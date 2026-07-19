@@ -48,6 +48,7 @@ gwyolo search-eval  freeze a validation FAR threshold and report test FAR/IFAR/w
 gwyolo scale-plan   audit a manifest and generate independent-data scaling targets
 gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
 gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
+gwyolo gwosc-verify scan every HDF5 chunk and match official GWOSC statistics/DQ sums
 gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
 gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds

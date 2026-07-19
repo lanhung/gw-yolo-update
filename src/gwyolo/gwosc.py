@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -70,6 +71,7 @@ def event_strain_files(
                 "sample_rate": sample_rate_khz * 1024,
                 "gps_start": int(item["gps_start"]),
                 "hdf5_url": str(item["hdf5_url"]),
+                "detail_url": str(item["detail_url"]),
             }
         )
     records.sort(key=lambda item: item["detector"])
@@ -78,6 +80,128 @@ def event_strain_files(
     if not records:
         raise ValueError(f"No {sample_rate_khz} kHz strain files found for {event}")
     return records
+
+
+def verify_hdf5_against_detail(
+    path: str | Path, detail: dict[str, Any], chunk_samples: int = 1_048_576
+) -> dict[str, Any]:
+    if chunk_samples <= 0:
+        raise ValueError("chunk_samples must be positive")
+    try:
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError("GWOSC verification requires the optional h5py dependency") from exc
+    source = Path(path)
+    failures = []
+    try:
+        with h5py.File(source, "r") as handle:
+            dataset = handle["strain/Strain"]
+            count = 0
+            total = np.longdouble(0.0)
+            total_square = np.longdouble(0.0)
+            minimum = math.inf
+            maximum = -math.inf
+            nonfinite = 0
+            for start in range(0, dataset.shape[0], chunk_samples):
+                values = np.asarray(dataset[start : start + chunk_samples], dtype=np.float64)
+                finite = np.isfinite(values)
+                nonfinite += int((~finite).sum())
+                valid = values[finite]
+                if valid.size:
+                    count += int(valid.size)
+                    total += np.sum(valid, dtype=np.longdouble)
+                    total_square += np.sum(
+                        valid.astype(np.longdouble) ** 2, dtype=np.longdouble
+                    )
+                    minimum = min(minimum, float(np.min(valid)))
+                    maximum = max(maximum, float(np.max(valid)))
+            if count == 0:
+                raise ValueError("strain dataset has no finite samples")
+            mean = float(total / count)
+            variance = max(float(total_square / count - np.longdouble(mean) ** 2), 0.0)
+            standard_deviation = math.sqrt(variance)
+            dqmask = np.asarray(handle["quality/simple/DQmask"], dtype=np.int64)
+            injmask = np.asarray(handle["quality/injections/Injmask"], dtype=np.int64)
+    except (OSError, KeyError, ValueError) as exc:
+        return {
+            "passed": False,
+            "path": str(source),
+            "bytes": source.stat().st_size if source.exists() else None,
+            "sha256": file_sha256(source) if source.is_file() else None,
+            "read_error": str(exc),
+            "failures": ["full_hdf5_chunk_scan_failed"],
+        }
+    observed = {
+        "filesize_bytes": source.stat().st_size,
+        "mean_strain": mean,
+        "stdev_strain": standard_deviation,
+        "min_strain": minimum,
+        "max_strain": maximum,
+        "nans_fraction": nonfinite / (count + nonfinite),
+    }
+    tolerances = {
+        "mean_strain": (1e-6, 1e-30),
+        "stdev_strain": (1e-10, 0.0),
+        "min_strain": (1e-12, 0.0),
+        "max_strain": (1e-12, 0.0),
+        "nans_fraction": (0.0, 1e-15),
+    }
+    if observed["filesize_bytes"] != int(detail["filesize_bytes"]):
+        failures.append("filesize_bytes_mismatch")
+    for field, (relative, absolute) in tolerances.items():
+        if not math.isclose(
+            float(observed[field]), float(detail[field]), rel_tol=relative, abs_tol=absolute
+        ):
+            failures.append(f"{field}_mismatch")
+    observed_bits = {}
+    for record in detail.get("bitsums", []):
+        bit = int(record["bit"])
+        vector = dqmask if bit < 32 else injmask
+        local_bit = bit if bit < 32 else bit - 32
+        bit_sum = int(np.count_nonzero(vector & (1 << local_bit)))
+        observed_bits[str(bit)] = bit_sum
+        if bit_sum != int(record["sum"]):
+            failures.append(f"bit_{bit}_sum_mismatch")
+    return {
+        "passed": not failures,
+        "path": str(source),
+        "bytes": source.stat().st_size,
+        "sha256": file_sha256(source),
+        "strain_samples": count + nonfinite,
+        "observed": observed,
+        "expected": {key: detail[key] for key in observed},
+        "observed_bitsums": observed_bits,
+        "failures": failures,
+    }
+
+
+def run_gwosc_verification(
+    event: str,
+    files: dict[str, str | Path],
+    output_path: str | Path,
+    chunk_samples: int = 1_048_576,
+) -> dict[str, Any]:
+    records = {record["detector"]: record for record in event_strain_files(event, files)}
+    missing = sorted(set(files) - set(records))
+    if missing:
+        raise ValueError(f"GWOSC metadata lacks detectors: {missing}")
+    detector_reports = {}
+    for ifo, path in sorted(files.items()):
+        detail = _api_json(records[ifo]["detail_url"])
+        detector_reports[ifo] = verify_hdf5_against_detail(path, detail, chunk_samples)
+    report = {
+        "status": (
+            "verified" if all(row["passed"] for row in detector_reports.values()) else "failed"
+        ),
+        "passed": all(row["passed"] for row in detector_reports.values()),
+        "event": event,
+        "detectors": detector_reports,
+        "chunk_samples": chunk_samples,
+    }
+    atomic_write_json(output_path, report)
+    if not report["passed"]:
+        raise RuntimeError(f"GWOSC full-file verification failed; inspect {output_path}")
+    return report
 
 
 def _remote_size(url: str) -> int | None:

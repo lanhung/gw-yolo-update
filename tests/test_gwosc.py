@@ -16,20 +16,76 @@ from gwyolo.gwosc import (
     event_strain_files,
     read_hdf5_segment,
     run_gwosc_pilot,
+    verify_hdf5_against_detail,
 )
 
 
 def test_event_strain_file_filtering() -> None:
     response = {
         "results": [
-            {"detector": "H1", "sample_rate_kHz": 4, "gps_start": 10, "hdf5_url": "h1"},
-            {"detector": "L1", "sample_rate_kHz": 4, "gps_start": 10, "hdf5_url": "l1"},
-            {"detector": "H1", "sample_rate_kHz": 16, "gps_start": 10, "hdf5_url": "h1-16"},
+            {
+                "detector": "H1",
+                "sample_rate_kHz": 4,
+                "gps_start": 10,
+                "hdf5_url": "h1",
+                "detail_url": "h1-detail",
+            },
+            {
+                "detector": "L1",
+                "sample_rate_kHz": 4,
+                "gps_start": 10,
+                "hdf5_url": "l1",
+                "detail_url": "l1-detail",
+            },
+            {
+                "detector": "H1",
+                "sample_rate_kHz": 16,
+                "gps_start": 10,
+                "hdf5_url": "h1-16",
+                "detail_url": "h1-16-detail",
+            },
         ]
     }
     with patch("gwyolo.gwosc._api_json", return_value=response):
         records = event_strain_files("event", ["L1"], 4)
-    assert records == [{"detector": "L1", "sample_rate": 4096, "gps_start": 10, "hdf5_url": "l1"}]
+    assert records == [
+        {
+            "detector": "L1",
+            "sample_rate": 4096,
+            "gps_start": 10,
+            "hdf5_url": "l1",
+            "detail_url": "l1-detail",
+        }
+    ]
+
+
+def test_full_hdf5_verification_matches_official_statistics(tmp_path: Path) -> None:
+    path = tmp_path / "verified.hdf5"
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    with h5py.File(path, "w") as handle:
+        handle.create_group("strain").create_dataset(
+            "Strain", data=values, chunks=(2,), fletcher32=True
+        )
+        quality = handle.create_group("quality")
+        quality.create_group("simple").create_dataset("DQmask", data=[3, 1, 0, 2])
+        quality.create_group("injections").create_dataset("Injmask", data=[1, 0, 1, 0])
+    detail = {
+        "filesize_bytes": path.stat().st_size,
+        "mean_strain": 2.5,
+        "stdev_strain": float(np.std(values)),
+        "min_strain": 1.0,
+        "max_strain": 4.0,
+        "nans_fraction": 0.0,
+        "bitsums": [
+            {"bit": 0, "sum": 2},
+            {"bit": 1, "sum": 2},
+            {"bit": 32, "sum": 2},
+        ],
+    }
+    report = verify_hdf5_against_detail(path, detail, chunk_samples=2)
+    assert report["passed"]
+    assert report["strain_samples"] == 4
+    assert report["observed_bitsums"] == {"0": 2, "1": 2, "32": 2}
 
 
 def test_read_hdf5_segment_and_downsample(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from .catalog import evaluate_catalog_predictions
 from .config import load_config
 from .data import audit_and_split, scan_sources
 from .factory import run_data_factory
-from .gwosc import run_gwosc_pilot
+from .gwosc import run_gwosc_pilot, run_gwosc_verification
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
@@ -96,6 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc.add_argument("--target-sample-rate", type=int, default=1024)
     gwosc.add_argument("--download-workers", type=int, default=4)
     gwosc.add_argument("--allow-locked-evaluation-data", action="store_true")
+
+    gwosc_verify = subparsers.add_parser("gwosc-verify")
+    gwosc_verify.add_argument("--event", required=True)
+    gwosc_verify.add_argument(
+        "--file", action="append", required=True, metavar="IFO=PATH"
+    )
+    gwosc_verify.add_argument("--output", required=True)
+    gwosc_verify.add_argument("--chunk-samples", type=int, default=1_048_576)
 
     numeric = subparsers.add_parser("numeric-train")
     numeric.add_argument("--config", required=True)
@@ -319,6 +327,17 @@ def main(argv: list[str] | None = None) -> int:
                 allow_locked_evaluation_data=args.allow_locked_evaluation_data,
             )
         )
+    elif args.command == "gwosc-verify":
+        files = {}
+        for item in args.file:
+            if "=" not in item:
+                raise ValueError(f"Expected IFO=PATH for --file, received {item!r}")
+            detector, path = item.split("=", 1)
+            detector = detector.strip().upper()
+            if not detector or not path or detector in files:
+                raise ValueError(f"Invalid or duplicate --file value: {item!r}")
+            files[detector] = path
+        _print(run_gwosc_verification(args.event, files, args.output, args.chunk_samples))
     elif args.command == "numeric-train":
         from .numeric import train_numeric_model
 
