@@ -165,6 +165,14 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
     trigger.add_argument("--target-sample-rate", type=int, default=1024)
     trigger.add_argument("--context-duration", type=float, default=64.0)
+
+    injection = subparsers.add_parser("injection-plan")
+    injection.add_argument("--background-manifest", required=True)
+    injection.add_argument("--background-report", required=True)
+    injection.add_argument("--output-dir", required=True)
+    injection.add_argument("--validation-count", type=int, default=5000)
+    injection.add_argument("--test-count", type=int, default=20000)
+    injection.add_argument("--seed", type=int, default=20260719)
     return parser
 
 
@@ -348,6 +356,19 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(args.q_values),
                 args.target_sample_rate,
                 args.context_duration,
+            )
+        )
+    elif args.command == "injection-plan":
+        from .injections import run_injection_plan
+
+        _print(
+            run_injection_plan(
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                args.validation_count,
+                args.test_count,
+                args.seed,
             )
         )
     else:

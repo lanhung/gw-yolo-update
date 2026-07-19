@@ -115,6 +115,11 @@ chirp 投影中位保留约 100%；26 个 chirp-only 场景在修复 STFT 边界
 为零。这是 oracle 上限而非 learned/O4 结果。`search-compare` 已实现同一目标 FAR 下 raw 与
 cleaned 的 validation 校准、test 冻结、Wilson/bootstrap 和成对 `<VT>` 差值协议。
 
+按该背景清单生成的配方层已有 5,000 validation + 20,000 test 注入，BBH/BNS/NSBH 为
+11,250/7,500/6,250，25,000 个 waveform/injection ID 全部唯一且 val/test 交叉为零，权重单位
+为 `Mpc^3 yr`。但它只复用了 192 个窗口、6 个 GPS block，且 waveform backend 明确未分配；
+因此只是 `<VT>` I/O/权重/provenance 验收，不是灵敏度结果。
+
 ## 下一阶段执行布局
 
 ### P0：把图像基线做成可发表的负责任基线（1–2 周）

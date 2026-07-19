@@ -28,6 +28,25 @@ of years, depending on the target IFAR.
 The next real-data step is to repeat the plan on the aligned H1+L1 intersection, then generate and
 cluster triggers. O4b remains locked; O4a provides development backgrounds only.
 
+## Injection and `<VT>` recipe contract
+
+`gwyolo injection-plan` samples BBH/BNS/NSBH families, distances uniform in volume, sky/orientation,
+component masses and spins, while inheriting the background window's split and GPS block. Each row
+has unique waveform/injection IDs and an importance weight in `Mpc^3 yr`. A hand-calculated unit test
+verifies that weights sum to the sampled population volume times split live time.
+
+The H1 integration pilot generated 5,000 validation and 20,000 test recipes:
+
+- 11,250 BBH, 7,500 BNS, and 6,250 NSBH;
+- 25,000 unique injection and waveform IDs;
+- zero validation/test injection-ID overlap;
+- manifest SHA256 `6a7a280f77c1b949a99250f9ba34f0227a56afdd3545ce758ee5916c2887084f`.
+
+This is not yet a valid sensitivity corpus. It reuses only 192 background windows from six GPS blocks,
+and every row deliberately says `waveform_backend=unassigned_requires_lal_or_validated_equivalent`.
+The recipe validates cardinality, units and provenance only. A publication `<VT>` requires a validated
+LAL/PyCBC-equivalent waveform backend and substantially more independent real background.
+
 ## Fair raw-versus-cleaned comparison
 
 `gwyolo search-compare` calibrates a separate validation-background threshold for raw and
