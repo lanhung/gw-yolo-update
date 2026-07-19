@@ -9,9 +9,10 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten, read_hdf5_segment
+from .gwosc import _fft_downsample, _whiten
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .trigger import probability_summaries
+from .waveforms import _atomic_save_npz, load_materialized_context
 
 
 def score_materialized_injections(
@@ -22,6 +23,7 @@ def score_materialized_injections(
     model_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
     q_values: tuple[float, ...] = (4.0, 8.0, 16.0),
     target_sample_rate: int = 1024,
+    save_probabilities: bool = False,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -45,54 +47,23 @@ def score_materialized_injections(
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
     if not manifest_rows:
         raise ValueError("Materialized injection manifest cannot be empty")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
     output_rows = []
     failures = []
     verified_background_hashes: dict[str, str] = {}
     started = time.time()
     for row in manifest_rows:
         try:
-            artifact = Path(row["materialized_path"])
-            if file_sha256(artifact) != str(row["materialized_sha256"]):
-                raise ValueError("materialized array hash mismatch")
-            with np.load(artifact, allow_pickle=False) as arrays:
-                source_rate = int(arrays["sample_rate"])
-                ifos = [str(value) for value in arrays["ifos"].tolist()]
-                context_start = float(arrays["context_gps_start"])
-                analysis_start = float(arrays["analysis_gps_start"])
-                source_start = int(arrays["analysis_start_index"])
-                source_stop = int(arrays["analysis_stop_index"])
-                source_duration = (source_stop - source_start) / source_rate
-                if "strain" in arrays:
-                    mixture = np.asarray(arrays["strain"], dtype=np.float64)
-                else:
-                    signal = np.asarray(arrays["signal"], dtype=np.float64)
-                    context_duration = signal.shape[1] / source_rate
-                    context_center = context_start + context_duration / 2.0
-                    detector_noise = []
-                    for ifo in ifos:
-                        source = row["background_source_files"][ifo]
-                        source_path = str(source["path"])
-                        expected_hash = str(source["sha256"])
-                        actual_hash = verified_background_hashes.get(source_path)
-                        if actual_hash is None:
-                            actual_hash = file_sha256(source_path)
-                            verified_background_hashes[source_path] = actual_hash
-                        if actual_hash != expected_hash:
-                            raise ValueError(f"background source hash mismatch for {ifo}")
-                        segment = read_hdf5_segment(
-                            source_path, context_center, context_duration
-                        )
-                        detector_noise.append(
-                            _fft_downsample(
-                                np.asarray(segment["strain"], dtype=np.float64),
-                                int(segment["sample_rate"]),
-                                source_rate,
-                            )
-                        )
-                    noise = np.stack(detector_noise)
-                    if noise.shape != signal.shape:
-                        raise ValueError("reconstructed background shape differs from signal")
-                    mixture = noise + signal
+            context = load_materialized_context(row, verified_background_hashes)
+            source_rate = int(context["sample_rate"])
+            ifos = list(context["ifos"])
+            context_start = float(context["context_gps_start"])
+            analysis_start = float(context["analysis_gps_start"])
+            source_start = int(context["analysis_start_index"])
+            source_stop = int(context["analysis_stop_index"])
+            source_duration = (source_stop - source_start) / source_rate
+            mixture = np.asarray(context["mixture"], dtype=np.float64)
             if source_rate < target_sample_rate or source_rate % target_sample_rate:
                 raise ValueError("materialized sample rate must be an integer multiple of target")
             transformed = []
@@ -134,6 +105,20 @@ def score_materialized_injections(
                 analysis_start,
                 source_duration,
             )
+            probability_record = {}
+            if save_probabilities:
+                probability_path = output / "probabilities" / f"{row['injection_id']}.npz"
+                _atomic_save_npz(
+                    probability_path,
+                    chirp_probability=probabilities[0].astype(np.float16),
+                    glitch_probability=probabilities[1].astype(np.float16),
+                    ifos=np.asarray(model_ifos),
+                    q_values=np.asarray(q_values, dtype=np.float32),
+                )
+                probability_record = {
+                    "probability_path": str(probability_path),
+                    "probability_sha256": file_sha256(probability_path),
+                }
             output_rows.append(
                 {
                     "injection_id": row["injection_id"],
@@ -149,13 +134,12 @@ def score_materialized_injections(
                     "vt_weight_unit": row["vt_weight_unit"],
                     "materialized_sha256": row["materialized_sha256"],
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in ifos],
+                    **probability_record,
                     **summary,
                 }
             )
         except (ValueError, OSError, KeyError) as exc:
             failures.append({"injection_id": row.get("injection_id"), "error": str(exc)})
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
     triggers_path = output / "injection_triggers.jsonl"
     atomic_write_text(
         triggers_path,
@@ -172,6 +156,7 @@ def score_materialized_injections(
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
+        "probabilities_saved": save_probabilities,
         "input_injections": len(manifest_rows),
         "scored_injections": len(output_rows),
         "failed_injections": len(failures),

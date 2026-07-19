@@ -166,6 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
     deglitch_benchmark.add_argument("--output", required=True)
     deglitch_benchmark.add_argument("--strength", type=float, default=0.9)
 
+    learned_deglitch = subparsers.add_parser("learned-deglitch")
+    learned_deglitch.add_argument("--materialized-manifest", required=True)
+    learned_deglitch.add_argument("--scored-manifest", required=True)
+    learned_deglitch.add_argument("--output-dir", required=True)
+    learned_deglitch.add_argument("--strength", type=float, default=0.9)
+
     trigger = subparsers.add_parser("trigger-score")
     trigger.add_argument("--manifest", required=True)
     trigger.add_argument("--checkpoint", required=True)
@@ -213,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
     injection_score.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
     injection_score.add_argument("--target-sample-rate", type=int, default=1024)
+    injection_score.add_argument("--save-probabilities", action="store_true")
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -403,6 +410,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.factory_report, args.output, args.strength
             )
         )
+    elif args.command == "learned-deglitch":
+        from .learned_deglitch import run_learned_deglitch
+
+        _print(
+            run_learned_deglitch(
+                args.materialized_manifest,
+                args.scored_manifest,
+                args.output_dir,
+                args.strength,
+            )
+        )
     elif args.command == "trigger-score":
         from .trigger import score_background_manifest
 
@@ -415,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(args.model_ifos),
                 tuple(args.q_values),
                 args.target_sample_rate,
+                args.save_probabilities,
                 args.context_duration,
                 args.storage_mode,
             )

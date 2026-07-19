@@ -199,6 +199,71 @@ def _atomic_save_npz(path: Path, **arrays: np.ndarray) -> None:
         raise
 
 
+def load_materialized_context(
+    row: dict[str, Any], verified_background_hashes: dict[str, str] | None = None
+) -> dict[str, Any]:
+    artifact = Path(row["materialized_path"])
+    if file_sha256(artifact) != str(row["materialized_sha256"]):
+        raise ValueError("materialized array hash mismatch")
+    with np.load(artifact, allow_pickle=False) as arrays:
+        source_rate = int(arrays["sample_rate"])
+        ifos = [str(value) for value in arrays["ifos"].tolist()]
+        context_start = float(arrays["context_gps_start"])
+        analysis_start = float(arrays["analysis_gps_start"])
+        analysis_start_index = int(arrays["analysis_start_index"])
+        analysis_stop_index = int(arrays["analysis_stop_index"])
+        signal = np.asarray(arrays["signal"], dtype=np.float64)
+        stored_noise = (
+            np.asarray(arrays["noise"], dtype=np.float64) if "noise" in arrays else None
+        )
+        stored_mixture = (
+            np.asarray(arrays["strain"], dtype=np.float64) if "strain" in arrays else None
+        )
+    if stored_noise is None:
+        verified = verified_background_hashes if verified_background_hashes is not None else {}
+        context_duration = signal.shape[1] / source_rate
+        context_center = context_start + context_duration / 2.0
+        detector_noise = []
+        for ifo in ifos:
+            source = row["background_source_files"][ifo]
+            source_path = str(source["path"])
+            expected_hash = str(source["sha256"])
+            actual_hash = verified.get(source_path)
+            if actual_hash is None:
+                actual_hash = file_sha256(source_path)
+                verified[source_path] = actual_hash
+            if actual_hash != expected_hash:
+                raise ValueError(f"background source hash mismatch for {ifo}")
+            segment = read_hdf5_segment(source_path, context_center, context_duration)
+            detector_noise.append(
+                _fft_downsample(
+                    np.asarray(segment["strain"], dtype=np.float64),
+                    int(segment["sample_rate"]),
+                    source_rate,
+                )
+            )
+        noise = np.stack(detector_noise)
+    else:
+        noise = stored_noise
+    if noise.shape != signal.shape:
+        raise ValueError("reconstructed background shape differs from signal")
+    mixture = noise + signal if stored_mixture is None else stored_mixture
+    if mixture.shape != signal.shape:
+        raise ValueError("stored mixture shape differs from signal")
+    return {
+        "artifact": artifact,
+        "sample_rate": source_rate,
+        "ifos": ifos,
+        "context_gps_start": context_start,
+        "analysis_gps_start": analysis_start,
+        "analysis_start_index": analysis_start_index,
+        "analysis_stop_index": analysis_stop_index,
+        "noise": noise,
+        "signal": signal,
+        "mixture": mixture,
+    }
+
+
 def materialize_recipe(
     recipe: dict[str, Any],
     background: dict[str, Any],

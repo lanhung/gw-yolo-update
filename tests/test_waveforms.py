@@ -9,6 +9,7 @@ import pytest
 from gwyolo.io import file_sha256
 from gwyolo.waveforms import (
     materialize_recipe,
+    load_materialized_context,
     place_waveform_samples,
     run_injection_materialization,
     validate_recipe_identities,
@@ -108,3 +109,6 @@ def test_signal_only_materialization_references_hashed_background(tmp_path) -> N
         assert arrays["signal"].shape == (1, 16)
     assert report["storage_mode"] == "signal_only"
     assert report["background_source_files"]["H1"]["sha256"] == file_sha256(source)
+    loaded = load_materialized_context(report)
+    assert loaded["noise"].shape == (1, 16)
+    assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
