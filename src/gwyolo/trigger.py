@@ -131,6 +131,19 @@ def score_background_manifest(
                 ifo: float(np.max(probabilities[1, index]))
                 for index, ifo in enumerate(model_ifos)
             }
+            peak_times = {"chirp": {}, "glitch": {}}
+            for class_index, class_name in enumerate(("chirp", "glitch")):
+                for ifo_index, ifo in enumerate(model_ifos):
+                    profile = np.max(probabilities[class_index, ifo_index], axis=(0, 1))
+                    peak_index = int(np.argmax(profile))
+                    peak_offset = (peak_index + 0.5) / profile.size * float(row["duration"])
+                    peak_times[class_name][ifo] = {
+                        "gps": float(row["gps_start"]) + peak_offset,
+                        "offset_seconds": peak_offset,
+                        "time_bin": peak_index,
+                        "time_bins": int(profile.size),
+                        "score": float(profile[peak_index]),
+                    }
             ranking = network_ranking(chirp_scores, glitch_scores, valid_ifos)
             rows.append(
                 {
@@ -141,6 +154,7 @@ def score_background_manifest(
                     "gps_block": row["gps_block"],
                     "chirp_scores": chirp_scores,
                     "glitch_scores": glitch_scores,
+                    "peak_times": peak_times,
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
                     **ranking,
                 }

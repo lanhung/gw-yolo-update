@@ -28,6 +28,20 @@ of years, depending on the target IFAR.
 The next real-data step is to repeat the plan on the aligned H1+L1 intersection, then generate and
 cluster triggers. O4b remains locked; O4a provides development backgrounds only.
 
+`gwyolo trigger-score` now stores each IFO's maximum chirp/glitch probability and the time-bin/GPS
+location of each peak. `gwyolo time-slide-background` can then build nonzero, non-cyclic H1/L1
+slides independently for validation or test, optionally requiring the shifted peaks to fall inside a
+fixed coincidence window. Equivalent exposure is the union of valid reference intervals within each
+slide and the sum across slides; rejected peak coincidences reduce trigger count, not exposure. A
+hand-calculated test covers both ranking and exposure.
+
+The present scorer has only 96 time bins over an 8-second window, so its time resolution is about
+83 ms. Every time-slide report therefore says `window_level_time_slide_integration_only` and forbids
+a scientific claim. Publication FAR needs sub-window candidate extraction and clustering at a
+predeclared millisecond coincidence window, veto/category policy, many independent continuous O4a
+segments, and enough nonzero shifts to support the requested IFAR. The current implementation proves
+the split/exposure plumbing and will be replaced at that boundary rather than silently overstated.
+
 ## Injection and `<VT>` recipe contract
 
 `gwyolo injection-plan` samples BBH/BNS/NSBH families, sky/orientation, component masses and spins,

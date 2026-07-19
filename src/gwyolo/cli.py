@@ -176,6 +176,16 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--target-sample-rate", type=int, default=1024)
     trigger.add_argument("--context-duration", type=float, default=64.0)
 
+    time_slide = subparsers.add_parser("time-slide-background")
+    time_slide.add_argument("--triggers", required=True)
+    time_slide.add_argument("--output-dir", required=True)
+    time_slide.add_argument("--split", choices=("val", "test"), required=True)
+    time_slide.add_argument("--reference-ifo", default="H1")
+    time_slide.add_argument("--shifted-ifo", default="L1")
+    time_slide.add_argument("--slide-count", type=int, required=True)
+    time_slide.add_argument("--step-seconds", type=float, required=True)
+    time_slide.add_argument("--coincidence-window-seconds", type=float)
+
     injection = subparsers.add_parser("injection-plan")
     injection.add_argument("--background-manifest", required=True)
     injection.add_argument("--background-report", required=True)
@@ -395,6 +405,21 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(args.q_values),
                 args.target_sample_rate,
                 args.context_duration,
+            )
+        )
+    elif args.command == "time-slide-background":
+        from .timeslides import run_window_time_slides
+
+        _print(
+            run_window_time_slides(
+                args.triggers,
+                args.output_dir,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.slide_count,
+                args.step_seconds,
+                args.coincidence_window_seconds,
             )
         )
     elif args.command == "injection-plan":

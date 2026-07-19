@@ -59,6 +59,7 @@ gwyolo search-compare compare raw/mask-cleaned methods at a common validation-ca
 gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound in the time domain
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
 gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking triggers
+gwyolo time-slide-background build split-safe nonzero time-slide background exposure
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain
 gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
