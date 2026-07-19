@@ -82,6 +82,10 @@ The default `signal_only` mode stores the projected waveform and a hash-addresse
 GWOSC source instead of duplicating noise and mixture for every injection. `injection-score` verifies
 each source hash and reconstructs the mixture before whitening. A `full` mode remains available for
 small immutable debugging sets; it is not the scalable default.
+Materialization writes a run-identity state and an atomic partial manifest every ten injections. A
+restart verifies every indexed artifact hash, rejects a changed manifest/config/backend, and resumes
+without regenerating completed rows. Waveform-domain failures remain nonzero exits and are never
+silently skipped.
 The output records PyCBC/LALSuite versions, approximant, source-file hashes and waveform summaries.
 The implementation follows the official PyCBC interfaces for
 [waveform generation](https://pycbc.org/pycbc/latest/html/waveform.html) and

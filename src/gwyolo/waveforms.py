@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from .gwosc import _fft_downsample, read_hdf5_segment
-from .io import atomic_write_json, atomic_write_text, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
 
 def place_waveform_samples(
@@ -384,8 +384,49 @@ def run_injection_materialization(
             )
     backend = PyCBCWaveformBackend()
     output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "recipe_manifest_sha256": file_sha256(recipe_manifest),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "selected_injection_ids_hash": canonical_hash(
+            [str(row["injection_id"]) for row in selected], 64
+        ),
+        "sample_rate": sample_rate,
+        "context_duration": context_duration,
+        "storage_mode": storage_mode,
+        "backend": backend.metadata,
+        "backend_validation_report_sha256": (
+            file_sha256(backend_validation_report) if backend_validation_report else None
+        ),
+    }
+    state_path = output / "materialization_state.json"
+    partial_path = output / "materialized_injections.partial.jsonl"
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            prior_state = json.load(handle)
+        if prior_state.get("run_identity") != run_identity:
+            raise ValueError("Existing materialization state belongs to a different run")
     materialized = []
-    for recipe in selected:
+    if partial_path.is_file():
+        with partial_path.open("r", encoding="utf-8") as handle:
+            materialized = [json.loads(line) for line in handle if line.strip()]
+    selected_ids = {str(row["injection_id"]) for row in selected}
+    completed_by_id = {}
+    for completed in materialized:
+        injection_id = str(completed["injection_id"])
+        if injection_id not in selected_ids or injection_id in completed_by_id:
+            raise ValueError("Partial materialization contains unexpected or duplicate injection")
+        if file_sha256(completed["materialized_path"]) != str(
+            completed["materialized_sha256"]
+        ):
+            raise ValueError(f"Partial materialized hash mismatch for {injection_id}")
+        completed_by_id[injection_id] = completed
+    materialized = []
+    for index, recipe in enumerate(selected, start=1):
+        injection_id = str(recipe["injection_id"])
+        if injection_id in completed_by_id:
+            materialized.append(completed_by_id[injection_id])
+            continue
         artifact_path = output / "arrays" / f"{recipe['injection_id']}.npz"
         materialized.append(
             materialize_recipe(
@@ -398,6 +439,20 @@ def run_injection_materialization(
                 storage_mode,
             )
         )
+        if index % 10 == 0 or index == len(selected):
+            atomic_write_text(
+                partial_path,
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in materialized),
+            )
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress",
+                    "run_identity": run_identity,
+                    "completed": len(materialized),
+                    "requested": len(selected),
+                },
+            )
     manifest_path = output / "materialized_injections.jsonl"
     atomic_write_text(
         manifest_path,
@@ -428,4 +483,14 @@ def run_injection_materialization(
         "manifest_sha256": file_sha256(manifest_path),
     }
     atomic_write_json(output / "materialization_report.json", report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed": len(materialized),
+            "requested": len(selected),
+            "manifest_sha256": report["manifest_sha256"],
+        },
+    )
     return report
