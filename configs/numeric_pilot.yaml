@@ -1,0 +1,18 @@
+numeric_training:
+  evaluate_test: false
+  seed: 20260719
+  epochs: 20
+  batch_size: 8
+  workers: 0
+  base_channels: 16
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  # Glitch masks occupy ~0.17% of pilot pixels versus ~1.22% for chirps.
+  positive_weights: [10, 40]
+  dice_weights: [1, 4]
+  threshold_grid: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  tensor:
+    frequency_bins: 96
+    time_bins: 96
+    fmin: 16
+    fmax: 500

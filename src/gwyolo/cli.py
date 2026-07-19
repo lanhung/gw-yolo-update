@@ -11,6 +11,7 @@ from .factory import run_data_factory
 from .gwosc import run_gwosc_pilot
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
+from .provenance import create_recipe_subset
 from .search import run_search_benchmark
 from .scaling import run_scale_plan
 from .training import evaluate_checkpoint, train_candidate
@@ -80,7 +81,29 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc.add_argument("--context-duration", type=float, default=64.0)
     gwosc.add_argument("--output-duration", type=float, default=8.0)
     gwosc.add_argument("--target-sample-rate", type=int, default=1024)
+    gwosc.add_argument("--download-workers", type=int, default=4)
     gwosc.add_argument("--allow-locked-evaluation-data", action="store_true")
+
+    numeric = subparsers.add_parser("numeric-train")
+    numeric.add_argument("--config", required=True)
+    numeric.add_argument("--manifest", required=True)
+    numeric.add_argument("--output-dir", required=True)
+
+    numeric_evaluate = subparsers.add_parser("numeric-evaluate")
+    numeric_evaluate.add_argument("--config", required=True)
+    numeric_evaluate.add_argument("--manifest", required=True)
+    numeric_evaluate.add_argument("--checkpoint", required=True)
+    numeric_evaluate.add_argument("--split", choices=("val", "test"), required=True)
+    numeric_evaluate.add_argument("--chirp-threshold", required=True, type=float)
+    numeric_evaluate.add_argument("--glitch-threshold", required=True, type=float)
+    numeric_evaluate.add_argument("--output", required=True)
+
+    subset = subparsers.add_parser("recipe-subset")
+    subset.add_argument("--manifest", required=True)
+    subset.add_argument("--output", required=True)
+    subset.add_argument("--train-count", required=True, type=int)
+    subset.add_argument("--val-count", required=True, type=int)
+    subset.add_argument("--test-count", required=True, type=int)
     return parser
 
 
@@ -155,7 +178,35 @@ def main(argv: list[str] | None = None) -> int:
                 context_duration=args.context_duration,
                 output_duration=args.output_duration,
                 target_sample_rate=args.target_sample_rate,
+                download_workers=args.download_workers,
                 allow_locked_evaluation_data=args.allow_locked_evaluation_data,
+            )
+        )
+    elif args.command == "numeric-train":
+        from .numeric import train_numeric_model
+
+        _print(train_numeric_model(args.config, args.manifest, args.output_dir))
+    elif args.command == "numeric-evaluate":
+        from .numeric import evaluate_numeric_checkpoint
+
+        _print(
+            evaluate_numeric_checkpoint(
+                args.config,
+                args.manifest,
+                args.checkpoint,
+                args.split,
+                (args.chirp_threshold, args.glitch_threshold),
+                args.output,
+            )
+        )
+    elif args.command == "recipe-subset":
+        _print(
+            create_recipe_subset(
+                args.manifest,
+                args.output,
+                args.train_count,
+                args.val_count,
+                args.test_count,
             )
         )
     else:

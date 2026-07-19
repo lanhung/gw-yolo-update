@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .io import canonical_hash
+from .io import atomic_write_json, canonical_hash, file_sha256
 
 
 SPLITS = ("train", "val", "test")
@@ -157,3 +157,38 @@ def audit_provenance(recipes: Iterable[SceneRecipe]) -> dict[str, Any]:
             for axis, split_values in values.items()
         },
     }
+
+
+def create_recipe_subset(
+    manifest_path: str | Path,
+    output_path: str | Path,
+    train_count: int,
+    val_count: int,
+    test_count: int,
+) -> dict[str, Any]:
+    requested = {"train": train_count, "val": val_count, "test": test_count}
+    if any(value <= 0 for value in requested.values()):
+        raise ValueError("all subset counts must be positive")
+    recipes = read_recipe_manifest(manifest_path)
+    selected: list[SceneRecipe] = []
+    for split in SPLITS:
+        candidates = [recipe for recipe in recipes if recipe.split == split]
+        if len(candidates) < requested[split]:
+            raise ValueError(
+                f"Requested {requested[split]} {split} recipes, only {len(candidates)} available"
+            )
+        selected.extend(candidates[: requested[split]])
+    audit = audit_provenance(selected)
+    if not audit["passed"]:
+        raise ValueError(f"Subset provenance audit failed: {audit}")
+    write_recipe_manifest(output_path, selected)
+    report = {
+        "source_manifest": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "output_manifest": str(output_path),
+        "output_manifest_sha256": file_sha256(output_path),
+        "requested_counts": requested,
+        "audit": audit,
+    }
+    atomic_write_json(Path(output_path).with_suffix(".report.json"), report)
+    return report

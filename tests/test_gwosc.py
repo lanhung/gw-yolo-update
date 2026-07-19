@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +10,13 @@ import h5py
 import numpy as np
 import pytest
 
-from gwyolo.gwosc import _fft_downsample, event_strain_files, read_hdf5_segment, run_gwosc_pilot
+from gwyolo.gwosc import (
+    _fft_downsample,
+    download_resumable,
+    event_strain_files,
+    read_hdf5_segment,
+    run_gwosc_pilot,
+)
 
 
 def test_event_strain_file_filtering() -> None:
@@ -52,3 +60,44 @@ def test_o4b_is_locked_before_any_download(tmp_path: Path) -> None:
 def test_report_shape_is_json_serializable() -> None:
     value = {"shape": list(np.zeros((2, 3)).shape)}
     assert json.loads(json.dumps(value)) == {"shape": [2, 3]}
+
+
+def test_parallel_download_resumes_exact_prefix(tmp_path: Path) -> None:
+    payload = bytes(range(251)) * 100
+
+    class RangeHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            units, requested = self.headers["Range"].split("=")
+            assert units == "bytes"
+            start_text, stop_text = requested.split("-")
+            start, stop = int(start_text), int(stop_text)
+            body = payload[start : stop + 1]
+            self.send_response(206)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Range", f"bytes {start}-{stop}/{len(payload)}")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RangeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = tmp_path / "payload.bin"
+    target.write_bytes(payload[:137])
+    try:
+        report = download_resumable(
+            f"http://127.0.0.1:{server.server_port}/payload", target, workers=3
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+    assert target.read_bytes() == payload
+    assert report["bytes"] == len(payload)
+    assert report["downloaded"]

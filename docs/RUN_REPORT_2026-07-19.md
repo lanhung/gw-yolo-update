@@ -79,6 +79,14 @@ O4b。详细设计和命令见 `docs/DATA_FACTORY.md`。
 重叠为零。这个结果验证了目标规模的 provenance/I/O 路径，但不等价于已经拥有 20 万条真实
 波形和真实噪声锚点。
 
+数值模型闭环也已完成。统一 BCE 的首轮模型发生 glitch 类塌缩（test IoU 0.009）；加入由
+训练稀疏度驱动的正样本/Dice 加权，并只在 validation 校准阈值后，glitch test IoU 提升到
+0.219。随后用相同 64-val/64-test 做嵌套数据规模实验：72→250 个训练场景使 validation
+mean IoU 从 0.411 提升到 0.675（+26.35 个百分点）。选中的 250-scene checkpoint 使用冻结
+0.7/0.7 阈值，在 64-test 上达到 chirp IoU 0.770、glitch IoU 0.558、mean IoU 0.664。
+这些数值只验证 analytic synthetic 闭环，不是 O4 灵敏度；但它为“当前远远缺数据”的判断
+提供了首个受控实验证据。详见 `docs/NUMERIC_BASELINE.md`。
+
 ## 下一阶段执行布局
 
 ### P0：把图像基线做成可发表的负责任基线（1–2 周）

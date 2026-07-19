@@ -48,6 +48,9 @@ gwyolo search-eval  freeze a validation FAR threshold and report test FAR/IFAR/w
 gwyolo scale-plan   audit a manifest and generate independent-data scaling targets
 gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
 gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
+gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
+gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
+gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 
@@ -62,4 +65,5 @@ AMPLFI and DINGO are parameter-estimation systems. The defensible comparison is 
 Shared metrics are end-to-end latency, posterior coverage, searched sky area/volume, and robustness under glitch overlap. GW-YOLO's distinct contribution is interpretable time-frequency localization and background reduction.
 
 See [DATA_FACTORY.md](docs/DATA_FACTORY.md), [PROJECT_PLAN.md](docs/PROJECT_PLAN.md),
-[DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
+[DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md),
+[NUMERIC_BASELINE.md](docs/NUMERIC_BASELINE.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).

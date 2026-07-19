@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -85,7 +86,43 @@ def _remote_size(url: str) -> int | None:
     return int(value) if value else None
 
 
-def download_resumable(url: str, destination: str | Path, chunk_size: int = 1024 * 1024) -> dict[str, Any]:
+def _download_range(
+    url: str,
+    path: Path,
+    start: int,
+    stop: int,
+    chunk_size: int,
+) -> None:
+    expected = stop - start + 1
+    present = path.stat().st_size if path.exists() else 0
+    if present == expected:
+        return
+    if present > expected:
+        raise IOError(f"Range cache {path} is larger than expected")
+    request_start = start + present
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Range": f"bytes={request_start}-{stop}"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        if response.status != 206:
+            raise IOError(f"Server ignored range request {request_start}-{stop}: HTTP {response.status}")
+        with path.open("ab") as handle:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                handle.write(chunk)
+    if path.stat().st_size != expected:
+        raise IOError(f"Incomplete range {start}-{stop}: {path.stat().st_size} != {expected}")
+
+
+def download_resumable(
+    url: str,
+    destination: str | Path,
+    chunk_size: int = 1024 * 1024,
+    workers: int = 4,
+) -> dict[str, Any]:
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     expected_size = _remote_size(url)
@@ -97,30 +134,70 @@ def download_resumable(url: str, destination: str | Path, chunk_size: int = 1024
             "downloaded": False,
         }
 
-    partial = target.with_suffix(target.suffix + ".part")
-    offset = partial.stat().st_size if partial.exists() else 0
-    headers = {"User-Agent": USER_AGENT}
-    if offset:
-        headers["Range"] = f"bytes={offset}-"
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=120) as response:
-        resumed = offset > 0 and response.status == 206
-        mode = "ab" if resumed else "wb"
-        if not resumed:
-            offset = 0
-        with partial.open(mode) as handle:
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                handle.write(chunk)
-    actual_size = partial.stat().st_size
-    if expected_size is not None and actual_size != expected_size:
-        raise IOError(f"Incomplete download for {url}: {actual_size} != {expected_size}")
-    os.replace(partial, target)
+    if expected_size is None:
+        raise IOError(f"Parallel resumable download requires Content-Length: {url}")
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    prefix_size = target.stat().st_size if target.exists() else 0
+    if prefix_size > expected_size:
+        raise IOError(f"Existing file is larger than remote object: {prefix_size} > {expected_size}")
+    remaining = expected_size - prefix_size
+    ranges = []
+    if remaining:
+        worker_count = min(workers, remaining)
+        base = remaining // worker_count
+        extra = remaining % worker_count
+        cursor = prefix_size
+        for index in range(worker_count):
+            length = base + (1 if index < extra else 0)
+            start = cursor
+            stop = start + length - 1
+            part = target.with_name(f".{target.name}.range-{start}-{stop}.part")
+            ranges.append((part, start, stop))
+            cursor = stop + 1
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(_download_range, url, part, start, stop, chunk_size)
+                for part, start, stop in ranges
+            ]
+            for future in futures:
+                future.result()
+
+    descriptor, assembled_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".assembled", dir=target.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as assembled:
+            if prefix_size:
+                with target.open("rb") as prefix:
+                    remaining_prefix = prefix_size
+                    while remaining_prefix:
+                        chunk = prefix.read(min(chunk_size, remaining_prefix))
+                        if not chunk:
+                            raise IOError(
+                                f"Existing prefix ended before {prefix_size} bytes"
+                            )
+                        assembled.write(chunk)
+                        remaining_prefix -= len(chunk)
+            for part, _, _ in ranges:
+                with part.open("rb") as source:
+                    while chunk := source.read(chunk_size):
+                        assembled.write(chunk)
+        actual_size = Path(assembled_name).stat().st_size
+        if actual_size != expected_size:
+            raise IOError(f"Incomplete download for {url}: {actual_size} != {expected_size}")
+        os.replace(assembled_name, target)
+        for part, _, _ in ranges:
+            part.unlink()
+    except BaseException:
+        try:
+            os.unlink(assembled_name)
+        except FileNotFoundError:
+            pass
+        raise
     return {
         "path": str(target),
-        "bytes": actual_size,
+        "bytes": target.stat().st_size,
         "sha256": file_sha256(target),
         "downloaded": True,
     }
@@ -195,6 +272,7 @@ def run_gwosc_pilot(
     context_duration: float = 64.0,
     output_duration: float = 8.0,
     target_sample_rate: int = 1024,
+    download_workers: int = 4,
     allow_locked_evaluation_data: bool = False,
 ) -> dict[str, Any]:
     event_record = resolve_event(event)
@@ -209,7 +287,9 @@ def run_gwosc_pilot(
     quality = {}
     for record in files:
         filename = Path(record["hdf5_url"]).name
-        download = download_resumable(record["hdf5_url"], cache / filename)
+        download = download_resumable(
+            record["hdf5_url"], cache / filename, workers=download_workers
+        )
         downloads.append({**record, **download})
         segment = read_hdf5_segment(download["path"], event_record["gps"], context_duration)
         resampled = _fft_downsample(segment["strain"], segment["sample_rate"], target_sample_rate)

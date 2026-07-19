@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from gwyolo.provenance import SceneRecipe, audit_provenance
+from gwyolo.provenance import (
+    SceneRecipe,
+    audit_provenance,
+    create_recipe_subset,
+    read_recipe_manifest,
+    write_recipe_manifest,
+)
 
 
 def recipe(split: str, index: int, kind: str = "overlap") -> SceneRecipe:
@@ -47,3 +53,15 @@ def test_audit_rejects_reused_gps_background() -> None:
     report = audit_provenance([train, val])
     assert not report["passed"]
     assert report["cross_split_overlap_count"] == 1
+
+
+def test_recipe_subset_is_nested_and_audited(tmp_path) -> None:
+    source = tmp_path / "source.jsonl"
+    rows = [recipe(split, index + offset) for split, offset in zip(("train", "val", "test"), (0, 10, 20)) for index in range(3)]
+    write_recipe_manifest(source, rows)
+    output = tmp_path / "subset.jsonl"
+    report = create_recipe_subset(source, output, train_count=2, val_count=1, test_count=1)
+    selected = read_recipe_manifest(output)
+    assert [item.scene_id for item in selected[:2]] == [item.scene_id for item in rows[:2]]
+    assert report["audit"]["passed"]
+    assert report["audit"]["split_counts"] == {"train": 2, "val": 1, "test": 1}
