@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 
+import h5py
 import numpy as np
 import pytest
 
+from gwyolo.io import file_sha256
 from gwyolo.waveforms import (
+    materialize_recipe,
     place_waveform_samples,
     run_injection_materialization,
     validate_recipe_identities,
@@ -61,3 +64,47 @@ def test_materializer_rejects_internal_only_validation_as_external_evidence(tmp_
             tmp_path / "output",
             backend_validation_report=validation,
         )
+
+
+def test_signal_only_materialization_references_hashed_background(tmp_path) -> None:
+    source = tmp_path / "strain.hdf5"
+    with h5py.File(source, "w") as handle:
+        meta = handle.create_group("meta")
+        meta.create_dataset("GPSstart", data=100)
+        strain = handle.create_group("strain").create_dataset(
+            "Strain", data=np.arange(32, dtype=np.float64)
+        )
+        strain.attrs["Xspacing"] = 0.25
+
+    class FakeBackend:
+        def generate(self, recipe, ifos, sample_rate):
+            assert ifos == ["H1"]
+            assert sample_rate == 4
+            return {"H1": (103.0, np.asarray([1.0, 2.0]))}, {"H1": {"fake": True}}
+
+    recipe = {
+        "injection_id": "i1",
+        "background_window_id": "b1",
+        "gps_block": "g1",
+        "split": "val",
+    }
+    background = {
+        "window_id": "b1",
+        "gps_block": "g1",
+        "split": "val",
+        "gps_start": 103.0,
+        "duration": 2.0,
+        "ifos": ["H1"],
+        "source_files": {"H1": {"path": str(source), "sha256": file_sha256(source)}},
+    }
+    output = tmp_path / "injection.npz"
+    report = materialize_recipe(
+        recipe, background, FakeBackend(), 4, output, context_duration=4.0
+    )
+    with np.load(output, allow_pickle=False) as arrays:
+        assert "signal" in arrays
+        assert "noise" not in arrays
+        assert "strain" not in arrays
+        assert arrays["signal"].shape == (1, 16)
+    assert report["storage_mode"] == "signal_only"
+    assert report["background_source_files"]["H1"]["sha256"] == file_sha256(source)

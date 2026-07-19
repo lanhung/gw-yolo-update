@@ -71,6 +71,10 @@ cross polarizations into every IFO with sky-dependent antenna response and arriv
 result to the detector sample grid, and atomically stores noise, signal and mixture numeric arrays.
 It stores a 64-second context by default together with exact indices for the central 8-second analysis
 window; this prevents the injected signal from defining a PSD from only its own short window.
+The default `signal_only` mode stores the projected waveform and a hash-addressed reference to each
+GWOSC source instead of duplicating noise and mixture for every injection. `injection-score` verifies
+each source hash and reconstructs the mixture before whitening. A `full` mode remains available for
+small immutable debugging sets; it is not the scalable default.
 The output records PyCBC/LALSuite versions, approximant, source-file hashes and waveform summaries.
 The implementation follows the official PyCBC interfaces for
 [waveform generation](https://pycbc.org/pycbc/latest/html/waveform.html) and

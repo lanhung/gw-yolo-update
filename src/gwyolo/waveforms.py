@@ -206,7 +206,10 @@ def materialize_recipe(
     sample_rate: int,
     output_path: str | Path,
     context_duration: float = 64.0,
+    storage_mode: str = "signal_only",
 ) -> dict[str, Any]:
+    if storage_mode not in {"signal_only", "full"}:
+        raise ValueError("storage_mode must be signal_only or full")
     if str(recipe["background_window_id"]) != str(background["window_id"]):
         raise ValueError("Recipe/background window identity mismatch")
     if str(recipe["gps_block"]) != str(background["gps_block"]):
@@ -241,18 +244,18 @@ def materialize_recipe(
     if analysis_start_index < 0 or analysis_stop_index > noise.shape[1]:
         raise ValueError("Analysis window falls outside materialized context")
     target = Path(output_path)
-    _atomic_save_npz(
-        target,
-        noise=noise,
-        signal=signal,
-        strain=mixture,
-        ifos=np.asarray(ifos),
-        sample_rate=np.asarray(sample_rate, dtype=np.int64),
-        context_gps_start=np.asarray(context_start, dtype=np.float64),
-        analysis_gps_start=np.asarray(background["gps_start"], dtype=np.float64),
-        analysis_start_index=np.asarray(analysis_start_index, dtype=np.int64),
-        analysis_stop_index=np.asarray(analysis_stop_index, dtype=np.int64),
-    )
+    stored_arrays = {
+        "signal": signal,
+        "ifos": np.asarray(ifos),
+        "sample_rate": np.asarray(sample_rate, dtype=np.int64),
+        "context_gps_start": np.asarray(context_start, dtype=np.float64),
+        "analysis_gps_start": np.asarray(background["gps_start"], dtype=np.float64),
+        "analysis_start_index": np.asarray(analysis_start_index, dtype=np.int64),
+        "analysis_stop_index": np.asarray(analysis_stop_index, dtype=np.int64),
+    }
+    if storage_mode == "full":
+        stored_arrays.update({"noise": noise, "strain": mixture})
+    _atomic_save_npz(target, **stored_arrays)
     return {
         **recipe,
         "materialized_path": str(target),
@@ -262,10 +265,15 @@ def materialize_recipe(
         "context_duration": context_duration,
         "analysis_start_index": analysis_start_index,
         "analysis_stop_index": analysis_stop_index,
+        "storage_mode": storage_mode,
         "signal_summary": signal_summary,
         "time_alignment": "integer_copy_or_lanczos_sinc_half_width_16",
-        "background_source_sha256": {
-            ifo: str(background["source_files"][ifo]["sha256"]) for ifo in ifos
+        "background_source_files": {
+            ifo: {
+                "path": str(background["source_files"][ifo]["path"]),
+                "sha256": str(background["source_files"][ifo]["sha256"]),
+            }
+            for ifo in ifos
         },
     }
 
@@ -279,6 +287,7 @@ def run_injection_materialization(
     limit: int | None = None,
     backend_validation_report: str | Path | None = None,
     context_duration: float = 64.0,
+    storage_mode: str = "signal_only",
 ) -> dict[str, Any]:
     with Path(recipe_manifest).open("r", encoding="utf-8") as handle:
         recipes = [json.loads(line) for line in handle if line.strip()]
@@ -321,6 +330,7 @@ def run_injection_materialization(
                 sample_rate,
                 artifact_path,
                 context_duration,
+                storage_mode,
             )
         )
     manifest_path = output / "materialized_injections.jsonl"
@@ -341,6 +351,7 @@ def run_injection_materialization(
         "selected_recipes": len(selected),
         "sample_rate": sample_rate,
         "context_duration": context_duration,
+        "storage_mode": storage_mode,
         "identity_audit": identity_audit,
         "backend": backend.metadata,
         "recipe_manifest_sha256": file_sha256(recipe_manifest),

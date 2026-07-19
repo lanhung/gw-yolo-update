@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten
+from .gwosc import _fft_downsample, _whiten, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .trigger import probability_summaries
 
@@ -47,6 +47,7 @@ def score_materialized_injections(
         raise ValueError("Materialized injection manifest cannot be empty")
     output_rows = []
     failures = []
+    verified_background_hashes: dict[str, str] = {}
     started = time.time()
     for row in manifest_rows:
         try:
@@ -61,7 +62,37 @@ def score_materialized_injections(
                 source_start = int(arrays["analysis_start_index"])
                 source_stop = int(arrays["analysis_stop_index"])
                 source_duration = (source_stop - source_start) / source_rate
-                mixture = np.asarray(arrays["strain"], dtype=np.float64)
+                if "strain" in arrays:
+                    mixture = np.asarray(arrays["strain"], dtype=np.float64)
+                else:
+                    signal = np.asarray(arrays["signal"], dtype=np.float64)
+                    context_duration = signal.shape[1] / source_rate
+                    context_center = context_start + context_duration / 2.0
+                    detector_noise = []
+                    for ifo in ifos:
+                        source = row["background_source_files"][ifo]
+                        source_path = str(source["path"])
+                        expected_hash = str(source["sha256"])
+                        actual_hash = verified_background_hashes.get(source_path)
+                        if actual_hash is None:
+                            actual_hash = file_sha256(source_path)
+                            verified_background_hashes[source_path] = actual_hash
+                        if actual_hash != expected_hash:
+                            raise ValueError(f"background source hash mismatch for {ifo}")
+                        segment = read_hdf5_segment(
+                            source_path, context_center, context_duration
+                        )
+                        detector_noise.append(
+                            _fft_downsample(
+                                np.asarray(segment["strain"], dtype=np.float64),
+                                int(segment["sample_rate"]),
+                                source_rate,
+                            )
+                        )
+                    noise = np.stack(detector_noise)
+                    if noise.shape != signal.shape:
+                        raise ValueError("reconstructed background shape differs from signal")
+                    mixture = noise + signal
             if source_rate < target_sample_rate or source_rate % target_sample_rate:
                 raise ValueError("materialized sample rate must be an integer multiple of target")
             transformed = []
