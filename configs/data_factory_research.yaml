@@ -1,0 +1,30 @@
+data_factory:
+  # Production scenes are generated deterministically online. Only validation and
+  # the eventually frozen evaluation corpus should be materialized in shards.
+  materialization: recipe_only
+  observing_run: synthetic-O1-O4a-development
+  seed: 20260719
+  duration: 4.0
+  sample_rate: 1024
+  ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]
+  source_families: [BBH, BNS, NSBH]
+  snr_range: [4, 40]
+  split_counts:
+    train: 160000
+    val: 10000
+    test: 30000
+  scene_mix:
+    chirp_only: 0.25
+    noise_only: 0.25
+    overlap: 0.40
+    quiet: 0.10
+  gps_bases:
+    train: 1200000000
+    val: 1300000000
+    test: 1400000000
+  tensor:
+    frequency_bins: 96
+    time_bins: 96
+    fmin: 16
+    fmax: 500

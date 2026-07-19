@@ -116,6 +116,12 @@ Requirements:
 
 Do not materialize millions of RGB plots. Maintain versioned pools of real strain/GPS blocks and glitch triggers, sample physical injections, combine them in the time domain, and generate numeric multi-Q tensors during training. Cache deterministic validation/test tensors only.
 
+This policy is now executable. `configs/data_factory_research.yaml` defines a 200k physical-recipe
+corpus with 160k/10k/30k train/validation/test scenes and uses `recipe_only` materialization. The
+implemented pilot measured about 0.41 MB per full-debug scene, implying roughly 82 GB for 200k scenes,
+well above the current server's approximately 14 GB free space. Online generation is therefore a
+hard infrastructure requirement, not just an optimization.
+
 ## Leakage rules for generated mixtures
 
 A mixture depends on at least two identities: injection/waveform ID and glitch/GPS ID. A random split of mixture rows is invalid. Use a disjoint bipartite split:

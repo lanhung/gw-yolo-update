@@ -59,7 +59,25 @@ YOLO26m 的锁定测试结果：
 
 训练框架默认使用综合 fitness 保存 `best.pt`，而论文主指标是 mask mAP50；YOLO26n 的训练日志曾达到约 0.741，但默认 `best.pt` 复验只有 0.697。代码现已增加 `best_target.pt`：每个 epoch 按配置中的主指标独立保存 checkpoint，后续运行优先使用该权重。该修复已增加单元测试。
 
-当前本地测试为 12/12 通过，远端模块也已编译和导入验证。
+当前本地测试为 27/27 通过，远端模块也已编译和导入验证。
+
+## 数据工厂增量（同日）
+
+数据不足结论已经转化为可运行代码，而不再只是规划：新增确定性的物理 `SceneRecipe`、
+waveform/injection、glitch 和 GPS 四轴泄漏审计、三 IFO × 三 Q 数值张量以及 chirp/glitch
+双掩膜。远端完整 pilot 生成 104 个场景，67/67 个含 chirp 场景和 67/67 个含 glitch
+场景均有非空目标掩膜，跨 split 物理 ID 重叠为零，产物位于
+`/root/GW-YOLO-v2-artifacts/data_factory_pilot`。
+
+服务器仅余约 14 GB，而 full-debug pilot 已占 42 MB；线性外推 20 万场景约 82 GB。因此
+研究配置已改为 16 万训练、1 万验证、3 万锁定测试的 `recipe_only` 模式，训练在线确定性
+生成，只有冻结评估集采用 float16 分片。真实 O4 接口使用 GWOSC API v2/HDF5，并默认硬锁
+O4b。详细设计和命令见 `docs/DATA_FACTORY.md`。
+
+20 万条配方已经在远端完整生成并审计，manifest 为 93,093,283 bytes，SHA256 为
+`ac36fc3732fc8583b1903b78cccb50048b8f2680d36d1c483ee576569c5b9505`，四个物理轴的跨 split
+重叠为零。这个结果验证了目标规模的 provenance/I/O 路径，但不等价于已经拥有 20 万条真实
+波形和真实噪声锚点。
 
 ## 下一阶段执行布局
 

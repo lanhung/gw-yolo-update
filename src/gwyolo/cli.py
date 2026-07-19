@@ -7,6 +7,8 @@ from typing import Any
 from .catalog import evaluate_catalog_predictions
 from .config import load_config
 from .data import audit_and_split, scan_sources
+from .factory import run_data_factory
+from .gwosc import run_gwosc_pilot
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .search import run_search_benchmark
@@ -64,6 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     scaling.add_argument("--baseline-target", type=int, default=10_000)
     scaling.add_argument("--research-target", type=int, default=200_000)
     scaling.add_argument("--seeds", type=int, default=3)
+
+    factory = subparsers.add_parser("data-factory")
+    factory.add_argument("--config", required=True)
+    factory.add_argument("--output-dir", required=True)
+    factory.add_argument("--limit", type=int)
+
+    gwosc = subparsers.add_parser("gwosc-pilot")
+    gwosc.add_argument("--event", required=True)
+    gwosc.add_argument("--cache-dir", required=True)
+    gwosc.add_argument("--output-dir", required=True)
+    gwosc.add_argument("--detectors", nargs="+")
+    gwosc.add_argument("--context-duration", type=float, default=64.0)
+    gwosc.add_argument("--output-duration", type=float, default=8.0)
+    gwosc.add_argument("--target-sample-rate", type=int, default=1024)
+    gwosc.add_argument("--allow-locked-evaluation-data", action="store_true")
     return parser
 
 
@@ -124,6 +141,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.baseline_target,
                 args.research_target,
                 args.seeds,
+            )
+        )
+    elif args.command == "data-factory":
+        _print(run_data_factory(args.config, args.output_dir, args.limit))
+    elif args.command == "gwosc-pilot":
+        _print(
+            run_gwosc_pilot(
+                event=args.event,
+                cache_dir=args.cache_dir,
+                output_dir=args.output_dir,
+                detectors=args.detectors,
+                context_duration=args.context_duration,
+                output_duration=args.output_duration,
+                target_sample_rate=args.target_sample_rate,
+                allow_locked_evaluation_data=args.allow_locked_evaluation_data,
             )
         )
     else:

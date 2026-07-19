@@ -10,6 +10,8 @@ This repository turns the legacy GW-YOLO image experiment into a reproducible re
 - GWTC metadata joins and SNR-stratified hit-rate diagnostics;
 - machine-readable experiment and quality-gate reports;
 - physical-group data-scale audits and learning-curve target plans;
+- deterministic multi-IFO, multi-resolution numeric scene generation;
+- GWOSC O4 HDF5 acquisition with an O4b evaluation lock;
 
 The project does **not** treat mAP on rendered Q-scans as a gravitational-wave search metric. Publication experiments must add continuous background, software injections, FAR/IFAR, and `<VT>` evaluation.
 
@@ -23,6 +25,12 @@ PYTHONPATH=src python -m gwyolo.cli pipeline --config configs/legacy_remote.yaml
 PYTHONPATH=src python -m gwyolo.cli scale-plan \
   --manifest /root/GW-YOLO-v2-artifacts/data/manifest.csv \
   --output /root/GW-YOLO-v2-artifacts/data/scale_plan.json
+PYTHONPATH=src python -m gwyolo.cli data-factory \
+  --config configs/data_factory_pilot.yaml \
+  --output-dir artifacts/data_factory_pilot
+PYTHONPATH=src python -m gwyolo.cli data-factory \
+  --config configs/data_factory_research.yaml \
+  --output-dir artifacts/data_factory_research
 ```
 
 The remote legacy config expects the original project at `/root/GW-YOLO` and writes only to `/root/GW-YOLO-v2-artifacts`.
@@ -38,6 +46,8 @@ gwyolo predict      preserve every box and segmentation polygon
 gwyolo catalog-eval join predictions to GWOSC metadata
 gwyolo search-eval  freeze a validation FAR threshold and report test FAR/IFAR/weighted VT
 gwyolo scale-plan   audit a manifest and generate independent-data scaling targets
+gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
+gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 
@@ -51,4 +61,5 @@ AMPLFI and DINGO are parameter-estimation systems. The defensible comparison is 
 
 Shared metrics are end-to-end latency, posterior coverage, searched sky area/volume, and robustness under glitch overlap. GW-YOLO's distinct contribution is interpretable time-frequency localization and background reduction.
 
-See [PROJECT_PLAN.md](docs/PROJECT_PLAN.md), [DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
+See [DATA_FACTORY.md](docs/DATA_FACTORY.md), [PROJECT_PLAN.md](docs/PROJECT_PLAN.md),
+[DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
