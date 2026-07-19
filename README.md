@@ -59,6 +59,7 @@ gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound i
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
 gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking triggers
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
+gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 

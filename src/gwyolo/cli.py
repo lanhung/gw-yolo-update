@@ -173,6 +173,11 @@ def build_parser() -> argparse.ArgumentParser:
     injection.add_argument("--validation-count", type=int, default=5000)
     injection.add_argument("--test-count", type=int, default=20000)
     injection.add_argument("--seed", type=int, default=20260719)
+
+    pe = subparsers.add_parser("pe-evaluate")
+    pe.add_argument("--manifest", required=True)
+    pe.add_argument("--output", required=True)
+    pe.add_argument("--credible-level", type=float, default=0.9)
     return parser
 
 
@@ -371,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "pe-evaluate":
+        from .pe import run_pe_evaluation
+
+        _print(run_pe_evaluation(args.manifest, args.output, args.credible_level))
     else:
         raise AssertionError(args.command)
     return 0

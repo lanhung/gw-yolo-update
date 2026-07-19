@@ -58,6 +58,26 @@ This interface is designed for the later AMPLFI/DINGO experiment: raw strain and
 must share events, injection weights, live time, waveform population, and FAR definition. A mAP
 comparison is explicitly not part of the protocol.
 
+`gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
+contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
+posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
+pairs, duplicate conditions, truth mismatches, empty samples and non-finite samples. It records file
+hashes, per-parameter bias/absolute bias, central credible width, mean absolute distance to truth,
+90% coverage with Wilson intervals, and cleaning latency overhead. A typical invocation is:
+
+```bash
+python -m gwyolo.cli pe-evaluate \
+  --manifest artifacts/pe/paired_manifest.jsonl \
+  --output artifacts/pe/paired_report.json \
+  --credible-level 0.9
+```
+
+This adapter is backend-neutral: it does not pretend that a synthetic NPZ is an AMPLFI or DINGO
+result. Publication comparisons still require both actual backends to use matched priors, waveform
+conventions, detector data, injection truth and hardware, with the backend version and model hash
+added to each manifest row. The paired adapter is an executable evaluation boundary, not evidence
+that either external inference run has already been completed.
+
 ## Oracle mask-deglitch upper bound
 
 The invertible cleaning baseline applies a Hamming-window complex STFT, suppresses
