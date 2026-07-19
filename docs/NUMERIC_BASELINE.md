@@ -34,6 +34,7 @@ loss, and training length. Both passed the four-axis provenance audit.
 | 1,000 | 0.866 | 0.708 | 0.787 | 0.7 / 0.6 |
 | 2,000 | 0.875 | 0.756 | 0.816 | 0.7 / 0.8 |
 | 5,000 | 0.915 | 0.831 | 0.873 | 0.6 / 0.7 |
+| 10,000 | 0.918 | 0.856 | 0.887 | 0.7 / 0.7 |
 
 The 72→250 expansion improved mean IoU by 26.35 percentage points on the same validation set. This
 is strong evidence that the current regime is data-limited, even in the simplified synthetic domain.
@@ -41,10 +42,13 @@ It supports increasing independent physical scenes before investing primarily in
 
 The later points confirm that conclusion through 5,000 scenes. Gains remain positive but are not
 smooth: 250→500 adds 4.47 points, 500→1k adds 6.75, 1k→2k adds 2.89, and 2k→5k adds 5.72. A
-constrained fit of `M(N)=M_inf-aN^-alpha` gives `alpha=0.527`, asymptote 0.914, and R² 0.993, with an
-exploratory 10k forecast of 0.877. Since the observed 5k point lies above the fitted curve and only one
-seed has been run, this forecast is not a stopping rule; an actual 10k point and multiple seeds are
-required.
+constrained pre-10k fit of `M(N)=M_inf-aN^-alpha` forecast 0.877 at 10k. Refitting all seven points
+gives `alpha=0.513`, asymptote 0.920, and R² 0.994, with exploratory forecasts 0.892 at 20k and 0.903
+at 50k. The completed 10k run selected epoch 20 with pre-calibration
+validation mean IoU 0.883 and validation-selected 0.7/0.7 thresholds; calibrated validation mean IoU
+is 0.887 (chirp 0.918, glitch 0.856), 1.05 points above 5k. This confirms continued improvement but
+also a marked reduction from the 2k→5k gain. One seed cannot distinguish saturation from seed noise,
+so the 10k point is now being repeated to reach five seeds and is not a stopping rule.
 
 After selecting the 250-scene point, the frozen 0.7/0.7 thresholds were applied once to the shared
 64-scene test:
@@ -66,10 +70,20 @@ Reproducibility identifiers:
 - numeric config hash: `5b012c436dbbfc6d`;
 - seed: `20260719`.
 
+The 10k manifest SHA256 is
+`b7fabb1c89ac07573487f386bc426ccf48a62f6055eca2335a18d520dbd55f44`; its checkpoint SHA256 is
+`0974da172ed13b6cdcff99e522f7130b7700369a7526c8bdbbee88d299b4bcb0`, report SHA256 is
+`825d0b6e68d420d7b470ae115eedf8795d096962515d35159f9247a04f6b0b37`, config hash is
+`52d78273f647eba6`, and elapsed training time was 2,477.6 seconds on the RTX 4090 D. Test evaluation
+was disabled and remains null.
+
 ## Immediate implications
 
-1. Continue the nested curve at 500, 1k, 2k, 5k, and 10k independent scenes with at least three
-   seeds; the first seed is complete through 5k and 10k is running.
+1. Repeat the completed 10k point with at least five total training seeds. `gwyolo numeric-multiseed`
+   resumes finished seed
+   directories, reuses a validated existing report without copying its checkpoint, and atomically
+   updates a Student-t validation summary after every seed. It rejects duplicate seeds, manifest
+   mismatches and non-seed configuration mismatches. Test data remain unevaluated in this sweep.
 2. The optional in-memory cache produces exactly identical metrics and reduced the 72-scene run from
    157.5 to 27.6 seconds (5.7×). Use it for fixed scaling scenes, but not as a substitute for online
    recipe diversity in publication training.

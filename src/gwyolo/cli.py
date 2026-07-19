@@ -101,6 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
     numeric.add_argument("--config", required=True)
     numeric.add_argument("--manifest", required=True)
     numeric.add_argument("--output-dir", required=True)
+    numeric.add_argument("--seed", type=int)
+
+    numeric_multiseed = subparsers.add_parser("numeric-multiseed")
+    numeric_multiseed.add_argument("--config", required=True)
+    numeric_multiseed.add_argument("--manifest", required=True)
+    numeric_multiseed.add_argument("--output-dir", required=True)
+    numeric_multiseed.add_argument("--seeds", nargs="+", type=int, required=True)
+    numeric_multiseed.add_argument(
+        "--reuse-run", action="append", default=[], help="SEED=/path/numeric_training_report.json"
+    )
 
     numeric_evaluate = subparsers.add_parser("numeric-evaluate")
     numeric_evaluate.add_argument("--config", required=True)
@@ -284,7 +294,22 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "numeric-train":
         from .numeric import train_numeric_model
 
-        _print(train_numeric_model(args.config, args.manifest, args.output_dir))
+        _print(train_numeric_model(args.config, args.manifest, args.output_dir, args.seed))
+    elif args.command == "numeric-multiseed":
+        from .multiseed import run_numeric_multiseed
+
+        reuse_runs = {
+            int(seed): path for seed, path in (item.split("=", 1) for item in args.reuse_run)
+        }
+        _print(
+            run_numeric_multiseed(
+                args.config,
+                args.manifest,
+                args.output_dir,
+                args.seeds,
+                reuse_runs,
+            )
+        )
     elif args.command == "numeric-evaluate":
         from .numeric import evaluate_numeric_checkpoint
 

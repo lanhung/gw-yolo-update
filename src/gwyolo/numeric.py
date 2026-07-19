@@ -4,6 +4,7 @@ import os
 import random
 import tempfile
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -237,11 +238,16 @@ def train_numeric_model(
     config_path: str | Path,
     manifest_path: str | Path,
     output_dir: str | Path,
+    seed_override: int | None = None,
 ) -> dict[str, Any]:
     _require_torch()
     config = load_yaml(config_path)
     settings = config["numeric_training"]
+    if seed_override is not None:
+        settings["seed"] = int(seed_override)
     seed = int(settings.get("seed", 0))
+    family_config = deepcopy(config)
+    family_config["numeric_training"].pop("seed", None)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -350,6 +356,7 @@ def train_numeric_model(
         "seed": seed,
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
+        "config_family_hash": canonical_hash(family_config),
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "split_counts": {key: len(value) for key, value in by_split.items()},

@@ -49,6 +49,7 @@ gwyolo scale-plan   audit a manifest and generate independent-data scaling targe
 gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
 gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
 gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
+gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors

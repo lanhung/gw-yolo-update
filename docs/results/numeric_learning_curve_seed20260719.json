@@ -4,5 +4,6 @@
   {"physical_groups": 500, "metric": 0.7193263780085244},
   {"physical_groups": 1000, "metric": 0.7868324155035451},
   {"physical_groups": 2000, "metric": 0.8157514380215027},
-  {"physical_groups": 5000, "metric": 0.8729947716295546}
+  {"physical_groups": 5000, "metric": 0.8729947716295546},
+  {"physical_groups": 10000, "metric": 0.8831658106383224}
 ]

@@ -1,15 +1,60 @@
 {
   "forecasts": {
-    "10000": 0.8767725663777614,
-    "25000": 0.8909662504379946,
-    "50000": 0.8979632089028777
+    "10000": 0.880220380393849,
+    "20000": 0.8922485470577808,
+    "25000": 0.8952953067039414,
+    "50000": 0.9028125085660128
   },
   "model": "metric(N) = asymptote - amplitude * N^(-alpha)",
   "parameters": {
-    "alpha": 0.527,
-    "amplitude": 4.752226012242233,
-    "asymptote": 0.913831855741345
+    "alpha": 0.513,
+    "amplitude": 4.5309075061884725,
+    "asymptote": 0.9204165987348792
   },
-  "r_squared": 0.9931483671495246,
+  "points": [
+    {
+      "fitted_metric": 0.4153209514780576,
+      "metric": 0.4111576399030438,
+      "physical_groups": 72,
+      "residual": -0.004163311575013762
+    },
+    {
+      "fitted_metric": 0.6537049573314947,
+      "metric": 0.6746659184914816,
+      "physical_groups": 250,
+      "residual": 0.020960961159986913
+    },
+    {
+      "fitted_metric": 0.7335147555267671,
+      "metric": 0.7193263780085244,
+      "physical_groups": 500,
+      "residual": -0.014188377518242756
+    },
+    {
+      "fitted_metric": 0.7894425669649018,
+      "metric": 0.7868324155035451,
+      "physical_groups": 1000,
+      "residual": -0.00261015146135668
+    },
+    {
+      "fitted_metric": 0.8286347484136807,
+      "metric": 0.8157514380215027,
+      "physical_groups": 2000,
+      "residual": -0.012883310392177938
+    },
+    {
+      "fitted_metric": 0.863056012087226,
+      "metric": 0.8729947716295546,
+      "physical_groups": 5000,
+      "residual": 0.00993875954232859
+    },
+    {
+      "fitted_metric": 0.880220380393849,
+      "metric": 0.8831658106383224,
+      "physical_groups": 10000,
+      "residual": 0.002945430244473468
+    }
+  ],
+  "r_squared": 0.994095767533008,
   "warning": "Exploratory extrapolation only; repeat with multiple seeds and real data."
 }
