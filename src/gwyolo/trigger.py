@@ -10,7 +10,68 @@ import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten, read_hdf5_segment
-from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
+
+
+def _load_resumable_trigger_rows(
+    output: Path,
+    run_identity: dict[str, Any],
+    manifest_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    state_path = output / "trigger_score_state.json"
+    partial_path = output / "background_triggers.partial.jsonl"
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing trigger-score state belongs to a different run")
+    elif partial_path.is_file():
+        raise ValueError("Partial background triggers exist without a run-identity state")
+    else:
+        atomic_write_json(
+            state_path,
+            {
+                "status": "in_progress",
+                "run_identity": run_identity,
+                "completed": 0,
+                "requested": len(manifest_rows),
+            },
+        )
+        return []
+    if not partial_path.is_file():
+        return []
+    with partial_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    requested = {str(row["window_id"]) for row in manifest_rows}
+    completed = set()
+    for row in rows:
+        window_id = str(row["window_id"])
+        if window_id not in requested or window_id in completed:
+            raise ValueError("Partial background scores contain unexpected or duplicate IDs")
+        completed.add(window_id)
+    return rows
+
+
+def _save_trigger_progress(
+    output: Path,
+    rows: list[dict[str, Any]],
+    run_identity: dict[str, Any],
+    requested: int,
+    status: str = "in_progress",
+) -> None:
+    atomic_write_text(
+        output / "background_triggers.partial.jsonl",
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    atomic_write_json(
+        output / "trigger_score_state.json",
+        {
+            "status": status,
+            "run_identity": run_identity,
+            "completed": len(rows),
+            "requested": requested,
+        },
+    )
 
 
 def network_ranking(
@@ -133,12 +194,35 @@ def score_background_manifest(
     model = MultiIFOQNet(expected_channels, int(checkpoint["base_channels"])).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
-    rows = []
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
+    if not manifest_rows:
+        raise ValueError("Background manifest cannot be empty")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "manifest_sha256": file_sha256(manifest_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "config_sha256": file_sha256(config_path),
+        "window_ids_hash": canonical_hash(
+            [str(row["window_id"]) for row in manifest_rows], 64
+        ),
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "target_sample_rate": target_sample_rate,
+        "context_duration": context_duration,
+    }
+    resumed_rows = _load_resumable_trigger_rows(output, run_identity, manifest_rows)
+    resumed_by_id = {str(row["window_id"]): row for row in resumed_rows}
+    rows = []
     started = time.time()
     failures = []
+    newly_scored = 0
     for row in manifest_rows:
+        window_id = str(row["window_id"])
+        if window_id in resumed_by_id:
+            rows.append(resumed_by_id[window_id])
+            continue
         try:
             strain, valid_ifos = _window_strain(
                 row, model_ifos, target_sample_rate, context_duration
@@ -179,10 +263,12 @@ def score_background_manifest(
                     **summary,
                 }
             )
+            newly_scored += 1
+            if newly_scored % 5 == 0:
+                _save_trigger_progress(output, rows, run_identity, len(manifest_rows))
         except (ValueError, OSError, KeyError) as exc:
             failures.append({"window_id": row.get("window_id"), "error": str(exc)})
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+    _save_trigger_progress(output, rows, run_identity, len(manifest_rows))
     triggers_path = output / "background_triggers.jsonl"
     atomic_write_text(
         triggers_path,
@@ -200,7 +286,10 @@ def score_background_manifest(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
+        "run_identity_hash": canonical_hash(run_identity, 64),
         "input_windows": len(manifest_rows),
+        "resumed_windows": len(resumed_rows),
+        "newly_scored_windows": newly_scored,
         "scored_windows": len(rows),
         "failed_windows": len(failures),
         "failures": failures,
@@ -213,4 +302,16 @@ def score_background_manifest(
         "elapsed_seconds": time.time() - started,
     }
     atomic_write_json(output / "trigger_score_report.json", report)
+    _save_trigger_progress(
+        output,
+        rows,
+        run_identity,
+        len(manifest_rows),
+        "failed" if failures else "complete",
+    )
+    if failures:
+        raise RuntimeError(
+            f"Trigger scoring failed for {len(failures)} windows; inspect "
+            f"{output / 'trigger_score_report.json'}"
+        )
     return report

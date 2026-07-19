@@ -449,16 +449,14 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             score_background_manifest(
-                args.manifest,
-                args.checkpoint,
-                args.config,
-                args.output_dir,
-                tuple(args.model_ifos),
-                tuple(args.q_values),
-                args.target_sample_rate,
-                args.save_probabilities,
-                args.context_duration,
-                args.storage_mode,
+                manifest_path=args.manifest,
+                checkpoint_path=args.checkpoint,
+                config_path=args.config,
+                output_dir=args.output_dir,
+                model_ifos=tuple(args.model_ifos),
+                q_values=tuple(args.q_values),
+                target_sample_rate=args.target_sample_rate,
+                context_duration=args.context_duration,
             )
         )
     elif args.command == "time-slide-background":
@@ -494,15 +492,15 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_injection_materialization(
-                args.recipes,
-                args.background_manifest,
-                args.output_dir,
-                args.sample_rate,
-                args.split,
-                args.limit,
-                args.backend_validation_report,
-                args.context_duration,
-                args.storage_mode,
+                recipe_manifest=args.recipes,
+                background_manifest=args.background_manifest,
+                output_dir=args.output_dir,
+                sample_rate=args.sample_rate,
+                split=args.split,
+                limit=args.limit,
+                backend_validation_report=args.backend_validation_report,
+                context_duration=args.context_duration,
+                storage_mode=args.storage_mode,
             )
         )
     elif args.command == "injection-score":
@@ -510,14 +508,14 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             score_materialized_injections(
-                args.manifest,
-                args.checkpoint,
-                args.config,
-                args.output_dir,
-                tuple(args.model_ifos),
-                tuple(args.q_values),
-                args.target_sample_rate,
-                args.save_probabilities,
+                manifest_path=args.manifest,
+                checkpoint_path=args.checkpoint,
+                config_path=args.config,
+                output_dir=args.output_dir,
+                model_ifos=tuple(args.model_ifos),
+                q_values=tuple(args.q_values),
+                target_sample_rate=args.target_sample_rate,
+                save_probabilities=args.save_probabilities,
             )
         )
     elif args.command == "pe-evaluate":

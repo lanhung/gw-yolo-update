@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-import numpy as np
+import json
+from pathlib import Path
 
-from gwyolo.trigger import network_ranking, probability_summaries
+import numpy as np
+import pytest
+
+from gwyolo.trigger import (
+    _load_resumable_trigger_rows,
+    _save_trigger_progress,
+    network_ranking,
+    probability_summaries,
+)
 
 
 def test_network_ranking_uses_second_loudest_valid_ifo() -> None:
@@ -35,3 +44,29 @@ def test_probability_summary_peak_time_and_network_score_by_hand() -> None:
     assert result["ranking_score"] == np.float32(0.7)
     assert result["peak_times"]["chirp"]["H1"]["gps"] == 1003.0
     assert result["peak_times"]["chirp"]["L1"]["gps"] == 1005.0
+
+
+def test_trigger_resume_reuses_only_matching_window_ids(tmp_path: Path) -> None:
+    identity = {"manifest_sha256": "same"}
+    rows = [{"window_id": "one", "ranking_score": 0.5}]
+    manifest = [{"window_id": "one"}, {"window_id": "two"}]
+    _save_trigger_progress(tmp_path, rows, identity, requested=2)
+    assert _load_resumable_trigger_rows(tmp_path, identity, manifest) == rows
+
+    partial = tmp_path / "background_triggers.partial.jsonl"
+    partial.write_text(
+        json.dumps({"window_id": "not-requested", "ranking_score": 0.5}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unexpected or duplicate"):
+        _load_resumable_trigger_rows(tmp_path, identity, manifest)
+
+
+def test_trigger_resume_rejects_changed_identity(tmp_path: Path) -> None:
+    _save_trigger_progress(tmp_path, [], {"manifest_sha256": "old"}, requested=1)
+    with pytest.raises(ValueError, match="different run"):
+        _load_resumable_trigger_rows(
+            tmp_path,
+            {"manifest_sha256": "new"},
+            [{"window_id": "one"}],
+        )

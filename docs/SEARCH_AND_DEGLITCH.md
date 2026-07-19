@@ -38,6 +38,10 @@ fixed coincidence window. Equivalent exposure is the union of valid reference in
 slide and the sum across slides; rejected peak coincidences reduce trigger count, not exposure. A
 hand-calculated test covers both ranking and exposure.
 
+Background scoring checkpoints atomically every five windows under a manifest/checkpoint/config and
+preprocessing identity. Restarts reuse only matching window IDs. Any unreadable accepted window is
+reported and forces a nonzero exit, rather than quietly shrinking the declared live time.
+
 The present scorer has only 96 time bins over an 8-second window, so its time resolution is about
 83 ms. Every time-slide report therefore says `window_level_time_slide_integration_only` and forbids
 a scientific claim. Publication FAR needs sub-window candidate extraction and clustering at a
