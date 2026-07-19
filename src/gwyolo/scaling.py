@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from .io import atomic_write_json
 
@@ -189,3 +192,73 @@ def run_scale_plan(
     }
     atomic_write_json(output, result)
     return result
+
+
+def fit_power_law_curve(points: list[dict[str, float]]) -> dict[str, Any]:
+    if len(points) < 3:
+        raise ValueError("At least three learning-curve points are required")
+    ordered = sorted(points, key=lambda item: float(item["physical_groups"]))
+    groups = np.asarray([float(item["physical_groups"]) for item in ordered])
+    metrics = np.asarray([float(item["metric"]) for item in ordered])
+    if np.any(groups <= 0) or len(set(groups.tolist())) != len(groups):
+        raise ValueError("physical_groups must be positive and unique")
+    if not np.isfinite(metrics).all():
+        raise ValueError("metrics must be finite")
+
+    best = None
+    for alpha in np.linspace(0.05, 2.0, 1951):
+        scale = groups ** (-alpha)
+        design = np.stack([np.ones_like(scale), scale], axis=1)
+        coefficients, _, _, _ = np.linalg.lstsq(design, metrics, rcond=None)
+        asymptote, slope = (float(item) for item in coefficients)
+        amplitude = -slope
+        if amplitude < 0 or asymptote < float(np.max(metrics)) or asymptote > 1.05:
+            continue
+        predicted = asymptote - amplitude * scale
+        squared_error = float(np.sum((metrics - predicted) ** 2))
+        if best is None or squared_error < best["squared_error"]:
+            best = {
+                "alpha": float(alpha),
+                "asymptote": asymptote,
+                "amplitude": amplitude,
+                "squared_error": squared_error,
+                "predicted": predicted,
+            }
+    if best is None:
+        raise ValueError("No physically constrained power-law fit found")
+    total_error = float(np.sum((metrics - np.mean(metrics)) ** 2))
+    forecasts = {}
+    for count in sorted({int(groups[-1] * 2), 10_000, 25_000, 50_000}):
+        forecasts[str(count)] = float(
+            best["asymptote"] - best["amplitude"] * count ** (-best["alpha"])
+        )
+    return {
+        "model": "metric(N) = asymptote - amplitude * N^(-alpha)",
+        "points": [
+            {
+                "physical_groups": int(group),
+                "metric": float(metric),
+                "fitted_metric": float(predicted),
+                "residual": float(metric - predicted),
+            }
+            for group, metric, predicted in zip(groups, metrics, best["predicted"])
+        ],
+        "parameters": {
+            "asymptote": best["asymptote"],
+            "amplitude": best["amplitude"],
+            "alpha": best["alpha"],
+        },
+        "r_squared": 1.0 - best["squared_error"] / total_error if total_error else 1.0,
+        "forecasts": forecasts,
+        "warning": "Exploratory extrapolation only; repeat with multiple seeds and real data.",
+    }
+
+
+def run_curve_fit(points_path: str | Path, output_path: str | Path) -> dict[str, Any]:
+    with Path(points_path).open("r", encoding="utf-8") as handle:
+        points = json.load(handle)
+    if not isinstance(points, list):
+        raise ValueError("Learning-curve points file must contain a list")
+    report = fit_power_law_curve(points)
+    atomic_write_json(output_path, report)
+    return report

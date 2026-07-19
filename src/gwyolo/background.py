@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+from typing import Any, Iterable
+
+import numpy as np
+
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+
+
+SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
+
+def _read_quality(path: str | Path) -> dict[str, Any]:
+    try:
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError("Background planning requires the optional h5py dependency") from exc
+    with h5py.File(path, "r") as handle:
+        gps_start = int(handle["meta/GPSstart"][()])
+        duration = int(handle["meta/Duration"][()])
+        dqmask = np.asarray(handle["quality/simple/DQmask"], dtype=np.int64)
+        injection_path = "quality/injections/Injmask"
+        injmask = (
+            np.asarray(handle[injection_path], dtype=np.int64)
+            if injection_path in handle
+            else np.full(duration, -1, dtype=np.int64)
+        )
+    if dqmask.size < duration or injmask.size < duration:
+        raise ValueError(f"Quality vectors in {path} are shorter than metadata duration")
+    return {
+        "gps_start": gps_start,
+        "gps_end": gps_start + duration,
+        "duration": duration,
+        "dqmask": dqmask[:duration],
+        "injmask": injmask[:duration],
+    }
+
+
+def _overlaps(start: float, end: float, intervals: Iterable[tuple[float, float]]) -> bool:
+    return any(start < excluded_end and end > excluded_start for excluded_start, excluded_end in intervals)
+
+
+def _union_duration(intervals: Iterable[tuple[float, float]]) -> float:
+    ordered = sorted(intervals)
+    if not ordered:
+        return 0.0
+    total = 0.0
+    current_start, current_end = ordered[0]
+    for start, end in ordered[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            total += current_end - current_start
+            current_start, current_end = start, end
+    return total + current_end - current_start
+
+
+def _assign_blocks(
+    block_ids: Iterable[str], validation_fraction: float, test_fraction: float, seed: int
+) -> dict[str, str]:
+    if validation_fraction < 0 or test_fraction < 0 or validation_fraction + test_fraction >= 1:
+        raise ValueError("validation/test fractions must be non-negative and sum below one")
+    ordered = sorted(
+        set(block_ids), key=lambda value: canonical_hash({"block_id": value, "seed": seed}, 64)
+    )
+    validation_count = round(len(ordered) * validation_fraction)
+    test_count = round(len(ordered) * test_fraction)
+    mapping = {}
+    for index, block_id in enumerate(ordered):
+        if index < validation_count:
+            split = "val"
+        elif index < validation_count + test_count:
+            split = "test"
+        else:
+            split = "train"
+        mapping[block_id] = split
+    return mapping
+
+
+def plan_background_windows(
+    files: dict[str, str | Path],
+    window_duration: int = 8,
+    stride: int = 8,
+    block_duration: int = 256,
+    required_dq_bits: int = 1,
+    required_injection_bits: int = 0,
+    excluded_intervals: Iterable[tuple[float, float]] = (),
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.2,
+    seed: int = 20260719,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not files:
+        raise ValueError("At least one detector file is required")
+    if min(window_duration, stride, block_duration) <= 0:
+        raise ValueError("window, stride, and block durations must be positive")
+    if window_duration > block_duration:
+        raise ValueError("window duration cannot exceed block duration")
+    quality = {ifo: _read_quality(path) for ifo, path in sorted(files.items())}
+    common_start = max(item["gps_start"] for item in quality.values())
+    common_end = min(item["gps_end"] for item in quality.values())
+    if common_end - common_start < window_duration:
+        raise ValueError("Detector files have no usable common interval")
+    exclusions = list(excluded_intervals)
+    source_files = {
+        ifo: {"path": str(files[ifo]), "sha256": file_sha256(files[ifo])}
+        for ifo in sorted(files)
+    }
+    candidates = []
+    first_start = int(math.ceil(common_start / stride) * stride)
+    for gps_start in range(first_start, common_end - window_duration + 1, stride):
+        gps_end = gps_start + window_duration
+        block_index = (gps_start - common_start) // block_duration
+        block_start = common_start + block_index * block_duration
+        if gps_end > block_start + block_duration or _overlaps(gps_start, gps_end, exclusions):
+            continue
+        dq_values = []
+        injection_values = []
+        valid = True
+        for item in quality.values():
+            start_index = gps_start - item["gps_start"]
+            stop_index = gps_end - item["gps_start"]
+            dq = item["dqmask"][start_index:stop_index]
+            injection = item["injmask"][start_index:stop_index]
+            if dq.size != window_duration or injection.size != window_duration:
+                valid = False
+                break
+            if required_dq_bits and np.any((dq & required_dq_bits) != required_dq_bits):
+                valid = False
+                break
+            if required_injection_bits and np.any(
+                (injection & required_injection_bits) != required_injection_bits
+            ):
+                valid = False
+                break
+            dq_values.extend(int(value) for value in dq)
+            injection_values.extend(int(value) for value in injection)
+        if not valid:
+            continue
+        block_id = f"gps:{block_start}:{block_duration}"
+        candidates.append(
+            {
+                "window_id": f"background-{canonical_hash({'gps': gps_start, 'ifos': sorted(files)}, 20)}",
+                "gps_start": gps_start,
+                "gps_end": gps_end,
+                "duration": window_duration,
+                "ifos": sorted(files),
+                "gps_block": block_id,
+                "dq_bitwise_and": int(np.bitwise_and.reduce(dq_values)),
+                "inj_bitwise_and": int(np.bitwise_and.reduce(injection_values)),
+                "source_files": source_files,
+            }
+        )
+    block_mapping = _assign_blocks(
+        (row["gps_block"] for row in candidates), validation_fraction, test_fraction, seed
+    )
+    for row in candidates:
+        row["split"] = block_mapping[row["gps_block"]]
+    split_blocks = {
+        split: {row["gps_block"] for row in candidates if row["split"] == split}
+        for split in ("train", "val", "test")
+    }
+    overlaps = {
+        f"{left}:{right}": sorted(split_blocks[left] & split_blocks[right])
+        for left, right in (("train", "val"), ("train", "test"), ("val", "test"))
+    }
+    split_summary = {}
+    for split in ("train", "val", "test"):
+        rows = [row for row in candidates if row["split"] == split]
+        live_seconds = _union_duration((row["gps_start"], row["gps_end"]) for row in rows)
+        split_summary[split] = {
+            "windows": len(rows),
+            "gps_blocks": len(split_blocks[split]),
+            "live_time_seconds": live_seconds,
+            "live_time_years": live_seconds / SECONDS_PER_YEAR,
+        }
+    report = {
+        "passed": all(not value for value in overlaps.values()),
+        "ifos": sorted(files),
+        "common_gps_interval": [common_start, common_end],
+        "window_duration": window_duration,
+        "stride": stride,
+        "block_duration": block_duration,
+        "required_dq_bits": required_dq_bits,
+        "required_injection_bits": required_injection_bits,
+        "excluded_intervals": exclusions,
+        "windows": len(candidates),
+        "unique_gps_blocks": len(block_mapping),
+        "cross_split_block_overlaps": overlaps,
+        "splits": split_summary,
+    }
+    return candidates, report
+
+
+def run_background_plan(
+    files: dict[str, str | Path], output_dir: str | Path, **kwargs: Any
+) -> dict[str, Any]:
+    rows, report = plan_background_windows(files, **kwargs)
+    if not report["passed"]:
+        raise ValueError(f"Background split audit failed: {report}")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / "background_windows.jsonl"
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    result = {
+        **report,
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+    }
+    atomic_write_json(output / "background_plan_report.json", result)
+    return result

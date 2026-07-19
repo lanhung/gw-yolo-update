@@ -41,10 +41,13 @@ def test_read_hdf5_segment_and_downsample(tmp_path: Path) -> None:
         strain.attrs["Xspacing"] = 0.25
         simple = handle.create_group("quality").create_group("simple")
         simple.create_dataset("DQmask", data=np.arange(20))
+        injections = handle["quality"].create_group("injections")
+        injections.create_dataset("Injmask", data=np.arange(20) + 100)
     segment = read_hdf5_segment(path, gps_center=105.0, duration=4.0)
     assert segment["sample_rate"] == 4
     assert segment["strain"].tolist() == list(np.arange(12, 28, dtype=float))
     assert len(segment["quality"]["DQmask"]) == 4
+    assert segment["quality"]["Injmask"].tolist() == [103, 104, 105, 106]
     downsampled = _fft_downsample(segment["strain"], 4, 2)
     assert downsampled.shape == (8,)
 

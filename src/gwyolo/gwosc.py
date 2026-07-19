@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -92,29 +93,42 @@ def _download_range(
     start: int,
     stop: int,
     chunk_size: int,
+    max_attempts: int = 50,
 ) -> None:
     expected = stop - start + 1
-    present = path.stat().st_size if path.exists() else 0
-    if present == expected:
-        return
-    if present > expected:
-        raise IOError(f"Range cache {path} is larger than expected")
-    request_start = start + present
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": USER_AGENT, "Range": f"bytes={request_start}-{stop}"},
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        present = path.stat().st_size if path.exists() else 0
+        if present == expected:
+            return
+        if present > expected:
+            raise IOError(f"Range cache {path} is larger than expected")
+        request_start = start + present
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": USER_AGENT, "Range": f"bytes={request_start}-{stop}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if response.status != 206:
+                    raise IOError(
+                        f"Server ignored range request {request_start}-{stop}: HTTP {response.status}"
+                    )
+                with path.open("ab") as handle:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+        except (OSError, TimeoutError) as exc:
+            last_error = exc
+        if path.stat().st_size == expected:
+            return
+        time.sleep(min(0.25 * (attempt + 1), 2.0))
+    raise IOError(
+        f"Incomplete range {start}-{stop} after {max_attempts} attempts: "
+        f"{path.stat().st_size} != {expected}; last_error={last_error}"
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        if response.status != 206:
-            raise IOError(f"Server ignored range request {request_start}-{stop}: HTTP {response.status}")
-        with path.open("ab") as handle:
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                handle.write(chunk)
-    if path.stat().st_size != expected:
-        raise IOError(f"Incomplete range {start}-{stop}: {path.stat().st_size} != {expected}")
 
 
 def download_resumable(
@@ -225,8 +239,11 @@ def read_hdf5_segment(path: str | Path, gps_center: float, duration: float) -> d
             raise ValueError(f"Requested [{start}:{stop}] outside strain file with {dataset.shape[0]} samples")
         strain = np.asarray(dataset[start:stop], dtype=np.float64)
         quality: dict[str, np.ndarray] = {}
-        for key in ("DQmask", "Injmask"):
-            dataset_path = f"quality/simple/{key}"
+        quality_paths = {
+            "DQmask": "quality/simple/DQmask",
+            "Injmask": "quality/injections/Injmask",
+        }
+        for key, dataset_path in quality_paths.items():
             if dataset_path in handle:
                 second_start = int(np.floor(gps_center - duration / 2 - gps_start))
                 second_stop = int(np.ceil(gps_center + duration / 2 - gps_start))

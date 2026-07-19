@@ -13,7 +13,7 @@ from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
 from .search import run_search_benchmark
-from .scaling import run_scale_plan
+from .scaling import run_curve_fit, run_scale_plan
 from .training import evaluate_checkpoint, train_candidate
 
 
@@ -104,6 +104,33 @@ def build_parser() -> argparse.ArgumentParser:
     subset.add_argument("--train-count", required=True, type=int)
     subset.add_argument("--val-count", required=True, type=int)
     subset.add_argument("--test-count", required=True, type=int)
+
+    gravityspy = subparsers.add_parser("gravityspy-index")
+    gravityspy.add_argument("--record-id", type=int, default=5_649_212)
+    gravityspy.add_argument("--filenames", nargs="+", required=True)
+    gravityspy.add_argument("--cache-dir", required=True)
+    gravityspy.add_argument("--output-dir", required=True)
+    gravityspy.add_argument("--minimum-confidence", type=float, default=0.9)
+    gravityspy.add_argument("--per-label", type=int, default=100)
+    gravityspy.add_argument("--seed", type=int, default=20260719)
+    gravityspy.add_argument("--download-workers", type=int, default=8)
+
+    curve = subparsers.add_parser("fit-curve")
+    curve.add_argument("--points", required=True)
+    curve.add_argument("--output", required=True)
+
+    background = subparsers.add_parser("background-plan")
+    background.add_argument("--file", action="append", required=True, help="IFO=/path/file.hdf5")
+    background.add_argument("--output-dir", required=True)
+    background.add_argument("--window-duration", type=int, default=8)
+    background.add_argument("--stride", type=int, default=8)
+    background.add_argument("--block-duration", type=int, default=256)
+    background.add_argument("--required-dq-bits", type=int, default=1)
+    background.add_argument("--required-injection-bits", type=int, default=0)
+    background.add_argument("--exclude", action="append", default=[], help="GPS_START:GPS_END")
+    background.add_argument("--validation-fraction", type=float, default=0.2)
+    background.add_argument("--test-fraction", type=float, default=0.2)
+    background.add_argument("--seed", type=int, default=20260719)
     return parser
 
 
@@ -207,6 +234,43 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_count,
                 args.val_count,
                 args.test_count,
+            )
+        )
+    elif args.command == "gravityspy-index":
+        from .gravityspy import run_gravityspy_index
+
+        _print(
+            run_gravityspy_index(
+                args.record_id,
+                args.filenames,
+                args.cache_dir,
+                args.output_dir,
+                args.minimum_confidence,
+                args.per_label,
+                args.seed,
+                args.download_workers,
+            )
+        )
+    elif args.command == "fit-curve":
+        _print(run_curve_fit(args.points, args.output))
+    elif args.command == "background-plan":
+        from .background import run_background_plan
+
+        files = dict(item.split("=", 1) for item in args.file)
+        exclusions = [tuple(float(value) for value in item.split(":", 1)) for item in args.exclude]
+        _print(
+            run_background_plan(
+                files,
+                args.output_dir,
+                window_duration=args.window_duration,
+                stride=args.stride,
+                block_duration=args.block_duration,
+                required_dq_bits=args.required_dq_bits,
+                required_injection_bits=args.required_injection_bits,
+                excluded_intervals=exclusions,
+                validation_fraction=args.validation_fraction,
+                test_fraction=args.test_fraction,
+                seed=args.seed,
             )
         )
     else:

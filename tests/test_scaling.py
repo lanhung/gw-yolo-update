@@ -2,7 +2,7 @@ import csv
 
 import pytest
 
-from gwyolo.scaling import analyze_manifest, make_scaling_plan
+from gwyolo.scaling import analyze_manifest, fit_power_law_curve, make_scaling_plan
 
 
 def _write_manifest(path, rows):
@@ -69,3 +69,15 @@ def test_scale_audit_rejects_cross_split_group(tmp_path):
     )
     with pytest.raises(ValueError, match="crosses splits"):
         analyze_manifest(manifest)
+
+
+def test_power_law_fit_recovers_hand_generated_curve():
+    points = [
+        {"physical_groups": groups, "metric": 0.9 - 0.6 * groups**-0.5}
+        for groups in (100, 200, 400, 800, 1600)
+    ]
+    result = fit_power_law_curve(points)
+    assert result["parameters"]["alpha"] == pytest.approx(0.5, abs=0.002)
+    assert result["parameters"]["asymptote"] == pytest.approx(0.9, abs=0.001)
+    assert result["parameters"]["amplitude"] == pytest.approx(0.6, abs=0.01)
+    assert result["r_squared"] == pytest.approx(1.0)

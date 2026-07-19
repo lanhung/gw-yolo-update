@@ -1,0 +1,15 @@
+{
+  "forecasts": {
+    "10000": 0.8767725663777614,
+    "25000": 0.8909662504379946,
+    "50000": 0.8979632089028777
+  },
+  "model": "metric(N) = asymptote - amplitude * N^(-alpha)",
+  "parameters": {
+    "alpha": 0.527,
+    "amplitude": 4.752226012242233,
+    "asymptote": 0.913831855741345
+  },
+  "r_squared": 0.9931483671495246,
+  "warning": "Exploratory extrapolation only; repeat with multiple seeds and real data."
+}

@@ -1,0 +1,8 @@
+[
+  {"physical_groups": 72, "metric": 0.4111576399030438},
+  {"physical_groups": 250, "metric": 0.6746659184914816},
+  {"physical_groups": 500, "metric": 0.7193263780085244},
+  {"physical_groups": 1000, "metric": 0.7868324155035451},
+  {"physical_groups": 2000, "metric": 0.8157514380215027},
+  {"physical_groups": 5000, "metric": 0.8729947716295546}
+]

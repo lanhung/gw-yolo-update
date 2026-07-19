@@ -31,19 +31,32 @@ def _require_torch() -> None:
 
 
 class NumericRecipeDataset:
-    def __init__(self, recipes: list[SceneRecipe], tensor_config: dict[str, Any]):
+    def __init__(
+        self,
+        recipes: list[SceneRecipe],
+        tensor_config: dict[str, Any],
+        cache_in_memory: bool = False,
+    ):
         self.recipes = recipes
         self.tensor_config = tensor_config
+        self.cache: list[tuple[np.ndarray, np.ndarray] | None] | None = (
+            [None] * len(recipes) if cache_in_memory else None
+        )
 
     def __len__(self) -> int:
         return len(self.recipes)
 
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
+        if self.cache is not None and self.cache[index] is not None:
+            return self.cache[index]  # type: ignore[return-value]
         arrays = synthesize_scene(self.recipes[index], self.tensor_config)
         features = arrays["features"].reshape(-1, *arrays["features"].shape[-2:])
         masks = np.stack([arrays["chirp_mask"], arrays["glitch_mask"]])
         masks = masks.reshape(2, -1, *masks.shape[-2:])
-        return features.astype(np.float32), masks.astype(np.float32)
+        item = features.astype(np.float32), masks.astype(np.float32)
+        if self.cache is not None:
+            self.cache[index] = item
+        return item
 
 
 if nn is not None:
@@ -245,7 +258,11 @@ def train_numeric_model(
     generator = torch.Generator().manual_seed(seed)
     loaders = {
         split: DataLoader(
-            NumericRecipeDataset(items, tensor_config),
+            NumericRecipeDataset(
+                items,
+                tensor_config,
+                cache_in_memory=bool(settings.get("cache_in_memory", False)),
+            ),
             batch_size=batch_size,
             shuffle=split == "train",
             num_workers=int(settings.get("workers", 0)),
@@ -336,6 +353,7 @@ def train_numeric_model(
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "split_counts": {key: len(value) for key, value in by_split.items()},
+        "cache_in_memory": bool(settings.get("cache_in_memory", False)),
         "best_epoch": best_epoch,
         "best_validation_mean_iou": best_metric,
         "positive_weights": positive_weights,
