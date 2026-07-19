@@ -6,7 +6,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .io import atomic_write_json
+from .metrics import wilson_interval
 
 
 def far_upper_limit_zero_count(live_time_years: float, confidence: float = 0.90) -> float:
@@ -56,6 +59,8 @@ def evaluate_search(
     background_scores: Iterable[float],
     background_live_time_years: float,
     injections: Iterable[dict[str, Any]],
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 20260719,
 ) -> dict[str, Any]:
     """Evaluate a frozen threshold on background and importance-weighted injections."""
     if background_live_time_years <= 0:
@@ -74,6 +79,21 @@ def evaluate_search(
     if total_weight <= 0:
         raise ValueError("sum of injection weights must be positive")
     recovered_weight = sum(weight for weight, hit in zip(weights, recovered) if hit)
+    rng = np.random.default_rng(bootstrap_seed)
+    bootstrap_efficiencies = []
+    if bootstrap_replicates <= 0:
+        raise ValueError("bootstrap_replicates must be positive")
+    recovered_array = np.asarray(recovered, dtype=np.float64)
+    weight_array = np.asarray(weights, dtype=np.float64)
+    for _ in range(bootstrap_replicates):
+        indices = rng.integers(0, len(rows), size=len(rows))
+        sampled_weights = weight_array[indices]
+        denominator = float(sampled_weights.sum())
+        if denominator > 0:
+            bootstrap_efficiencies.append(
+                float((sampled_weights * recovered_array[indices]).sum() / denominator)
+            )
+    efficiency_interval = wilson_interval(sum(recovered), len(rows))
     return {
         "threshold": threshold,
         "background": {
@@ -90,10 +110,133 @@ def evaluate_search(
             "total": len(rows),
             "recovered": sum(recovered),
             "efficiency": sum(recovered) / len(rows),
+            "efficiency_wilson_95": list(efficiency_interval),
             "total_vt_weight": total_weight,
             "recovered_vt": recovered_weight,
             "weighted_efficiency": recovered_weight / total_weight,
+            "weighted_efficiency_bootstrap_95": [
+                float(np.percentile(bootstrap_efficiencies, 2.5)),
+                float(np.percentile(bootstrap_efficiencies, 97.5)),
+            ],
+            "bootstrap_replicates": bootstrap_replicates,
         },
+    }
+
+
+def paired_vt_comparison(
+    injections: Iterable[dict[str, Any]],
+    threshold_a: float,
+    threshold_b: float,
+    score_field_a: str,
+    score_field_b: str,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    rows = list(injections)
+    if not rows:
+        raise ValueError("at least one injection is required")
+    weights = np.asarray(
+        [float(row.get("vt_weight", row.get("weight", 1.0))) for row in rows],
+        dtype=np.float64,
+    )
+    recovered_a = np.asarray(
+        [float(row[score_field_a]) >= threshold_a for row in rows], dtype=np.float64
+    )
+    recovered_b = np.asarray(
+        [float(row[score_field_b]) >= threshold_b for row in rows], dtype=np.float64
+    )
+    contributions = weights * (recovered_b - recovered_a)
+    delta = float(contributions.sum())
+    recovered_vt_a = float((weights * recovered_a).sum())
+    recovered_vt_b = float((weights * recovered_b).sum())
+    rng = np.random.default_rng(seed)
+    bootstrap_delta = []
+    for _ in range(bootstrap_replicates):
+        indices = rng.integers(0, len(rows), size=len(rows))
+        bootstrap_delta.append(float(contributions[indices].sum()))
+    strata = {}
+    for stratum in sorted({str(row.get("stratum", "all")) for row in rows}):
+        indices = [index for index, row in enumerate(rows) if str(row.get("stratum", "all")) == stratum]
+        stratum_weight = float(weights[indices].sum())
+        strata[stratum] = {
+            "injections": len(indices),
+            "total_weight": stratum_weight,
+            "weighted_efficiency_a": (
+                float((weights[indices] * recovered_a[indices]).sum() / stratum_weight)
+                if stratum_weight
+                else None
+            ),
+            "weighted_efficiency_b": (
+                float((weights[indices] * recovered_b[indices]).sum() / stratum_weight)
+                if stratum_weight
+                else None
+            ),
+        }
+    return {
+        "method_a": {"score_field": score_field_a, "threshold": threshold_a, "recovered_vt": recovered_vt_a},
+        "method_b": {"score_field": score_field_b, "threshold": threshold_b, "recovered_vt": recovered_vt_b},
+        "delta_recovered_vt_b_minus_a": delta,
+        "relative_delta": delta / recovered_vt_a if recovered_vt_a > 0 else None,
+        "paired_bootstrap_95": [
+            float(np.percentile(bootstrap_delta, 2.5)),
+            float(np.percentile(bootstrap_delta, 97.5)),
+        ],
+        "bootstrap_replicates": bootstrap_replicates,
+        "strata": strata,
+    }
+
+
+def compare_search_methods(
+    validation_background: Iterable[dict[str, Any]],
+    test_background: Iterable[dict[str, Any]],
+    test_injections: Iterable[dict[str, Any]],
+    validation_live_time_years: float,
+    test_live_time_years: float,
+    target_far_per_year: float,
+    score_field_a: str,
+    score_field_b: str,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    validation_rows = list(validation_background)
+    background_rows = list(test_background)
+    injection_rows = list(test_injections)
+    calibrations = {
+        field: calibrate_threshold(
+            (row[field] for row in validation_rows), validation_live_time_years, target_far_per_year
+        )
+        for field in (score_field_a, score_field_b)
+    }
+
+    def with_ranking_score(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+        return [{**row, "ranking_score": row[field]} for row in rows]
+
+    evaluations = {
+        field: evaluate_search(
+            calibrations[field]["threshold"],
+            (row[field] for row in background_rows),
+            test_live_time_years,
+            with_ranking_score(injection_rows, field),
+            bootstrap_replicates,
+            seed,
+        )
+        for field in (score_field_a, score_field_b)
+    }
+    paired = paired_vt_comparison(
+        injection_rows,
+        calibrations[score_field_a]["threshold"],
+        calibrations[score_field_b]["threshold"],
+        score_field_a,
+        score_field_b,
+        bootstrap_replicates,
+        seed,
+    )
+    return {
+        "protocol": "method-specific validation thresholds at common target FAR; paired frozen test",
+        "target_far_per_year": target_far_per_year,
+        "calibrations": calibrations,
+        "test_evaluations": evaluations,
+        "paired_vt": paired,
     }
 
 
@@ -138,5 +281,34 @@ def run_search_benchmark(
         "calibration": calibration,
         "test": evaluation,
     }
+    atomic_write_json(output, result)
+    return result
+
+
+def run_search_comparison(
+    validation_background: str | Path,
+    test_background: str | Path,
+    test_injections: str | Path,
+    validation_live_time_years: float,
+    test_live_time_years: float,
+    target_far_per_year: float,
+    score_field_a: str,
+    score_field_b: str,
+    output: str | Path,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    result = compare_search_methods(
+        load_jsonl(validation_background),
+        load_jsonl(test_background),
+        load_jsonl(test_injections),
+        validation_live_time_years,
+        test_live_time_years,
+        target_far_per_year,
+        score_field_a,
+        score_field_b,
+        bootstrap_replicates,
+        seed,
+    )
     atomic_write_json(output, result)
     return result

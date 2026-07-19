@@ -54,6 +54,9 @@ gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
 gwyolo fit-curve fit an exploratory power-law learning curve to controlled scale points
 gwyolo background-plan build DQ-safe continuous multi-IFO windows and true live-time exposure
+gwyolo search-compare compare raw/mask-cleaned methods at a common validation-calibrated FAR
+gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound in the time domain
+gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 
@@ -69,4 +72,5 @@ Shared metrics are end-to-end latency, posterior coverage, searched sky area/vol
 
 See [DATA_FACTORY.md](docs/DATA_FACTORY.md), [PROJECT_PLAN.md](docs/PROJECT_PLAN.md),
 [DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md),
-[NUMERIC_BASELINE.md](docs/NUMERIC_BASELINE.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
+[NUMERIC_BASELINE.md](docs/NUMERIC_BASELINE.md),
+[SEARCH_AND_DEGLITCH.md](docs/SEARCH_AND_DEGLITCH.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).

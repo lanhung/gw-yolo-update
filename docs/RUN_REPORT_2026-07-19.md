@@ -105,6 +105,16 @@ H1 O3a 也已通过发布方 MD5：80,763 原始行中有 59,857 个合格高置
 后保留 10,450 个唯一 glitch ID、7,917 个 64 秒 GPS block、21 类。O1+O3a 当前选择池合计
 11,841 行（尚未做跨 run 合并），已经具备构建真实 glitch anchor pool 的数量基础。
 
+连续背景 H1 pilot 也已生成：在 4096 秒 O4a 文件上排除事件 ±16 秒后得到 507 个 8 秒
+窗口、16 个独立 256 秒 GPS block，train/val/test live time 为 2520/768/768 秒，跨 split
+block 为零。测试暴露只有 2.43e-5 年，即使零背景计数，90% FAR 上限仍约 94,615/年，明确
+证明它只够接口验收，远不足以支撑 IFAR 结论。
+
+oracle mask 去噪在全部 41 个 analytic overlap 场景上使 clean-reference MSE 中位降低 75.7%，
+chirp 投影中位保留约 100%；26 个 chirp-only 场景在修复 STFT 边界后 waveform change 精确
+为零。这是 oracle 上限而非 learned/O4 结果。`search-compare` 已实现同一目标 FAR 下 raw 与
+cleaned 的 validation 校准、test 冻结、Wilson/bootstrap 和成对 `<VT>` 差值协议。
+
 ## 下一阶段执行布局
 
 ### P0：把图像基线做成可发表的负责任基线（1–2 周）

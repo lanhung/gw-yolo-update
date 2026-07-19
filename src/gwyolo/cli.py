@@ -12,7 +12,7 @@ from .gwosc import run_gwosc_pilot
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
-from .search import run_search_benchmark
+from .search import run_search_benchmark, run_search_comparison
 from .scaling import run_curve_fit, run_scale_plan
 from .training import evaluate_checkpoint, train_candidate
 
@@ -60,6 +60,19 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--test-live-time-years", required=True, type=float)
     search.add_argument("--target-far-per-year", required=True, type=float)
     search.add_argument("--output", required=True)
+
+    search_compare = subparsers.add_parser("search-compare")
+    search_compare.add_argument("--validation-background", required=True)
+    search_compare.add_argument("--test-background", required=True)
+    search_compare.add_argument("--test-injections", required=True)
+    search_compare.add_argument("--validation-live-time-years", required=True, type=float)
+    search_compare.add_argument("--test-live-time-years", required=True, type=float)
+    search_compare.add_argument("--target-far-per-year", required=True, type=float)
+    search_compare.add_argument("--score-field-a", required=True)
+    search_compare.add_argument("--score-field-b", required=True)
+    search_compare.add_argument("--bootstrap-replicates", type=int, default=2000)
+    search_compare.add_argument("--seed", type=int, default=20260719)
+    search_compare.add_argument("--output", required=True)
 
     scaling = subparsers.add_parser("scale-plan")
     scaling.add_argument("--manifest", required=True)
@@ -131,6 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
     background.add_argument("--validation-fraction", type=float, default=0.2)
     background.add_argument("--test-fraction", type=float, default=0.2)
     background.add_argument("--seed", type=int, default=20260719)
+
+    deglitch = subparsers.add_parser("oracle-deglitch")
+    deglitch.add_argument("--input", required=True)
+    deglitch.add_argument("--output", required=True)
+    deglitch.add_argument("--report", required=True)
+    deglitch.add_argument("--strength", type=float, default=0.9)
+
+    deglitch_benchmark = subparsers.add_parser("oracle-deglitch-benchmark")
+    deglitch_benchmark.add_argument("--factory-report", required=True)
+    deglitch_benchmark.add_argument("--output", required=True)
+    deglitch_benchmark.add_argument("--strength", type=float, default=0.9)
     return parser
 
 
@@ -181,6 +205,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.test_live_time_years,
                 args.target_far_per_year,
                 args.output,
+            )
+        )
+    elif args.command == "search-compare":
+        _print(
+            run_search_comparison(
+                args.validation_background,
+                args.test_background,
+                args.test_injections,
+                args.validation_live_time_years,
+                args.test_live_time_years,
+                args.target_far_per_year,
+                args.score_field_a,
+                args.score_field_b,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
             )
         )
     elif args.command == "scale-plan":
@@ -271,6 +311,18 @@ def main(argv: list[str] | None = None) -> int:
                 validation_fraction=args.validation_fraction,
                 test_fraction=args.test_fraction,
                 seed=args.seed,
+            )
+        )
+    elif args.command == "oracle-deglitch":
+        from .deglitch import run_oracle_deglitch
+
+        _print(run_oracle_deglitch(args.input, args.output, args.report, args.strength))
+    elif args.command == "oracle-deglitch-benchmark":
+        from .deglitch import run_oracle_deglitch_benchmark
+
+        _print(
+            run_oracle_deglitch_benchmark(
+                args.factory_report, args.output, args.strength
             )
         )
     else:
