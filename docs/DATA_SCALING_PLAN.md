@@ -163,6 +163,16 @@ At the current JPEG size, 100k plots would be only several GB, but RGB plots dis
 - deterministic recipe manifests instead of duplicated tensors;
 - streaming dataloaders and resumable shards.
 
+For injection sensitivity, count and storage targets must be expressed separately. The current 25k
+H1 recipe artifact is only a provenance pilot and is too correlated (192 windows, six GPS blocks).
+The publication corpus should target at least 10k independently seeded validation injections and
+50k--200k locked test injections across BBH/BNS/NSBH strata, but the decisive increase is independent
+GPS background blocks and source-population coverage, not repeated injection rows on the same few
+seconds. Run a group-safe scaling matrix over injection count, unique GPS live time, glitch overlap,
+SNR/distance, source family, IFO network and observing run. Stop increasing count only when bootstrap
+uncertainty on paired `<VT>` improvement is below the predeclared effect size and performance has
+plateaued across at least two successive scale points.
+
 On the current RTX 4090 D, a 100k-scene YOLO26m experiment is expected to be an order of roughly one day rather than minutes, before multi-Q generation overhead. Measure generator throughput before committing to a 1M-scene run.
 
 ## Promotion gates

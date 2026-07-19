@@ -23,6 +23,9 @@ train = [
 data = [
   "h5py>=3.7",
 ]
+waveforms = [
+  "pycbc",
+]
 dev = [
   "pytest>=7",
   "ruff>=0.5",

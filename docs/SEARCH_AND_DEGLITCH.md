@@ -30,22 +30,42 @@ cluster triggers. O4b remains locked; O4a provides development backgrounds only.
 
 ## Injection and `<VT>` recipe contract
 
-`gwyolo injection-plan` samples BBH/BNS/NSBH families, distances uniform in volume, sky/orientation,
-component masses and spins, while inheriting the background window's split and GPS block. Each row
-has unique waveform/injection IDs and an importance weight in `Mpc^3 yr`. A hand-calculated unit test
-verifies that weights sum to the sampled population volume times split live time.
+`gwyolo injection-plan` samples BBH/BNS/NSBH families, sky/orientation, component masses and spins,
+while inheriting the background window's split and GPS block. The current planner uses a flat
+Lambda-CDM grid with Planck 2018 `H0=67.66 km/s/Mpc` and `Omega_m=0.3111`, samples uniformly in
+comoving volume, transforms source-frame masses to detector-frame masses, and applies the
+`1/(1+z)` source-time factor to each `Mpc^3 yr` weight. Cosmology and the proposal measure are stored
+in the report. This replaces the earlier Euclidean-distance pilot, which is retained only as a
+historical integration artifact. The values follow the
+[Planck 2018 cosmological-parameter result](https://doi.org/10.1051/0004-6361/201833910).
 
-The H1 integration pilot generated 5,000 validation and 20,000 test recipes:
+The earlier H1 integration pilot generated 5,000 validation and 20,000 test recipes:
 
 - 11,250 BBH, 7,500 BNS, and 6,250 NSBH;
 - 25,000 unique injection and waveform IDs;
 - zero validation/test injection-ID overlap;
 - manifest SHA256 `6a7a280f77c1b949a99250f9ba34f0227a56afdd3545ce758ee5916c2887084f`.
 
-This is not yet a valid sensitivity corpus. It reuses only 192 background windows from six GPS blocks,
-and every row deliberately says `waveform_backend=unassigned_requires_lal_or_validated_equivalent`.
-The recipe validates cardinality, units and provenance only. A publication `<VT>` requires a validated
-LAL/PyCBC-equivalent waveform backend and substantially more independent real background.
+This is not a valid sensitivity corpus and must be regenerated with the cosmological planner. It
+reuses only 192 background windows from six GPS blocks, and every old row deliberately says
+`waveform_backend=unassigned_requires_lal_or_validated_equivalent`. The historical recipe validates
+cardinality and split provenance only.
+
+`gwyolo injection-materialize` is now the physical next stage. It reads the real detector strain for
+the referenced GPS window, asks PyCBC/LALSimulation for a time-domain approximant, projects plus and
+cross polarizations into every IFO with sky-dependent antenna response and arrival delay, aligns the
+result to the detector sample grid, and atomically stores noise, signal and mixture numeric arrays.
+The output records PyCBC/LALSuite versions, approximant, source-file hashes and waveform summaries.
+The implementation follows the official PyCBC interfaces for
+[waveform generation](https://pycbc.org/pycbc/latest/html/waveform.html) and
+[detector projection](https://pycbc.org/pycbc/latest/html/pycbc.detector.html).
+
+The materializer fails if PyCBC/LALSuite is absent. Without a passing waveform-backend validation
+report it labels output `integration_only_unvalidated_backend`; even with that report it does not
+authorize a sensitivity claim. Before freezing the corpus, the broad pilot mass/spin and provisional
+tidal proposal must be replaced or reweighted to documented GWTC population models, each selected
+approximant must pass match/epoch/amplitude checks, and substantially more independent real
+background must be available.
 
 ## Fair raw-versus-cleaned comparison
 

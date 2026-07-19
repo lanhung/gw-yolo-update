@@ -8,17 +8,33 @@ from typing import Any
 
 import numpy as np
 
+from .cosmology import FlatLambdaCDMGrid
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
 
 DEFAULT_POPULATION = {
-    "BBH": {"fraction": 0.45, "maximum_distance_mpc": 5000.0},
-    "BNS": {"fraction": 0.30, "maximum_distance_mpc": 500.0},
-    "NSBH": {"fraction": 0.25, "maximum_distance_mpc": 1500.0},
+    "BBH": {
+        "fraction": 0.45,
+        "maximum_distance_mpc": 5000.0,
+        "approximant": "IMRPhenomXAS",
+        "f_lower_hz": 20.0,
+    },
+    "BNS": {
+        "fraction": 0.30,
+        "maximum_distance_mpc": 500.0,
+        "approximant": "IMRPhenomXAS_NRTidalv3",
+        "f_lower_hz": 20.0,
+    },
+    "NSBH": {
+        "fraction": 0.25,
+        "maximum_distance_mpc": 1500.0,
+        "approximant": "IMRPhenomNSBH",
+        "f_lower_hz": 20.0,
+    },
 }
 
 
-def _allocate(total: int, population: dict[str, dict[str, float]]) -> dict[str, int]:
+def _allocate(total: int, population: dict[str, dict[str, Any]]) -> dict[str, int]:
     if total <= 0:
         raise ValueError("injection count must be positive")
     fractions = {key: float(value["fraction"]) for key, value in population.items()}
@@ -34,7 +50,7 @@ def _allocate(total: int, population: dict[str, dict[str, float]]) -> dict[str, 
     return counts
 
 
-def _source_parameters(family: str, rng: np.random.Generator) -> dict[str, float]:
+def _source_parameters(family: str, rng: np.random.Generator) -> dict[str, Any]:
     if family == "BBH":
         mass_1 = float(rng.uniform(20, 100))
         mass_2 = float(rng.uniform(5, mass_1))
@@ -46,15 +62,35 @@ def _source_parameters(family: str, rng: np.random.Generator) -> dict[str, float
         mass_2 = float(rng.uniform(1.0, 2.5))
     else:
         raise ValueError(f"Unsupported source family: {family}")
+    if family == "BBH":
+        spin_1z = float(rng.uniform(-0.95, 0.95))
+        spin_2z = float(rng.uniform(-0.95, 0.95))
+        lambda_1 = 0.0
+        lambda_2 = 0.0
+    elif family == "BNS":
+        spin_1z = float(rng.uniform(-0.05, 0.05))
+        spin_2z = float(rng.uniform(-0.05, 0.05))
+        lambda_1 = float(np.clip(400.0 * (1.4 / mass_1) ** 6, 0.0, 5000.0))
+        lambda_2 = float(np.clip(400.0 * (1.4 / mass_2) ** 6, 0.0, 5000.0))
+    else:
+        spin_1z = float(rng.uniform(-0.95, 0.95))
+        spin_2z = float(rng.uniform(-0.05, 0.05))
+        lambda_1 = 0.0
+        lambda_2 = float(np.clip(400.0 * (1.4 / mass_2) ** 6, 0.0, 5000.0))
     return {
         "mass_1_msun": mass_1,
         "mass_2_msun": mass_2,
-        "spin_1z": float(rng.uniform(-0.95, 0.95)),
-        "spin_2z": float(rng.uniform(-0.5, 0.5)),
+        "mass_frame": "source",
+        "spin_1z": spin_1z,
+        "spin_2z": spin_2z,
+        "lambda_1": lambda_1,
+        "lambda_2": lambda_2,
+        "tidal_proposal": "provisional_mass_scaling_not_eos_validated",
         "inclination": float(np.arccos(rng.uniform(-1, 1))),
         "right_ascension": float(rng.uniform(0, 2 * np.pi)),
         "declination": float(np.arcsin(rng.uniform(-1, 1))),
         "polarization": float(rng.uniform(0, np.pi)),
+        "coalescence_phase": float(rng.uniform(0, 2 * np.pi)),
     }
 
 
@@ -62,10 +98,11 @@ def plan_injection_recipes(
     background_rows: list[dict[str, Any]],
     live_time_years_by_split: dict[str, float],
     counts_by_split: dict[str, int],
-    population: dict[str, dict[str, float]] | None = None,
+    population: dict[str, dict[str, Any]] | None = None,
     seed: int = 20260719,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     population = population or DEFAULT_POPULATION
+    cosmology = FlatLambdaCDMGrid()
     recipes = []
     rng = np.random.default_rng(seed)
     for split, requested_count in counts_by_split.items():
@@ -79,19 +116,33 @@ def plan_injection_recipes(
         families = [family for family in sorted(family_counts) for _ in range(family_counts[family])]
         rng.shuffle(families)
         window_order = rng.permutation(len(windows))
-        per_family_weight = {}
+        family_survey = {}
         fraction_sum = sum(float(item["fraction"]) for item in population.values())
         for family, count in family_counts.items():
             maximum_distance = float(population[family]["maximum_distance_mpc"])
+            maximum_redshift = float(cosmology.redshift_at_luminosity_distance(maximum_distance))
+            maximum_comoving = float(cosmology.distances_at_redshift(maximum_redshift)[0])
             mixture_fraction = float(population[family]["fraction"]) / fraction_sum
-            survey_vt = (
-                mixture_fraction * (4.0 * np.pi / 3.0) * maximum_distance**3 * live_time
-            )
-            per_family_weight[family] = survey_vt / count
+            family_survey[family] = {
+                "maximum_redshift": maximum_redshift,
+                "maximum_comoving_distance_mpc": maximum_comoving,
+                "proposal_comoving_volume_mpc3": 4.0 * np.pi / 3.0 * maximum_comoving**3,
+                "base_weight": mixture_fraction
+                * (4.0 * np.pi / 3.0)
+                * maximum_comoving**3
+                * live_time
+                / count,
+            }
         for index, family in enumerate(families):
             window = windows[int(window_order[index % len(window_order)])]
             maximum_distance = float(population[family]["maximum_distance_mpc"])
-            distance = maximum_distance * float(rng.random()) ** (1.0 / 3.0)
+            survey = family_survey[family]
+            comoving_distance = float(survey["maximum_comoving_distance_mpc"]) * float(
+                rng.random()
+            ) ** (1.0 / 3.0)
+            redshift = float(cosmology.redshift_at_comoving_distance(comoving_distance))
+            distance = (1.0 + redshift) * comoving_distance
+            source = _source_parameters(family, rng)
             identity = f"{split}-{index:09d}-{seed}"
             recipes.append(
                 {
@@ -99,7 +150,11 @@ def plan_injection_recipes(
                     "waveform_id": f"waveform-{identity}",
                     "split": split,
                     "source_family": family,
-                    "waveform_backend": "unassigned_requires_lal_or_validated_equivalent",
+                    "waveform_backend": "pycbc_lalsimulation_requires_validation",
+                    "waveform_approximant": str(
+                        population[family].get("approximant", "unassigned")
+                    ),
+                    "f_lower_hz": float(population[family].get("f_lower_hz", 20.0)),
                     "background_window_id": window["window_id"],
                     "gps_block": window["gps_block"],
                     "gps_time": float(
@@ -107,11 +162,16 @@ def plan_injection_recipes(
                     ),
                     "ifos": list(window["ifos"]),
                     "luminosity_distance_mpc": distance,
+                    "comoving_distance_mpc": comoving_distance,
+                    "redshift": redshift,
                     "maximum_distance_mpc": maximum_distance,
-                    "vt_weight": per_family_weight[family],
+                    "vt_weight": float(survey["base_weight"]) / (1.0 + redshift),
                     "vt_weight_unit": "Mpc^3 yr",
+                    "vt_measure": "comoving_volume_times_source_frame_time",
                     "seed": seed + index,
-                    **_source_parameters(family, rng),
+                    **source,
+                    "mass_1_detector_msun": source["mass_1_msun"] * (1.0 + redshift),
+                    "mass_2_detector_msun": source["mass_2_msun"] * (1.0 + redshift),
                 }
             )
     injection_ids = {row["injection_id"] for row in recipes}
@@ -126,7 +186,7 @@ def plan_injection_recipes(
         for right in list(split_ids)[left_index + 1 :]
     }
     report = {
-        "status": "injection_recipe_plan_requires_validated_waveform_backend",
+        "status": "cosmological_injection_recipe_plan_requires_validated_waveform_backend",
         "scientific_claim_allowed": False,
         "seed": seed,
         "recipes": len(recipes),
@@ -142,6 +202,9 @@ def plan_injection_recipes(
             for split in counts_by_split
         },
         "population": population,
+        "cosmology": cosmology.metadata(),
+        "proposal_measure": "uniform_in_comoving_volume_with_1_over_1_plus_z_source_time_weight",
+        "population_model_status": "broad_pilot_not_GWTC_population_fit",
     }
     return recipes, report
 

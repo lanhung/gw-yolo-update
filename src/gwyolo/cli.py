@@ -174,6 +174,15 @@ def build_parser() -> argparse.ArgumentParser:
     injection.add_argument("--test-count", type=int, default=20000)
     injection.add_argument("--seed", type=int, default=20260719)
 
+    materialize = subparsers.add_parser("injection-materialize")
+    materialize.add_argument("--recipes", required=True)
+    materialize.add_argument("--background-manifest", required=True)
+    materialize.add_argument("--output-dir", required=True)
+    materialize.add_argument("--sample-rate", type=int, default=2048)
+    materialize.add_argument("--split", choices=("train", "val", "test"))
+    materialize.add_argument("--limit", type=int)
+    materialize.add_argument("--backend-validation-report")
+
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
     pe.add_argument("--output", required=True)
@@ -374,6 +383,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_count,
                 args.test_count,
                 args.seed,
+            )
+        )
+    elif args.command == "injection-materialize":
+        from .waveforms import run_injection_materialization
+
+        _print(
+            run_injection_materialization(
+                args.recipes,
+                args.background_manifest,
+                args.output_dir,
+                args.sample_rate,
+                args.split,
+                args.limit,
+                args.backend_validation_report,
             )
         )
     elif args.command == "pe-evaluate":
