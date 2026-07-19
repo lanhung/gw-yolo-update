@@ -120,7 +120,11 @@ search-statistics code can later evaluate physical injections. These rows remain
 diagnostics until the waveform equivalence, background exposure, population model and locked-test
 gates all pass.
 
-When invoked with `--save-probabilities`, the scorer stores float16 chirp/glitch masks with hashes.
+Scoring is resumable: every five completed injections it atomically checkpoints trigger rows and a
+run identity covering manifest/checkpoint/config hashes, IFO/Q layout and probability-storage mode.
+A restart verifies every saved probability hash before reuse. Any failed input produces a report and
+a nonzero exit instead of silently accepting a partial corpus. When invoked with
+`--save-probabilities`, the scorer stores float16 chirp/glitch masks with hashes.
 `gwyolo learned-deglitch` applies those frozen soft masks to the raw central strain and reports
 per-IFO/network injected-signal projection retention, waveform change and post-clean signal error.
 This closes the learned-mask execution path without inventing a clean real-noise counterfactual: its

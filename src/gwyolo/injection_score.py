@@ -10,9 +10,75 @@ import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten
-from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .trigger import probability_summaries
 from .waveforms import _atomic_save_npz, load_materialized_context
+
+
+def _load_resumable_rows(
+    output: Path,
+    run_identity: dict[str, Any],
+    manifest_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    state_path = output / "injection_score_state.json"
+    partial_path = output / "injection_triggers.partial.jsonl"
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing injection-score state belongs to a different run")
+    elif partial_path.is_file():
+        raise ValueError("Partial injection triggers exist without a run-identity state")
+    else:
+        atomic_write_json(
+            state_path,
+            {
+                "status": "in_progress",
+                "run_identity": run_identity,
+                "completed": 0,
+                "requested": len(manifest_rows),
+            },
+        )
+        return []
+    if not partial_path.is_file():
+        return []
+    with partial_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    requested = {str(row["injection_id"]) for row in manifest_rows}
+    completed = set()
+    for row in rows:
+        injection_id = str(row["injection_id"])
+        if injection_id not in requested or injection_id in completed:
+            raise ValueError("Partial injection scores contain unexpected or duplicate IDs")
+        if run_identity["save_probabilities"]:
+            path = row.get("probability_path")
+            expected_sha = row.get("probability_sha256")
+            if not path or not expected_sha or file_sha256(path) != expected_sha:
+                raise ValueError(f"Partial probability hash mismatch for {injection_id}")
+        completed.add(injection_id)
+    return rows
+
+
+def _save_progress(
+    output: Path,
+    rows: list[dict[str, Any]],
+    run_identity: dict[str, Any],
+    requested: int,
+    status: str = "in_progress",
+) -> None:
+    atomic_write_text(
+        output / "injection_triggers.partial.jsonl",
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    atomic_write_json(
+        output / "injection_score_state.json",
+        {
+            "status": status,
+            "run_identity": run_identity,
+            "completed": len(rows),
+            "requested": requested,
+        },
+    )
 
 
 def score_materialized_injections(
@@ -49,11 +115,30 @@ def score_materialized_injections(
         raise ValueError("Materialized injection manifest cannot be empty")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "manifest_sha256": file_sha256(manifest_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "config_sha256": file_sha256(config_path),
+        "injection_ids_hash": canonical_hash(
+            [str(row["injection_id"]) for row in manifest_rows], 64
+        ),
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "target_sample_rate": target_sample_rate,
+        "save_probabilities": save_probabilities,
+    }
+    resumed_rows = _load_resumable_rows(output, run_identity, manifest_rows)
+    resumed_by_id = {str(row["injection_id"]): row for row in resumed_rows}
     output_rows = []
     failures = []
+    newly_scored = 0
     verified_background_hashes: dict[str, str] = {}
     started = time.time()
     for row in manifest_rows:
+        injection_id = str(row["injection_id"])
+        if injection_id in resumed_by_id:
+            output_rows.append(resumed_by_id[injection_id])
+            continue
         try:
             context = load_materialized_context(row, verified_background_hashes)
             source_rate = int(context["sample_rate"])
@@ -119,8 +204,7 @@ def score_materialized_injections(
                     "probability_path": str(probability_path),
                     "probability_sha256": file_sha256(probability_path),
                 }
-            output_rows.append(
-                {
+            output_row = {
                     "injection_id": row["injection_id"],
                     "waveform_id": row["waveform_id"],
                     "split": row["split"],
@@ -137,9 +221,13 @@ def score_materialized_injections(
                     **probability_record,
                     **summary,
                 }
-            )
+            output_rows.append(output_row)
+            newly_scored += 1
+            if newly_scored % 5 == 0:
+                _save_progress(output, output_rows, run_identity, len(manifest_rows))
         except (ValueError, OSError, KeyError) as exc:
             failures.append({"injection_id": row.get("injection_id"), "error": str(exc)})
+    _save_progress(output, output_rows, run_identity, len(manifest_rows))
     triggers_path = output / "injection_triggers.jsonl"
     atomic_write_text(
         triggers_path,
@@ -157,7 +245,10 @@ def score_materialized_injections(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "probabilities_saved": save_probabilities,
+        "run_identity_hash": canonical_hash(run_identity, 64),
         "input_injections": len(manifest_rows),
+        "resumed_injections": len(resumed_rows),
+        "newly_scored_injections": newly_scored,
         "scored_injections": len(output_rows),
         "failed_injections": len(failures),
         "failures": failures,
@@ -170,4 +261,16 @@ def score_materialized_injections(
         "preprocessing": "full-context PSD whitening then central analysis-window crop",
     }
     atomic_write_json(output / "injection_score_report.json", report)
+    _save_progress(
+        output,
+        output_rows,
+        run_identity,
+        len(manifest_rows),
+        "failed" if failures else "complete",
+    )
+    if failures:
+        raise RuntimeError(
+            f"Injection scoring failed for {len(failures)} rows; inspect "
+            f"{output / 'injection_score_report.json'}"
+        )
     return report

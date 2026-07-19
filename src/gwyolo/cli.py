@@ -500,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.limit,
                 args.backend_validation_report,
                 args.context_duration,
+                args.storage_mode,
             )
         )
     elif args.command == "injection-score":
@@ -514,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(args.model_ifos),
                 tuple(args.q_values),
                 args.target_sample_rate,
+                args.save_probabilities,
             )
         )
     elif args.command == "pe-evaluate":
