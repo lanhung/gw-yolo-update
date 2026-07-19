@@ -42,6 +42,13 @@ predeclared millisecond coincidence window, veto/category policy, many independe
 segments, and enough nonzero shifts to support the requested IFAR. The current implementation proves
 the split/exposure plumbing and will be replaced at that boundary rather than silently overstated.
 
+The first aligned H1+L1 run scored all 96 validation and all 96 test windows; failures were confined
+to 8 edge windows whose 64-second context exceeded the file and 11 training-window HDF reads. Thirty
+one nonzero 8-second slides per split produced 11,904 seconds (`3.77e-4 yr`) of equivalent exposure,
+with 50 validation and 47 test peak coincidences at a 0.1-second integration window. This is only
+3.3 hours, so even zero events would have a 90% FAR upper bound of roughly 6,100/year. It verifies
+bookkeeping, not an astrophysical IFAR.
+
 ## Injection and `<VT>` recipe contract
 
 `gwyolo injection-plan` samples BBH/BNS/NSBH families, sky/orientation, component masses and spins,
@@ -87,6 +94,13 @@ authorize a sensitivity claim. Before freezing the corpus, the broad pilot mass/
 tidal proposal must be replaced or reweighted to documented GWTC population models, each selected
 approximant must pass match/epoch/amplitude checks, and substantially more independent real
 background must be available.
+
+The first 300-row materialization attempt exposed a useful hard failure at row 114: a source-frame
+NS mass drawn up to 2.5 solar masses can exceed the `IMRPhenomNSBH` detector-frame 3-solar-mass domain
+after cosmological redshift. No failed row was skipped. The planner now limits the NSBH source-frame
+NS mass to 2.2 solar masses, records the maximum detector-frame value, and fails the entire plan if
+any NSBH row exceeds the approximant domain. The failed v2 attempt is retained as a negative result;
+the corrected recipe is regenerated rather than patched row by row.
 
 `gwyolo injection-score` verifies every materialized-array hash, downsamples and whitens the full
 context, crops only the recorded central window, applies the frozen multi-IFO/multi-Q checkpoint, and

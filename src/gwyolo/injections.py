@@ -59,7 +59,7 @@ def _source_parameters(family: str, rng: np.random.Generator) -> dict[str, Any]:
         mass_2 = float(rng.uniform(1.0, mass_1))
     elif family == "NSBH":
         mass_1 = float(rng.uniform(5, 30))
-        mass_2 = float(rng.uniform(1.0, 2.5))
+        mass_2 = float(rng.uniform(1.0, 2.2))
     else:
         raise ValueError(f"Unsupported source family: {family}")
     if family == "BBH":
@@ -205,7 +205,25 @@ def plan_injection_recipes(
         "cosmology": cosmology.metadata(),
         "proposal_measure": "uniform_in_comoving_volume_with_1_over_1_plus_z_source_time_weight",
         "population_model_status": "broad_pilot_not_GWTC_population_fit",
+        "approximant_domain_audit": {
+            "nsbh_detector_frame_neutron_star_mass_maximum_msun": max(
+                (
+                    float(row["mass_2_detector_msun"])
+                    for row in recipes
+                    if row["source_family"] == "NSBH"
+                ),
+                default=None,
+            ),
+            "imrphenom_nsbh_neutron_star_mass_limit_msun": 3.0,
+            "passed": all(
+                row["source_family"] != "NSBH"
+                or float(row["mass_2_detector_msun"]) <= 3.0
+                for row in recipes
+            ),
+        },
     }
+    if not report["approximant_domain_audit"]["passed"]:
+        raise ValueError("Planned NSBH detector-frame masses exceed waveform approximant domain")
     return recipes, report
 
 

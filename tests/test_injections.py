@@ -78,3 +78,28 @@ def test_flat_cosmology_distance_round_trip_and_monotonicity() -> None:
     recovered = cosmology.redshift_at_luminosity_distance(luminosity)
     assert recovered == pytest.approx(redshifts, abs=1e-8)
     assert luminosity == pytest.approx((1 + np.asarray(redshifts)) * comoving)
+
+
+def test_nsbh_detector_frame_neutron_star_mass_stays_in_approximant_domain() -> None:
+    rows = [
+        {
+            "window_id": "v",
+            "split": "val",
+            "gps_block": "val-block",
+            "gps_start": 1000,
+            "gps_end": 1008,
+            "ifos": ["H1", "L1"],
+        }
+    ]
+    population = {
+        "NSBH": {
+            "fraction": 1.0,
+            "maximum_distance_mpc": 1500.0,
+            "approximant": "IMRPhenomNSBH",
+        }
+    }
+    recipes, report = plan_injection_recipes(
+        rows, {"val": 1.0}, {"val": 1000}, population, seed=11
+    )
+    assert max(row["mass_2_detector_msun"] for row in recipes) <= 3.0
+    assert report["approximant_domain_audit"]["passed"]
