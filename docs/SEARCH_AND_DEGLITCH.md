@@ -69,6 +69,8 @@ cardinality and split provenance only.
 the referenced GPS window, asks PyCBC/LALSimulation for a time-domain approximant, projects plus and
 cross polarizations into every IFO with sky-dependent antenna response and arrival delay, aligns the
 result to the detector sample grid, and atomically stores noise, signal and mixture numeric arrays.
+It stores a 64-second context by default together with exact indices for the central 8-second analysis
+window; this prevents the injected signal from defining a PSD from only its own short window.
 The output records PyCBC/LALSuite versions, approximant, source-file hashes and waveform summaries.
 The implementation follows the official PyCBC interfaces for
 [waveform generation](https://pycbc.org/pycbc/latest/html/waveform.html) and
@@ -81,6 +83,13 @@ authorize a sensitivity claim. Before freezing the corpus, the broad pilot mass/
 tidal proposal must be replaced or reweighted to documented GWTC population models, each selected
 approximant must pass match/epoch/amplitude checks, and substantially more independent real
 background must be available.
+
+`gwyolo injection-score` verifies every materialized-array hash, downsamples and whitens the full
+context, crops only the recorded central window, applies the frozen multi-IFO/multi-Q checkpoint, and
+emits trigger rows carrying the original `vt_weight`. Thus the same validation-only threshold and
+search-statistics code can later evaluate physical injections. These rows remain domain-transfer
+diagnostics until the waveform equivalence, background exposure, population model and locked-test
+gates all pass.
 
 ## Fair raw-versus-cleaned comparison
 

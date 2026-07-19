@@ -162,23 +162,26 @@ class PyCBCWaveformBackend:
 
 
 def _read_background(
-    row: dict[str, Any], target_sample_rate: int
-) -> tuple[list[str], np.ndarray]:
-    segment_start = float(row["gps_start"])
-    duration = float(row["duration"])
-    center = segment_start + duration / 2.0
+    row: dict[str, Any], target_sample_rate: int, context_duration: float
+) -> tuple[list[str], np.ndarray, float]:
+    analysis_start = float(row["gps_start"])
+    analysis_duration = float(row["duration"])
+    if context_duration < analysis_duration:
+        raise ValueError("context duration cannot be shorter than the analysis window")
+    center = analysis_start + analysis_duration / 2.0
+    segment_start = center - context_duration / 2.0
     detector_noise = []
     ifos = [str(ifo) for ifo in row["ifos"]]
     for ifo in ifos:
         source = row["source_files"][ifo]
-        segment = read_hdf5_segment(source["path"], center, duration)
+        segment = read_hdf5_segment(source["path"], center, context_duration)
         values = np.asarray(segment["strain"], dtype=np.float64)
         values = _fft_downsample(values, int(segment["sample_rate"]), target_sample_rate)
-        expected = int(round(duration * target_sample_rate))
+        expected = int(round(context_duration * target_sample_rate))
         if values.size != expected:
             raise ValueError(f"Background segment for {ifo} has {values.size}, expected {expected}")
         detector_noise.append(values)
-    return ifos, np.stack(detector_noise)
+    return ifos, np.stack(detector_noise), segment_start
 
 
 def _atomic_save_npz(path: Path, **arrays: np.ndarray) -> None:
@@ -202,6 +205,7 @@ def materialize_recipe(
     backend: Any,
     sample_rate: int,
     output_path: str | Path,
+    context_duration: float = 64.0,
 ) -> dict[str, Any]:
     if str(recipe["background_window_id"]) != str(background["window_id"]):
         raise ValueError("Recipe/background window identity mismatch")
@@ -209,12 +213,14 @@ def materialize_recipe(
         raise ValueError("Recipe/background GPS-block identity mismatch")
     if str(recipe["split"]) != str(background["split"]):
         raise ValueError("Recipe/background split mismatch")
-    ifos, noise = _read_background(background, sample_rate)
+    ifos, noise, context_start = _read_background(
+        background, sample_rate, context_duration
+    )
     projected, signal_summary = backend.generate(recipe, ifos, sample_rate)
     signal = np.stack(
         [
             place_waveform_samples(
-                float(background["gps_start"]),
+                context_start,
                 sample_rate,
                 noise.shape[1],
                 projected[ifo][0],
@@ -226,6 +232,14 @@ def materialize_recipe(
     if not np.any(signal):
         raise ValueError(f"Projected waveform misses background window for {recipe['injection_id']}")
     mixture = noise + signal
+    analysis_start_index = int(
+        round((float(background["gps_start"]) - context_start) * sample_rate)
+    )
+    analysis_stop_index = analysis_start_index + int(
+        round(float(background["duration"]) * sample_rate)
+    )
+    if analysis_start_index < 0 or analysis_stop_index > noise.shape[1]:
+        raise ValueError("Analysis window falls outside materialized context")
     target = Path(output_path)
     _atomic_save_npz(
         target,
@@ -234,7 +248,10 @@ def materialize_recipe(
         strain=mixture,
         ifos=np.asarray(ifos),
         sample_rate=np.asarray(sample_rate, dtype=np.int64),
-        gps_start=np.asarray(background["gps_start"], dtype=np.float64),
+        context_gps_start=np.asarray(context_start, dtype=np.float64),
+        analysis_gps_start=np.asarray(background["gps_start"], dtype=np.float64),
+        analysis_start_index=np.asarray(analysis_start_index, dtype=np.int64),
+        analysis_stop_index=np.asarray(analysis_stop_index, dtype=np.int64),
     )
     return {
         **recipe,
@@ -242,6 +259,9 @@ def materialize_recipe(
         "materialized_sha256": file_sha256(target),
         "sample_rate": sample_rate,
         "samples_per_ifo": int(noise.shape[1]),
+        "context_duration": context_duration,
+        "analysis_start_index": analysis_start_index,
+        "analysis_stop_index": analysis_stop_index,
         "signal_summary": signal_summary,
         "time_alignment": "integer_copy_or_lanczos_sinc_half_width_16",
         "background_source_sha256": {
@@ -258,6 +278,7 @@ def run_injection_materialization(
     split: str | None = None,
     limit: int | None = None,
     backend_validation_report: str | Path | None = None,
+    context_duration: float = 64.0,
 ) -> dict[str, Any]:
     with Path(recipe_manifest).open("r", encoding="utf-8") as handle:
         recipes = [json.loads(line) for line in handle if line.strip()]
@@ -299,6 +320,7 @@ def run_injection_materialization(
                 backend,
                 sample_rate,
                 artifact_path,
+                context_duration,
             )
         )
     manifest_path = output / "materialized_injections.jsonl"
@@ -318,6 +340,7 @@ def run_injection_materialization(
         "selected_split": split,
         "selected_recipes": len(selected),
         "sample_rate": sample_rate,
+        "context_duration": context_duration,
         "identity_audit": identity_audit,
         "backend": backend.metadata,
         "recipe_manifest_sha256": file_sha256(recipe_manifest),

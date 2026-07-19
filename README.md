@@ -62,6 +62,7 @@ gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking t
 gwyolo time-slide-background build split-safe nonzero time-slide background exposure
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain
+gwyolo injection-score score full-context-whitened physical injections with the frozen model
 gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```

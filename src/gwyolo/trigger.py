@@ -38,6 +38,44 @@ def network_ranking(
     }
 
 
+def probability_summaries(
+    probabilities: np.ndarray,
+    model_ifos: tuple[str, ...],
+    valid_ifos: list[str],
+    gps_start: float,
+    duration: float,
+) -> dict[str, Any]:
+    if probabilities.ndim != 5 or probabilities.shape[0] != 2:
+        raise ValueError("probabilities must have shape [2, IFO, Q, frequency, time]")
+    if probabilities.shape[1] != len(model_ifos):
+        raise ValueError("probability IFO axis does not match model_ifos")
+    chirp_scores = {
+        ifo: float(np.max(probabilities[0, index])) for index, ifo in enumerate(model_ifos)
+    }
+    glitch_scores = {
+        ifo: float(np.max(probabilities[1, index])) for index, ifo in enumerate(model_ifos)
+    }
+    peak_times = {"chirp": {}, "glitch": {}}
+    for class_index, class_name in enumerate(("chirp", "glitch")):
+        for ifo_index, ifo in enumerate(model_ifos):
+            profile = np.max(probabilities[class_index, ifo_index], axis=(0, 1))
+            peak_index = int(np.argmax(profile))
+            peak_offset = (peak_index + 0.5) / profile.size * duration
+            peak_times[class_name][ifo] = {
+                "gps": gps_start + peak_offset,
+                "offset_seconds": peak_offset,
+                "time_bin": peak_index,
+                "time_bins": int(profile.size),
+                "score": float(profile[peak_index]),
+            }
+    return {
+        "chirp_scores": chirp_scores,
+        "glitch_scores": glitch_scores,
+        "peak_times": peak_times,
+        **network_ranking(chirp_scores, glitch_scores, valid_ifos),
+    }
+
+
 def _window_strain(
     row: dict[str, Any],
     model_ifos: tuple[str, ...],
@@ -123,28 +161,13 @@ def score_background_manifest(
             probabilities = probabilities.reshape(
                 2, len(model_ifos), len(q_values), power.shape[-2], power.shape[-1]
             )
-            chirp_scores = {
-                ifo: float(np.max(probabilities[0, index]))
-                for index, ifo in enumerate(model_ifos)
-            }
-            glitch_scores = {
-                ifo: float(np.max(probabilities[1, index]))
-                for index, ifo in enumerate(model_ifos)
-            }
-            peak_times = {"chirp": {}, "glitch": {}}
-            for class_index, class_name in enumerate(("chirp", "glitch")):
-                for ifo_index, ifo in enumerate(model_ifos):
-                    profile = np.max(probabilities[class_index, ifo_index], axis=(0, 1))
-                    peak_index = int(np.argmax(profile))
-                    peak_offset = (peak_index + 0.5) / profile.size * float(row["duration"])
-                    peak_times[class_name][ifo] = {
-                        "gps": float(row["gps_start"]) + peak_offset,
-                        "offset_seconds": peak_offset,
-                        "time_bin": peak_index,
-                        "time_bins": int(profile.size),
-                        "score": float(profile[peak_index]),
-                    }
-            ranking = network_ranking(chirp_scores, glitch_scores, valid_ifos)
+            summary = probability_summaries(
+                probabilities,
+                model_ifos,
+                valid_ifos,
+                float(row["gps_start"]),
+                float(row["duration"]),
+            )
             rows.append(
                 {
                     "window_id": row["window_id"],
@@ -152,11 +175,8 @@ def score_background_manifest(
                     "gps_start": row["gps_start"],
                     "gps_end": row["gps_end"],
                     "gps_block": row["gps_block"],
-                    "chirp_scores": chirp_scores,
-                    "glitch_scores": glitch_scores,
-                    "peak_times": peak_times,
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
-                    **ranking,
+                    **summary,
                 }
             )
         except (ValueError, OSError, KeyError) as exc:

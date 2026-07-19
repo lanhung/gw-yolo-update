@@ -199,9 +199,19 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--background-manifest", required=True)
     materialize.add_argument("--output-dir", required=True)
     materialize.add_argument("--sample-rate", type=int, default=2048)
+    materialize.add_argument("--context-duration", type=float, default=64.0)
     materialize.add_argument("--split", choices=("train", "val", "test"))
     materialize.add_argument("--limit", type=int)
     materialize.add_argument("--backend-validation-report")
+
+    injection_score = subparsers.add_parser("injection-score")
+    injection_score.add_argument("--manifest", required=True)
+    injection_score.add_argument("--checkpoint", required=True)
+    injection_score.add_argument("--config", required=True)
+    injection_score.add_argument("--output-dir", required=True)
+    injection_score.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
+    injection_score.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
+    injection_score.add_argument("--target-sample-rate", type=int, default=1024)
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -447,6 +457,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.split,
                 args.limit,
                 args.backend_validation_report,
+                args.context_duration,
+            )
+        )
+    elif args.command == "injection-score":
+        from .injection_score import score_materialized_injections
+
+        _print(
+            score_materialized_injections(
+                args.manifest,
+                args.checkpoint,
+                args.config,
+                args.output_dir,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
             )
         )
     elif args.command == "pe-evaluate":
