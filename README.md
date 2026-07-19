@@ -57,6 +57,7 @@ gwyolo background-plan build DQ-safe continuous multi-IFO windows and true live-
 gwyolo search-compare compare raw/mask-cleaned methods at a common validation-calibrated FAR
 gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound in the time domain
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
+gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking triggers
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 

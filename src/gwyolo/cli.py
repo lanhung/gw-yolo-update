@@ -155,6 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
     deglitch_benchmark.add_argument("--factory-report", required=True)
     deglitch_benchmark.add_argument("--output", required=True)
     deglitch_benchmark.add_argument("--strength", type=float, default=0.9)
+
+    trigger = subparsers.add_parser("trigger-score")
+    trigger.add_argument("--manifest", required=True)
+    trigger.add_argument("--checkpoint", required=True)
+    trigger.add_argument("--config", required=True)
+    trigger.add_argument("--output-dir", required=True)
+    trigger.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
+    trigger.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
+    trigger.add_argument("--target-sample-rate", type=int, default=1024)
+    trigger.add_argument("--context-duration", type=float, default=64.0)
     return parser
 
 
@@ -323,6 +333,21 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             run_oracle_deglitch_benchmark(
                 args.factory_report, args.output, args.strength
+            )
+        )
+    elif args.command == "trigger-score":
+        from .trigger import score_background_manifest
+
+        _print(
+            score_background_manifest(
+                args.manifest,
+                args.checkpoint,
+                args.config,
+                args.output_dir,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
             )
         )
     else:
