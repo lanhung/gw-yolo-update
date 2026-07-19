@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import h5py
 import numpy as np
 
-from gwyolo.background import plan_background_windows
+import pytest
+
+from gwyolo.background import (
+    plan_background_windows,
+    run_background_plan,
+    validate_source_verification,
+)
+from gwyolo.io import file_sha256
 
 
 def _write_quality_file(path: Path, gps_start: int, duration: int, bad_second: int | None = None) -> None:
@@ -62,3 +70,44 @@ def test_background_live_time_uses_interval_union(tmp_path) -> None:
     )
     assert report["windows"] == 3
     assert report["splits"]["train"]["live_time_seconds"] == 16
+
+
+def test_background_run_requires_hash_matched_verified_sources(tmp_path: Path) -> None:
+    h1 = tmp_path / "h1.hdf5"
+    _write_quality_file(h1, 3000, 16)
+    verification_path = tmp_path / "verification.json"
+    verification_path.write_text(
+        json.dumps(
+            {
+                "status": "verified",
+                "passed": True,
+                "event": "unit-test",
+                "detectors": {"H1": {"passed": True, "sha256": file_sha256(h1)}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = run_background_plan(
+        {"H1": h1},
+        tmp_path / "background",
+        verification_path,
+        window_duration=8,
+        stride=8,
+        block_duration=16,
+        validation_fraction=0,
+        test_fraction=0,
+    )
+    assert report["source_verification"]["detector_sha256"] == {
+        "H1": file_sha256(h1)
+    }
+    first_row = json.loads(
+        (tmp_path / "background" / "background_windows.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert first_row["source_files"]["H1"]["verification_report_sha256"]
+
+    with h1.open("ab") as handle:
+        handle.write(b"changed")
+    with pytest.raises(ValueError, match="hash differs"):
+        validate_source_verification({"H1": h1}, verification_path)

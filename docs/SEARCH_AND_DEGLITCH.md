@@ -2,7 +2,8 @@
 
 ## Continuous-background protocol
 
-`gwyolo background-plan` intersects per-second DQ masks across detector files, excludes event or
+`gwyolo background-plan` first requires a passing `gwosc-verify` report and checks every detector
+file SHA256 against it. It then intersects per-second DQ masks across detector files, excludes event or
 hardware-injection intervals, forms numeric windows, and assigns entire coarse GPS blocks to
 train/validation/test. Live time is the union of intervals, not the sum of possibly overlapping
 windows. The resulting manifest is the input contract for trigger generation and time slides.
@@ -42,7 +43,13 @@ predeclared millisecond coincidence window, veto/category policy, many independe
 segments, and enough nonzero shifts to support the requested IFAR. The current implementation proves
 the split/exposure plumbing and will be replaced at that boundary rather than silently overstated.
 
-The first aligned H1+L1 run scored all 96 validation and all 96 test windows; failures were confined
+The initially downloaded H1 file subsequently failed a complete HDF5 Fletcher32 scan, while L1
+matched all 16,777,216 samples, official strain statistics and DQ/injection bit sums. Consequently,
+all H1 and aligned H1+L1 background, trigger and time-slide numbers below are retained only as
+corruption-detection integration evidence and are excluded from scientific comparisons. The source
+gate now prevents such a file from entering a new background manifest.
+
+The invalidated aligned H1+L1 run scored all 96 validation and all 96 test windows; failures were confined
 to 8 edge windows whose 64-second context exceeded the file and 11 training-window HDF reads. Thirty
 one nonzero 8-second slides per split produced 11,904 seconds (`3.77e-4 yr`) of equivalent exposure,
 with 50 validation and 47 test peak coincidences at a 0.1-second integration window. This is only

@@ -152,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     background = subparsers.add_parser("background-plan")
     background.add_argument("--file", action="append", required=True, help="IFO=/path/file.hdf5")
+    background.add_argument("--source-verification-report", required=True)
     background.add_argument("--output-dir", required=True)
     background.add_argument("--window-duration", type=int, default=8)
     background.add_argument("--stride", type=int, default=8)
@@ -406,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
             run_background_plan(
                 files,
                 args.output_dir,
+                source_verification_report=args.source_verification_report,
                 window_duration=args.window_duration,
                 stride=args.stride,
                 block_duration=args.block_duration,

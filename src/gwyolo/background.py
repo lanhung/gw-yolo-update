@@ -13,6 +13,36 @@ from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha25
 SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
 
+def validate_source_verification(
+    files: dict[str, str | Path], verification_report: str | Path
+) -> dict[str, Any]:
+    report_path = Path(verification_report)
+    with report_path.open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if not report.get("passed") or report.get("status") != "verified":
+        raise ValueError("GWOSC source verification report did not pass")
+    detector_reports = report.get("detectors", {})
+    verified = {}
+    for ifo, path in sorted(files.items()):
+        detector = detector_reports.get(ifo)
+        if not detector or not detector.get("passed"):
+            raise ValueError(f"GWOSC source verification is missing a passing {ifo} record")
+        observed_sha = file_sha256(path)
+        expected_sha = detector.get("sha256")
+        if observed_sha != expected_sha:
+            raise ValueError(
+                f"GWOSC source hash differs from verification report for {ifo}: "
+                f"{observed_sha} != {expected_sha}"
+            )
+        verified[ifo] = observed_sha
+    return {
+        "report_path": str(report_path),
+        "report_sha256": file_sha256(report_path),
+        "event": report.get("event"),
+        "detector_sha256": verified,
+    }
+
+
 def _read_quality(path: str | Path) -> dict[str, Any]:
     try:
         import h5py
@@ -195,20 +225,28 @@ def plan_background_windows(
 
 
 def run_background_plan(
-    files: dict[str, str | Path], output_dir: str | Path, **kwargs: Any
+    files: dict[str, str | Path],
+    output_dir: str | Path,
+    source_verification_report: str | Path,
+    **kwargs: Any,
 ) -> dict[str, Any]:
+    verification = validate_source_verification(files, source_verification_report)
     rows, report = plan_background_windows(files, **kwargs)
     if not report["passed"]:
         raise ValueError(f"Background split audit failed: {report}")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "background_windows.jsonl"
+    for row in rows:
+        for source in row["source_files"].values():
+            source["verification_report_sha256"] = verification["report_sha256"]
     atomic_write_text(
         manifest_path,
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
     )
     result = {
         **report,
+        "source_verification": verification,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
     }

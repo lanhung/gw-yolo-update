@@ -55,7 +55,7 @@ gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thr
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
 gwyolo fit-curve fit an exploratory power-law learning curve to controlled scale points
-gwyolo background-plan build DQ-safe continuous multi-IFO windows and true live-time exposure
+gwyolo background-plan require verified sources, then build DQ-safe multi-IFO live-time windows
 gwyolo search-compare compare raw/mask-cleaned methods at a common validation-calibrated FAR
 gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound in the time domain
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
