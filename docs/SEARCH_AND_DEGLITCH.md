@@ -74,8 +74,9 @@ The implementation follows the official PyCBC interfaces for
 [waveform generation](https://pycbc.org/pycbc/latest/html/waveform.html) and
 [detector projection](https://pycbc.org/pycbc/latest/html/pycbc.detector.html).
 
-The materializer fails if PyCBC/LALSuite is absent. Without a passing waveform-backend validation
-report it labels output `integration_only_unvalidated_backend`; even with that report it does not
+The materializer fails if PyCBC/LALSuite is absent. Without a passing external-reference
+waveform-equivalence report it labels output `integration_only_unvalidated_backend`; an internal
+smoke report is explicitly rejected as claim evidence. Even with an external report it does not
 authorize a sensitivity claim. Before freezing the corpus, the broad pilot mass/spin and provisional
 tidal proposal must be replaced or reweighted to documented GWTC population models, each selected
 approximant must pass match/epoch/amplitude checks, and substantially more independent real

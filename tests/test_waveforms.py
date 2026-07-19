@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
-from gwyolo.waveforms import place_waveform_samples, validate_recipe_identities
+from gwyolo.waveforms import (
+    place_waveform_samples,
+    run_injection_materialization,
+    validate_recipe_identities,
+)
 
 
 def test_place_waveform_samples_clips_both_edges_by_hand() -> None:
@@ -28,3 +34,30 @@ def test_recipe_identity_audit_rejects_gps_leakage() -> None:
     ]
     with pytest.raises(ValueError, match="GPS-block leakage"):
         validate_recipe_identities(rows)
+
+
+def test_materializer_rejects_internal_only_validation_as_external_evidence(tmp_path) -> None:
+    recipes = tmp_path / "recipes.jsonl"
+    backgrounds = tmp_path / "backgrounds.jsonl"
+    validation = tmp_path / "validation.json"
+    recipes.write_text(
+        json.dumps(
+            {
+                "injection_id": "i1",
+                "waveform_id": "w1",
+                "split": "val",
+                "gps_block": "g1",
+                "background_window_id": "b1",
+            }
+        )
+        + "\n"
+    )
+    backgrounds.write_text(json.dumps({"window_id": "b1"}) + "\n")
+    validation.write_text(json.dumps({"passed": True, "validation_scope": "internal_smoke"}))
+    with pytest.raises(ValueError, match="external_reference_waveform_equivalence"):
+        run_injection_materialization(
+            recipes,
+            backgrounds,
+            tmp_path / "output",
+            backend_validation_report=validation,
+        )

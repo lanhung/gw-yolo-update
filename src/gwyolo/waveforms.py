@@ -283,6 +283,10 @@ def run_injection_materialization(
             validation = json.load(handle)
         if not validation.get("passed", False):
             raise ValueError("Waveform backend validation report did not pass")
+        if validation.get("validation_scope") != "external_reference_waveform_equivalence":
+            raise ValueError(
+                "A claim-validating report must declare external_reference_waveform_equivalence"
+            )
     backend = PyCBCWaveformBackend()
     output = Path(output_dir)
     materialized = []
@@ -303,7 +307,11 @@ def run_injection_materialization(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in materialized),
     )
     report = {
-        "status": "materialized_backend_validated" if validation else "integration_only_unvalidated_backend",
+        "status": (
+            "materialized_externally_validated_backend"
+            if validation
+            else "integration_only_unvalidated_backend"
+        ),
         "waveform_materialization_validated": validation is not None,
         "sensitivity_claim_allowed": False,
         "sensitivity_claim_blocker": "requires frozen thresholds, independent background exposure and locked injections",
