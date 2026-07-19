@@ -115,6 +115,7 @@ def plan_background_windows(
     window_duration: int = 8,
     stride: int = 8,
     block_duration: int = 256,
+    required_context_duration: int | None = None,
     required_dq_bits: int = 1,
     required_injection_bits: int = 0,
     excluded_intervals: Iterable[tuple[float, float]] = (),
@@ -128,6 +129,9 @@ def plan_background_windows(
         raise ValueError("window, stride, and block durations must be positive")
     if window_duration > block_duration:
         raise ValueError("window duration cannot exceed block duration")
+    context_duration = required_context_duration or window_duration
+    if context_duration < window_duration:
+        raise ValueError("required context duration cannot be shorter than the window")
     quality = {ifo: _read_quality(path) for ifo, path in sorted(files.items())}
     common_start = max(item["gps_start"] for item in quality.values())
     common_end = min(item["gps_end"] for item in quality.values())
@@ -142,6 +146,12 @@ def plan_background_windows(
     first_start = int(math.ceil(common_start / stride) * stride)
     for gps_start in range(first_start, common_end - window_duration + 1, stride):
         gps_end = gps_start + window_duration
+        center = (gps_start + gps_end) / 2
+        if (
+            center - context_duration / 2 < common_start
+            or center + context_duration / 2 > common_end
+        ):
+            continue
         block_index = (gps_start - common_start) // block_duration
         block_start = common_start + block_index * block_duration
         if gps_end > block_start + block_duration or _overlaps(gps_start, gps_end, exclusions):
@@ -213,6 +223,7 @@ def plan_background_windows(
         "window_duration": window_duration,
         "stride": stride,
         "block_duration": block_duration,
+        "required_context_duration": context_duration,
         "required_dq_bits": required_dq_bits,
         "required_injection_bits": required_injection_bits,
         "excluded_intervals": exclusions,

@@ -72,6 +72,22 @@ def test_background_live_time_uses_interval_union(tmp_path) -> None:
     assert report["splits"]["train"]["live_time_seconds"] == 16
 
 
+def test_background_excludes_windows_without_full_preprocessing_context(tmp_path) -> None:
+    h1 = tmp_path / "h1.hdf5"
+    _write_quality_file(h1, 1000, 64)
+    rows, report = plan_background_windows(
+        {"H1": h1},
+        window_duration=8,
+        stride=8,
+        block_duration=64,
+        required_context_duration=32,
+        validation_fraction=0,
+        test_fraction=0,
+    )
+    assert [row["gps_start"] for row in rows] == [1016, 1024, 1032, 1040]
+    assert report["required_context_duration"] == 32
+
+
 def test_background_run_requires_hash_matched_verified_sources(tmp_path: Path) -> None:
     h1 = tmp_path / "h1.hdf5"
     _write_quality_file(h1, 3000, 16)

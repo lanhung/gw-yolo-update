@@ -6,7 +6,9 @@
 file SHA256 against it. It then intersects per-second DQ masks across detector files, excludes event or
 hardware-injection intervals, forms numeric windows, and assigns entire coarse GPS blocks to
 train/validation/test. Live time is the union of intervals, not the sum of possibly overlapping
-windows. The resulting manifest is the input contract for trigger generation and time slides.
+windows. It also removes edge windows that cannot supply the declared full whitening context
+(64 seconds by default), so an accepted row cannot later fail solely because preprocessing extends
+beyond the source file. The resulting manifest is the input contract for trigger generation and time slides.
 
 The first real O4a H1 pilot used the 4096-second file surrounding GW231123_135430, 8-second
 non-overlapping windows, 256-second split blocks, and excluded event GPS ±16 seconds. It produced:

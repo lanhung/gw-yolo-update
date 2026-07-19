@@ -157,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     background.add_argument("--window-duration", type=int, default=8)
     background.add_argument("--stride", type=int, default=8)
     background.add_argument("--block-duration", type=int, default=256)
+    background.add_argument("--required-context-duration", type=int, default=64)
     background.add_argument("--required-dq-bits", type=int, default=1)
     background.add_argument("--required-injection-bits", type=int, default=0)
     background.add_argument("--exclude", action="append", default=[], help="GPS_START:GPS_END")
@@ -411,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
                 window_duration=args.window_duration,
                 stride=args.stride,
                 block_duration=args.block_duration,
+                required_context_duration=args.required_context_duration,
                 required_dq_bits=args.required_dq_bits,
                 required_injection_bits=args.required_injection_bits,
                 excluded_intervals=exclusions,
