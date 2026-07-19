@@ -82,3 +82,5 @@ See [DATA_FACTORY.md](docs/DATA_FACTORY.md), [PROJECT_PLAN.md](docs/PROJECT_PLAN
 [DATA_SCALING_PLAN.md](docs/DATA_SCALING_PLAN.md),
 [NUMERIC_BASELINE.md](docs/NUMERIC_BASELINE.md),
 [SEARCH_AND_DEGLITCH.md](docs/SEARCH_AND_DEGLITCH.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
+[GWTC5_LOCKED_EVALUATION.md](docs/GWTC5_LOCKED_EVALUATION.md) defines the event-level O4b/GWTC-5
+pre-registration boundary now that the public release exists.
