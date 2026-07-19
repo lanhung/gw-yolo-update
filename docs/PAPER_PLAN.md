@@ -1,0 +1,137 @@
+# Publication plan: PRD / JCAP / ApJS
+
+## 1. Recommended paper claim
+
+**A multi-detector, multi-Q, instance-segmentation framework provides interpretable chirp/glitch masks that improve glitch-overlap recovery and/or search sensitivity at fixed false-alarm rate, while preserving low-latency compatibility with neural parameter-estimation systems.**
+
+This claim is stronger and more defensible than “YOLO classifies GWTC screenshots accurately.”
+
+## 2. Relationship to AMPLFI and DINGO
+
+AMPLFI is likelihood-free BBH parameter estimation based on normalizing flows. Its accelerated Aframe+AMPLFI workflow reports an end-to-end latency around six seconds in a mock stream. DINGO performs neural posterior estimation, with importance sampling available for reliability and calibration. Both answer “what are the source parameters?” after a candidate exists.
+
+GW-YOLO answers complementary questions:
+
+- is the time-frequency scene chirp, glitch, both, multiple instances, or OOD?
+- where is each component?
+- can the glitch component be removed or down-ranked without erasing the chirp?
+
+Fair common comparisons:
+
+| Dimension | AMPLFI/DINGO-compatible metric | GW-YOLO contribution |
+|---|---|---|
+| Latency | end-to-end seconds/event | segmentation and cleaning overhead |
+| Calibration | PP plots, coverage, SBC | confidence/OOD calibration and downstream PE coverage |
+| Localization | searched sky area/volume | whether deglitching improves localization |
+| Intrinsic parameters | bias, credible interval coverage | whether masks reduce overlap-induced bias |
+| Robustness | failure under nonstationary noise | explicit glitch mask and hard-negative behavior |
+| Interpretability | posterior samples | time-frequency instance masks |
+
+Do not claim that detection mAP “beats” a posterior estimator.
+
+Primary references:
+
+- AMPLFI: https://arxiv.org/abs/2407.19048
+- AMPLFI public-alert validation: https://arxiv.org/abs/2509.22561
+- DINGO: https://github.com/dingo-gw/dingo
+- DINGO importance sampling: https://arxiv.org/abs/2210.05686
+- GW-YOLO: https://arxiv.org/abs/2508.17399
+
+## 3. Venue-specific framing
+
+### Physical Review D
+
+Best fit if the main result is quantitative GW data-analysis performance:
+
+- fixed-FAR injection sensitivity and `<VT>`;
+- overlap recovery and parameter-bias reduction;
+- rigorous comparison to search/deglitch baselines;
+- physics-driven population and waveform coverage.
+
+Minimum evidence target: paired confidence interval demonstrating a robust sensitivity improvement, with complete background methodology.
+
+### JCAP
+
+Best fit if the method enables an astrophysical/cosmological inference that changes materially after robust deglitching:
+
+- recovered low-SNR population near glitches;
+- selection-function changes and population inference;
+- lensing/overlapping-event science;
+- impact on standard sirens or merger-rate inference.
+
+A methods-only image segmentation paper is less naturally aligned unless connected to a clear astrophysics outcome.
+
+### The Astrophysical Journal Supplement Series
+
+Best fit if the principal contribution is a reusable catalog/data/software resource:
+
+- O4a/O4b multi-detector Q-map and mask benchmark;
+- documented event/glitch annotations;
+- reproducible pipeline and extensive validation tables;
+- public trained weights, manifests, and tutorials.
+
+This is the most realistic first target if the team releases a high-quality benchmark but the `<VT>` gain is still modest.
+
+## 4. Core figures and tables
+
+1. End-to-end workflow: strain → multi-Q/multi-IFO model → masks → rerank/deglitch → PE.
+2. Leakage audit: random split versus physical group split.
+3. Efficiency-versus-SNR curves for clean and overlap BBH/NSBH/BNS.
+4. FAR/IFAR versus efficiency and `<VT>` comparison.
+5. Performance versus overlap severity and glitch class.
+6. Single-Q/single-IFO versus multi-Q/multi-IFO ablation.
+7. Before/after deglitch Q-maps and matched-filter recovery.
+8. Posterior coverage/PP plots before and after mask cleaning, alongside AMPLFI/DINGO-compatible results.
+9. Latency and compute table.
+10. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
+
+## 5. Required baselines
+
+- published GW-YOLO/YOLOv8 protocol;
+- current YOLO26 legacy-image model;
+- numeric single-Q model;
+- multi-Q single-IFO model;
+- multi-Q multi-IFO model;
+- model without glitch mask/deglitching;
+- conventional gating or a documented deglitch baseline;
+- matched-filter/search statistic before and after reranking;
+- AMPLFI/DINGO or published reference posteriors for a shared event subset, if environment and waveform priors can be matched.
+
+## 6. Statistical protocol
+
+- predefine populations, splits, thresholds, and primary endpoint;
+- preserve O4b as locked test until all choices are frozen;
+- use importance weights for astrophysical injection populations;
+- paired bootstrap over injections/background blocks;
+- report confidence intervals and effective sample size;
+- test calibration with SBC/PP plots and expected calibration error;
+- correct for multiple comparisons in large ablation grids;
+- publish all seeds, including failed or negative runs.
+
+## 7. Minimum publishable package
+
+- public code with tagged release;
+- environment/container specification;
+- dataset/provenance manifest and group split;
+- at least one reusable O4 benchmark product;
+- machine-readable tables;
+- five-seed model comparison;
+- continuous-background analysis;
+- fixed-FAR sensitivity result;
+- documented limitations and failure gallery;
+- model cards and inference latency benchmark.
+
+## 8. Data-scale evidence required
+
+The current 414-image/300-group release cannot support the primary paper claim by itself. Before submission, include:
+
+- a group-safe learning curve over at least 250→10k independent scenes;
+- a table separating rendered scenes from unique injections, glitches, GPS blocks, IFOs, and observing runs;
+- at least 10k independent training scenes for an image-method claim, or a learning-curve justification for less;
+- a target of roughly 200k numeric/generated scenes for the multi-Q/multi-IFO search study;
+- 5k–10k validation and 20k–50k locked-test injection scenes;
+- continuous/time-slide background exposure commensurate with the claimed FAR;
+- BBH/BNS/NSBH, low-SNR, overlap-severity, glitch-morphology, detector, and run strata;
+- an explicit demonstration that adding data improves O4 transfer rather than only O3-like mAP.
+
+Offline augmentations are reported separately and never counted as independent physical samples.

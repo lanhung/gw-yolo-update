@@ -1,0 +1,40 @@
+project:
+  name: legacy_smoke
+  seed: 20260719
+  output_dir: /tmp/gwyolo-smoke
+
+data:
+  sources:
+    - name: legacy_train
+      images: /root/GW-YOLO/train/images
+      labels: /root/GW-YOLO/train/labels
+    - name: legacy_validation
+      images: /root/GW-YOLO/val/val_3.0/images
+      labels: /root/GW-YOLO/val/val_3.0/labels
+  names: [chirp, noise]
+  split: {train: 0.70, val: 0.15, test: 0.15, trials: 100, link_mode: symlink}
+
+training:
+  common:
+    imgsz: 640
+    batch: 8
+    workers: 0
+    patience: 2
+    deterministic: true
+    seed: 20260719
+    mosaic: 0.0
+    mixup: 0.0
+    flipud: 0.0
+    fliplr: 0.0
+  candidates:
+    - name: smoke_yolo26n
+      model: /root/GW-YOLO/yolo26n-seg.pt
+      epochs: 1
+
+quality: {metric: metrics/mAP50(M), minimum: 0.0, stop_when_met: true}
+
+catalog:
+  source: /root/GW-YOLO/imgs/gw_4.0
+  release: GWTC-4.0
+  api_url: https://gwosc.org/eventapi/json/GWTC-4.0/
+  confidence: 0.25
