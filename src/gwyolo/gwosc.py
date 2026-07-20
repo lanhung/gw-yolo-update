@@ -341,6 +341,7 @@ def run_gwosc_batch_download(
         "selected_pairs": len(pairs),
         "verified_files": len(completed),
         "files": completed,
+        **execution_provenance(),
     }
     report_path = output / "batch_download_report.json"
     atomic_write_json(report_path, result)

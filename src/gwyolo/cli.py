@@ -481,6 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
     background_bank.add_argument("--context-duration", type=float, default=64.0)
     background_bank.add_argument("--split", choices=("train", "val", "test"))
     background_bank.add_argument("--limit", type=int)
+    background_bank.add_argument("--maximum-windows-per-gps-block", type=int)
 
     background_bank_evict = subparsers.add_parser("background-bank-evict-sources")
     background_bank_evict.add_argument("--background-bank-report", required=True)
@@ -1178,6 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.context_duration,
                 args.split,
                 args.limit,
+                args.maximum_windows_per_gps_block,
             )
         )
     elif args.command == "background-bank-evict-sources":

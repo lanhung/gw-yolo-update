@@ -48,6 +48,7 @@ def test_numeric_background_bank_survives_source_eviction(tmp_path) -> None:
         bank_background = json.loads(next(handle))
     assert bank_report["selected_windows"] == 1
     assert bank_report["unique_source_files"] == 1
+    assert bank_report["splits"]["train"]["live_time_seconds"] == 2.0
     source.unlink()
 
     class FakeBackend:

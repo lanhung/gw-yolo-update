@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from .background import SECONDS_PER_YEAR, _union_duration
 from .gwosc import _fft_downsample, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
@@ -750,6 +751,7 @@ def materialize_background_bank(
     context_duration: float = 64.0,
     split: str | None = None,
     limit: int | None = None,
+    maximum_windows_per_gps_block: int | None = None,
 ) -> dict[str, Any]:
     """Extract unique numeric noise contexts so verified source HDF files can be evicted."""
     if target_sample_rate <= 0 or context_duration <= 0:
@@ -757,6 +759,17 @@ def materialize_background_bank(
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
     selected = [row for row in rows if split is None or row.get("split") == split]
+    if maximum_windows_per_gps_block is not None:
+        if maximum_windows_per_gps_block <= 0:
+            raise ValueError("maximum windows per GPS block must be positive")
+        counts: Counter[str] = Counter()
+        bounded = []
+        for row in selected:
+            block = str(row["gps_block"])
+            if counts[block] < maximum_windows_per_gps_block:
+                bounded.append(row)
+                counts[block] += 1
+        selected = bounded
     if limit is not None:
         if limit <= 0:
             raise ValueError("background bank limit must be positive")
@@ -787,6 +800,7 @@ def materialize_background_bank(
         "context_duration": context_duration,
         "split": split,
         "limit": limit,
+        "maximum_windows_per_gps_block": maximum_windows_per_gps_block,
         "source_hashes": dict(sorted(source_hashes.items())),
     }
     state_path = output / "background_bank_state.json"
@@ -881,10 +895,55 @@ def materialize_background_bank(
         "selected_windows": len(enriched),
         "unique_window_ids": len(set(window_ids)),
         "unique_source_files": len(source_hashes),
+        "unique_gps_blocks": len({str(row["gps_block"]) for row in enriched}),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "stored_bytes": sum(Path(row["background_bank"]["path"]).stat().st_size for row in enriched),
         "source_hashes": dict(sorted(source_hashes.items())),
+        "splits": {
+            selected_split: {
+                "windows": len([row for row in enriched if row["split"] == selected_split]),
+                "gps_blocks": len(
+                    {
+                        str(row["gps_block"])
+                        for row in enriched
+                        if row["split"] == selected_split
+                    }
+                ),
+                "live_time_seconds": _union_duration(
+                    (
+                        (
+                            float(row["gps_start"]),
+                            float(
+                                row.get(
+                                    "gps_end",
+                                    float(row["gps_start"]) + float(row["duration"]),
+                                )
+                            ),
+                        )
+                        for row in enriched
+                        if row["split"] == selected_split
+                    )
+                ),
+                "live_time_years": _union_duration(
+                    (
+                        (
+                            float(row["gps_start"]),
+                            float(
+                                row.get(
+                                    "gps_end",
+                                    float(row["gps_start"]) + float(row["duration"]),
+                                )
+                            ),
+                        )
+                        for row in enriched
+                        if row["split"] == selected_split
+                    )
+                )
+                / SECONDS_PER_YEAR,
+            }
+            for selected_split in sorted({str(row["split"]) for row in enriched})
+        },
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "run_identity": run_identity,
