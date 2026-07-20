@@ -385,6 +385,24 @@ def candidate_arrival_threshold_metrics(
     return output
 
 
+def candidate_positive_timing_error_quantiles(
+    prediction_rows: list[dict[str, Any]],
+) -> dict[str, float]:
+    errors = np.asarray(
+        [
+            float(row["refined_timing_error_seconds"])
+            for row in prediction_rows
+            if bool(row["local_crop_contains_arrival"])
+        ],
+        dtype=np.float64,
+    )
+    if not errors.size or not np.isfinite(errors).all() or np.any(errors < 0):
+        raise ValueError("candidate timing summary requires finite localizable errors")
+    return {
+        str(q): float(np.quantile(errors, q)) for q in (0.5, 0.9, 0.99, 1.0)
+    }
+
+
 class CandidateLocalDataset:
     def __init__(
         self,
@@ -1076,14 +1094,6 @@ def run_candidate_local_refiner_validation(
     scores = np.asarray(
         [row["presence_score"] for row in prediction_rows], dtype=np.float64
     )
-    positive_errors = np.asarray(
-        [
-            row["refined_timing_error_seconds"]
-            for row in prediction_rows
-            if row["local_crop_contains_arrival"]
-        ],
-        dtype=np.float64,
-    )
     thresholds = [float(value) for value in settings["presence_thresholds"]]
     tolerances = [float(value) for value in settings["timing_tolerances_seconds"]]
     threshold_metrics = candidate_arrival_threshold_metrics(
@@ -1100,10 +1110,7 @@ def run_candidate_local_refiner_validation(
     ]
     selected_threshold = eligible[-1] if eligible else None
     average_precision = candidate_average_precision(labels, scores)
-    timing_quantiles = {
-        str(q): float(np.quantile(positive_errors, q))
-        for q in (0.5, 0.9, 0.99, 1.0)
-    }
+    timing_quantiles = candidate_positive_timing_error_quantiles(prediction_rows)
     gate_checks = {
         "candidate_average_precision": average_precision
         >= float(settings["minimum_candidate_average_precision"]),

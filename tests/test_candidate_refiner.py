@@ -5,6 +5,7 @@ from gwyolo.candidate_refiner import (
     candidate_average_precision,
     candidate_arrival_threshold_metrics,
     candidate_crop_contains_arrival,
+    candidate_positive_timing_error_quantiles,
     label_candidate_refiner_rows,
 )
 
@@ -116,6 +117,26 @@ def test_candidate_crop_supervision_uses_physical_arrival_not_interval_label() -
     }
     assert candidate_crop_contains_arrival(row, 2.5) is True
     assert candidate_crop_contains_arrival(row, 1.0) is False
+
+
+def test_candidate_positive_timing_summary_uses_local_crop_label() -> None:
+    rows = [
+        {
+            "local_crop_contains_arrival": True,
+            "refined_timing_error_seconds": 0.01,
+        },
+        {
+            "local_crop_contains_arrival": True,
+            "refined_timing_error_seconds": 0.03,
+        },
+        {
+            "local_crop_contains_arrival": False,
+            "refined_timing_error_seconds": 10.0,
+        },
+    ]
+    summary = candidate_positive_timing_error_quantiles(rows)
+    assert summary["0.5"] == 0.02
+    assert summary["1.0"] == 0.03
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:
