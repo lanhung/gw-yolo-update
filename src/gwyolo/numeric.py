@@ -469,6 +469,123 @@ if nn is not None:
             logits = self.head(fused).reshape(batch, detectors, self.output_bins)
             return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
 
+
+    class CandidateLocalSpectrogramRefiner(nn.Module):
+        """Score and time every local candidate with aligned detector context."""
+
+        def __init__(
+            self,
+            detector_count: int,
+            output_bins: int = 640,
+            base_channels: int = 16,
+        ):
+            super().__init__()
+            if detector_count < 2 or output_bins < 32 or base_channels < 4:
+                raise ValueError("candidate local refiner dimensions are invalid")
+            self.detector_count = int(detector_count)
+            self.output_bins = int(output_bins)
+            self.n_fft = 128
+            self.hop_length = 4
+            self.register_buffer("stft_window", torch.hann_window(self.n_fft))
+            groups = min(8, base_channels)
+            self.spectral_encoder = nn.Sequential(
+                nn.Conv2d(
+                    1,
+                    base_channels,
+                    (7, 5),
+                    stride=(2, 1),
+                    padding=(3, 2),
+                    bias=False,
+                ),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.MaxPool2d((2, 1)),
+                nn.Conv2d(
+                    base_channels,
+                    base_channels,
+                    (5, 5),
+                    padding=(2, 2),
+                    groups=base_channels,
+                    bias=False,
+                ),
+                nn.Conv2d(base_channels, base_channels, 1, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.frequency_projection = nn.Sequential(
+                nn.Conv1d(2 * base_channels, base_channels, 1, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.temporal_context = nn.Sequential(
+                *(
+                    _DilatedResidual1D(2 * base_channels, dilation)
+                    for dilation in (1, 2, 4, 8, 16)
+                )
+            )
+            self.timing_head = nn.Sequential(
+                nn.Conv1d(
+                    2 * base_channels, base_channels, 5, padding=2, bias=False
+                ),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, 1, 1),
+            )
+            self.presence_head = nn.Sequential(
+                nn.Linear(4 * base_channels, 2 * base_channels),
+                nn.SiLU(),
+                nn.Linear(2 * base_channels, 1),
+            )
+
+        def forward(
+            self, value: Any, availability: Any, candidate_ifo_index: Any
+        ) -> tuple[Any, Any]:
+            if value.ndim != 3 or value.shape[1] != self.detector_count:
+                raise ValueError("candidate refiner strain must be [batch, IFO, time]")
+            if availability.shape != value.shape[:2]:
+                raise ValueError("candidate refiner availability differs from strain")
+            if candidate_ifo_index.shape != (value.shape[0],):
+                raise ValueError("candidate refiner IFO index must be [batch]")
+            batch, detectors, samples = value.shape
+            if torch.any(candidate_ifo_index < 0) or torch.any(
+                candidate_ifo_index >= detectors
+            ):
+                raise ValueError("candidate refiner IFO index is outside model slots")
+            candidate_available = availability.to(torch.bool).gather(
+                1, candidate_ifo_index[:, None]
+            )
+            if torch.any(~candidate_available):
+                raise ValueError("candidate refiner proposal uses an unavailable detector")
+            spectrum = torch.stft(
+                value.reshape(batch * detectors, samples),
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.n_fft,
+                window=self.stft_window,
+                center=True,
+                return_complex=True,
+            )
+            if spectrum.shape[-1] < self.output_bins:
+                raise ValueError("candidate refiner crop has too few time bins")
+            power = torch.log1p(spectrum[..., : self.output_bins].abs().square())
+            encoded_2d = self.spectral_encoder(power[:, None])
+            encoded = self.frequency_projection(
+                torch.cat(
+                    [encoded_2d.mean(dim=2), encoded_2d.amax(dim=2)], dim=1
+                )
+            ).reshape(batch, detectors, -1, self.output_bins)
+            mask = availability.to(encoded.dtype)[:, :, None, None]
+            if torch.any(mask.sum(dim=1) < 1):
+                raise ValueError("candidate refiner batch has no available detector")
+            network = (encoded * mask).sum(dim=1) / mask.sum(dim=1)
+            batch_indices = torch.arange(batch, device=value.device)
+            local = encoded[batch_indices, candidate_ifo_index]
+            fused = self.temporal_context(torch.cat([local, network], dim=1))
+            timing = self.timing_head(fused)[:, 0]
+            pooled = torch.cat([fused.mean(dim=2), fused.amax(dim=2)], dim=1)
+            presence = self.presence_head(pooled)[:, 0]
+            return presence, timing
+
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
@@ -492,6 +609,10 @@ else:
             _require_torch()
 
     class DetectorArrivalSpectrogramNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class CandidateLocalSpectrogramRefiner:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 

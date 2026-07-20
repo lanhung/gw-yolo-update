@@ -1,4 +1,10 @@
-from gwyolo.candidate_refiner import label_candidate_refiner_rows
+import numpy as np
+import pytest
+
+from gwyolo.candidate_refiner import (
+    candidate_average_precision,
+    label_candidate_refiner_rows,
+)
 
 
 def _parent(injection_id: str, split: str, gps: float):
@@ -51,3 +57,31 @@ def test_candidate_refiner_plan_retains_all_and_counts_coverage_by_hand() -> Non
     assert report["arrivals_with_positive_candidate"] == 2
     assert report["positive_candidate_coverage_fraction"] == 1.0
     assert report["all_connected_candidates_retained"] is True
+
+
+def test_candidate_average_precision_by_hand() -> None:
+    # Sorted labels are true, false, true: AP = (1/1 + 2/3) / 2.
+    value = candidate_average_precision(
+        np.asarray([True, True, False]), np.asarray([0.9, 0.7, 0.8])
+    )
+    assert np.isclose(value, 5 / 6)
+
+
+def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:
+    torch = pytest.importorskip("torch")
+    from gwyolo.numeric import CandidateLocalSpectrogramRefiner
+
+    model = CandidateLocalSpectrogramRefiner(
+        detector_count=3, output_bins=64, base_channels=8
+    )
+    strain = torch.randn(2, 3, 380)
+    availability = torch.tensor([[True, True, False], [False, True, True]])
+    candidate_ifo = torch.tensor([0, 2])
+    presence, timing = model(strain, availability, candidate_ifo)
+    assert presence.shape == (2,)
+    assert timing.shape == (2, 64)
+    assert torch.isfinite(presence).all()
+    assert torch.isfinite(timing).all()
+
+    with pytest.raises(ValueError, match="unavailable detector"):
+        model(strain, availability, torch.tensor([2, 2]))

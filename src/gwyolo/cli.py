@@ -447,6 +447,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_refiner_plan.add_argument("--seed", type=int, default=20260720)
 
+    candidate_refiner_train = subparsers.add_parser("candidate-refiner-train")
+    candidate_refiner_train.add_argument("--config", required=True)
+    candidate_refiner_train.add_argument("--train-injection-manifest", required=True)
+    candidate_refiner_train.add_argument("--train-candidate-manifest", required=True)
+    candidate_refiner_train.add_argument(
+        "--validation-injection-manifest", required=True
+    )
+    candidate_refiner_train.add_argument(
+        "--validation-selection-candidate-manifest", required=True
+    )
+    candidate_refiner_train.add_argument(
+        "--validation-calibration-candidate-manifest", required=True
+    )
+    candidate_refiner_train.add_argument("--output-dir", required=True)
+    candidate_refiner_train.add_argument("--seed", type=int)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1517,6 +1533,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.positive_padding_seconds,
                 args.validation_selection_fraction,
+                args.seed,
+            )
+        )
+    elif args.command == "candidate-refiner-train":
+        from .candidate_refiner import run_candidate_local_refiner_training
+
+        _print(
+            run_candidate_local_refiner_training(
+                args.config,
+                args.train_injection_manifest,
+                args.train_candidate_manifest,
+                args.validation_injection_manifest,
+                args.validation_selection_candidate_manifest,
+                args.validation_calibration_candidate_manifest,
+                args.output_dir,
                 args.seed,
             )
         )
