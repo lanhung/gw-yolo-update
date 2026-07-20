@@ -37,6 +37,23 @@ Primary references:
 - DINGO importance sampling: https://arxiv.org/abs/2210.05686
 - GW-YOLO: https://arxiv.org/abs/2508.17399
 
+### Frozen joint-comparison contract
+
+Current primary sources sharpen the comparison. AMPLFI's public-alert validation uses BBH injections
+in O3 noise and compares searched sky area/volume with BAYESTAR; DINGO-IS exposes posterior coverage,
+importance-sampling efficiency and evidence uncertainty as reliability diagnostics. The shared study
+will therefore use an identical paired BBH subset under raw and GW-YOLO-cleaned conditions and report:
+
+- AMPLFI: searched sky area/volume, coarse chirp-mass coverage and end-to-end latency;
+- DINGO/DINGO-IS: parameter coverage, importance-sampling efficiency, evidence uncertainty and
+  proposal/inference latency;
+- GW-YOLO overhead: mask/deglitch latency, signal retention, glitch residual and false veto rate;
+- paired changes with bootstrap intervals, split by clean/overlap and glitch morphology.
+
+The same waveform prior, detector set, PSD, calibration assumptions and injections are mandatory.
+Published numbers from different populations are context only, never a head-to-head result. AMPLFI
+and DINGO remain PE systems; no detection-mAP comparison is permitted.
+
 ## 3. Venue-specific framing
 
 ### Physical Review D
