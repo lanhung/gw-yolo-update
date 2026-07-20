@@ -580,6 +580,13 @@ def build_parser() -> argparse.ArgumentParser:
     pe_robustness.add_argument(
         "--allow-incomplete-provenance", action="store_true"
     )
+
+    ood = subparsers.add_parser("ood-abstention-evaluate")
+    ood.add_argument("--calibration-manifest", required=True)
+    ood.add_argument("--evaluation-manifest", required=True)
+    ood.add_argument("--output", required=True)
+    ood.add_argument("--maximum-known-abstention-rate", type=float, default=0.05)
+    ood.add_argument("--score-field", default="ood_score")
     return parser
 
 
@@ -1331,6 +1338,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+            )
+        )
+    elif args.command == "ood-abstention-evaluate":
+        from .ood import run_ood_abstention_evaluation
+
+        _print(
+            run_ood_abstention_evaluation(
+                args.calibration_manifest,
+                args.evaluation_manifest,
+                args.output,
+                args.maximum_known_abstention_rate,
+                args.score_field,
             )
         )
     else:

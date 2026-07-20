@@ -77,6 +77,15 @@ out, O1--O3 to O4a transfer and newly observed morphologies. Unknown artifacts a
 not forced members of a known class. Weak Gravity Spy masks remain weak labels until the blinded
 human audit is complete.
 
+`ood-abstention-evaluate` enforces the statistical half of this protocol independently of the
+eventual embedding choice. Its threshold uses only known validation scores and a predeclared maximum
+known-artifact abstention rate; ties are handled conservatively. Glitch and GPS groups must be
+disjoint from evaluation. Held-out families and later observing runs are then evaluated once with
+Wilson intervals for known false abstention, unknown true abstention and unknown false acceptance,
+plus diagnostic AUROC and family/run strata. Unknown scores are explicitly prohibited from threshold
+selection. The remaining model task is to produce the score from known-only training embeddings once
+the verified Gravity Spy bank completes.
+
 ### C3 — Mask-conditioned search and inference robustness
 
 Measure raw, contaminated and mask-conditioned versions of the same injection. Primary search

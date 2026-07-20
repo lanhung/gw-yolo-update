@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import pytest
+
+from gwyolo.ood import (
+    calibrate_known_only_abstention,
+    evaluate_frozen_ood_threshold,
+    ood_auc,
+)
+
+
+def _row(
+    glitch_id: str,
+    gps_block: str,
+    family: str,
+    score: float,
+    unknown: bool,
+    split: str,
+) -> dict:
+    return {
+        "glitch_id": glitch_id,
+        "gps_block": gps_block,
+        "glitch_family": family,
+        "observing_run": "O4a" if unknown else "O3b",
+        "ood_score": score,
+        "is_unknown": unknown,
+        "split": split,
+    }
+
+
+def test_known_only_ood_calibration_is_tie_safe() -> None:
+    result = calibrate_known_only_abstention([0.1, 0.2, 0.2, 0.3], 0.5)
+    assert result["maximum_known_abstentions"] == 2
+    assert result["threshold"] == 0.3
+    assert result["observed_known_abstentions"] == 1
+    assert result["unknown_scores_used_for_selection"] is False
+
+
+def test_ood_auc_pair_count_handles_ties_by_hand() -> None:
+    rows = [
+        {"ood_score": 0.1, "is_unknown": False},
+        {"ood_score": 0.4, "is_unknown": False},
+        {"ood_score": 0.4, "is_unknown": True},
+        {"ood_score": 0.8, "is_unknown": True},
+    ]
+    # Pair wins: 1 + 0.5 + 1 + 1 = 3.5 of four.
+    assert ood_auc(rows) == 0.875
+
+
+def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
+    calibration = [
+        _row("c0", "cb0", "Blip", 0.1, False, "val"),
+        _row("c1", "cb1", "Blip", 0.2, False, "val"),
+        _row("c2", "cb2", "Koi_Fish", 0.3, False, "val"),
+        _row("c3", "cb3", "Koi_Fish", 0.4, False, "val"),
+    ]
+    evaluation = [
+        _row("e0", "eb0", "Blip", 0.1, False, "test"),
+        _row("e1", "eb1", "Koi_Fish", 0.5, False, "test"),
+        _row("u0", "ub0", "Held_Out", 0.8, True, "test"),
+        _row("u1", "ub1", "Held_Out", 0.2, True, "test"),
+    ]
+    result = evaluate_frozen_ood_threshold(calibration, evaluation, 0.25)
+    assert result["calibration"]["threshold"] == 0.4
+    assert result["known_false_abstention"]["rate"] == 0.5
+    assert result["unknown_true_abstention"]["rate"] == 0.5
+    assert result["unknown_false_acceptance"]["rate"] == 0.5
+    assert result["calibration"]["unknown_scores_used_for_selection"] is False
+    leaked = [*evaluation]
+    leaked[0] = {**leaked[0], "glitch_id": "c0"}
+    with pytest.raises(ValueError, match="group leakage"):
+        evaluate_frozen_ood_threshold(calibration, leaked, 0.25)
