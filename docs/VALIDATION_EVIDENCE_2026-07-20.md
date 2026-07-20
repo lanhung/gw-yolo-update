@@ -53,6 +53,18 @@ endpoint error is 3.63 s median and 6.17 s at the 90th percentile on 367 validat
 non-empty visibility-gated targets. Thus higher resolution alone does not validate millisecond
 coincidence; explicit localization supervision and false-activation control are required.
 
+Two low-resolution temporal-profile losses were also negative. Reusing positive weight 10 reached
+0.04104 IoU only after validation calibration to threshold 0.7, but endpoint error remained 3.08 s
+median/5.70 s at 90%. Decoupling temporal positive weight to 1 reduced endpoint error to 2.75 s
+median/5.42 s at 90% but collapsed calibrated IoU to 0.02909. Neither is promoted; the next timing
+model requires an explicit peak/coalescence-time head rather than max-profile BCE.
+
+Five fully verified Gravity Spy pilot shards now merge to five unique train glitches/blocks across
+O2/O3a/O3b and four classes (manifest SHA256
+`9f992a0dd7b726e2ff5025d9414736a024af0f23384e8be13505aa1d127549c8`). Their five official source
+files were evicted only after output revalidation, recovering 648,372,382 bytes while preserving
+URL/SHA256 tombstones. A bounded five-file scale run covering O1--O3b is in progress.
+
 ## Evidence boundary
 
 This checkpoint uses only analytic training data and O4a development/validation data. It is not a
@@ -81,6 +93,19 @@ The validation-only 31-shift integration produced 11,904 seconds (`3.77215e-4 yr
 window-level coincident rows. Its manifest SHA256 is
 `99b3a648a8f550b29a346d553b528bd18c83a6d24970d4cbdfe6262248cc58db`.
 The 83-ms output grid and tiny exposure prohibit a search claim.
+
+The second verified O4a acquisition batch adds four disjoint H1/L1 pairs (batch-report SHA256
+`a5e0e6bcbf7715b73e9af230b841dd400b633136b2d3610620b4bb5dc282abb3`). A single global split over
+both batches yields 4,009 context-safe windows and 128 blocks with zero overlap: 2,385/824/800
+train/validation/test windows and 19,080/6,592/6,400 seconds. The global manifest SHA256 is
+`8f2285bd2dfaaed3d6be06d8302f12981caf7e6669d83e2cd2da1601e3e28f61`.
+
+On that background, a 10k-train/3k-validation recipe plan contains 13,000 unique waveform and
+injection IDs over 102 blocks (manifest SHA256
+`90d258fdeeec19955f718bd5e565176fbb5893140b4b3da3ded9703b01b29cd5`). A fresh direct-LAL 30-case
+gate passed. A 100-case scaled-float16 storage pilot used 12,409,144 bytes and had worst relative L2
+reconstruction error 2.14e-4; full 10k train materialization is therefore running resumably under
+the <=1e-3 storage gate.
 
 ## Model selection and physical injections
 
