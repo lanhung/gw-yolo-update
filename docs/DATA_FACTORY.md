@@ -102,6 +102,9 @@ converted to an 8-second numeric multi-Q tensor. The accompanying masks are cons
 derived from Gravity Spy duration, peak frequency and Q metadata. They are explicitly marked as
 non-human masks and cannot support a segmentation-accuracy claim until a pixel-mask audit is frozen.
 The command does not evict verified source files automatically.
+Individual anchors whose 64-second context contains publisher-recorded non-finite strain or lacks
+the DATA bit are explicit row-level rejections. They do not abort other anchors in the same verified
+file; completed plus rejected IDs must exactly equal requested IDs in the final report.
 `gwyolo gravityspy-numeric-merge` then verifies every shard report, manifest and numeric-sample hash
 before merging one declared split. Duplicate glitch IDs and mixed train/validation/test rows are
 fatal; weak and human pixel-mask counts remain separate in the merged report.

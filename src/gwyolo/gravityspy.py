@@ -364,6 +364,7 @@ def materialize_gravityspy_strain_shard(
     state_path = output / "materialization_state.json"
     partial_path = output / "materialization_partial.json"
     completed: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     verified_sources: dict[str, dict[str, Any]] = {}
     if state_path.is_file():
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -372,6 +373,7 @@ def materialize_gravityspy_strain_shard(
         if partial_path.is_file():
             partial = json.loads(partial_path.read_text(encoding="utf-8"))
             completed = list(partial.get("records", []))
+            rejected = list(partial.get("rejected", []))
             verified_sources = dict(partial.get("verified_sources", {}))
     completed_ids: set[str] = set()
     for record in completed:
@@ -379,6 +381,9 @@ def materialize_gravityspy_strain_shard(
         if glitch_id in completed_ids or file_sha256(record["path"]) != record["sha256"]:
             raise ValueError(f"Invalid resumable Gravity Spy sample {glitch_id}")
         completed_ids.add(glitch_id)
+    rejected_ids = {str(row["glitch_id"]) for row in rejected}
+    if len(rejected_ids) != len(rejected) or completed_ids & rejected_ids:
+        raise ValueError("Invalid resumable Gravity Spy rejection inventory")
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_source[str(row["strain_source"]["hdf5_url"])].append(row)
@@ -405,16 +410,42 @@ def materialize_gravityspy_strain_shard(
             raise ValueError(f"Cached source changed after verification: {url}")
         for row in source_rows:
             glitch_id = str(row["glitch_id"])
-            if glitch_id in completed_ids:
+            if glitch_id in completed_ids or glitch_id in rejected_ids:
                 continue
             segment = read_hdf5_segment(
                 download["path"], float(row["event_time"]), float(row["context_duration"])
             )
             if not np.isfinite(segment["strain"]).all():
-                raise ValueError(f"Non-finite strain in Gravity Spy sample {glitch_id}")
+                rejected.append(
+                    {"glitch_id": glitch_id, "reason": "nonfinite_strain_context"}
+                )
+                rejected_ids.add(glitch_id)
+                atomic_write_json(
+                    partial_path,
+                    {
+                        "run_identity": run_identity,
+                        "verified_sources": verified_sources,
+                        "records": completed,
+                        "rejected": rejected,
+                    },
+                )
+                continue
             data_quality = np.asarray(segment["quality"].get("DQmask", []), dtype=np.int64)
             if data_quality.size == 0 or not np.all(data_quality & 1):
-                raise ValueError(f"DATA quality bit is not valid throughout {glitch_id}")
+                rejected.append(
+                    {"glitch_id": glitch_id, "reason": "data_quality_bit_missing"}
+                )
+                rejected_ids.add(glitch_id)
+                atomic_write_json(
+                    partial_path,
+                    {
+                        "run_identity": run_identity,
+                        "verified_sources": verified_sources,
+                        "records": completed,
+                        "rejected": rejected,
+                    },
+                )
+                continue
             context = _fft_downsample(
                 segment["strain"], int(segment["sample_rate"]), target_sample_rate
             )
@@ -490,6 +521,7 @@ def materialize_gravityspy_strain_shard(
                     "run_identity": run_identity,
                     "verified_sources": verified_sources,
                     "records": completed,
+                    "rejected": rejected,
                 },
             )
             atomic_write_json(
@@ -498,11 +530,14 @@ def materialize_gravityspy_strain_shard(
                     "status": "in_progress",
                     "run_identity": run_identity,
                     "completed_rows": len(completed),
+                    "rejected_rows": len(rejected),
                     "requested_rows": len(rows),
                     "verified_files": len(verified_sources),
                     "requested_files": len(by_source),
                 },
             )
+    if len(completed_ids) + len(rejected_ids) != len(rows):
+        raise RuntimeError("Gravity Spy shard rows were not fully accounted")
     completed.sort(key=lambda row: str(row["glitch_id"]))
     manifest = output / "gravityspy_numeric_manifest.jsonl"
     atomic_write_text(
@@ -519,6 +554,12 @@ def materialize_gravityspy_strain_shard(
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
         "rows": len(completed),
+        "requested_rows": len(rows),
+        "rejected_rows": len(rejected),
+        "rejection_reason_counts": dict(
+            sorted(Counter(row["reason"] for row in rejected).items())
+        ),
+        "rejection_examples": rejected[:20],
         "unique_glitches": len(completed_ids),
         "verified_files": len(verified_sources),
         "model_ifos": list(model_ifos),
@@ -541,6 +582,7 @@ def materialize_gravityspy_strain_shard(
             "status": "complete",
             "run_identity": run_identity,
             "completed_rows": len(completed),
+            "rejected_rows": len(rejected),
             "requested_rows": len(rows),
             "verified_files": len(verified_sources),
             "requested_files": len(by_source),
