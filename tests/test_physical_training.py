@@ -17,6 +17,7 @@ from gwyolo.physical_training import (
     relative_component_mask,
     scale_component_for_transform,
     summarize_binary_mask_counts,
+    timing_accuracy_gate,
 )
 
 
@@ -52,6 +53,18 @@ def test_peak_to_endpoint_timing_error_is_hand_calculated() -> None:
     assert peak_to_endpoint_timing_error_seconds(
         probability, np.zeros_like(expected), 8.0
     ) is None
+
+
+def test_timing_accuracy_gate_requires_resolution_and_p90() -> None:
+    exact = {"0.9": 0.0}
+    assert not timing_accuracy_gate(exact, bin_width_seconds=8.0 / 96.0)
+    assert timing_accuracy_gate(exact, bin_width_seconds=8.0 / 1024.0)
+    assert not timing_accuracy_gate(
+        {"0.9": 0.02}, bin_width_seconds=8.0 / 1024.0
+    )
+    assert not timing_accuracy_gate(
+        exact, bin_width_seconds=8.0 / 1024.0, prediction_misses=1
+    )
 
 
 def test_focal_gamma_zero_matches_binary_cross_entropy() -> None:

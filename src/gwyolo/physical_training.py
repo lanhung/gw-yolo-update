@@ -918,6 +918,23 @@ def peak_to_endpoint_timing_error_seconds(
     return abs(predicted_peak - target_endpoint) * duration / scores.shape[-1]
 
 
+def timing_accuracy_gate(
+    error_quantiles: dict[str, float] | None,
+    bin_width_seconds: float,
+    target_seconds: float = 0.01,
+    prediction_misses: int = 0,
+) -> bool:
+    """Require both adequate representation resolution and empirical p90 accuracy."""
+    if bin_width_seconds <= 0 or target_seconds <= 0 or prediction_misses < 0:
+        raise ValueError("timing gate inputs must be positive with non-negative misses")
+    return bool(
+        error_quantiles is not None
+        and bin_width_seconds <= target_seconds
+        and float(error_quantiles["0.9"]) <= target_seconds
+        and prediction_misses == 0
+    )
+
+
 def audit_physical_checkpoint(
     config_path: str | Path,
     validation_manifest: str | Path,
@@ -1082,14 +1099,13 @@ def audit_physical_checkpoint(
             "bin_width_seconds": bin_width_seconds,
             "representation_gate_seconds": 0.01,
             "representation_gate_passed": bin_width_seconds <= 0.01,
-            "accuracy_gate_passed": (
-                overall_error is not None
-                and float(overall_error["0.9"]) <= 0.01
-                and overall_timing["timing_prediction_misses"] == 0
+            "accuracy_gate_passed": timing_accuracy_gate(
+                overall_error,
+                bin_width_seconds,
+                prediction_misses=overall_timing["timing_prediction_misses"],
             ),
-            "peak_accuracy_gate_passed": (
-                overall_peak_error is not None
-                and float(overall_peak_error["0.9"]) <= 0.01
+            "peak_accuracy_gate_passed": timing_accuracy_gate(
+                overall_peak_error, bin_width_seconds
             ),
         },
         "groups": summaries,
