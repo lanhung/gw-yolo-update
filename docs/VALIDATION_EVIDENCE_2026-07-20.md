@@ -507,8 +507,20 @@ official 4-kHz source files total 256,022,424 bytes. Plan manifest SHA256 is
 `8484ffc320ad9136db38bd02600ed91a0d88421c19165c978ceed7f9e12f3974`; report SHA256 is
 `45e863c519a5864ced18232e0a2537eb7ff01fbf6b86887588c4037e86f88ed1`. Commit `1f21eeb`
 adds resumable full-file verification, per-IFO DQ checks, aligned raw-strain storage, detector
-availability and verified source eviction. Its bounded five-row materialization is running in an
-independent cache; no network-coherence or search claim is enabled by the plan alone.
+availability, weak-mask provenance and verified source eviction. The recovered shard is now
+complete: five H1L1 rows over
+four network GPS blocks, with report SHA256
+`d78b79315158e583aba2c212f66da42d26c8b756544d79a0d455416c14276866`.
+
+The first network-aware physical-overlap smoke then paired those five glitches with five group-unique
+O4a validation injections. Every row contains aligned H1L1 strain, and the generated manifest/report
+SHA256 values are `98f629ee1f3e8ced98a707bae64ea2669619342d1a2c472e84a25388f02c10fb`
+and `56ad53d7e32abf6e2816dcfeba8e5905d9e97f838b7f36e9203834db1c32a8da`.
+Commit `8614e99` converted exactly those rows into paired clean/contaminated injection overrides;
+the report SHA256 is `acdaa623fe204433d72edc904d2df69b3c8e034c63525931c412de433e9c0fa0`.
+This is an executable five-row smoke only. Mask-conditioned gain remains blocked on the scaled
+real-overlap checkpoint, clean non-inferiority, continuous background and a much larger aligned
+glitch corpus.
 
 Commit `dbfe4de` makes overlap construction network-aware. A network Gravity Spy row may be paired
 only with an injection supporting every available IFO; the coherent physical signal is added to all

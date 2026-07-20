@@ -508,6 +508,12 @@ aligned raw strain and numeric planes for every available IFO, and preserves the
 the catalog event IFO. Network-aware overlap generation then injects the physically coherent signal
 into every available detector; it refuses an injection that lacks any required IFO.
 
+The first recovered aligned shard is complete with five H1L1 events over four network GPS blocks.
+All five were successfully converted to network-aware physical overlaps and paired clean/contaminated
+validation overrides. This proves the data path but not effect size; five correlated rows cannot
+promote a deglitch or search claim. The Gravity Spy train/validation expansion and later aligned
+shards remain the source of the statistically useful overlap bank.
+
 The practical conclusion is that the corpus is still far too small in independent domain coverage,
 but increasing 10k to 50k with the same 76 GPS blocks is unlikely to create a qualitative change.
 A qualitative gain is plausible only after real overlap, new GPS/run, detector-subset and OOD axes
