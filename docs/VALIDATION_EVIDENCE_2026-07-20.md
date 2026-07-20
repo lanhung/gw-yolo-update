@@ -352,6 +352,16 @@ report SHA256 is `b43dfa4c9ab8fa1ccea74dc556f7f163c51d865ac6f75a468745cd3b161555
 The precommitted paired gate remains the authoritative adjudicator, but these endpoint values already
 exclude 5k/10k promotion under its conditional requirements.
 
+The 3,000-injection paired comparison at commit `382612d` formally sets `promotion_allowed=false`:
+only the two unconditional-p90 checks pass. All-sample p90 improves 21.66%, with paired p90-delta
+interval [-1.219, -0.945] s, but joint 10 ms coverage falls by 7.03 percentage points. In the 275
+both-IFO-SNR >=8 injections, worst-IFO p90 worsens by 3.002 s and 10 ms coverage falls by 56.0
+percentage points, with paired interval [-61.82, -50.18] points. All five conditional/high-SNR
+checks fail. Comparison-report SHA256 is
+`537888eb940678491b01841aaf15b92af3f47cc77c198698b13040aefc16c30b`; v1/v2 prediction-manifest
+SHA256 values are `f2ef74cfaea88143d4a8a4508fb3c61a855f90640263422eeb3664bb30af14c2` and
+`9020a07a96dacc5781b481d0e74494d82af5e827fb3d05a28b42c781835e7605`.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

@@ -202,6 +202,8 @@ manifests and 10,000 paired bootstrap replicates. The thresholds are committed i
 `configs/detector_arrival_timing_promotion.yaml` before the v2 endpoint is inspected; a failed check
 retires scaling even if an unregistered subgroup looks favorable.
 The full-context raw-strain v2 arm fails those conditional requirements despite a lower global p90.
+Its paired decision passes only 2/7 checks; at both-IFO SNR >=8, joint 10 ms coverage decreases by
+56.0 percentage points with an entirely negative paired interval. It is retired from scale-up.
 Run one final same-budget representation control, the high-time-resolution numeric-spectrogram v3
 arm. Do not scale it unless the already frozen paired v1 comparison passes every promotion check;
 otherwise move timing supervision into the all-instance candidate model rather than testing another
