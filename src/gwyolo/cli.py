@@ -238,6 +238,12 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_strain.add_argument("--sample-rate-khz", type=int, default=4)
     gravityspy_strain.add_argument("--context-duration", type=float, default=64.0)
 
+    gravityspy_shard = subparsers.add_parser("gravityspy-strain-shard")
+    gravityspy_shard.add_argument("--manifest", required=True)
+    gravityspy_shard.add_argument("--output-dir", required=True)
+    gravityspy_shard.add_argument("--files-per-shard", type=int, default=32)
+    gravityspy_shard.add_argument("--seed", type=int, default=20260720)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -659,6 +665,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.sample_rate_khz,
                 args.context_duration,
+            )
+        )
+    elif args.command == "gravityspy-strain-shard":
+        from .gravityspy import shard_gravityspy_strain_plan
+
+        _print(
+            shard_gravityspy_strain_plan(
+                args.manifest,
+                args.output_dir,
+                args.files_per_shard,
+                args.seed,
             )
         )
     elif args.command == "fit-curve":

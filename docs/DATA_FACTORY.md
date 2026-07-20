@@ -93,6 +93,9 @@ glitch-ID and network-block overlap.
 that contains the entire requested whitening context. Boundary and unavailable cases remain explicit
 rejections. The plan is metadata only: no real-glitch learning claim is allowed until every selected
 source is downloaded, hash/DQ verified and converted to numeric arrays and masks.
+`gwyolo gravityspy-strain-shard` assigns every source file and all of its anchors to exactly one
+bounded shard. This enables resumable download/verify/extract/evict execution without splitting one
+file's glitches across cache jobs or pretending that the bounded cache reduces the full corpus.
 
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9

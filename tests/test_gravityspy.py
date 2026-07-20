@@ -7,6 +7,7 @@ from pathlib import Path
 from gwyolo.gravityspy import (
     index_gravityspy_csv,
     match_glitch_to_strain_file,
+    shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
 
@@ -16,6 +17,35 @@ def test_glitch_strain_match_requires_full_context_in_one_file() -> None:
     assert match_glitch_to_strain_file(1050, records, 64) == records[0]
     assert match_glitch_to_strain_file(1010, records, 64) is None
     assert match_glitch_to_strain_file(1090, records, 64) is None
+
+
+def test_glitch_strain_shards_never_split_a_source_file(tmp_path) -> None:
+    manifest = tmp_path / "plan.jsonl"
+    rows = []
+    for file_index in range(5):
+        for glitch_index in range(2):
+            rows.append(
+                {
+                    "glitch_id": f"g-{file_index}-{glitch_index}",
+                    "network_gps_block": f"b-{file_index}-{glitch_index}",
+                    "event_time": 1000 + file_index * 10 + glitch_index,
+                    "ml_label": "Blip",
+                    "observing_run": "O3a",
+                    "ifo": "H1",
+                    "strain_source": {"hdf5_url": f"https://example/{file_index}.hdf5"},
+                }
+            )
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = shard_gravityspy_strain_plan(manifest, tmp_path / "out", files_per_shard=2)
+    assert report["shards"] == 3
+    assert report["all_rows_preserved"]
+    output = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]
+    assignments = {}
+    for row in output:
+        assignments.setdefault(row["strain_source"]["hdf5_url"], set()).add(
+            row["strain_shard"]
+        )
+    assert all(len(shards) == 1 for shards in assignments.values())
 
 
 def test_gravityspy_split_keeps_network_gps_blocks_together(tmp_path) -> None:

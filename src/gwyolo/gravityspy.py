@@ -144,6 +144,88 @@ def plan_gravityspy_strain(
     return report
 
 
+def shard_gravityspy_strain_plan(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    files_per_shard: int = 32,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    if files_per_shard <= 0:
+        raise ValueError("files per Gravity Spy shard must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Gravity Spy strain sharding requires a non-empty plan")
+    by_file: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_file[str(row["strain_source"]["hdf5_url"])].append(row)
+    ordered_files = sorted(
+        by_file,
+        key=lambda url: canonical_hash({"seed": seed, "hdf5_url": url}, 64),
+    )
+    file_shards = {
+        url: index // files_per_shard for index, url in enumerate(ordered_files)
+    }
+    sharded = []
+    for row in rows:
+        url = str(row["strain_source"]["hdf5_url"])
+        sharded.append({**row, "strain_shard": file_shards[url]})
+    sharded.sort(
+        key=lambda row: (
+            int(row["strain_shard"]),
+            str(row["strain_source"]["hdf5_url"]),
+            float(row["event_time"]),
+        )
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / "gravityspy_strain_shards.jsonl"
+    atomic_write_text(
+        target, "".join(json.dumps(row, sort_keys=True) + "\n" for row in sharded)
+    )
+    shard_summaries = []
+    for shard in sorted(set(file_shards.values())):
+        selected = [row for row in sharded if row["strain_shard"] == shard]
+        shard_summaries.append(
+            {
+                "shard": shard,
+                "rows": len(selected),
+                "unique_files": len(
+                    {row["strain_source"]["hdf5_url"] for row in selected}
+                ),
+                "unique_glitches": len({row["glitch_id"] for row in selected}),
+                "unique_network_gps_blocks": len(
+                    {row["network_gps_block"] for row in selected}
+                ),
+                "labels": dict(
+                    sorted(Counter(row["ml_label"] for row in selected).items())
+                ),
+                "runs": dict(
+                    sorted(Counter(row["observing_run"] for row in selected).items())
+                ),
+                "ifos": dict(sorted(Counter(row["ifo"] for row in selected).items())),
+            }
+        )
+    report = {
+        "status": "bounded_gravityspy_strain_shards",
+        "scientific_claim_allowed": False,
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(target),
+        "manifest_sha256": file_sha256(target),
+        "seed": seed,
+        "files_per_shard": files_per_shard,
+        "rows": len(sharded),
+        "unique_files": len(by_file),
+        "shards": len(shard_summaries),
+        "all_rows_preserved": len(sharded) == len(rows),
+        "all_files_assigned_once": len(file_shards) == len(by_file),
+        "shard_summaries": shard_summaries,
+    }
+    atomic_write_json(output / "gravityspy_strain_shard_report.json", report)
+    return report
+
+
 def _file_md5(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.md5()  # noqa: S324 - required to verify the publisher-provided checksum
     with Path(path).open("rb") as handle:
