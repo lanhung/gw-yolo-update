@@ -59,6 +59,17 @@ median/5.70 s at 90%. Decoupling temporal positive weight to 1 reduced endpoint 
 median/5.42 s at 90% but collapsed calibrated IoU to 0.02909. Neither is promoted; the next timing
 model requires an explicit peak/coalescence-time head rather than max-profile BCE.
 
+The first explicit temporal-peak competition run (weight 1.0) selected epoch 15 and reached only
+0.02598 validation IoU (checkpoint SHA256
+`099b251de2ea9bc8da61263f2ec662b387649943ae0be9bc03696d8a670e74ca`). Against the exact-SNR-quota
+checkpoint on the identical 500 validation injections, however, its threshold-independent
+peak-to-target-endpoint error improved from 3.50 s median/6.25 s p90 to 1.33 s/3.53 s. For SNR
+15--30, p90 improved from 4.14 s to 0.142 s. Thus the localization signal is informative but weight
+1.0 damages the mask objective. Both checkpoints still fail the timing gate: their 83.3-ms bins
+cannot establish <=10-ms accuracy, and their measured errors are far larger. A frozen weight-0.1
+Pareto ablation is the final low-resolution check before replacing the shared mask maximum with a
+separate high-resolution timing head.
+
 Five fully verified Gravity Spy pilot shards now merge to five unique train glitches/blocks across
 O2/O3a/O3b and four classes (manifest SHA256
 `9f992a0dd7b726e2ff5025d9414736a024af0f23384e8be13505aa1d127549c8`). Their five official source
