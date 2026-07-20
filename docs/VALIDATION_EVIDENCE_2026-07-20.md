@@ -210,6 +210,15 @@ IFO/Q plus frequency for the auxiliary temporal profile. A real O4a sample passe
 forward/loss/backward smoke with feature and target shapes `(9,96,96)`. The failed launch artifacts
 are not reused; the fixed scaling series starts in a new commit-tagged output directory.
 
+The corrected exploratory fixed-update n=2,000 run then completed exactly 3,750 updates and 60,000
+seen examples. Final-update epoch 30 (not the better-looking epoch 29) was selected by protocol; its
+validation-calibrated IoU is 0.03232 at threshold 0.6. The split audit again has zero injection,
+waveform and GPS overlap and `test_evaluation` is null. Report SHA256 is
+`f7a2b1974f72646ef443264729a4c98ff24a2b9150559bef812ca47952d0c61b`; checkpoint SHA256 is
+`50287eb0da92db3078a7aed51ca8d52669ba079555802fa668e92656f9d83471`. This is an exploratory
+single seed at commit `eb463a4`; the strict summary gate will not pool it with the final-code
+three-seed series.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721
