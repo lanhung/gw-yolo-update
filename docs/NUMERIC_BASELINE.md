@@ -118,7 +118,8 @@ with a hand-checked equivalence test against `numpy.interp`; this makes the <=10
 computationally executable without changing physical split identities.
 
 `gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
-from each injection's own real-noise context. It is resumable and writes explicit `<4`, `4–8`,
+from each injection's own full real-noise context, but integrates signal power only over the recorded
+eight-second analysis window seen by the model. It is resumable and writes explicit `<4`, `4–8`,
 `8–15`, `15–30`, and `>=30` strata. Physical training may require an annotated manifest and select
 only train injections above a configured SNR floor; validation remains unfiltered so sensitivity
 loss at low SNR stays visible rather than being removed from evaluation.
@@ -136,3 +137,7 @@ candidate, FAR and sensitivity interfaces without a parallel ad-hoc runner.
 The long physical ablation exposes focal BCE as an explicit configuration (`gamma=2`) while retaining
 Dice and frozen-teacher glitch distillation. The ordinary BCE path is exactly `gamma=0` and has a
 unit equivalence test, so any improvement can be attributed to a declared loss/config change.
+
+An earlier diagnostic annotation integrated the full 64-second signal and therefore overstated the
+available input SNR for long BNS/NSBH waveforms. Its manifests and curriculum runs are retained as
+negative controls but must not be used for final SNR-stratified evidence.

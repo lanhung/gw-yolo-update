@@ -58,6 +58,7 @@ def annotate_materialized_optimal_snr(
         "high_frequency": high_frequency,
         "psd_segment_seconds": psd_segment_seconds,
         "psd_stride_seconds": psd_stride_seconds,
+        "signal_support": "recorded_analysis_window_only",
         "pycbc_version": version("pycbc"),
         "lalsuite_version": version("lalsuite"),
     }
@@ -87,11 +88,15 @@ def annotate_materialized_optimal_snr(
         if segment_samples > context["noise"].shape[1]:
             raise ValueError("PSD segment is longer than materialized context")
         by_ifo = {}
+        analysis_start = int(context["analysis_start_index"])
+        analysis_stop = int(context["analysis_stop_index"])
         for ifo, noise, signal_values in zip(
             context["ifos"], context["noise"], context["signal"]
         ):
             noise_series = TimeSeries(noise, delta_t=1.0 / sample_rate)
-            signal_series = TimeSeries(signal_values, delta_t=1.0 / sample_rate)
+            signal_series = TimeSeries(
+                signal_values[analysis_start:analysis_stop], delta_t=1.0 / sample_rate
+            )
             signal_frequency = signal_series.to_frequencyseries()
             psd = interpolate(
                 welch(
@@ -121,7 +126,8 @@ def annotate_materialized_optimal_snr(
                 "network_optimal_snr": network_snr,
                 "optimal_snr_stratum": optimal_snr_stratum(network_snr),
                 "optimal_snr_definition": (
-                    "PyCBC sigma with median-Welch empirical noise PSD over full context"
+                    "PyCBC sigma on the recorded analysis-window signal with a median-Welch "
+                    "empirical noise PSD estimated from the full context"
                 ),
             }
         )

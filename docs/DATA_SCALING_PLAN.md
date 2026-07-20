@@ -248,6 +248,10 @@ The corrected all-row run reached only 0.0473 validation IoU. Filtering train to
 The empirical-noise optimal-SNR audit explains why nominal row count overstates useful training
 scale:
 
+> Correction: the table below is the first full-context diagnostic. It integrated signal power over
+> 64 seconds while the network sees eight seconds, so it overstates long-waveform SNR. It motivated
+> the correct analysis-window audit but is not final SNR evidence; corrected counts supersede it.
+
 | Split | Rows | SNR <4 | SNR 4–8 | SNR 8–15 | SNR 15–30 | SNR >=30 | Median SNR |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | train | 2,000 | 935 | 669 | 288 | 88 | 20 | 4.25 |

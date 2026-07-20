@@ -10,6 +10,8 @@
 - Empirical optimal-SNR manifests: train SHA256
   `4399ce654d0781f08d06de9e2fdc2396dfce6b113767a6e0844c8d82c5b3f940`, validation SHA256
   `573c901db4b2b9ce3e7dde44d9e3037a5d893252d22586997b256b70a50e0c9b`.
+  These hashes are retained full-context diagnostics and were superseded after finding that their
+  SNR integration included signal outside the model's eight-second analysis window.
 - Gravity Spy: 80,496 unique anchors; network-block-safe split has zero overlap. The train strain
   plan maps 59,933 anchors to 16,297 official GWOSC files at 93.23% coverage.
 
