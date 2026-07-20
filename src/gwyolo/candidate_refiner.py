@@ -1080,7 +1080,7 @@ def run_candidate_local_refiner_validation(
         [
             row["refined_timing_error_seconds"]
             for row in prediction_rows
-            if row["refiner_positive"]
+            if row["local_crop_contains_arrival"]
         ],
         dtype=np.float64,
     )
