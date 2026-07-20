@@ -427,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     endpoint_proposal_apply.add_argument(
         "--required-split", choices=("train", "val"), required=True
     )
+    endpoint_proposal_apply.add_argument("--shard-size", type=int, default=256)
     endpoint_proposal_apply.add_argument("--output-dir", required=True)
 
     candidate_refiner_plan = subparsers.add_parser("candidate-refiner-plan")
@@ -1552,6 +1553,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.threshold,
                 args.required_split,
                 args.output_dir,
+                args.shard_size,
             )
         )
     elif args.command == "candidate-refiner-plan":

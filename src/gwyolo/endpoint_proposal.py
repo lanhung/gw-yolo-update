@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import random
+import shutil
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -723,8 +726,9 @@ def run_detector_endpoint_proposal_application(
     threshold: float,
     required_split: str,
     output_dir: str | Path,
+    shard_size: int = 256,
 ) -> dict[str, Any]:
-    """Apply one frozen dense proposal threshold while retaining every component."""
+    """Apply one frozen threshold in resumable shards, retaining every component."""
 
     if torch is None:
         raise RuntimeError("Detector endpoint proposal application requires torch")
@@ -732,6 +736,8 @@ def run_detector_endpoint_proposal_application(
         raise ValueError("endpoint proposal application accepts only train or val")
     if not 0 <= threshold <= 1:
         raise ValueError("endpoint proposal application threshold is invalid")
+    if shard_size <= 0:
+        raise ValueError("endpoint proposal application shard size must be positive")
     config = load_yaml(config_path)
     settings = config["detector_endpoint_proposal"]
     output = Path(output_dir)
@@ -742,6 +748,7 @@ def run_detector_endpoint_proposal_application(
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "threshold": float(threshold),
         "required_split": required_split,
+        "shard_size": int(shard_size),
         "code_commit": execution_provenance()["code_commit"],
     }
     report_path = output / "detector_endpoint_proposal_application.json"
@@ -750,8 +757,12 @@ def run_detector_endpoint_proposal_application(
         if result.get("run_identity") != identity:
             raise ValueError("completed endpoint proposal application has another identity")
         return result
-    if any(output.iterdir()):
-        raise FileExistsError("endpoint proposal application output must be empty")
+    state_path = output / "detector_endpoint_proposal_application_state.json"
+    parts_dir = output / "parts"
+    if any(output.iterdir()) and not state_path.is_file():
+        raise FileExistsError(
+            "incomplete endpoint proposal application lacks a resumable state"
+        )
     rows = [
         json.loads(line)
         for line in Path(manifest_path).read_text().splitlines()
@@ -761,6 +772,27 @@ def run_detector_endpoint_proposal_application(
         raise ValueError("endpoint proposal application manifest has the wrong split")
     if len({str(row["injection_id"]) for row in rows}) != len(rows):
         raise ValueError("endpoint proposal application repeats injection IDs")
+    ranges = application_shard_ranges(len(rows), shard_size)
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("run_identity") != identity:
+            raise ValueError("resumable endpoint proposal application has another identity")
+        if int(state.get("source_rows", -1)) != len(rows):
+            raise ValueError("resumable endpoint proposal application row count changed")
+        if int(state.get("total_shards", -1)) != len(ranges):
+            raise ValueError("resumable endpoint proposal application shard plan changed")
+    else:
+        state = {
+            "status": "in_progress",
+            "run_identity": identity,
+            "source_rows": len(rows),
+            "total_shards": len(ranges),
+            "completed_shards": [],
+            "completed_rows": 0,
+            "completed_candidates": 0,
+        }
+        atomic_write_json(state_path, state)
+    parts_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if checkpoint.get("architecture") != "detector_endpoint_spectrogram_dense_v1":
         raise ValueError("endpoint proposal application checkpoint has the wrong architecture")
@@ -781,40 +813,107 @@ def run_detector_endpoint_proposal_application(
             observed = list(observed)
         if observed != value:
             raise ValueError(f"endpoint proposal checkpoint {key} differs from apply config")
-    dataset = DetectorArrivalDataset(
-        rows,
-        model_ifos,
-        int(settings["target_sample_rate"]),
-        duration,
-        output_bins,
-        bool(settings.get("cache_in_memory", True)),
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=int(settings["batch_size"]),
-        shuffle=False,
-        num_workers=0,
-    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = DetectorArrivalSpectrogramNet(len(model_ifos), base_channels).to(device)
     model.load_state_dict(checkpoint["model"])
     started = time.time()
-    probabilities, availability, offsets = _predict_proposals(model, loader, device)
-    candidates = extract_dense_endpoint_candidates(
-        probabilities,
-        availability,
-        offsets,
-        rows,
-        model_ifos,
-        duration,
-        threshold,
-        int(settings.get("minimum_bins", 1)),
-    )
+    part_reports: list[dict[str, Any]] = []
+    for shard_index, (start, stop) in enumerate(ranges):
+        part_path = parts_dir / (
+            f"endpoint_{required_split}_candidates_part_{shard_index:05d}.jsonl"
+        )
+        part_report_path = parts_dir / (
+            f"endpoint_{required_split}_candidates_part_{shard_index:05d}.json"
+        )
+        part_identity = {
+            "application_identity": identity,
+            "shard_index": shard_index,
+            "start_row": start,
+            "stop_row_exclusive": stop,
+            "injection_ids_hash": canonical_hash(
+                [str(row["injection_id"]) for row in rows[start:stop]], 64
+            ),
+        }
+        if part_report_path.is_file():
+            part_report = json.loads(part_report_path.read_text(encoding="utf-8"))
+            if part_report.get("part_identity") != part_identity:
+                raise ValueError(f"endpoint proposal part {shard_index} has another identity")
+            if not part_path.is_file() or file_sha256(part_path) != part_report.get(
+                "candidate_manifest_sha256"
+            ):
+                raise ValueError(f"endpoint proposal part {shard_index} failed hash verification")
+            part_reports.append(part_report)
+            continue
+        shard_rows = rows[start:stop]
+        shard_dataset = DetectorArrivalDataset(
+            shard_rows,
+            model_ifos,
+            int(settings["target_sample_rate"]),
+            duration,
+            output_bins,
+            bool(settings.get("cache_in_memory", True)),
+        )
+        shard_loader = DataLoader(
+            shard_dataset,
+            batch_size=int(settings["batch_size"]),
+            shuffle=False,
+            num_workers=0,
+        )
+        shard_started = time.time()
+        probabilities, availability, offsets = _predict_proposals(
+            model, shard_loader, device
+        )
+        candidates = extract_dense_endpoint_candidates(
+            probabilities,
+            availability,
+            offsets,
+            shard_rows,
+            model_ifos,
+            duration,
+            threshold,
+            int(settings.get("minimum_bins", 1)),
+        )
+        atomic_write_text(
+            part_path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in candidates),
+        )
+        part_report = {
+            "status": "complete_endpoint_proposal_application_part",
+            "part_identity": part_identity,
+            "source_rows": len(shard_rows),
+            "candidate_manifest": str(part_path),
+            "candidate_manifest_sha256": file_sha256(part_path),
+            "candidates": len(candidates),
+            "candidate_counts_by_ifo": dict(
+                sorted(Counter(str(row["ifo"]) for row in candidates).items())
+            ),
+            "all_connected_components_retained": True,
+            "top_k_pruning": None,
+            "elapsed_seconds": time.time() - shard_started,
+        }
+        atomic_write_json(part_report_path, part_report)
+        part_reports.append(part_report)
+        state.update(
+            {
+                "completed_shards": list(range(shard_index + 1)),
+                "completed_rows": sum(
+                    int(item["source_rows"]) for item in part_reports
+                ),
+                "completed_candidates": sum(
+                    int(item["candidates"]) for item in part_reports
+                ),
+            }
+        )
+        atomic_write_json(state_path, state)
     candidate_path = output / f"endpoint_{required_split}_candidates.jsonl"
-    atomic_write_text(
+    _atomic_concatenate(
         candidate_path,
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in candidates),
+        [Path(item["candidate_manifest"]) for item in part_reports],
     )
+    candidate_counts = Counter()
+    for part_report in part_reports:
+        candidate_counts.update(part_report["candidate_counts_by_ifo"])
+    candidate_count = sum(int(item["candidates"]) for item in part_reports)
     result = {
         "status": "frozen_dense_endpoint_proposal_application",
         "scientific_claim_allowed": False,
@@ -837,14 +936,65 @@ def run_detector_endpoint_proposal_application(
         "required_split": required_split,
         "candidate_manifest": str(candidate_path),
         "candidate_manifest_sha256": file_sha256(candidate_path),
-        "candidates": len(candidates),
-        "candidate_counts_by_ifo": dict(
-            sorted(Counter(str(row["ifo"]) for row in candidates).items())
-        ),
+        "shard_size": int(shard_size),
+        "shards": len(part_reports),
+        "part_report_hashes": [
+            {
+                "shard_index": int(item["part_identity"]["shard_index"]),
+                "candidate_manifest_sha256": item["candidate_manifest_sha256"],
+            }
+            for item in part_reports
+        ],
+        "candidates": candidate_count,
+        "candidate_counts_by_ifo": dict(sorted(candidate_counts.items())),
         "all_connected_components_retained": True,
         "top_k_pruning": None,
         "elapsed_seconds": time.time() - started,
         **execution_provenance(torch),
     }
     atomic_write_json(report_path, result)
+    state.update(
+        {
+            "status": "complete",
+            "completed_shards": list(range(len(ranges))),
+            "completed_rows": len(rows),
+            "completed_candidates": candidate_count,
+            "final_report_sha256": file_sha256(report_path),
+            "final_candidate_manifest_sha256": result["candidate_manifest_sha256"],
+        }
+    )
+    atomic_write_json(state_path, state)
     return result
+
+
+def application_shard_ranges(total_rows: int, shard_size: int) -> list[tuple[int, int]]:
+    """Return deterministic, exhaustive contiguous application shards."""
+
+    if total_rows <= 0 or shard_size <= 0:
+        raise ValueError("application shard geometry must be positive")
+    return [
+        (start, min(start + shard_size, total_rows))
+        for start in range(0, total_rows, shard_size)
+    ]
+
+
+def _atomic_concatenate(target: Path, sources: list[Path]) -> None:
+    """Concatenate verified shard files without holding the final manifest in memory."""
+
+    if not sources:
+        raise ValueError("endpoint proposal application has no candidate parts")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as output_handle:
+            for source in sources:
+                with source.open("rb") as input_handle:
+                    shutil.copyfileobj(input_handle, output_handle)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise

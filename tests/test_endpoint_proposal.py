@@ -1,13 +1,139 @@
+import json
+
 import numpy as np
 import pytest
 
+import gwyolo.endpoint_proposal as endpoint_proposal_module
 from gwyolo.endpoint_proposal import (
     _proposal_epoch,
+    application_shard_ranges,
     dense_endpoint_targets,
     extract_dense_endpoint_candidates,
     proposal_gate_record,
+    run_detector_endpoint_proposal_application,
     select_dense_proposal_record,
 )
+
+
+def test_application_shards_are_deterministic_exhaustive_and_non_overlapping() -> None:
+    assert application_shard_ranges(10, 4) == [(0, 4), (4, 8), (8, 10)]
+    with pytest.raises(ValueError):
+        application_shard_ranges(0, 4)
+    with pytest.raises(ValueError):
+        application_shard_ranges(10, 0)
+
+
+def test_endpoint_application_resumes_verified_parts_without_rescoring(
+    tmp_path, monkeypatch
+) -> None:
+    torch = pytest.importorskip("torch")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        json.dumps(
+            {
+                "detector_endpoint_proposal": {
+                    "model_ifos": ["H1", "L1"],
+                    "target_sample_rate": 8,
+                    "analysis_duration": 4.0,
+                    "output_bins": 4,
+                    "base_channels": 1,
+                    "batch_size": 2,
+                    "cache_in_memory": True,
+                    "minimum_bins": 1,
+                }
+            }
+        )
+    )
+    rows = [
+        {
+            "injection_id": f"i{index}",
+            "waveform_id": f"w{index}",
+            "split": "train",
+            "source_family": "BBH",
+            "gps_block": f"b{index}",
+            "detector_arrival_gps": {"H1": 101.0, "L1": 102.0},
+        }
+        for index in range(5)
+    ]
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    checkpoint_path.write_bytes(b"checkpoint identity")
+    checkpoint = {
+        "architecture": "detector_endpoint_spectrogram_dense_v1",
+        "model_ifos": ["H1", "L1"],
+        "target_sample_rate": 8,
+        "analysis_duration": 4.0,
+        "output_bins": 4,
+        "base_channels": 1,
+        "model": {},
+    }
+
+    class FakeDataset:
+        def __init__(self, shard_rows, *_args):
+            self.rows = shard_rows
+
+    class FakeLoader:
+        def __init__(self, dataset, **_kwargs):
+            self.dataset = dataset
+
+    class FakeModel:
+        def __init__(self, *_args):
+            pass
+
+        def to(self, _device):
+            return self
+
+        def load_state_dict(self, _state):
+            return None
+
+    scoring_calls = []
+
+    def fake_predict(_model, loader, _device):
+        count = len(loader.dataset.rows)
+        scoring_calls.append(count)
+        probabilities = np.zeros((count, 2, 4), dtype=np.float32)
+        probabilities[:, :, 1] = 0.9
+        availability = np.ones((count, 2), dtype=bool)
+        offsets = np.tile(np.asarray([[1.0, 2.0]]), (count, 1))
+        return probabilities, availability, offsets
+
+    monkeypatch.setattr(torch, "load", lambda *_args, **_kwargs: checkpoint)
+    monkeypatch.setattr(endpoint_proposal_module, "DetectorArrivalDataset", FakeDataset)
+    monkeypatch.setattr(endpoint_proposal_module, "DataLoader", FakeLoader)
+    monkeypatch.setattr(
+        endpoint_proposal_module, "DetectorArrivalSpectrogramNet", FakeModel
+    )
+    monkeypatch.setattr(endpoint_proposal_module, "_predict_proposals", fake_predict)
+    output = tmp_path / "output"
+    result = run_detector_endpoint_proposal_application(
+        config_path,
+        manifest_path,
+        checkpoint_path,
+        0.5,
+        "train",
+        output,
+        shard_size=2,
+    )
+    assert scoring_calls == [2, 2, 1]
+    assert result["shards"] == 3
+    assert result["candidates"] == 10
+    assert sum(1 for _ in open(result["candidate_manifest"])) == 10
+
+    (output / "detector_endpoint_proposal_application.json").unlink()
+    (output / "endpoint_train_candidates.jsonl").unlink()
+    scoring_calls.clear()
+    resumed = run_detector_endpoint_proposal_application(
+        config_path,
+        manifest_path,
+        checkpoint_path,
+        0.5,
+        "train",
+        output,
+        shard_size=2,
+    )
+    assert scoring_calls == []
+    assert resumed["candidate_manifest_sha256"] == result["candidate_manifest_sha256"]
 
 
 def test_dense_endpoint_targets_preserve_multiple_instances_by_hand() -> None:
