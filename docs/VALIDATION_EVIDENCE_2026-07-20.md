@@ -41,6 +41,13 @@ SHA256 `88fb6bb414088faccf6cdd3c60eb6ee341bdc592f3131c65d439eeb31a7e5659`. Its m
 weak metadata supervision (`human_pixel_masks=0`), so it validates acquisition and preprocessing,
 not segmentation quality.
 
+The 1,024-time-bin promotion selected epoch 4 and reached only 0.029385 validation IoU (checkpoint
+SHA256 `d840310ea9b94eab69d8250d653ce7d8f087ffe286d1e89c46e7e7e499b8bc6b`). Its 7.8125-ms bin
+width passes the representation gate, but it does not pass timing accuracy: the last-active-mask-bin
+endpoint error is 3.63 s median and 6.17 s at the 90th percentile on 367 validation injections with
+non-empty visibility-gated targets. Thus higher resolution alone does not validate millisecond
+coincidence; explicit localization supervision and false-activation control are required.
+
 ## Evidence boundary
 
 This checkpoint uses only analytic training data and O4a development/validation data. It is not a

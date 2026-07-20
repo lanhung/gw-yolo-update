@@ -305,6 +305,12 @@ The promotion sequence is now:
    accumulate pre-registered time-slide exposure in years;
 6. freeze architecture, calibration and thresholds before any O4b/locked-test evaluation.
 
+The first 1,024-bin run has now closed step 2 as a negative result. Its nominal 7.8125-ms grid passes
+the representation gate, but validation endpoint error is 3.63 s median and 6.17 s at the 90th
+percentile. The next representation change therefore needs an explicit coalescence-time/local-peak
+objective and suppression of window-spanning false activations; further time-bin increases alone are
+not promoted.
+
 The Gravity Spy acquisition plan is now partitioned into 510 deterministic shards of at most 32
 whole source files. All 59,933 planned anchors and all 16,297 files are preserved exactly once; the
 sharded manifest SHA256 is `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
