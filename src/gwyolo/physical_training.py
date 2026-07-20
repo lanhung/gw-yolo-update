@@ -337,6 +337,23 @@ def run_physical_finetune(
     config = load_yaml(config_path)
     settings = deepcopy(config["physical_training"])
     seed = int(seed_override if seed_override is not None else settings["seed"])
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "config_hash": canonical_hash(config),
+        "train_manifest_sha256": file_sha256(train_manifest),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
+        "seed": seed,
+    }
+    completed_report_path = output / "physical_finetune_report.json"
+    if completed_report_path.is_file():
+        with completed_report_path.open("r", encoding="utf-8") as handle:
+            completed_report = json.load(handle)
+        if completed_report.get("run_identity") != run_identity:
+            raise ValueError("Completed physical fine-tune output belongs to a different run")
+        return completed_report
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -406,29 +423,40 @@ def run_physical_finetune(
         for split, dataset in datasets.items()
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint = torch.load(pretrained_checkpoint, map_location=device, weights_only=False)
+    pretrained = torch.load(pretrained_checkpoint, map_location=device, weights_only=False)
     channels = len(model_ifos) * len(q_values)
-    if int(checkpoint["input_channels"]) != channels:
+    if int(pretrained["input_channels"]) != channels:
         raise ValueError("Pretrained checkpoint channel count differs from physical configuration")
-    base_channels = int(checkpoint["base_channels"])
+    base_channels = int(pretrained["base_channels"])
     model = MultiIFOQNet(channels, base_channels).to(device)
-    model.load_state_dict(checkpoint["model"])
+    model.load_state_dict(pretrained["model"])
     teacher = MultiIFOQNet(channels, base_channels).to(device)
-    teacher.load_state_dict(checkpoint["model"])
+    teacher.load_state_dict(pretrained["model"])
     teacher.requires_grad_(False)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
         weight_decay=float(settings["weight_decay"]),
     )
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output / "best_physical_finetune.pt"
+    resume_path = output / "last_physical_finetune.pt"
     history = []
     best_iou = -1.0
     best_epoch = None
+    start_epoch = 1
+    if resume_path.is_file():
+        resume = torch.load(resume_path, map_location=device, weights_only=False)
+        if resume.get("run_identity") != run_identity:
+            raise ValueError("Physical fine-tune resume checkpoint belongs to a different run")
+        model.load_state_dict(resume["model"])
+        optimizer.load_state_dict(resume["optimizer"])
+        generator.set_state(resume["data_generator_state"])
+        history = list(resume["history"])
+        best_iou = float(resume["best_validation_chirp_iou"])
+        best_epoch = resume["best_epoch"]
+        start_epoch = int(resume["epoch"]) + 1
     started = time.time()
-    for epoch in range(1, int(settings["epochs"]) + 1):
+    for epoch in range(start_epoch, int(settings["epochs"]) + 1):
         train_metrics = _chirp_epoch(
             model,
             teacher,
@@ -464,11 +492,22 @@ def run_physical_finetune(
                     "input_channels": channels,
                     "base_channels": base_channels,
                     "seed": seed,
-                    "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
-                    "train_manifest_sha256": file_sha256(train_manifest),
-                    "validation_manifest_sha256": file_sha256(validation_manifest),
+                    **run_identity,
                 },
             )
+        _atomic_torch_save(
+            resume_path,
+            {
+                "run_identity": run_identity,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "data_generator_state": generator.get_state(),
+                "epoch": epoch,
+                "history": history,
+                "best_validation_chirp_iou": best_iou,
+                "best_epoch": best_epoch,
+            },
+        )
         atomic_write_json(output / "history.json", history)
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(selected["model"])
@@ -510,6 +549,7 @@ def run_physical_finetune(
             "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         },
         "seed": seed,
+        "run_identity": run_identity,
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
         "split_audit": audit,
@@ -523,6 +563,7 @@ def run_physical_finetune(
         "train_manifest_sha256": file_sha256(train_manifest),
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "best_epoch": best_epoch,
+        "resumed_from_epoch": start_epoch - 1,
         "best_validation_chirp_iou_precalibration": best_iou,
         "selected_chirp_threshold": threshold,
         "threshold_curve": threshold_curve,
@@ -533,7 +574,7 @@ def run_physical_finetune(
         "elapsed_seconds": time.time() - started,
         "test_evaluation": None,
     }
-    atomic_write_json(output / "physical_finetune_report.json", report)
+    atomic_write_json(completed_report_path, report)
     return report
 
 

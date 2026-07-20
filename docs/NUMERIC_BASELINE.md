@@ -137,6 +137,10 @@ candidate, FAR and sensitivity interfaces without a parallel ad-hoc runner.
 The long physical ablation exposes focal BCE as an explicit configuration (`gamma=2`) while retaining
 Dice and frozen-teacher glitch distillation. The ordinary BCE path is exactly `gamma=0` and has a
 unit equivalence test, so any improvement can be attributed to a declared loss/config change.
+Every physical epoch also writes an atomic last-state checkpoint containing model, optimizer,
+data-loader RNG, complete history, best-validation state and immutable run identity. A restart
+rejects changed code/config/data/model identities and resumes at the next epoch; a completed report
+is idempotently returned rather than overwritten.
 
 An earlier diagnostic annotation integrated the full 64-second signal and therefore overstated the
 available input SNR for long BNS/NSBH waveforms. Its manifests and curriculum runs are retained as
