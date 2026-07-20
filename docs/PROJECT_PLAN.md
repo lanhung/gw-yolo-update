@@ -257,6 +257,13 @@ object that retains every proposal while using predeclared H1/L1/V1 light-travel
 uncertainty; its threshold must be fitted on the new hash-stable O4a GPS-block shard, never on the
 already exposed 3k parents.
 
+The first non-learned set audit confirms the direction but fails operationally. A 10 ms H1/L1
+interval-compatibility set contains a padded truth pair for 94.13% of selection parents, while the
+best predeclared proposal-score/center/width rule selects one for only 29.70% and has 4.61 s peak
+p90. The bottleneck is learned set ranking, not candidate-set recall. Train the next scorer on all
+compatible pairs grouped by parent; negative subsampling is allowed only inside training, while
+validation and deployment must score every pair and preserve abstention.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag

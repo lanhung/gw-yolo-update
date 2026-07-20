@@ -484,6 +484,16 @@ on the same 2,000 physical parents. The promoted diagnostic direction is an all-
 network ranker with explicit pairwise light-travel constraints, followed by calibration on newly
 acquired GPS blocks.
 
+The first truth-free set heuristic at `36ce7f7` evaluates every H1/L1 interval pair compatible with
+the predeclared 10 ms light-travel limit. All 596 selection parents have at least one compatible
+pair, and the compatible-set oracle contains a padded truth pair for 94.13% (Wilson 95% interval
+91.94--95.75%). Yet the validation-selected score/center/width rule recovers only 29.70%, with
+selected-pair peak-error p90 4.61 s. Report SHA256 is
+`f2726238d4d1f247005a434acff7ed472d951b97e6477352be6366302ecc5110`.
+Thus proposal-set support is adequate but linear hand ranking is not. The next bounded arm is a
+group-safe learned pair/set score that evaluates every compatible pair; the oracle is a ceiling
+diagnostic and may not be reported as operational recall.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
