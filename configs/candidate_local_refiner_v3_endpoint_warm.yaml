@@ -21,3 +21,5 @@ candidate_local_refiner:
   local_duration_seconds: 2.5
   local_output_bins: 640
   model_ifos: [H1, L1, V1]
+  calibration_evaluation_allowed: false
+  calibration_preexposure_note: dense endpoint warm-start checkpoint was selected on all 3000 current validation parents; this arm is a representation-transfer diagnostic and requires a fresh group-disjoint calibration corpus before threshold selection

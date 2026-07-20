@@ -890,8 +890,15 @@ def run_candidate_local_refiner_training(
         atomic_write_json(output / "history.json", history)
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(selected["model"])
-    calibration_metrics = _candidate_refiner_epoch(
-        model, loaders["calibration"], device, None, *epoch_arguments
+    calibration_evaluation_allowed = bool(
+        settings.get("calibration_evaluation_allowed", True)
+    )
+    calibration_metrics = (
+        _candidate_refiner_epoch(
+            model, loaders["calibration"], device, None, *epoch_arguments
+        )
+        if calibration_evaluation_allowed
+        else None
     )
     result = {
         "status": "validation_selected_candidate_local_timing_abstention_refiner",
@@ -933,6 +940,8 @@ def run_candidate_local_refiner_training(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "calibration_candidate_metrics": calibration_metrics,
+        "calibration_evaluation_allowed": calibration_evaluation_allowed,
+        "calibration_preexposure_note": settings.get("calibration_preexposure_note"),
         "epochs": int(settings["epochs"]),
         "completed_epochs": len(history),
         "steps_per_full_epoch": steps,
