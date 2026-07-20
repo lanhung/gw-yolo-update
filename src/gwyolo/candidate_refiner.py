@@ -589,7 +589,7 @@ def _candidate_refiner_epoch(
         if torch.any(positive):
             predicted = _candidate_timing_prediction(
                 timing_logits[positive], timing_estimator
-            ).cpu().numpy()
+            ).detach().cpu().numpy()
             predicted_offset = (
                 predicted.astype(np.float64) + 0.5
             ) * local_duration_seconds / local_output_bins

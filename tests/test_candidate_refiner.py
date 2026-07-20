@@ -141,7 +141,10 @@ def test_candidate_positive_timing_summary_uses_local_crop_label() -> None:
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:
     torch = pytest.importorskip("torch")
-    from gwyolo.candidate_refiner import _candidate_timing_prediction
+    from gwyolo.candidate_refiner import (
+        _candidate_refiner_epoch,
+        _candidate_timing_prediction,
+    )
     from gwyolo.numeric import (
         CandidateEndpointWarmRefiner,
         CandidateLocalSpectrogramRefiner,
@@ -176,3 +179,32 @@ def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> N
     warm_presence, warm_timing = warm(strain, availability, candidate_ifo)
     assert warm_presence.shape == (2,)
     assert warm_timing.shape == (2, 64)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    metrics = _candidate_refiner_epoch(
+        model,
+        [
+            (
+                strain,
+                availability,
+                candidate_ifo,
+                torch.ones(2),
+                torch.tensor([25, 50]),
+                torch.tensor([0.1, 0.2], dtype=torch.float64),
+            )
+        ],
+        torch.device("cpu"),
+        optimizer,
+        1.0,
+        2.0,
+        1.0,
+        0.0,
+        "gaussian_coordinate",
+        2.0,
+        10.0,
+        "expected_probability",
+        0.25,
+        64,
+    )
+    assert metrics["batches"] == 1
+    assert np.isfinite(metrics["loss"])
