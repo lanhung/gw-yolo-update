@@ -121,7 +121,11 @@ def test_candidate_crop_supervision_uses_physical_arrival_not_interval_label() -
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:
     torch = pytest.importorskip("torch")
     from gwyolo.candidate_refiner import _candidate_timing_prediction
-    from gwyolo.numeric import CandidateLocalSpectrogramRefiner
+    from gwyolo.numeric import (
+        CandidateEndpointWarmRefiner,
+        CandidateLocalSpectrogramRefiner,
+        DetectorArrivalSpectrogramNet,
+    )
 
     model = CandidateLocalSpectrogramRefiner(
         detector_count=3, output_bins=64, base_channels=8
@@ -139,3 +143,15 @@ def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> N
 
     with pytest.raises(ValueError, match="unavailable detector"):
         model(strain, availability, torch.tensor([2, 2]))
+
+    endpoint = DetectorArrivalSpectrogramNet(detector_count=3, base_channels=8)
+    warm = CandidateEndpointWarmRefiner(
+        detector_count=3, output_bins=64, base_channels=8
+    )
+    warm.load_endpoint_backbone(endpoint.state_dict())
+    assert torch.equal(
+        warm.spectral_encoder[0].weight, endpoint.spectral_encoder[0].weight
+    )
+    warm_presence, warm_timing = warm(strain, availability, candidate_ifo)
+    assert warm_presence.shape == (2,)
+    assert warm_timing.shape == (2, 64)

@@ -462,6 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_refiner_train.add_argument("--output-dir", required=True)
     candidate_refiner_train.add_argument("--seed", type=int)
+    candidate_refiner_train.add_argument("--pretrained-endpoint-checkpoint")
 
     candidate_refiner_validation = subparsers.add_parser(
         "candidate-refiner-validation"
@@ -1469,6 +1470,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.pretrained_checkpoint,
                 args.output_dir,
                 args.seed,
+                args.pretrained_endpoint_checkpoint,
             )
         )
     elif args.command == "detector-arrival-timing-train":

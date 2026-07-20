@@ -18,7 +18,11 @@ from .io import (
     load_yaml,
 )
 from .metrics import wilson_interval
-from .numeric import CandidateLocalSpectrogramRefiner, _atomic_torch_save
+from .numeric import (
+    CandidateEndpointWarmRefiner,
+    CandidateLocalSpectrogramRefiner,
+    _atomic_torch_save,
+)
 from .physical_training import physical_split_audit
 from .runtime import execution_provenance
 
@@ -605,6 +609,7 @@ def run_candidate_local_refiner_training(
     validation_calibration_candidate_manifest: str | Path,
     output_dir: str | Path,
     seed_override: int | None = None,
+    pretrained_endpoint_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     if torch is None:
         raise RuntimeError("Candidate local refiner training requires torch")
@@ -627,6 +632,11 @@ def run_candidate_local_refiner_training(
             validation_calibration_candidate_manifest
         ),
         "seed": seed,
+        "pretrained_endpoint_checkpoint_sha256": (
+            file_sha256(pretrained_endpoint_checkpoint)
+            if pretrained_endpoint_checkpoint is not None
+            else None
+        ),
         "code_commit": execution_provenance()["code_commit"],
     }
     report_path = output / "candidate_local_refiner_report.json"
@@ -726,9 +736,34 @@ def run_candidate_local_refiner_training(
     if timing_estimator not in {"argmax", "expected_probability"}:
         raise ValueError("candidate refiner timing estimator is unknown")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CandidateLocalSpectrogramRefiner(
+    architecture = str(
+        settings.get("architecture", "candidate_local_spectrogram_refiner_v1")
+    )
+    model_class = {
+        "candidate_local_spectrogram_refiner_v1": CandidateLocalSpectrogramRefiner,
+        "candidate_endpoint_warm_refiner_v2": CandidateEndpointWarmRefiner,
+    }.get(architecture)
+    if model_class is None:
+        raise ValueError("candidate refiner architecture is unknown")
+    model = model_class(
         len(model_ifos), local_output_bins, int(settings["base_channels"])
     ).to(device)
+    if architecture == "candidate_endpoint_warm_refiner_v2":
+        if pretrained_endpoint_checkpoint is None:
+            raise ValueError("endpoint-warm refiner requires a pretrained checkpoint")
+        warm = torch.load(
+            pretrained_endpoint_checkpoint, map_location="cpu", weights_only=False
+        )
+        if (
+            warm.get("architecture") != "detector_arrival_spectrogram_net_v3"
+            or list(warm.get("model_ifos", [])) != list(model_ifos)
+            or int(warm.get("base_channels", -1)) != int(settings["base_channels"])
+            or int(warm.get("output_bins", -1)) != 1024
+        ):
+            raise ValueError("endpoint-warm refiner checkpoint geometry differs")
+        model.load_endpoint_backbone(warm["model"])
+    elif pretrained_endpoint_checkpoint is not None:
+        raise ValueError("local refiner architecture does not accept endpoint warm start")
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -806,7 +841,7 @@ def run_candidate_local_refiner_training(
             _atomic_torch_save(
                 checkpoint_path,
                 {
-                    "architecture": "candidate_local_spectrogram_refiner_v1",
+                    "architecture": architecture,
                     "model": model.state_dict(),
                     "model_ifos": list(model_ifos),
                     "target_sample_rate": target_rate,
@@ -857,7 +892,7 @@ def run_candidate_local_refiner_training(
             "calibration_injections": len(calibration_ids),
             "overlap": 0,
         },
-        "architecture": "candidate_local_spectrogram_refiner_v1",
+        "architecture": architecture,
         "model_ifos": list(model_ifos),
         "all_candidates_scored": True,
         "top_k_pruning": None,
@@ -930,7 +965,12 @@ def run_candidate_local_refiner_validation(
     if any(output.iterdir()):
         raise FileExistsError("candidate validation output must be empty")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if checkpoint.get("architecture") != "candidate_local_spectrogram_refiner_v1":
+    architecture = str(checkpoint.get("architecture"))
+    model_class = {
+        "candidate_local_spectrogram_refiner_v1": CandidateLocalSpectrogramRefiner,
+        "candidate_endpoint_warm_refiner_v2": CandidateEndpointWarmRefiner,
+    }.get(architecture)
+    if model_class is None:
         raise ValueError("candidate validation checkpoint architecture differs")
     injections = _read_jsonl(validation_injection_manifest)
     candidates = _read_jsonl(validation_candidate_manifest)
@@ -975,7 +1015,7 @@ def run_candidate_local_refiner_validation(
         num_workers=0,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CandidateLocalSpectrogramRefiner(
+    model = model_class(
         len(model_ifos), local_output_bins, int(checkpoint["base_channels"])
     ).to(device)
     model.load_state_dict(checkpoint["model"])

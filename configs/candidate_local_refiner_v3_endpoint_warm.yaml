@@ -1,0 +1,23 @@
+candidate_local_refiner:
+  seed: 20260720
+  architecture: candidate_endpoint_warm_refiner_v2
+  epochs: 6
+  max_optimizer_updates: 3000
+  batch_size: 128
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  focal_gamma: 2.0
+  timing_loss_weight: 1.0
+  label_smoothing: 0.0
+  timing_loss_mode: gaussian_coordinate
+  gaussian_sigma_bins: 2.0
+  coordinate_loss_weight: 10.0
+  timing_estimator: expected_probability
+  base_channels: 16
+  cache_parents: true
+  analysis_duration_seconds: 8.0
+  target_sample_rate: 1024
+  parent_output_bins: 1024
+  local_duration_seconds: 2.5
+  local_output_bins: 640
+  model_ifos: [H1, L1, V1]

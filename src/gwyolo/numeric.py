@@ -586,6 +586,96 @@ if nn is not None:
             presence = self.presence_head(pooled)[:, 0]
             return presence, timing
 
+
+    class CandidateEndpointWarmRefiner(nn.Module):
+        """Local refiner whose timing backbone is compatible with the dense endpoint arm."""
+
+        def __init__(
+            self,
+            detector_count: int,
+            output_bins: int = 640,
+            base_channels: int = 16,
+        ):
+            super().__init__()
+            self.detector_count = int(detector_count)
+            self.output_bins = int(output_bins)
+            self.n_fft = 256
+            self.hop_length = 4
+            self.register_buffer("stft_window", torch.hann_window(self.n_fft))
+            endpoint = DetectorArrivalSpectrogramNet(detector_count, base_channels)
+            self.spectral_encoder = endpoint.spectral_encoder
+            self.frequency_projection = endpoint.frequency_projection
+            self.temporal_context = endpoint.temporal_context
+            self.timing_head = endpoint.head
+            self.presence_head = nn.Sequential(
+                nn.Linear(4 * base_channels, 2 * base_channels),
+                nn.SiLU(),
+                nn.Linear(2 * base_channels, 1),
+            )
+
+        def load_endpoint_backbone(self, endpoint_state: dict[str, Any]) -> None:
+            source = DetectorArrivalSpectrogramNet(
+                self.detector_count, self.timing_head[0].in_channels // 2
+            )
+            source.load_state_dict(endpoint_state)
+            self.spectral_encoder.load_state_dict(source.spectral_encoder.state_dict())
+            self.frequency_projection.load_state_dict(
+                source.frequency_projection.state_dict()
+            )
+            self.temporal_context.load_state_dict(source.temporal_context.state_dict())
+            self.timing_head.load_state_dict(source.head.state_dict())
+
+        def forward(
+            self, value: Any, availability: Any, candidate_ifo_index: Any
+        ) -> tuple[Any, Any]:
+            if value.ndim != 3 or value.shape[1] != self.detector_count:
+                raise ValueError("candidate refiner strain must be [batch, IFO, time]")
+            if availability.shape != value.shape[:2]:
+                raise ValueError("candidate refiner availability differs from strain")
+            if candidate_ifo_index.shape != (value.shape[0],):
+                raise ValueError("candidate refiner IFO index must be [batch]")
+            batch, detectors, samples = value.shape
+            if torch.any(candidate_ifo_index < 0) or torch.any(
+                candidate_ifo_index >= detectors
+            ):
+                raise ValueError("candidate refiner IFO index is outside model slots")
+            candidate_available = availability.to(torch.bool).gather(
+                1, candidate_ifo_index[:, None]
+            )
+            if torch.any(~candidate_available):
+                raise ValueError("candidate refiner proposal uses an unavailable detector")
+            spectrum = torch.stft(
+                value.reshape(batch * detectors, samples),
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.n_fft,
+                window=self.stft_window,
+                center=True,
+                return_complex=True,
+            )
+            if spectrum.shape[-1] < self.output_bins:
+                raise ValueError("candidate refiner crop has too few time bins")
+            power = torch.log1p(spectrum[..., : self.output_bins].abs().square())
+            encoded_2d = self.spectral_encoder(power[:, None])
+            encoded = self.temporal_context(
+                self.frequency_projection(
+                    torch.cat(
+                        [encoded_2d.mean(dim=2), encoded_2d.amax(dim=2)], dim=1
+                    )
+                )
+            ).reshape(batch, detectors, -1, self.output_bins)
+            mask = availability.to(encoded.dtype)[:, :, None, None]
+            if torch.any(mask.sum(dim=1) < 1):
+                raise ValueError("candidate refiner batch has no available detector")
+            network = (encoded * mask).sum(dim=1) / mask.sum(dim=1)
+            batch_indices = torch.arange(batch, device=value.device)
+            local = encoded[batch_indices, candidate_ifo_index]
+            fused = torch.cat([local, network], dim=1)
+            timing = self.timing_head(fused)[:, 0]
+            pooled = torch.cat([fused.mean(dim=2), fused.amax(dim=2)], dim=1)
+            presence = self.presence_head(pooled)[:, 0]
+            return presence, timing
+
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
@@ -613,6 +703,10 @@ else:
             _require_torch()
 
     class CandidateLocalSpectrogramRefiner:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class CandidateEndpointWarmRefiner:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 
