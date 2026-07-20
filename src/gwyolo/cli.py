@@ -379,6 +379,14 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_strain.add_argument("--sample-rate-khz", type=int, default=4)
     gravityspy_strain.add_argument("--context-duration", type=float, default=64.0)
 
+    gravityspy_network = subparsers.add_parser("gravityspy-network-strain-plan")
+    gravityspy_network.add_argument("--manifest", required=True)
+    gravityspy_network.add_argument("--output-dir", required=True)
+    gravityspy_network.add_argument("--detectors", nargs="+", default=["H1", "L1", "V1"])
+    gravityspy_network.add_argument("--sample-rate-khz", type=int, default=4)
+    gravityspy_network.add_argument("--context-duration", type=float, default=64.0)
+    gravityspy_network.add_argument("--minimum-detectors", type=int, default=2)
+
     gravityspy_select = subparsers.add_parser("gravityspy-strain-select")
     gravityspy_select.add_argument("--manifest", required=True)
     gravityspy_select.add_argument("--output-dir", required=True)
@@ -1114,6 +1122,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.sample_rate_khz,
                 args.context_duration,
+            )
+        )
+    elif args.command == "gravityspy-network-strain-plan":
+        from .gravityspy import plan_gravityspy_network_strain
+
+        _print(
+            plan_gravityspy_network_strain(
+                args.manifest,
+                args.output_dir,
+                args.detectors,
+                args.sample_rate_khz,
+                args.context_duration,
+                args.minimum_detectors,
             )
         )
     elif args.command == "gravityspy-strain-shard":

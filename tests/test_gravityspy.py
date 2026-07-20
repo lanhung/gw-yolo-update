@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from gwyolo.gravityspy import (
     evict_gravityspy_verified_sources,
@@ -12,6 +13,7 @@ from gwyolo.gravityspy import (
     index_gravityspy_csv,
     match_glitch_to_strain_file,
     merge_gravityspy_numeric_manifests,
+    plan_gravityspy_network_strain,
     select_gravityspy_source_files,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
@@ -39,6 +41,83 @@ def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
     assert int(mask[0].sum()) == 0
     assert int(mask[1].sum()) == 18
     assert int(mask[2].sum()) == 0
+
+
+def test_gravityspy_network_plan_preserves_real_detector_availability(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "anchors.jsonl"
+    rows = [
+        {
+            "glitch_id": "g-full",
+            "split": "train",
+            "observing_run": "O3a",
+            "ifo": "H1",
+            "event_time": 1100.0,
+            "network_gps_block": "O3a:1",
+        },
+        {
+            "glitch_id": "g-no-companion",
+            "split": "train",
+            "observing_run": "O3a",
+            "ifo": "H1",
+            "event_time": 2100.0,
+            "network_gps_block": "O3a:2",
+        },
+    ]
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    def fake_results(endpoint):
+        ifo = endpoint.split("detector=")[1].split("&")[0]
+        records = []
+        if ifo in {"H1", "L1"}:
+            records.append(
+                {
+                    "detector": ifo,
+                    "sample_rate_kHz": 4,
+                    "gps_start": 1000,
+                    "hdf5_url": f"https://example/{ifo}-1000-512.hdf5",
+                    "detail_url": f"https://example/{ifo}/detail",
+                }
+            )
+        if ifo == "H1":
+            records.append(
+                {
+                    "detector": ifo,
+                    "sample_rate_kHz": 4,
+                    "gps_start": 2000,
+                    "hdf5_url": f"https://example/{ifo}-2000-4096.hdf5",
+                    "detail_url": f"https://example/{ifo}/detail2",
+                }
+            )
+        return records, {"api_results_count": len(records), "api_pages": 1}
+
+    monkeypatch.setattr("gwyolo.gravityspy._api_results", fake_results)
+    report = plan_gravityspy_network_strain(
+        source, tmp_path / "network", context_duration=64, minimum_detectors=2
+    )
+    assert report["planned_rows"] == 1
+    assert report["rejected_rows"] == 1
+    assert report["detector_subset_counts"] == {"H1L1": 1}
+    planned = json.loads(Path(report["manifest_path"]).read_text().strip())
+    assert planned["available_ifos"] == ["H1", "L1"]
+    assert planned["detector_availability"] == [1, 1, 0]
+    assert set(planned["network_strain_sources"]) == {"H1", "L1"}
+    assert report["network_coherence_claim_allowed"] is False
+
+
+def test_gravityspy_network_plan_rejects_duplicate_glitch_identity(tmp_path) -> None:
+    source = tmp_path / "duplicate.jsonl"
+    row = {
+        "glitch_id": "same",
+        "observing_run": "O3a",
+        "ifo": "H1",
+        "event_time": 1000.0,
+        "network_gps_block": "block",
+    }
+    source.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n")
+    with pytest.raises(ValueError, match="duplicate glitch"):
+        plan_gravityspy_network_strain(source, tmp_path / "network")
 
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:

@@ -246,6 +246,172 @@ def plan_gravityspy_strain(
     return report
 
 
+def plan_gravityspy_network_strain(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    detectors: Iterable[str] = ("H1", "L1", "V1"),
+    sample_rate_khz: int = 4,
+    context_duration: float = 64.0,
+    minimum_detectors: int = 2,
+) -> dict[str, Any]:
+    """Match each glitch GPS to explicit companion-detector GWOSC strain files."""
+
+    wanted = tuple(dict.fromkeys(str(value).upper() for value in detectors))
+    if len(wanted) < 2 or minimum_detectors < 2 or minimum_detectors > len(wanted):
+        raise ValueError("Network Gravity Spy planning requires a valid detector subset gate")
+    if sample_rate_khz <= 0 or context_duration <= 0:
+        raise ValueError("Network Gravity Spy sample rate and context duration must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Network Gravity Spy planning requires a non-empty manifest")
+    if any(str(row["ifo"]) not in wanted for row in rows):
+        raise ValueError("A Gravity Spy event IFO is absent from the requested detector slots")
+    glitch_ids = [str(row["glitch_id"]) for row in rows]
+    if len(glitch_ids) != len(set(glitch_ids)):
+        raise ValueError("Network Gravity Spy source manifest contains duplicate glitch IDs")
+
+    runs = sorted({str(row["observing_run"]) for row in rows})
+    records_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    api_queries = []
+    for observing_run in runs:
+        for ifo in wanted:
+            endpoint = (
+                f"{API_ROOT}/runs/{observing_run}/strain-files?sample-rate="
+                f"{sample_rate_khz}&detector={ifo}&pagesize=500"
+            )
+            api_rows, api_summary = _api_results(endpoint)
+            records = []
+            for item in api_rows:
+                if str(item["detector"]) != ifo:
+                    raise ValueError(f"GWOSC detector mismatch for {observing_run}/{ifo}")
+                if int(item["sample_rate_kHz"]) != sample_rate_khz:
+                    continue
+                url = str(item["hdf5_url"])
+                match = re.search(r"-(\d+)\.hdf5$", url)
+                if match is None:
+                    raise ValueError(f"Cannot infer strain-file duration from {url}")
+                records.append(
+                    {
+                        "detector": ifo,
+                        "observing_run": observing_run,
+                        "gps_start": int(item["gps_start"]),
+                        "duration": int(match.group(1)),
+                        "sample_rate": sample_rate_khz * 1024,
+                        "hdf5_url": url,
+                        "detail_url": str(item["detail_url"]),
+                    }
+                )
+            records_by_key[(observing_run, ifo)] = records
+            api_queries.append(
+                {
+                    "observing_run": observing_run,
+                    "ifo": ifo,
+                    "endpoint": endpoint,
+                    "records": len(records),
+                    **api_summary,
+                }
+            )
+
+    planned = []
+    rejected = []
+    availability_counts: Counter[str] = Counter()
+    for row in rows:
+        observing_run = str(row["observing_run"])
+        sources = {}
+        for ifo in wanted:
+            match = match_glitch_to_strain_file(
+                float(row["event_time"]),
+                records_by_key[(observing_run, ifo)],
+                context_duration,
+            )
+            if match is not None:
+                sources[ifo] = match
+        event_ifo = str(row["ifo"])
+        if event_ifo not in sources:
+            rejected.append(
+                {
+                    "glitch_id": row["glitch_id"],
+                    "reason": "event_ifo_lacks_full_context",
+                    "available_ifos": sorted(sources),
+                }
+            )
+            continue
+        if len(sources) < minimum_detectors:
+            rejected.append(
+                {
+                    "glitch_id": row["glitch_id"],
+                    "reason": "insufficient_companion_detectors",
+                    "available_ifos": sorted(sources),
+                }
+            )
+            continue
+        if row.get("strain_source"):
+            previous = row["strain_source"]
+            if str(previous["hdf5_url"]) != str(sources[event_ifo]["hdf5_url"]):
+                raise ValueError("Existing event-IFO strain source differs from network match")
+        available_ifos = [ifo for ifo in wanted if ifo in sources]
+        detector_availability = [int(ifo in sources) for ifo in wanted]
+        subset = "".join(available_ifos)
+        availability_counts[subset] += 1
+        planned.append(
+            {
+                **row,
+                "network_strain_sources": sources,
+                "available_ifos": available_ifos,
+                "detector_availability": detector_availability,
+                "context_duration": context_duration,
+            }
+        )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "gravityspy_network_strain_plan.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in planned)
+    )
+    report = {
+        "status": "gravityspy_aligned_companion_strain_acquisition_plan",
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "scientific_blocker": (
+            "all companion files still require full-file hash/DQ verification and aligned "
+            "numeric materialization; event-local weak masks require human audit"
+        ),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "input_rows": len(rows),
+        "planned_rows": len(planned),
+        "rejected_rows": len(rejected),
+        "coverage": len(planned) / len(rows),
+        "minimum_detectors": minimum_detectors,
+        "detector_slots": list(wanted),
+        "detector_subset_counts": dict(sorted(availability_counts.items())),
+        "unique_glitches": len({str(row["glitch_id"]) for row in planned}),
+        "unique_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in planned}
+        ),
+        "unique_source_files": len(
+            {
+                str(source["hdf5_url"])
+                for row in planned
+                for source in row["network_strain_sources"].values()
+            }
+        ),
+        "context_duration": context_duration,
+        "sample_rate_khz": sample_rate_khz,
+        "rejection_reason_counts": dict(
+            sorted(Counter(row["reason"] for row in rejected).items())
+        ),
+        "rejection_examples": rejected[:20],
+        "api_queries": api_queries,
+        **_execution_provenance(),
+    }
+    atomic_write_json(output / "gravityspy_network_strain_plan_report.json", report)
+    return report
+
+
 def select_gravityspy_source_files(
     manifest_path: str | Path,
     output_dir: str | Path,
