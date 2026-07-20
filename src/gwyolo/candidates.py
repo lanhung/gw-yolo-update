@@ -372,6 +372,7 @@ def run_candidate_extraction(
         ),
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
     }
     atomic_write_json(output / "candidate_extraction_report.json", report)
     return report
@@ -593,6 +594,7 @@ def run_apply_candidate_timing_calibration(
         "scoring_provenance_matches": provenance_matches,
         "output_path": str(output_path),
         "output_sha256": file_sha256(output_path),
+        **execution_provenance(),
     }
     report_path = output_path.with_suffix(output_path.suffix + ".report.json")
     atomic_write_json(report_path, result)
@@ -663,6 +665,7 @@ def run_injection_candidate_extraction(
         ),
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
+        **execution_provenance(),
     }
     atomic_write_json(output / "injection_candidate_extraction_report.json", report)
     return report
@@ -884,6 +887,7 @@ def run_injection_candidate_rankings(
         "candidate_manifest_sha256": file_sha256(candidate_manifest),
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
+        **execution_provenance(),
     }
     atomic_write_json(output / f"{split}_injection_candidate_ranking_report.json", result)
     return result
@@ -1241,6 +1245,7 @@ def run_candidate_time_slides(
         "background_manifest_sha256": file_sha256(background_manifest),
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
     }
     atomic_write_json(output / f"{split}_candidate_time_slide_report.json", result)
     return result

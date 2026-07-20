@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from .background import SECONDS_PER_YEAR, _union_duration
 from .io import atomic_write_json, file_sha256
+from .runtime import execution_provenance
 
 
 def _ifos(row: dict[str, Any]) -> set[str]:
@@ -185,6 +186,7 @@ def run_candidate_background_exposure_plan(
         ),
         "background_manifest_path": str(background_manifest),
         "background_manifest_sha256": file_sha256(background_manifest),
+        **execution_provenance(),
     }
     atomic_write_json(output, result)
     return result
