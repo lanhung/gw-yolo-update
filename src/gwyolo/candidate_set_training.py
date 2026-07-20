@@ -853,8 +853,26 @@ def run_candidate_pair_ranker_training(
         if report.get("run_identity") != identity:
             raise ValueError("completed candidate pair ranker has another identity")
         return report
-    if any(output.iterdir()):
-        raise FileExistsError("candidate pair ranker output must be empty")
+    resumable_names = {
+        "best_candidate_pair_ranker.pt",
+        "last_candidate_pair_ranker.pt",
+        "history.json",
+        "validation_selection_pair_scores.npz",
+    }
+    unexpected = sorted(
+        path.name for path in output.iterdir() if path.name not in resumable_names
+    )
+    if unexpected:
+        raise FileExistsError(
+            f"candidate pair ranker output contains non-resumable files: {unexpected}"
+        )
+    early_resume_path = output / "last_candidate_pair_ranker.pt"
+    if early_resume_path.is_file():
+        early_resume = torch.load(
+            early_resume_path, map_location="cpu", weights_only=False
+        )
+        if early_resume.get("run_identity") != identity:
+            raise ValueError("candidate pair ranker resume identity differs")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -1167,6 +1185,7 @@ def run_candidate_pair_ranker_training(
         "budget_mode": budget_mode,
         "max_optimizer_updates": maximum_updates,
         "training_budget_reached": updates == maximum_updates,
+        "resumable_epoch_checkpoints": True,
         "strain_crop_shape": (
             list(train_examples["strain_crops"].shape[1:])
             if use_time_frequency_encoder
