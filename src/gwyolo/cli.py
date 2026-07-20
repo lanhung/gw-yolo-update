@@ -570,6 +570,16 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--bootstrap-replicates", type=int, default=2000)
     pe.add_argument("--bootstrap-seed", type=int, default=20260719)
     pe.add_argument("--require-publication-provenance", action="store_true")
+
+    pe_robustness = subparsers.add_parser("pe-robustness-evaluate")
+    pe_robustness.add_argument("--manifest", required=True)
+    pe_robustness.add_argument("--output", required=True)
+    pe_robustness.add_argument("--credible-level", type=float, default=0.9)
+    pe_robustness.add_argument("--bootstrap-replicates", type=int, default=2000)
+    pe_robustness.add_argument("--bootstrap-seed", type=int, default=20260720)
+    pe_robustness.add_argument(
+        "--allow-incomplete-provenance", action="store_true"
+    )
     return parser
 
 
@@ -1308,6 +1318,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 args.require_publication_provenance,
+            )
+        )
+    elif args.command == "pe-robustness-evaluate":
+        from .pe import run_pe_robustness_evaluation
+
+        _print(
+            run_pe_robustness_evaluation(
+                args.manifest,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+                not args.allow_incomplete_provenance,
             )
         )
     else:

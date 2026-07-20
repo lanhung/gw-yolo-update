@@ -280,6 +280,288 @@ def evaluate_pe_rows(
     }
 
 
+ROBUSTNESS_CONDITIONS = ("clean", "contaminated", "mask_conditioned")
+
+
+def _positive_optional(row: dict[str, Any], field: str) -> float | None:
+    value = row.get(field)
+    if value is None:
+        return None
+    number = float(value)
+    if not np.isfinite(number) or number <= 0:
+        raise ValueError(f"PE {field} must be finite and positive")
+    return number
+
+
+def evaluate_pe_robustness_rows(
+    rows: list[dict[str, Any]],
+    credible_level: float = 0.9,
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 20260720,
+    require_publication_provenance: bool = True,
+) -> dict[str, Any]:
+    """Evaluate clean/contaminated/mask-conditioned PE triplets without changing priors."""
+    if not rows:
+        raise ValueError("PE robustness manifest cannot be empty")
+    groups: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
+    evaluated = []
+    for row in rows:
+        if require_publication_provenance:
+            _validate_publication_provenance(row)
+        condition = str(row["condition"])
+        if condition not in ROBUSTNESS_CONDITIONS:
+            raise ValueError(f"Unsupported PE robustness condition: {condition}")
+        backend = str(row["backend"])
+        injection_id = str(row["injection_id"])
+        key = (backend, injection_id)
+        if condition in groups[key]:
+            raise ValueError(f"Duplicate {condition} PE row for {backend}/{injection_id}")
+        posterior = _load_posterior(row["posterior_path"])
+        sample_counts = {values.size for values in posterior.values()}
+        if len(sample_counts) != 1:
+            raise ValueError("all parameters in one posterior must have equal sample count")
+        sample_count = next(iter(sample_counts))
+        effective_sample_size = _positive_optional(row, "effective_sample_size")
+        sky_area = _positive_optional(row, "sky_area_90_deg2")
+        if require_publication_provenance and effective_sample_size is None:
+            raise ValueError("publication PE robustness rows require effective_sample_size")
+        if require_publication_provenance and sky_area is None:
+            raise ValueError("publication PE robustness rows require sky_area_90_deg2")
+        if effective_sample_size is not None and effective_sample_size > sample_count:
+            raise ValueError("effective_sample_size cannot exceed posterior sample count")
+        latency = float(row["latency_seconds"])
+        if not np.isfinite(latency) or latency <= 0:
+            raise ValueError("PE robustness latency_seconds must be finite and positive")
+        truth = {str(name): float(value) for name, value in row["truth"].items()}
+        record = {
+            **row,
+            "truth": truth,
+            "latency_seconds": latency,
+            "posterior_sha256": file_sha256(row["posterior_path"]),
+            "posterior_sample_count": sample_count,
+            "effective_sample_size": effective_sample_size,
+            "effective_samples_per_second": (
+                effective_sample_size / latency
+                if effective_sample_size is not None
+                else None
+            ),
+            "sky_area_90_deg2": sky_area,
+            "parameters": posterior_truth_metrics(posterior, truth, credible_level),
+        }
+        groups[key][condition] = record
+        evaluated.append(record)
+    incomplete = [
+        f"{backend}/{injection_id}"
+        for (backend, injection_id), triplet in groups.items()
+        if set(triplet) != set(ROBUSTNESS_CONDITIONS)
+    ]
+    if incomplete:
+        raise ValueError(f"Missing clean/contaminated/mask-conditioned PE triplets: {incomplete[:10]}")
+
+    comparisons = []
+    for (backend, injection_id), triplet in sorted(groups.items()):
+        clean = triplet["clean"]
+        contaminated = triplet["contaminated"]
+        masked = triplet["mask_conditioned"]
+        if not (clean["truth"] == contaminated["truth"] == masked["truth"]):
+            raise ValueError(f"PE robustness truth mismatch for {backend}/{injection_id}")
+        if require_publication_provenance:
+            inconsistent = [
+                field
+                for field in PUBLICATION_PROVENANCE_FIELDS
+                if len({str(triplet[condition][field]) for condition in ROBUSTNESS_CONDITIONS})
+                != 1
+            ]
+            if inconsistent:
+                raise ValueError(
+                    f"PE robustness provenance mismatch for {backend}/{injection_id}: "
+                    f"{inconsistent}"
+                )
+        parameters = {}
+        for parameter in sorted(clean["truth"]):
+            clean_metric = clean["parameters"][parameter]
+            contaminated_metric = contaminated["parameters"][parameter]
+            masked_metric = masked["parameters"][parameter]
+            parameters[parameter] = {
+                "contamination_absolute_bias_change": (
+                    contaminated_metric["absolute_bias"] - clean_metric["absolute_bias"]
+                ),
+                "mask_absolute_bias_change_vs_contaminated": (
+                    masked_metric["absolute_bias"] - contaminated_metric["absolute_bias"]
+                ),
+                "mask_absolute_bias_change_vs_clean": (
+                    masked_metric["absolute_bias"] - clean_metric["absolute_bias"]
+                ),
+                "contamination_width_ratio_vs_clean": (
+                    contaminated_metric["credible_width"] / clean_metric["credible_width"]
+                    if clean_metric["credible_width"] > 0
+                    else None
+                ),
+                "mask_width_ratio_vs_contaminated": (
+                    masked_metric["credible_width"]
+                    / contaminated_metric["credible_width"]
+                    if contaminated_metric["credible_width"] > 0
+                    else None
+                ),
+                "mask_width_ratio_vs_clean": (
+                    masked_metric["credible_width"] / clean_metric["credible_width"]
+                    if clean_metric["credible_width"] > 0
+                    else None
+                ),
+                "coverage_transition": (
+                    f"{int(clean_metric['covered'])}->"
+                    f"{int(contaminated_metric['covered'])}->"
+                    f"{int(masked_metric['covered'])}"
+                ),
+            }
+        def ratio(field: str, numerator: str, denominator: str) -> float | None:
+            top = triplet[numerator][field]
+            bottom = triplet[denominator][field]
+            return float(top / bottom) if top is not None and bottom not in (None, 0) else None
+
+        comparisons.append(
+            {
+                "backend": backend,
+                "injection_id": injection_id,
+                "event_id": clean.get("event_id"),
+                "contamination_stratum": contaminated.get("contamination_stratum", "all"),
+                "parameters": parameters,
+                "latency_mask_minus_contaminated_seconds": (
+                    masked["latency_seconds"] - contaminated["latency_seconds"]
+                ),
+                "ess_rate_mask_over_contaminated": ratio(
+                    "effective_samples_per_second", "mask_conditioned", "contaminated"
+                ),
+                "sky_area_mask_over_contaminated": ratio(
+                    "sky_area_90_deg2", "mask_conditioned", "contaminated"
+                ),
+                "sky_area_contaminated_over_clean": ratio(
+                    "sky_area_90_deg2", "contaminated", "clean"
+                ),
+            }
+        )
+
+    coverage = {}
+    paired_summaries = {}
+    for backend_index, backend in enumerate(sorted({row["backend"] for row in evaluated})):
+        backend_rows = [row for row in evaluated if row["backend"] == backend]
+        coverage[backend] = {}
+        for condition in ROBUSTNESS_CONDITIONS:
+            selected = [row for row in backend_rows if row["condition"] == condition]
+            coverage[backend][condition] = {}
+            for parameter in sorted(selected[0]["parameters"]):
+                successes = sum(row["parameters"][parameter]["covered"] for row in selected)
+                coverage[backend][condition][parameter] = {
+                    "covered": successes,
+                    "total": len(selected),
+                    "rate": successes / len(selected),
+                    "wilson_95": list(wilson_interval(successes, len(selected))),
+                }
+        backend_comparisons = [row for row in comparisons if row["backend"] == backend]
+        parameter_summaries = {}
+        for parameter_index, parameter in enumerate(
+            sorted(backend_comparisons[0]["parameters"])
+        ):
+            parameter_rows = [row["parameters"][parameter] for row in backend_comparisons]
+            parameter_summaries[parameter] = {}
+            for metric_index, metric in enumerate(
+                (
+                    "contamination_absolute_bias_change",
+                    "mask_absolute_bias_change_vs_contaminated",
+                    "mask_absolute_bias_change_vs_clean",
+                    "contamination_width_ratio_vs_clean",
+                    "mask_width_ratio_vs_contaminated",
+                    "mask_width_ratio_vs_clean",
+                )
+            ):
+                values = [row[metric] for row in parameter_rows if row[metric] is not None]
+                parameter_summaries[parameter][metric] = (
+                    _paired_mean_bootstrap(
+                        values,
+                        bootstrap_replicates,
+                        bootstrap_seed
+                        + backend_index * 100_000
+                        + parameter_index * 100
+                        + metric_index,
+                    )
+                    if values
+                    else None
+                )
+            parameter_summaries[parameter]["coverage_transitions"] = dict(
+                sorted(Counter(row["coverage_transition"] for row in parameter_rows).items())
+            )
+        resource_summaries = {}
+        for metric_index, metric in enumerate(
+            (
+                "latency_mask_minus_contaminated_seconds",
+                "ess_rate_mask_over_contaminated",
+                "sky_area_mask_over_contaminated",
+                "sky_area_contaminated_over_clean",
+            )
+        ):
+            values = [row[metric] for row in backend_comparisons if row[metric] is not None]
+            resource_summaries[metric] = (
+                _paired_mean_bootstrap(
+                    values,
+                    bootstrap_replicates,
+                    bootstrap_seed + backend_index * 100_000 + 90_000 + metric_index,
+                )
+                if values
+                else None
+            )
+        paired_summaries[backend] = {
+            "paired_injections": len(backend_comparisons),
+            "parameters": parameter_summaries,
+            "resources": resource_summaries,
+        }
+    backend_names = sorted(paired_summaries)
+    return {
+        "status": "paired_pe_contamination_mask_robustness",
+        "scientific_claim_allowed": False,
+        "protocol": (
+            "paired clean/contaminated/mask-conditioned inference with identical backend, prior, "
+            "waveform and detector assumptions"
+        ),
+        "conditions": list(ROBUSTNESS_CONDITIONS),
+        "credible_level": credible_level,
+        "backends": backend_names,
+        "dingo_amplfi_joint_gate": {"DINGO", "AMPLFI"}.issubset(
+            {name.upper() for name in backend_names}
+        ),
+        "triplets": len(comparisons),
+        "coverage": coverage,
+        "paired_summaries": paired_summaries,
+        "comparisons": comparisons,
+        "publication_provenance_required": require_publication_provenance,
+        "publication_provenance_fields": list(PUBLICATION_PROVENANCE_FIELDS),
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": bootstrap_seed,
+    }
+
+
+def run_pe_robustness_evaluation(
+    manifest_path: str | Path,
+    output_path: str | Path,
+    credible_level: float = 0.9,
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 20260720,
+    require_publication_provenance: bool = True,
+) -> dict[str, Any]:
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    report = evaluate_pe_robustness_rows(
+        rows,
+        credible_level,
+        bootstrap_replicates,
+        bootstrap_seed,
+        require_publication_provenance,
+    )
+    report["manifest_path"] = str(manifest_path)
+    report["manifest_sha256"] = file_sha256(manifest_path)
+    atomic_write_json(output_path, report)
+    return report
+
+
 def run_pe_evaluation(
     manifest_path: str | Path,
     output_path: str | Path,

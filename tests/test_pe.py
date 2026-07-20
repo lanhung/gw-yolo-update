@@ -6,6 +6,7 @@ import pytest
 from gwyolo.pe import (
     PUBLICATION_PROVENANCE_FIELDS,
     evaluate_pe_rows,
+    evaluate_pe_robustness_rows,
     posterior_truth_metrics,
 )
 
@@ -123,3 +124,45 @@ def test_pe_rejects_invalid_latency(tmp_path) -> None:
     ]
     with pytest.raises(ValueError, match="Invalid PE latency"):
         evaluate_pe_rows(rows, bootstrap_replicates=20)
+
+
+def test_pe_robustness_triplet_recovers_hand_calculated_contamination(tmp_path) -> None:
+    samples = {
+        "clean": np.asarray([1.0, 2.0, 3.0]),
+        "contaminated": np.asarray([2.0, 3.0, 4.0]),
+        "mask_conditioned": np.asarray([1.0, 2.0, 3.0]),
+    }
+    latency = {"clean": 1.0, "contaminated": 2.0, "mask_conditioned": 2.5}
+    ess = {"clean": 3.0, "contaminated": 2.0, "mask_conditioned": 3.0}
+    sky = {"clean": 10.0, "contaminated": 30.0, "mask_conditioned": 12.0}
+    rows = []
+    for condition, values in samples.items():
+        path = tmp_path / f"{condition}.npz"
+        np.savez(path, mass=values)
+        rows.append(
+            {
+                "backend": "DINGO",
+                "injection_id": "i-1",
+                "condition": condition,
+                "posterior_path": str(path),
+                "latency_seconds": latency[condition],
+                "effective_sample_size": ess[condition],
+                "sky_area_90_deg2": sky[condition],
+                "truth": {"mass": 2.0},
+            }
+        )
+    report = evaluate_pe_robustness_rows(
+        rows,
+        credible_level=0.8,
+        bootstrap_replicates=20,
+        require_publication_provenance=False,
+    )
+    comparison = report["comparisons"][0]
+    parameter = comparison["parameters"]["mass"]
+    assert parameter["contamination_absolute_bias_change"] == 1.0
+    assert parameter["mask_absolute_bias_change_vs_contaminated"] == -1.0
+    assert parameter["coverage_transition"] == "1->0->1"
+    assert comparison["sky_area_contaminated_over_clean"] == 3.0
+    assert comparison["sky_area_mask_over_contaminated"] == 0.4
+    assert comparison["ess_rate_mask_over_contaminated"] == pytest.approx(1.2)
+    assert comparison["latency_mask_minus_contaminated_seconds"] == 0.5

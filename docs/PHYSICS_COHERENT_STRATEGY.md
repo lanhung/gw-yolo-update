@@ -124,6 +124,15 @@ contaminated and mask-conditioned inputs with identical priors, PSDs and wavefor
 a small expensive BayesWave/Bilby subset only as a reference. A published number from another
 population is not a head-to-head comparison.
 
+`pe-robustness-evaluate` freezes the executable table schema for this stage. Every backend/injection
+must provide a complete clean, contaminated and mask-conditioned triplet. Publication mode rejects
+changes in backend/model hash, prior, waveform approximant, detector set, calibration version,
+source-event identity, hardware or latency scope across the triplet. It reports parameter coverage
+with Wilson intervals; paired changes in absolute bias and credible width; effective samples per
+second; 90% sky area; and mask-conditioning latency. DINGO and AMPLFI are reported as separate
+backends, and the joint comparison gate stays false until both are present. This is a downstream
+robustness protocol, not a detection-mAP competition.
+
 ### Stage E — one-time locked O4b/GWTC-5 evaluation
 
 After architecture, thresholds, calibration perturbations, auxiliary policy, OOD rule and all
