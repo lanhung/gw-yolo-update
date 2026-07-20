@@ -196,7 +196,9 @@ hashes, per-parameter bias/absolute bias, central credible width, mean absolute 
 python -m gwyolo.cli pe-evaluate \
   --manifest artifacts/pe/paired_manifest.jsonl \
   --output artifacts/pe/paired_report.json \
-  --credible-level 0.9
+  --credible-level 0.9 \
+  --bootstrap-replicates 10000 \
+  --require-publication-provenance
 ```
 
 This adapter is backend-neutral: it does not pretend that a synthetic NPZ is an AMPLFI or DINGO
@@ -204,6 +206,12 @@ result. Publication comparisons still require both actual backends to use matche
 conventions, detector data, injection truth and hardware, with the backend version and model hash
 added to each manifest row. The paired adapter is an executable evaluation boundary, not evidence
 that either external inference run has already been completed.
+
+The publication gate requires matching `backend_version`, `backend_model_hash`, `prior_hash`,
+`waveform_approximant`, `detector_set`, `calibration_version`, `source_event_hash`, `hardware`, and
+`latency_scope` on each raw/cleaned pair. The report adds deterministic paired-bootstrap intervals
+for absolute-bias changes, credible-width ratios and cleaning latency, plus paired coverage
+transitions. Development manifests may omit the gate, but no paper comparison may do so.
 
 ## Oracle mask-deglitch upper bound
 

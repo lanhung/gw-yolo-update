@@ -417,6 +417,9 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--manifest", required=True)
     pe.add_argument("--output", required=True)
     pe.add_argument("--credible-level", type=float, default=0.9)
+    pe.add_argument("--bootstrap-replicates", type=int, default=2000)
+    pe.add_argument("--bootstrap-seed", type=int, default=20260719)
+    pe.add_argument("--require-publication-provenance", action="store_true")
     return parser
 
 
@@ -949,7 +952,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "pe-evaluate":
         from .pe import run_pe_evaluation
 
-        _print(run_pe_evaluation(args.manifest, args.output, args.credible_level))
+        _print(
+            run_pe_evaluation(
+                args.manifest,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+                args.require_publication_provenance,
+            )
+        )
     else:
         raise AssertionError(args.command)
     return 0
