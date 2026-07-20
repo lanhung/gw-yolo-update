@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from gwyolo.cosmology import FlatLambdaCDMGrid
-from gwyolo.injections import plan_injection_recipes, run_injection_plan
+from gwyolo.injections import (
+    plan_injection_recipes,
+    run_injection_plan,
+    run_nested_injection_scale_plan,
+)
 from gwyolo.io import file_sha256
 
 
@@ -147,3 +153,61 @@ def test_run_injection_plan_can_create_train_val_without_test(tmp_path) -> None:
     assert report["counts_by_split"] == {"train": 3, "val": 2}
     assert report["requested_counts_by_split"]["test"] == 0
     assert report["background_manifest_sha256"] == file_sha256(manifest)
+
+
+def test_nested_injection_scale_plan_reuses_core_and_frozen_validation(tmp_path) -> None:
+    rows = [
+        {
+            "window_id": f"{split}-window",
+            "split": split,
+            "gps_block": f"{split}-block",
+            "gps_start": gps,
+            "gps_end": gps + 8,
+            "ifos": ["H1", "L1"],
+        }
+        for split, gps in (("train", 1000), ("val", 2000))
+    ]
+    background = tmp_path / "background.jsonl"
+    background.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    exposure = tmp_path / "background_report.json"
+    exposure.write_text(
+        json.dumps(
+            {
+                "splits": {
+                    "train": {"live_time_years": 1.0},
+                    "val": {"live_time_years": 1.0},
+                }
+            }
+        )
+    )
+    base_dir = tmp_path / "base"
+    base = run_injection_plan(
+        background,
+        exposure,
+        base_dir,
+        validation_count=3,
+        test_count=0,
+        training_count=10,
+        seed=7,
+    )
+    report = run_nested_injection_scale_plan(
+        base["manifest_path"],
+        background,
+        exposure,
+        tmp_path / "scales",
+        scales=(10, 20, 30),
+        supplement_seed=8,
+    )
+    assert report["strictly_nested"]
+    assert report["gps_diversity_saturated"]
+    assert report["test_recipes_read"] == 0
+    assert [item["increment_rows"] for item in report["scales"]] == [10, 10, 10]
+    manifests = [
+        {
+            json.loads(line)["injection_id"]
+            for line in Path(item["manifest_path"]).read_text().splitlines()
+        }
+        for item in report["scales"]
+    ]
+    assert manifests[0] < manifests[1] < manifests[2]
+    assert report["validation"]["rows"] == 3

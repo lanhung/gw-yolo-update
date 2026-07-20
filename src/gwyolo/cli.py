@@ -389,6 +389,14 @@ def build_parser() -> argparse.ArgumentParser:
     injection.add_argument("--test-count", type=int, default=20000)
     injection.add_argument("--seed", type=int, default=20260719)
 
+    injection_scale = subparsers.add_parser("injection-scale-plan")
+    injection_scale.add_argument("--base-recipes", required=True)
+    injection_scale.add_argument("--background-manifest", required=True)
+    injection_scale.add_argument("--background-report", required=True)
+    injection_scale.add_argument("--output-dir", required=True)
+    injection_scale.add_argument("--scale", action="append", type=int)
+    injection_scale.add_argument("--supplement-seed", type=int, default=20260722)
+
     materialize = subparsers.add_parser("injection-materialize")
     materialize.add_argument("--recipes", required=True)
     materialize.add_argument("--background-manifest", required=True)
@@ -933,6 +941,19 @@ def main(argv: list[str] | None = None) -> int:
                 test_count=args.test_count,
                 seed=args.seed,
                 training_count=args.train_count,
+            )
+        )
+    elif args.command == "injection-scale-plan":
+        from .injections import run_nested_injection_scale_plan
+
+        _print(
+            run_nested_injection_scale_plan(
+                args.base_recipes,
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                tuple(args.scale) if args.scale else (10_000, 25_000, 50_000),
+                args.supplement_seed,
             )
         )
     elif args.command == "injection-materialize":

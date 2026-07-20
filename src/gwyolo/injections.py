@@ -273,3 +273,164 @@ def run_injection_plan(
     }
     atomic_write_json(output / "injection_plan_report.json", result)
     return result
+
+
+def run_nested_injection_scale_plan(
+    base_recipe_manifest: str | Path,
+    background_manifest: str | Path,
+    background_report: str | Path,
+    output_dir: str | Path,
+    scales: tuple[int, ...] = (10_000, 25_000, 50_000),
+    supplement_seed: int = 20260722,
+) -> dict[str, Any]:
+    """Extend a frozen train core into family-stratified nested physical scales."""
+    ordered_scales = tuple(sorted(set(int(value) for value in scales)))
+    if not ordered_scales or any(value <= 0 for value in ordered_scales):
+        raise ValueError("nested injection scales must be positive")
+    with Path(base_recipe_manifest).open("r", encoding="utf-8") as handle:
+        base_rows = [json.loads(line) for line in handle if line.strip()]
+    if not base_rows:
+        raise ValueError("base injection recipe manifest cannot be empty")
+    if any(row.get("split") == "test" for row in base_rows):
+        raise ValueError("nested training scale planning refuses to read test recipes")
+    base_train = [row for row in base_rows if row.get("split") == "train"]
+    validation = [row for row in base_rows if row.get("split") == "val"]
+    if len(base_train) != ordered_scales[0] or not validation:
+        raise ValueError(
+            "smallest scale must equal the frozen base train count and validation must be non-empty"
+        )
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        background_rows = [json.loads(line) for line in handle if line.strip()]
+    with Path(background_report).open("r", encoding="utf-8") as handle:
+        background_exposure = json.load(handle)
+    expected_base = _allocate(ordered_scales[0], DEFAULT_POPULATION)
+    base_family_counts = Counter(str(row["source_family"]) for row in base_train)
+    if dict(base_family_counts) != expected_base:
+        raise ValueError(
+            f"base family counts do not match the frozen population: {base_family_counts}"
+        )
+    supplement_count = ordered_scales[-1] - ordered_scales[0]
+    supplement: list[dict[str, Any]] = []
+    supplement_report = None
+    if supplement_count:
+        supplement, supplement_report = plan_injection_recipes(
+            background_rows,
+            {"train": float(background_exposure["splits"]["train"]["live_time_years"])},
+            {"train": supplement_count},
+            seed=supplement_seed,
+        )
+    base_ids = {str(row["injection_id"]) for row in base_rows}
+    collisions = sorted(base_ids & {str(row["injection_id"]) for row in supplement})
+    if collisions:
+        raise ValueError(f"supplemental injection IDs collide with the frozen core: {collisions[:10]}")
+    supplement_by_family = {
+        family: sorted(
+            [row for row in supplement if row["source_family"] == family],
+            key=lambda row: canonical_hash(
+                {"seed": supplement_seed, "injection_id": row["injection_id"]}, 64
+            ),
+        )
+        for family in DEFAULT_POPULATION
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    validation_path = output / "injection_validation_frozen.jsonl"
+    atomic_write_text(
+        validation_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in validation),
+    )
+    validation_ids = {str(row["injection_id"]) for row in validation}
+    validation_waveforms = {str(row["waveform_id"]) for row in validation}
+    validation_blocks = {str(row["gps_block"]) for row in validation}
+    scale_reports = []
+    prior_ids: set[str] = set()
+    for scale in ordered_scales:
+        target_counts = _allocate(scale, DEFAULT_POPULATION)
+        selected = list(base_train)
+        for family in DEFAULT_POPULATION:
+            needed = target_counts[family] - base_family_counts[family]
+            if needed < 0 or len(supplement_by_family[family]) < needed:
+                raise ValueError(f"insufficient supplemental {family} recipes for scale {scale}")
+            selected.extend(supplement_by_family[family][:needed])
+        selected.sort(key=lambda row: str(row["injection_id"]))
+        ids = {str(row["injection_id"]) for row in selected}
+        waveforms = {str(row["waveform_id"]) for row in selected}
+        blocks = {str(row["gps_block"]) for row in selected}
+        if len(ids) != scale or len(waveforms) != scale:
+            raise ValueError(f"nested scale {scale} contains duplicate physical identities")
+        if ids & validation_ids or waveforms & validation_waveforms or blocks & validation_blocks:
+            raise ValueError(f"nested scale {scale} overlaps frozen validation identities")
+        if prior_ids and not prior_ids < ids:
+            raise ValueError(f"nested scale {scale} does not strictly contain the previous scale")
+        manifest_path = output / f"injection_train_{scale}.jsonl"
+        atomic_write_text(
+            manifest_path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+        )
+        increment = [row for row in selected if str(row["injection_id"]) not in prior_ids]
+        increment_path = output / f"injection_train_increment_to_{scale}.jsonl"
+        atomic_write_text(
+            increment_path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in increment),
+        )
+        scale_reports.append(
+            {
+                "scale": scale,
+                "rows": len(selected),
+                "unique_injection_ids": len(ids),
+                "unique_waveform_ids": len(waveforms),
+                "unique_gps_blocks": len(blocks),
+                "family_counts": dict(
+                    sorted(Counter(str(row["source_family"]) for row in selected).items())
+                ),
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": file_sha256(manifest_path),
+                "increment_rows": len(increment),
+                "increment_manifest_path": str(increment_path),
+                "increment_manifest_sha256": file_sha256(increment_path),
+                "contains_previous_scale": not prior_ids or prior_ids < ids,
+                "validation_injection_overlap": 0,
+                "validation_waveform_overlap": 0,
+                "validation_gps_block_overlap": 0,
+            }
+        )
+        prior_ids = ids
+    gps_counts = [int(item["unique_gps_blocks"]) for item in scale_reports]
+    result = {
+        "status": "nested_physical_training_scale_plan",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "recipes require waveform validation/materialization/SNR annotation; current O4a "
+            "background GPS diversity is fixed and must expand independently"
+        ),
+        "test_recipes_read": 0,
+        "test_evaluation": None,
+        "base_recipe_manifest_path": str(base_recipe_manifest),
+        "base_recipe_manifest_sha256": file_sha256(base_recipe_manifest),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "background_report_sha256": file_sha256(background_report),
+        "supplement_seed": supplement_seed,
+        "supplement_rows": len(supplement),
+        "supplement_plan_hash": (
+            canonical_hash(supplement_report, 64) if supplement_report is not None else None
+        ),
+        "scales": scale_reports,
+        "strictly_nested": all(
+            bool(item["contains_previous_scale"]) for item in scale_reports
+        ),
+        "gps_diversity_counts": gps_counts,
+        "gps_diversity_increases_with_scale": all(
+            right > left for left, right in zip(gps_counts, gps_counts[1:])
+        ),
+        "gps_diversity_saturated": len(set(gps_counts)) == 1,
+        "validation": {
+            "rows": len(validation),
+            "unique_injection_ids": len(validation_ids),
+            "unique_waveform_ids": len(validation_waveforms),
+            "unique_gps_blocks": len(validation_blocks),
+            "manifest_path": str(validation_path),
+            "manifest_sha256": file_sha256(validation_path),
+        },
+    }
+    atomic_write_json(output / "nested_injection_scale_report.json", result)
+    return result
