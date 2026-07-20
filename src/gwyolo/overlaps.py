@@ -150,13 +150,13 @@ def _load_gravityspy_sample(
     return {"raw": raw, "glitch_mask": glitch_mask}
 
 
-def _active_injection_signal(
+def _active_injection_signals(
     row: dict[str, Any],
     ifo: str,
     target_sample_rate: int,
     output_samples: int,
     minimum_ifo_mask_snr: float | None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     context = load_materialized_context(row)
     source_ifos = list(context["ifos"])
     if ifo not in source_ifos:
@@ -165,10 +165,11 @@ def _active_injection_signal(
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError("training_signal_scale must be finite and positive")
     signal = np.asarray(context["signal"], dtype=np.float64) * scale
+    target_signal = signal
     if minimum_ifo_mask_snr is not None:
         if "optimal_snr_by_ifo" not in row:
             raise ValueError("Visibility-gated overlap masks require optimal_snr_by_ifo")
-        signal = gate_component_by_ifo_snr(
+        target_signal = gate_component_by_ifo_snr(
             signal,
             source_ifos,
             row["optimal_snr_by_ifo"],
@@ -177,16 +178,18 @@ def _active_injection_signal(
         )
     start = int(context["analysis_start_index"])
     stop = int(context["analysis_stop_index"])
-    selected = signal[source_ifos.index(ifo), start:stop]
-    selected = _fft_downsample(selected, int(context["sample_rate"]), target_sample_rate)
-    if selected.shape != (output_samples,):
+    physical = signal[source_ifos.index(ifo), start:stop]
+    target = target_signal[source_ifos.index(ifo), start:stop]
+    physical = _fft_downsample(physical, int(context["sample_rate"]), target_sample_rate)
+    target = _fft_downsample(target, int(context["sample_rate"]), target_sample_rate)
+    if physical.shape != (output_samples,) or target.shape != (output_samples,):
         raise ValueError(
             f"Injection analysis duration differs from Gravity Spy context: "
-            f"{selected.size} != {output_samples}"
+            f"{physical.size}/{target.size} != {output_samples}"
         )
-    if not np.isfinite(selected).all():
+    if not np.isfinite(physical).all() or not np.isfinite(target).all():
         raise ValueError("Injection signal contains non-finite samples")
-    return selected
+    return physical, target
 
 
 def materialize_physical_overlaps(
@@ -230,7 +233,7 @@ def materialize_physical_overlaps(
             glitch, model_ifos, q_values, target_rate, frequency_bins, time_bins
         )
         raw_glitch = gravity["raw"]
-        signal_active = _active_injection_signal(
+        signal_active, target_signal_active = _active_injection_signals(
             injection, ifo, target_rate, raw_glitch.size, minimum_snr
         )
         detector_index = model_ifos.index(ifo)
@@ -238,8 +241,10 @@ def materialize_physical_overlaps(
         availability[detector_index] = 1
         glitch_strain = np.zeros((len(model_ifos), raw_glitch.size), dtype=np.float64)
         signal_strain = np.zeros_like(glitch_strain)
+        target_signal_strain = np.zeros_like(glitch_strain)
         glitch_strain[detector_index] = raw_glitch
         signal_strain[detector_index] = signal_active
+        target_signal_strain[detector_index] = target_signal_active
         mixture_strain = glitch_strain + signal_strain
         whitened = np.zeros_like(mixture_strain)
         whitened[detector_index] = _whiten(mixture_strain[detector_index])
@@ -253,7 +258,7 @@ def materialize_physical_overlaps(
             float(tensor["fmax"]),
         )
         signal_power = multiresolution_power(
-            scale_component_for_transform(signal_strain),
+            scale_component_for_transform(target_signal_strain),
             target_rate,
             q_values,
             frequency_bins,
@@ -286,6 +291,7 @@ def materialize_physical_overlaps(
             glitch_mask=gravity["glitch_mask"].astype(np.uint8),
             raw_glitch_strain=glitch_strain.astype(np.float32),
             signal_strain=signal_strain.astype(np.float64),
+            target_signal_strain=target_signal_strain.astype(np.float64),
             mixture_strain=mixture_strain.astype(np.float32),
             detector_availability=availability,
             ifos=np.asarray(model_ifos),
