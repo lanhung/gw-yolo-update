@@ -417,6 +417,18 @@ def build_parser() -> argparse.ArgumentParser:
     endpoint_proposal_evaluate.add_argument("--checkpoint", required=True)
     endpoint_proposal_evaluate.add_argument("--output-dir", required=True)
 
+    endpoint_proposal_apply = subparsers.add_parser(
+        "detector-endpoint-proposal-apply"
+    )
+    endpoint_proposal_apply.add_argument("--config", required=True)
+    endpoint_proposal_apply.add_argument("--manifest", required=True)
+    endpoint_proposal_apply.add_argument("--checkpoint", required=True)
+    endpoint_proposal_apply.add_argument("--threshold", type=float, required=True)
+    endpoint_proposal_apply.add_argument(
+        "--required-split", choices=("train", "val"), required=True
+    )
+    endpoint_proposal_apply.add_argument("--output-dir", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1459,6 +1471,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.validation_manifest,
                 args.checkpoint,
+                args.output_dir,
+            )
+        )
+    elif args.command == "detector-endpoint-proposal-apply":
+        from .endpoint_proposal import run_detector_endpoint_proposal_application
+
+        _print(
+            run_detector_endpoint_proposal_application(
+                args.config,
+                args.manifest,
+                args.checkpoint,
+                args.threshold,
+                args.required_split,
                 args.output_dir,
             )
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -708,6 +709,140 @@ def run_detector_endpoint_proposal_evaluation(
         "proposal_gate_passed": selected is not None,
         "selected_threshold": selected,
         "audit_hashes": audit_hashes,
+        "elapsed_seconds": time.time() - started,
+        **execution_provenance(torch),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
+def run_detector_endpoint_proposal_application(
+    config_path: str | Path,
+    manifest_path: str | Path,
+    checkpoint_path: str | Path,
+    threshold: float,
+    required_split: str,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Apply one frozen dense proposal threshold while retaining every component."""
+
+    if torch is None:
+        raise RuntimeError("Detector endpoint proposal application requires torch")
+    if required_split not in {"train", "val"}:
+        raise ValueError("endpoint proposal application accepts only train or val")
+    if not 0 <= threshold <= 1:
+        raise ValueError("endpoint proposal application threshold is invalid")
+    config = load_yaml(config_path)
+    settings = config["detector_endpoint_proposal"]
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "threshold": float(threshold),
+        "required_split": required_split,
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report_path = output / "detector_endpoint_proposal_application.json"
+    if report_path.is_file():
+        result = json.loads(report_path.read_text(encoding="utf-8"))
+        if result.get("run_identity") != identity:
+            raise ValueError("completed endpoint proposal application has another identity")
+        return result
+    if any(output.iterdir()):
+        raise FileExistsError("endpoint proposal application output must be empty")
+    rows = [
+        json.loads(line)
+        for line in Path(manifest_path).read_text().splitlines()
+        if line
+    ]
+    if not rows or any(row.get("split") != required_split for row in rows):
+        raise ValueError("endpoint proposal application manifest has the wrong split")
+    if len({str(row["injection_id"]) for row in rows}) != len(rows):
+        raise ValueError("endpoint proposal application repeats injection IDs")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if checkpoint.get("architecture") != "detector_endpoint_spectrogram_dense_v1":
+        raise ValueError("endpoint proposal application checkpoint has the wrong architecture")
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    duration = float(settings["analysis_duration"])
+    output_bins = int(settings["output_bins"])
+    base_channels = int(settings["base_channels"])
+    expected = {
+        "model_ifos": list(model_ifos),
+        "target_sample_rate": int(settings["target_sample_rate"]),
+        "analysis_duration": duration,
+        "output_bins": output_bins,
+        "base_channels": base_channels,
+    }
+    for key, value in expected.items():
+        observed = checkpoint.get(key)
+        if key == "model_ifos" and observed is not None:
+            observed = list(observed)
+        if observed != value:
+            raise ValueError(f"endpoint proposal checkpoint {key} differs from apply config")
+    dataset = DetectorArrivalDataset(
+        rows,
+        model_ifos,
+        int(settings["target_sample_rate"]),
+        duration,
+        output_bins,
+        bool(settings.get("cache_in_memory", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DetectorArrivalSpectrogramNet(len(model_ifos), base_channels).to(device)
+    model.load_state_dict(checkpoint["model"])
+    started = time.time()
+    probabilities, availability, offsets = _predict_proposals(model, loader, device)
+    candidates = extract_dense_endpoint_candidates(
+        probabilities,
+        availability,
+        offsets,
+        rows,
+        model_ifos,
+        duration,
+        threshold,
+        int(settings.get("minimum_bins", 1)),
+    )
+    candidate_path = output / f"endpoint_{required_split}_candidates.jsonl"
+    atomic_write_text(
+        candidate_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in candidates),
+    )
+    result = {
+        "status": "frozen_dense_endpoint_proposal_application",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "candidate proposal application is not search recall and requires validation timing, "
+            "continuous background and locked-test VT"
+        ),
+        "test_evaluation": None,
+        "run_identity": identity,
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "source_manifest": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "source_rows": len(rows),
+        "unique_waveforms": len({str(row["waveform_id"]) for row in rows}),
+        "unique_gps_blocks": len({str(row["gps_block"]) for row in rows}),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "threshold": float(threshold),
+        "required_split": required_split,
+        "candidate_manifest": str(candidate_path),
+        "candidate_manifest_sha256": file_sha256(candidate_path),
+        "candidates": len(candidates),
+        "candidate_counts_by_ifo": dict(
+            sorted(Counter(str(row["ifo"]) for row in candidates).items())
+        ),
+        "all_connected_components_retained": True,
+        "top_k_pruning": None,
         "elapsed_seconds": time.time() - started,
         **execution_provenance(torch),
     }
