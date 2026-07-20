@@ -8,6 +8,7 @@ import pytest
 
 from gwyolo.physical_training import (
     build_snr_curriculum_manifest,
+    gate_component_by_ifo_snr,
     physical_split_audit,
     relative_component_mask,
     scale_component_for_transform,
@@ -28,6 +29,15 @@ def test_component_scaling_prevents_physical_float32_power_underflow() -> None:
     assert scaled[0].tolist() == pytest.approx([0.0, 0.5, -1.0])
     assert scaled[1].tolist() == [0.0, 0.0, 0.0]
     assert np.max(np.abs(scaled[0])) == 1.0
+
+
+def test_component_visibility_gate_is_per_ifo() -> None:
+    component = np.ones((2, 4))
+    gated = gate_component_by_ifo_snr(
+        component, ["H1", "L1"], {"H1": 1.5, "L1": 3.0}, 2.0
+    )
+    assert gated[0].tolist() == [0.0] * 4
+    assert gated[1].tolist() == [1.0] * 4
 
 
 def test_snr_curriculum_rescales_only_subfloor_training_rows(tmp_path) -> None:

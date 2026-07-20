@@ -49,6 +49,30 @@ def scale_component_for_transform(component: np.ndarray) -> np.ndarray:
     return np.divide(values, peaks, out=np.zeros_like(values), where=peaks > 0)
 
 
+def gate_component_by_ifo_snr(
+    component: np.ndarray,
+    ifos: list[str],
+    snr_by_ifo: dict[str, float],
+    minimum_ifo_snr: float,
+    signal_scale: float = 1.0,
+) -> np.ndarray:
+    if minimum_ifo_snr < 0 or signal_scale <= 0:
+        raise ValueError("IFO visibility SNR and signal scale are invalid")
+    values = np.asarray(component, dtype=np.float64).copy()
+    if values.ndim != 2 or values.shape[0] != len(ifos):
+        raise ValueError("component and IFO axes differ")
+    missing = [ifo for ifo in ifos if ifo not in snr_by_ifo]
+    if missing:
+        raise ValueError(f"Missing per-IFO optimal SNR for {missing}")
+    for index, ifo in enumerate(ifos):
+        effective_snr = float(snr_by_ifo[ifo]) * signal_scale
+        if not np.isfinite(effective_snr) or effective_snr < 0:
+            raise ValueError(f"Invalid effective optimal SNR for {ifo}")
+        if effective_snr < minimum_ifo_snr:
+            values[index] = 0.0
+    return values
+
+
 def physical_split_audit(
     train_rows: list[dict[str, Any]], validation_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -125,6 +149,18 @@ class PhysicalInjectionDataset:
             raise ValueError("training signal scale must be finite and positive")
         signal = np.asarray(context["signal"], dtype=np.float64) * signal_scale
         mixture = np.asarray(context["noise"], dtype=np.float64) + signal
+        target_signal = signal
+        minimum_ifo_mask_snr = self.tensor_config.get("minimum_ifo_mask_snr")
+        if minimum_ifo_mask_snr is not None:
+            if "optimal_snr_by_ifo" not in self.rows[index]:
+                raise ValueError("Visibility-gated masks require per-IFO optimal SNR annotation")
+            target_signal = gate_component_by_ifo_snr(
+                signal,
+                ifos,
+                self.rows[index]["optimal_snr_by_ifo"],
+                float(minimum_ifo_mask_snr),
+                signal_scale=signal_scale,
+            )
         for ifo in self.model_ifos:
             if ifo not in ifos:
                 mixture_planes.append(np.zeros(output_samples, dtype=np.float32))
@@ -135,7 +171,7 @@ class PhysicalInjectionDataset:
                 mixture[ifo_index], source_rate, self.target_sample_rate
             )
             signal_context = _fft_downsample(
-                signal[ifo_index], source_rate, self.target_sample_rate
+                target_signal[ifo_index], source_rate, self.target_sample_rate
             )
             mixture_planes.append(
                 _whiten(mixture_context)[target_start : target_start + output_samples]

@@ -126,3 +126,7 @@ loss at low SNR stays visible rather than being removed from evaluation.
 their signal-only component into an SNR 4–8 curriculum band. It never accepts validation/test rows,
 does not alter their population weights, and explicitly reports that rescaling adds no independent
 waveforms or GPS blocks.
+Mask supervision is also visibility-aware per detector: an IFO plane below the configured optimal-SNR
+floor is target-negative even when the network injection is retained, while the physically scaled
+signal remains in the mixture input. This prevents the loss from demanding a resolved mask in an
+antenna-suppressed detector and preserves the louder detector's instance mask.
