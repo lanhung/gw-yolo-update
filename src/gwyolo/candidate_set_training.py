@@ -167,6 +167,58 @@ def candidate_pair_strain_feature_vector(
     return result
 
 
+def candidate_pair_aligned_strain_crop(
+    first: dict[str, Any],
+    second: dict[str, Any],
+    strain: np.ndarray,
+    model_ifos: tuple[str, ...],
+    analysis_start_gps: float,
+    sample_rate: int,
+    crop_duration_seconds: float,
+    clip_amplitude: float,
+) -> np.ndarray:
+    """Extract a truth-free H1/L1 crop on one shared GPS time axis."""
+
+    values = np.asarray(strain, dtype=np.float32)
+    first_ifo, second_ifo = str(first["ifo"]), str(second["ifo"])
+    if (
+        values.ndim != 2
+        or values.shape[0] != len(model_ifos)
+        or first_ifo not in model_ifos
+        or second_ifo not in model_ifos
+        or first_ifo == second_ifo
+        or sample_rate <= 0
+        or crop_duration_seconds <= 0
+        or clip_amplitude <= 0
+    ):
+        raise ValueError("candidate pair aligned strain crop inputs are invalid")
+    samples = int(round(crop_duration_seconds * sample_rate))
+    if samples < 16 or not np.isclose(
+        samples / sample_rate, crop_duration_seconds, rtol=0, atol=1e-9
+    ):
+        raise ValueError("candidate pair crop duration must map to at least 16 samples")
+    centers = [
+        0.5 * (float(row["gps_start"]) + float(row["gps_end"]))
+        for row in (first, second)
+    ]
+    if not np.isfinite(centers).all():
+        raise ValueError("candidate pair crop centers are invalid")
+    crop_start_gps = float(np.mean(centers)) - crop_duration_seconds / 2
+    source_start = int(round((crop_start_gps - analysis_start_gps) * sample_rate))
+    source_stop = source_start + samples
+    valid_start = max(source_start, 0)
+    valid_stop = min(source_stop, values.shape[1])
+    output = np.zeros((2, samples), dtype=np.float32)
+    if valid_stop > valid_start:
+        target_start = valid_start - source_start
+        target_stop = target_start + valid_stop - valid_start
+        for output_index, ifo in enumerate((first_ifo, second_ifo)):
+            output[output_index, target_start:target_stop] = values[
+                model_ifos.index(ifo), valid_start:valid_stop
+            ]
+    return np.clip(output, -clip_amplitude, clip_amplitude).astype(np.float16)
+
+
 def candidate_parent_top1_metrics(
     parent_ids: list[str],
     example_parent_ids: list[str],
@@ -239,7 +291,14 @@ def _build_examples(
     strain_contexts: dict[str, tuple[np.ndarray, float]] | None = None,
     model_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
     sample_rate: int = 1024,
+    include_strain_summary: bool = False,
+    strain_crop_seconds: float | None = None,
+    strain_clip_amplitude: float = 32.0,
 ) -> dict[str, Any]:
+    if include_strain_summary and strain_crop_seconds is not None:
+        raise ValueError("candidate pair examples cannot mix summary and STFT strain modes")
+    if (include_strain_summary or strain_crop_seconds is not None) and strain_contexts is None:
+        raise ValueError("candidate pair strain mode requires parent strain contexts")
     parent_map = {str(row["injection_id"]): row for row in parents}
     by_parent: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
@@ -255,6 +314,7 @@ def _build_examples(
     exact_labels = []
     peak_errors = []
     example_parent_ids = []
+    strain_crops = []
     retained_negative_pairs = 0
     available_negative_pairs = 0
     for injection_id, parent in sorted(parent_map.items()):
@@ -285,7 +345,8 @@ def _build_examples(
                     physical_delay_limit_seconds,
                     width_scale_seconds,
                 )
-                if strain_contexts is not None:
+                aligned_crop = None
+                if include_strain_summary:
                     if injection_id not in strain_contexts:
                         raise ValueError("candidate pair strain context is absent")
                     strain, analysis_start = strain_contexts[injection_id]
@@ -304,6 +365,20 @@ def _build_examples(
                             ),
                         ]
                     ).astype(np.float32)
+                elif strain_crop_seconds is not None:
+                    if injection_id not in strain_contexts:
+                        raise ValueError("candidate pair strain context is absent")
+                    strain, analysis_start = strain_contexts[injection_id]
+                    aligned_crop = candidate_pair_aligned_strain_crop(
+                        first,
+                        second,
+                        strain,
+                        model_ifos,
+                        analysis_start,
+                        sample_rate,
+                        strain_crop_seconds,
+                        strain_clip_amplitude,
+                    )
                 rows.append(
                     {
                         "features": feature_vector,
@@ -311,6 +386,7 @@ def _build_examples(
                         "exact": bool(support["exact"]),
                         "peak_error": float(support["maximum_peak_error_seconds"]),
                         "pair_id": f'{first["candidate_id"]}|{second["candidate_id"]}',
+                        "strain_crop": aligned_crop,
                     }
                 )
         positives = [row for row in rows if row["padded"]]
@@ -334,9 +410,11 @@ def _build_examples(
             exact_labels.append(row["exact"])
             peak_errors.append(row["peak_error"])
             example_parent_ids.append(injection_id)
+            if strain_crop_seconds is not None:
+                strain_crops.append(row["strain_crop"])
     if not eligible or not features or not any(padded_labels) or all(padded_labels):
         raise ValueError("candidate pair training examples lack parents or class diversity")
-    return {
+    result = {
         "parent_ids": eligible,
         "features": np.stack(features),
         "padded_labels": np.asarray(padded_labels, dtype=bool),
@@ -346,6 +424,15 @@ def _build_examples(
         "available_negative_pairs": available_negative_pairs,
         "retained_negative_pairs": retained_negative_pairs,
     }
+    if strain_crop_seconds is not None:
+        result["strain_crops"] = np.stack(strain_crops)
+        if result["strain_crops"].shape != (
+            len(features),
+            2,
+            int(round(strain_crop_seconds * sample_rate)),
+        ):
+            raise ValueError("candidate pair strain crops do not align with examples")
+    return result
 
 
 def _build_strain_contexts(
@@ -395,9 +482,85 @@ if nn is not None:
         def forward(self, value: Any) -> Any:
             return self.network(value)[:, 0]
 
+
+    class CandidatePairTimeFrequencyEncoder(nn.Module):
+        """Shared per-IFO STFT encoder with a symmetric pair-ranking head."""
+
+        def __init__(
+            self,
+            scalar_features: int,
+            hidden_features: int,
+            embedding_features: int,
+            stft_n_fft: int,
+            stft_hop_length: int,
+        ):
+            super().__init__()
+            if (
+                scalar_features <= 0
+                or hidden_features <= 0
+                or embedding_features <= 0
+                or stft_n_fft < 16
+                or stft_hop_length <= 0
+                or stft_hop_length > stft_n_fft
+            ):
+                raise ValueError("candidate pair STFT encoder settings are invalid")
+            self.stft_n_fft = stft_n_fft
+            self.stft_hop_length = stft_hop_length
+            self.register_buffer("stft_window", torch.hann_window(stft_n_fft))
+            self.shared_encoder = nn.Sequential(
+                nn.Conv2d(1, 8, kernel_size=3, padding=1),
+                nn.GroupNorm(4, 8),
+                nn.SiLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(8, 16, kernel_size=3, padding=1),
+                nn.GroupNorm(4, 16),
+                nn.SiLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(16, embedding_features, kernel_size=3, padding=1),
+                nn.SiLU(),
+                nn.AdaptiveAvgPool2d((1, 1)),
+            )
+            self.ranker = nn.Sequential(
+                nn.Linear(scalar_features + 4 * embedding_features, hidden_features),
+                nn.LayerNorm(hidden_features),
+                nn.SiLU(),
+                nn.Linear(hidden_features, hidden_features),
+                nn.SiLU(),
+                nn.Linear(hidden_features, 1),
+            )
+
+        def forward(self, scalar: Any, strain_crops: Any) -> Any:
+            if strain_crops.ndim != 3 or strain_crops.shape[1] != 2:
+                raise ValueError("candidate pair STFT encoder expects [batch, 2, samples]")
+            batch = strain_crops.shape[0]
+            flattened = strain_crops.float().reshape(batch * 2, -1)
+            spectrum = torch.stft(
+                flattened,
+                n_fft=self.stft_n_fft,
+                hop_length=self.stft_hop_length,
+                window=self.stft_window,
+                center=False,
+                return_complex=True,
+            ).abs()
+            spectrum = torch.log1p(spectrum)
+            mean = spectrum.mean(dim=(-2, -1), keepdim=True)
+            scale = spectrum.std(dim=(-2, -1), keepdim=True).clamp_min(1e-4)
+            encoded = self.shared_encoder(((spectrum - mean) / scale)[:, None])
+            encoded = encoded.reshape(batch, 2, -1)
+            first, second = encoded[:, 0], encoded[:, 1]
+            pair = torch.cat(
+                [first, second, torch.abs(first - second), first * second, scalar],
+                dim=1,
+            )
+            return self.ranker(pair)[:, 0]
+
 else:
 
     class CandidatePairMLP:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            raise RuntimeError("Candidate pair training requires torch")
+
+    class CandidatePairTimeFrequencyEncoder:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             raise RuntimeError("Candidate pair training requires torch")
 
@@ -413,7 +576,15 @@ def _evaluate_pair_model(
     scores = []
     with torch.no_grad():
         for start in range(0, len(features), batch_size):
-            scores.append(torch.sigmoid(model(features[start : start + batch_size].to(device))).cpu())
+            batch_features = features[start : start + batch_size].to(device)
+            if "strain_crops" in examples:
+                batch_crops = torch.from_numpy(
+                    examples["strain_crops"][start : start + batch_size]
+                ).to(device)
+                logits = model(batch_features, batch_crops)
+            else:
+                logits = model(batch_features)
+            scores.append(torch.sigmoid(logits).cpu())
     values = torch.cat(scores).numpy()
     metrics = candidate_parent_top1_metrics(
         examples["parent_ids"],
@@ -542,7 +713,15 @@ def run_candidate_pair_ranker_training(
         float(settings["positive_padding_seconds"]),
     )
     use_strain_features = bool(settings.get("use_strain_pair_features", False))
-    model_ifos = tuple(str(value) for value in settings.get("model_ifos", ["H1", "L1", "V1"]))
+    use_time_frequency_encoder = bool(
+        settings.get("use_time_frequency_pair_encoder", False)
+    )
+    if use_strain_features and use_time_frequency_encoder:
+        raise ValueError("candidate pair ranker permits only one strain representation")
+    model_ifos = tuple(
+        str(value)
+        for value in settings.get("model_ifos", ["H1", "L1", "V1"])
+    )
     target_sample_rate = int(settings.get("target_sample_rate", 1024))
     train_contexts = (
         _build_strain_contexts(
@@ -552,7 +731,7 @@ def run_candidate_pair_ranker_training(
             float(settings["analysis_duration_seconds"]),
             int(settings["parent_output_bins"]),
         )
-        if use_strain_features
+        if use_strain_features or use_time_frequency_encoder
         else None
     )
     validation_contexts = (
@@ -563,7 +742,7 @@ def run_candidate_pair_ranker_training(
             float(settings["analysis_duration_seconds"]),
             int(settings["parent_output_bins"]),
         )
-        if use_strain_features
+        if use_strain_features or use_time_frequency_encoder
         else None
     )
     train_examples = _build_examples(
@@ -575,6 +754,13 @@ def run_candidate_pair_ranker_training(
         train_contexts,
         model_ifos,
         target_sample_rate,
+        use_strain_features,
+        (
+            float(settings["strain_crop_seconds"])
+            if use_time_frequency_encoder
+            else None
+        ),
+        float(settings.get("strain_clip_amplitude", 32.0)),
     )
     validation_examples = _build_examples(
         validation_parents,
@@ -585,12 +771,37 @@ def run_candidate_pair_ranker_training(
         validation_contexts,
         model_ifos,
         target_sample_rate,
+        use_strain_features,
+        (
+            float(settings["strain_crop_seconds"])
+            if use_time_frequency_encoder
+            else None
+        ),
+        float(settings.get("strain_clip_amplitude", 32.0)),
     )
     input_features = int(train_examples["features"].shape[1])
     if validation_examples["features"].shape[1] != input_features:
         raise ValueError("candidate pair train/validation features differ")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CandidatePairMLP(input_features, int(settings["hidden_features"])).to(device)
+    architecture = (
+        "candidate_pair_trainable_stft_cnn_v3"
+        if use_time_frequency_encoder
+        else "candidate_pair_mlp_strain_coherence_v2"
+        if use_strain_features
+        else "candidate_pair_mlp_v1"
+    )
+    if use_time_frequency_encoder:
+        model = CandidatePairTimeFrequencyEncoder(
+            input_features,
+            int(settings["hidden_features"]),
+            int(settings["embedding_features"]),
+            int(settings["stft_n_fft"]),
+            int(settings["stft_hop_length"]),
+        ).to(device)
+    else:
+        model = CandidatePairMLP(
+            input_features, int(settings["hidden_features"])
+        ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -599,8 +810,13 @@ def run_candidate_pair_ranker_training(
     features = torch.from_numpy(train_examples["features"])
     labels = torch.from_numpy(train_examples["padded_labels"].astype(np.float32))
     generator = torch.Generator().manual_seed(seed)
+    training_tensors = (
+        (features, torch.from_numpy(train_examples["strain_crops"]), labels)
+        if use_time_frequency_encoder
+        else (features, labels)
+    )
     loader = DataLoader(
-        TensorDataset(features, labels),
+        TensorDataset(*training_tensors),
         batch_size=int(settings["batch_size"]),
         shuffle=True,
         generator=generator,
@@ -635,11 +851,19 @@ def run_candidate_pair_ranker_training(
     for epoch in range(start_epoch, int(settings["epochs"]) + 1):
         model.train()
         losses = []
-        for batch_features, batch_labels in loader:
+        for batch in loader:
             if updates >= maximum_updates:
                 break
+            if use_time_frequency_encoder:
+                batch_features, batch_crops, batch_labels = batch
+            else:
+                batch_features, batch_labels = batch
             optimizer.zero_grad(set_to_none=True)
-            logits = model(batch_features.to(device))
+            logits = (
+                model(batch_features.to(device), batch_crops.to(device))
+                if use_time_frequency_encoder
+                else model(batch_features.to(device))
+            )
             loss = torch_functional.binary_cross_entropy_with_logits(
                 logits, batch_labels.to(device), pos_weight=positive_weight
             )
@@ -666,11 +890,7 @@ def run_candidate_pair_ranker_training(
             _atomic_torch_save(
                 checkpoint_path,
                 {
-                    "architecture": (
-                        "candidate_pair_mlp_strain_coherence_v2"
-                        if use_strain_features
-                        else "candidate_pair_mlp_v1"
-                    ),
+                    "architecture": architecture,
                     "model": model.state_dict(),
                     "input_features": input_features,
                     "hidden_features": int(settings["hidden_features"]),
@@ -731,16 +951,19 @@ def run_candidate_pair_ranker_training(
         "test_evaluation": None,
         "run_identity": identity,
         "split_audit": split_audit,
-        "architecture": (
-            "candidate_pair_mlp_strain_coherence_v2"
-            if use_strain_features
-            else "candidate_pair_mlp_v1"
-        ),
+        "architecture": architecture,
         "input_features": input_features,
         "strain_pair_features": use_strain_features,
+        "time_frequency_pair_encoder": use_time_frequency_encoder,
         "strain_feature_definition": (
             "absolute/signed physical-lag correlation, local RMS/peak amplitudes and ROI duration"
             if use_strain_features
+            else None
+        ),
+        "time_frequency_feature_definition": (
+            "shared-GPS aligned whitened H1/L1 crops, trainable log-STFT shared-IFO CNN, "
+            "ordered detector embeddings, difference/product fusion and proposal geometry"
+            if use_time_frequency_encoder
             else None
         ),
         "detector_pair": [first_ifo, second_ifo],

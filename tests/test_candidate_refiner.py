@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from gwyolo.candidate_set_training import (
+    candidate_pair_aligned_strain_crop,
     candidate_pair_feature_vector,
     candidate_pair_strain_feature_vector,
     candidate_parent_top1_metrics,
@@ -192,6 +193,31 @@ def test_candidate_interval_pair_features_by_hand() -> None:
     )
     assert strain_features.shape == (7,)
     assert np.isclose(strain_features[0], 1.0)
+
+
+def test_candidate_pair_aligned_crop_uses_one_truth_free_gps_axis() -> None:
+    first = {"ifo": "H1", "gps_start": 0.8, "gps_end": 1.0}
+    second = {"ifo": "L1", "gps_start": 1.0, "gps_end": 1.2}
+    strain = np.stack(
+        [
+            np.arange(40, dtype=np.float32),
+            100 + np.arange(40, dtype=np.float32),
+        ]
+    )
+    crop = candidate_pair_aligned_strain_crop(
+        first,
+        second,
+        strain,
+        ("H1", "L1"),
+        analysis_start_gps=0.0,
+        sample_rate=20,
+        crop_duration_seconds=1.0,
+        clip_amplitude=200.0,
+    )
+    assert crop.dtype == np.float16
+    assert crop.shape == (2, 20)
+    assert np.array_equal(crop[0], np.arange(10, 30, dtype=np.float16))
+    assert np.array_equal(crop[1], 100 + np.arange(10, 30, dtype=np.float16))
 
 
 def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:
