@@ -613,6 +613,28 @@ def _build_strain_contexts(
     return contexts
 
 
+def candidate_pair_optimizer_budget(
+    settings: dict[str, Any], batches_per_epoch: int
+) -> tuple[str, int]:
+    """Resolve predeclared fixed-update or fixed-epoch controls."""
+
+    epochs = int(settings["epochs"])
+    if epochs <= 0 or batches_per_epoch <= 0:
+        raise ValueError("candidate pair ranker epoch geometry is invalid")
+    mode = str(settings.get("budget_mode", "fixed_updates"))
+    if mode == "fixed_epochs":
+        if "max_optimizer_updates" in settings:
+            raise ValueError("fixed-epoch candidate ranker must not set max updates")
+        updates = epochs * batches_per_epoch
+    elif mode == "fixed_updates":
+        updates = int(settings["max_optimizer_updates"])
+    else:
+        raise ValueError("candidate pair ranker budget mode is invalid")
+    if updates <= 0 or updates > epochs * batches_per_epoch:
+        raise ValueError("candidate pair ranker optimizer budget is invalid")
+    return mode, updates
+
+
 if nn is not None:
 
     class CandidatePairMLP(nn.Module):
@@ -979,9 +1001,9 @@ def run_candidate_pair_ranker_training(
     best_key = (float("inf"), float("inf"), float("inf"))
     best_epoch = None
     updates = 0
-    maximum_updates = int(settings["max_optimizer_updates"])
-    if maximum_updates <= 0 or maximum_updates > int(settings["epochs"]) * len(loader):
-        raise ValueError("candidate pair ranker optimizer budget is invalid")
+    budget_mode, maximum_updates = candidate_pair_optimizer_budget(
+        settings, len(loader)
+    )
     start_epoch = 1
     if resume_path.is_file():
         resume = torch.load(resume_path, map_location=device, weights_only=False)
@@ -1124,6 +1146,14 @@ def run_candidate_pair_ranker_training(
             "retained": train_examples["retained_negative_pairs"],
             "all_positive_pairs_retained": True,
         },
+        "train_physical_parents": len(train_examples["parent_ids"]),
+        "train_unique_waveforms": len(
+            {str(row["waveform_id"]) for row in train_parents}
+        ),
+        "train_unique_gps_blocks": len(
+            {str(row["gps_block"]) for row in train_parents}
+        ),
+        "train_candidate_rows": len(train_candidates),
         "train_pairs": len(train_examples["features"]),
         "validation_selection_pairs": len(validation_examples["features"]),
         "validation_selection_parents": len(validation_examples["parent_ids"]),
@@ -1134,8 +1164,19 @@ def run_candidate_pair_ranker_training(
         "selection_gate_checks": gates,
         "selection_gate_passed": all(gates.values()),
         "optimizer_updates": updates,
+        "budget_mode": budget_mode,
         "max_optimizer_updates": maximum_updates,
         "training_budget_reached": updates == maximum_updates,
+        "strain_crop_shape": (
+            list(train_examples["strain_crops"].shape[1:])
+            if use_time_frequency_encoder
+            else None
+        ),
+        "strain_crop_storage_dtype": (
+            str(train_examples["strain_crops"].dtype)
+            if use_time_frequency_encoder
+            else None
+        ),
         "completed_epochs": len(history),
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),

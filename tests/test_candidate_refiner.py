@@ -6,6 +6,7 @@ import pytest
 from gwyolo.candidate_set_training import (
     candidate_pair_aligned_strain_crop,
     candidate_pair_feature_vector,
+    candidate_pair_optimizer_budget,
     candidate_pair_strain_feature_vector,
     candidate_parent_top1_metrics,
     run_candidate_pair_scaling_plan,
@@ -285,6 +286,25 @@ def test_candidate_pair_scaling_plan_counts_physical_parents_not_candidates(
     ]
     assert all(row["refiner_role"] == "train" for row in planned)
     assert all(row["training_parent_scale"] == 3 for row in planned)
+
+
+def test_candidate_pair_budget_separates_fixed_updates_from_fixed_epochs() -> None:
+    assert candidate_pair_optimizer_budget(
+        {"budget_mode": "fixed_updates", "epochs": 10, "max_optimizer_updates": 12},
+        3,
+    ) == ("fixed_updates", 12)
+    assert candidate_pair_optimizer_budget(
+        {"budget_mode": "fixed_epochs", "epochs": 4}, 7
+    ) == ("fixed_epochs", 28)
+    with pytest.raises(ValueError, match="must not set max updates"):
+        candidate_pair_optimizer_budget(
+            {
+                "budget_mode": "fixed_epochs",
+                "epochs": 4,
+                "max_optimizer_updates": 28,
+            },
+            7,
+        )
 
 
 def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:

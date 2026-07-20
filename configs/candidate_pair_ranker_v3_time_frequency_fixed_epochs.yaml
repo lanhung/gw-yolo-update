@@ -17,9 +17,8 @@ candidate_pair_ranker:
   stft_hop_length: 16
   embedding_features: 32
   hidden_features: 128
-  budget_mode: fixed_updates
-  epochs: 50
-  max_optimizer_updates: 900
+  budget_mode: fixed_epochs
+  epochs: 4
   batch_size: 128
   evaluation_batch_size: 256
   learning_rate: 0.0003
