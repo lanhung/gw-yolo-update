@@ -111,6 +111,17 @@ validation split maps 7,643/8,257 anchors to 4,851 official files (plan SHA256
 `3d25dcffe9ea9e5d2d8a7a19a6590051fe8209f0b09afcdddb905d441389f9b1`); 20 labels reach at least
 20 examples, while only eight complete-context `Wandering_Line` examples exist. Validation
 materialization is running before any real-glitch model selection. All masks remain weak metadata
+supervision.
+
+The train deficit selection was reproduced under the standardized provenance contract at commit
+`6b88e9b`; its manifest remained bit-identical at
+`0eb8272a498770e6b4eab7ffcebf3b68bdbd7397d59a82680c49a5cd9a429cd0`. The selection report
+SHA256 is `9ec446317e33b4cc36e2727a9806e775e2167f774042461c6092fca8821b179c`. Its 1,075 rows and 36
+official files are now assigned to 36 single-file resumable shards with manifest SHA256
+`0d65cf37e420f56fb56178dcca97e1a72c37feeba68ae6466a3426ebbcdec918` and report SHA256
+`544a2c4968d08693bf205ee5a16a11bb3bf35c5c9f77cd48e0a3f84fbc6fac00`. Train acquisition is
+queued only after validation acquisition releases the bounded source cache; every source will again
+be evicted only after numeric-output verification.
 supervision and cannot support a segmentation claim without a frozen human pixel-mask audit.
 
 ## Evidence boundary
