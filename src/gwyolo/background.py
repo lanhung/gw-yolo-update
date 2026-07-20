@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -143,18 +144,26 @@ def plan_background_windows(
         for ifo in sorted(files)
     }
     candidates = []
+    rejections: Counter[str] = Counter()
+    grid_windows = 0
     first_start = int(math.ceil(common_start / stride) * stride)
     for gps_start in range(first_start, common_end - window_duration + 1, stride):
+        grid_windows += 1
         gps_end = gps_start + window_duration
         center = (gps_start + gps_end) / 2
         if (
             center - context_duration / 2 < common_start
             or center + context_duration / 2 > common_end
         ):
+            rejections["insufficient_preprocessing_context"] += 1
             continue
         block_index = (gps_start - common_start) // block_duration
         block_start = common_start + block_index * block_duration
-        if gps_end > block_start + block_duration or _overlaps(gps_start, gps_end, exclusions):
+        if gps_end > block_start + block_duration:
+            rejections["crosses_gps_block_boundary"] += 1
+            continue
+        if _overlaps(gps_start, gps_end, exclusions):
+            rejections["catalog_or_declared_exclusion"] += 1
             continue
         dq_values = []
         injection_values = []
@@ -168,14 +177,17 @@ def plan_background_windows(
             injection = item["injmask"][start_index:stop_index]
             expected_context_seconds = context_stop - context_start
             if dq.size != expected_context_seconds or injection.size != expected_context_seconds:
+                rejections["incomplete_quality_context"] += 1
                 valid = False
                 break
             if required_dq_bits and np.any((dq & required_dq_bits) != required_dq_bits):
+                rejections["required_dq_bits_missing_in_context"] += 1
                 valid = False
                 break
             if required_injection_bits and np.any(
                 (injection & required_injection_bits) != required_injection_bits
             ):
+                rejections["required_no_injection_bits_missing_in_context"] += 1
                 valid = False
                 break
             dq_values.extend(int(value) for value in dq)
@@ -231,6 +243,9 @@ def plan_background_windows(
         "required_injection_bits": required_injection_bits,
         "excluded_intervals": exclusions,
         "windows": len(candidates),
+        "candidate_grid_windows": grid_windows,
+        "rejected_windows": sum(rejections.values()),
+        "rejection_counts": dict(sorted(rejections.items())),
         "unique_gps_blocks": len(block_mapping),
         "cross_split_block_overlaps": overlaps,
         "splits": split_summary,
@@ -314,8 +329,10 @@ def run_batch_background_plan(
         raise ValueError("Batch report does not contain complete, consistent multi-IFO pairs")
     batch_sha = file_sha256(batch_report_path)
     rows = []
+    aggregate_grid_windows = 0
+    aggregate_rejections: Counter[str] = Counter()
     for pair_id in sorted(by_pair, key=lambda value: pair_gps[value]):
-        pair_rows, _ = plan_background_windows(
+        pair_rows, pair_report = plan_background_windows(
             by_pair[pair_id],
             window_duration=window_duration,
             stride=stride,
@@ -328,6 +345,8 @@ def run_batch_background_plan(
             test_fraction=0,
             seed=seed,
         )
+        aggregate_grid_windows += int(pair_report["candidate_grid_windows"])
+        aggregate_rejections.update(pair_report["rejection_counts"])
         for row in pair_rows:
             row["pair_id"] = pair_id
             row["observing_run"] = batch["run"]
@@ -386,6 +405,9 @@ def run_batch_background_plan(
         "required_dq_bits": required_dq_bits,
         "required_injection_bits": required_injection_bits,
         "windows": len(rows),
+        "candidate_grid_windows": aggregate_grid_windows,
+        "rejected_windows": sum(aggregate_rejections.values()),
+        "rejection_counts": dict(sorted(aggregate_rejections.items())),
         "unique_gps_blocks": len(block_mapping),
         "cross_split_block_overlaps": overlaps,
         "splits": split_summary,

@@ -92,7 +92,7 @@ def test_background_excludes_windows_without_full_preprocessing_context(tmp_path
 def test_background_dq_gate_covers_full_whitening_context(tmp_path) -> None:
     h1 = tmp_path / "h1.hdf5"
     _write_quality_file(h1, 1000, 64, bad_second=30)
-    rows, _ = plan_background_windows(
+    rows, report = plan_background_windows(
         {"H1": h1},
         window_duration=8,
         stride=8,
@@ -106,6 +106,7 @@ def test_background_dq_gate_covers_full_whitening_context(tmp_path) -> None:
     assert 1032 not in starts
     assert 1016 in starts
     assert 1040 in starts
+    assert report["rejection_counts"]["required_dq_bits_missing_in_context"] == 2
 
 
 def test_background_run_requires_hash_matched_verified_sources(tmp_path: Path) -> None:
