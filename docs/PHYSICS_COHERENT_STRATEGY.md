@@ -178,6 +178,16 @@ feasibility only. It is explicitly not a real-background, false-alarm or ranking
 valid comparison must score identical continuous O4a background with morphology-only and
 coherence-assisted frozen candidates.
 
+That comparison path is now executable. With `--coherence-config`, both background and injection
+scorers retain the morphology score and additionally crop the same one-second whitened strain ROI
+around the network mask peak. For every available detector pair they maximize absolute normalized
+correlation only inside the predeclared light-travel limit plus the 1 ms timing allowance. The
+coherence-assisted ranking is the morphology score times the square root of mean pairwise absolute
+correlation. Coarse mask-bin arrivals are not mislabeled as a timing gate. The command
+`coherence-validation-compare` independently calibrates morphology and coherence thresholds on the
+same validation background count and performs an injection-paired `<VT>` bootstrap. It remains a
+short-exposure development comparison until continuous clustered background and time slides exist.
+
 The first detector-set architecture boundary is now implemented separately from the running
 fixed-channel control. `DetectorSetQNet` applies one shared Q-plane encoder to every configured IFO,
 uses an explicit binary availability tensor to mask set-attention, fuses only available detectors,

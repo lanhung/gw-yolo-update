@@ -23,6 +23,7 @@ physics_coherent_pilot:
   coherence:
     sample_rate: 1024
     timing_uncertainty_seconds: 0.001
+    roi_duration_seconds: 1.0
     maximum_pair_delay_seconds:
       H1-L1: 0.010
       H1-V1: 0.027

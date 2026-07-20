@@ -8,6 +8,7 @@ from gwyolo.search import (
     aggregate_physical_endpoint_records,
     calibrate_threshold,
     compare_search_methods,
+    compare_validation_score_fields,
     detector_subset_noninferiority,
     evaluate_search,
     far_upper_limit_zero_count,
@@ -106,6 +107,26 @@ def test_detector_subset_noninferiority_uses_paired_lower_bound() -> None:
     assert result["passed"] is True
     comparison["paired_bootstrap_95"][0] = -11.0
     assert detector_subset_noninferiority(comparison, 0.1)["passed"] is False
+
+
+def test_validation_score_comparison_calibrates_both_fields_by_hand() -> None:
+    background = [
+        {"split": "val", "raw": 0.9, "coherent": 0.8},
+        {"split": "val", "raw": 0.7, "coherent": 0.6},
+        {"split": "val", "raw": 0.1, "coherent": 0.2},
+    ]
+    injections = [
+        {"split": "val", "raw": 0.8, "coherent": 0.9, "vt_weight": 2.0},
+        {"split": "val", "raw": 0.6, "coherent": 0.7, "vt_weight": 1.0},
+    ]
+    result = compare_validation_score_fields(
+        background, injections, 1, "raw", "coherent", bootstrap_replicates=20, seed=1
+    )
+    assert result["calibrations"]["raw"]["threshold"] == 0.9
+    assert result["calibrations"]["coherent"]["threshold"] == 0.8
+    assert result["injection_summaries"]["raw"]["recovered_vt"] == 0.0
+    assert result["injection_summaries"]["coherent"]["recovered_vt"] == 2.0
+    assert result["paired_comparison"]["delta_recovered_vt_b_minus_a"] == 2.0
 
 
 def test_search_comparison_calibrates_each_method_on_validation_only():

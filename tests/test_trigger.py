@@ -9,9 +9,35 @@ import pytest
 from gwyolo.trigger import (
     _load_resumable_trigger_rows,
     _save_trigger_progress,
+    coherence_assisted_summary,
     network_ranking,
     probability_summaries,
 )
+
+
+def test_coherence_assisted_score_uses_physical_lag_roi_by_hand() -> None:
+    strain = np.zeros((2, 200), dtype=np.float64)
+    strain[0, 100] = 1.0
+    strain[1, 101] = -1.0
+    peaks = {
+        "H1": {"offset_seconds": 1.0},
+        "L1": {"offset_seconds": 1.0},
+    }
+    result = coherence_assisted_summary(
+        strain,
+        ("H1", "L1"),
+        ["H1", "L1"],
+        100,
+        peaks,
+        0.8,
+        {"H1-L1": 0.01},
+        0.0,
+        1.0,
+    )
+    assert result["coherence_evaluable"] is True
+    assert result["coherence_mean_absolute_correlation"] == 1.0
+    assert result["coherence_features"][0]["lag_samples"] == 1
+    assert result["coherence_assisted_score"] == pytest.approx(0.8)
 
 
 def test_network_ranking_uses_second_loudest_valid_ifo() -> None:

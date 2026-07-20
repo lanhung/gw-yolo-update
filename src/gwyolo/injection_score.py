@@ -18,7 +18,11 @@ from .io import (
     load_yaml,
     training_tensor_config,
 )
-from .trigger import probability_summaries
+from .trigger import (
+    _coherence_settings,
+    coherence_assisted_summary,
+    probability_summaries,
+)
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
 
@@ -100,6 +104,7 @@ def score_materialized_injections(
     save_probabilities: bool = False,
     required_split: str | None = None,
     enabled_ifos: tuple[str, ...] | None = None,
+    coherence_config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -109,6 +114,7 @@ def score_materialized_injections(
 
     config = load_yaml(config_path)
     tensor_config = training_tensor_config(config)
+    coherence = _coherence_settings(coherence_config_path, target_sample_rate)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     enabled_ifos = model_ifos if enabled_ifos is None else enabled_ifos
@@ -150,6 +156,9 @@ def score_materialized_injections(
         "save_probabilities": save_probabilities,
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
+        "coherence_config_sha256": (
+            coherence["config_sha256"] if coherence is not None else None
+        ),
         "whitening": str(tensor_config.get("whitening", "self")),
         "required_split": required_split,
         "code_commit": execution_provenance()["code_commit"],
@@ -240,6 +249,20 @@ def score_materialized_injections(
                 analysis_start,
                 source_duration,
             )
+            if coherence is not None:
+                summary.update(
+                    coherence_assisted_summary(
+                        strain,
+                        model_ifos,
+                        valid_ifos,
+                        target_sample_rate,
+                        summary["peak_times"]["chirp"],
+                        summary["ranking_score"],
+                        coherence["limits_seconds"],
+                        coherence["timing_uncertainty_seconds"],
+                        coherence["roi_duration_seconds"],
+                    )
+                )
             probability_record = {}
             if save_probabilities:
                 probability_path = output / "probabilities" / f"{row['injection_id']}.npz"
@@ -298,6 +321,7 @@ def score_materialized_injections(
         "q_values": list(q_values),
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
+        "coherence": coherence,
         "target_sample_rate": target_sample_rate,
         "probabilities_saved": save_probabilities,
         "required_split": required_split,

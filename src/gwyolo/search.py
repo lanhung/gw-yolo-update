@@ -706,6 +706,121 @@ def run_physical_validation_endpoint(
     return result
 
 
+def compare_validation_score_fields(
+    background_rows: list[dict[str, Any]],
+    injection_rows: list[dict[str, Any]],
+    maximum_validation_false_alarms: int,
+    score_field_a: str,
+    score_field_b: str,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Compare two predeclared rankings using validation-only count calibration."""
+    if not background_rows or not injection_rows:
+        raise ValueError("validation score comparison requires background and injections")
+    for label, rows in (("background", background_rows), ("injection", injection_rows)):
+        if any(row.get("split") != "val" for row in rows):
+            raise ValueError(f"validation score comparison received non-val {label} rows")
+        missing = [
+            index
+            for index, row in enumerate(rows)
+            if score_field_a not in row or score_field_b not in row
+        ]
+        if missing:
+            raise ValueError(f"validation {label} rows lack compared scores: {missing[:10]}")
+    calibrations = {
+        field: calibrate_validation_count(
+            (float(row[field]) for row in background_rows),
+            maximum_validation_false_alarms,
+        )
+        for field in (score_field_a, score_field_b)
+    }
+    summaries = {
+        field: summarize_injection_efficiency(
+            injection_rows,
+            float(calibrations[field]["threshold"]),
+            field,
+            bootstrap_replicates,
+            seed + index,
+        )
+        for index, field in enumerate((score_field_a, score_field_b))
+    }
+    paired = paired_vt_comparison(
+        injection_rows,
+        float(calibrations[score_field_a]["threshold"]),
+        float(calibrations[score_field_b]["threshold"]),
+        score_field_a,
+        score_field_b,
+        bootstrap_replicates,
+        seed + 2,
+    )
+    return {
+        "score_field_a": score_field_a,
+        "score_field_b": score_field_b,
+        "maximum_validation_false_alarms": maximum_validation_false_alarms,
+        "calibrations": calibrations,
+        "injection_summaries": summaries,
+        "paired_comparison": paired,
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": seed,
+    }
+
+
+def run_coherence_validation_comparison(
+    background_score_report: str | Path,
+    injection_score_report: str | Path,
+    output: str | Path,
+    maximum_validation_false_alarms: int,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    background_report, background_rows = _verified_score_artifact(
+        background_score_report, "background"
+    )
+    injection_report, injection_rows = _verified_score_artifact(
+        injection_score_report, "injection"
+    )
+    for field in ("checkpoint_sha256", "config_sha256", "code_commit"):
+        if str(background_report[field]) != str(injection_report[field]):
+            raise ValueError(f"coherence comparison score reports disagree on {field}")
+    if not background_report.get("coherence") or not injection_report.get("coherence"):
+        raise ValueError("coherence comparison requires coherence-enabled score reports")
+    if background_report["coherence"] != injection_report["coherence"]:
+        raise ValueError("background/injection coherence protocols differ")
+    comparison = compare_validation_score_fields(
+        background_rows,
+        injection_rows,
+        maximum_validation_false_alarms,
+        "ranking_score",
+        "coherence_assisted_score",
+        bootstrap_replicates,
+        seed,
+    )
+    result = {
+        "status": "validation_only_morphology_vs_physical_coherence",
+        "scientific_claim_allowed": False,
+        "promotion_allowed": False,
+        "scientific_blocker": (
+            "short validation-window exposure is a model-selection diagnostic; continuous "
+            "clustered background/time slides and locked injections remain required"
+        ),
+        "protocol": (
+            "each ranking threshold calibrated independently on the same validation background "
+            "count, then compared on paired validation injections"
+        ),
+        "checkpoint_sha256": background_report["checkpoint_sha256"],
+        "config_sha256": background_report["config_sha256"],
+        "coherence": background_report["coherence"],
+        "background_score_report_sha256": file_sha256(background_score_report),
+        "injection_score_report_sha256": file_sha256(injection_score_report),
+        **comparison,
+        "test_evaluation": None,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
 def detector_subset_noninferiority(
     paired_comparison: dict[str, Any],
     relative_margin: float,

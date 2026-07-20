@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections import Counter
 from pathlib import Path
@@ -20,6 +21,7 @@ from .io import (
 )
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz
+from .coherence import pairwise_lag_coherence
 
 
 def _load_resumable_trigger_rows(
@@ -153,6 +155,92 @@ def probability_summaries(
     }
 
 
+def coherence_assisted_summary(
+    whitened_strain: np.ndarray,
+    model_ifos: tuple[str, ...],
+    valid_ifos: list[str],
+    sample_rate: int,
+    chirp_peak_times: dict[str, dict[str, Any]],
+    morphology_ranking_score: float,
+    limits_seconds: dict[str, float],
+    timing_uncertainty_seconds: float,
+    roi_duration_seconds: float,
+) -> dict[str, Any]:
+    """Add physical-lag strain coherence without replacing the morphology baseline."""
+    if whitened_strain.ndim != 2 or whitened_strain.shape[0] != len(model_ifos):
+        raise ValueError("coherence strain must have shape [configured IFO, time]")
+    if len(valid_ifos) < 2:
+        return {
+            "coherence_evaluable": False,
+            "coherence_reason": "fewer_than_two_valid_ifos",
+            "coherence_assisted_score": None,
+            "coherence_features": [],
+        }
+    roi_samples = int(round(float(roi_duration_seconds) * sample_rate))
+    if roi_samples < 2 or roi_samples > whitened_strain.shape[1]:
+        raise ValueError("coherence ROI duration is invalid for the scored strain")
+    offsets = [float(chirp_peak_times[ifo]["offset_seconds"]) for ifo in valid_ifos]
+    center = int(round(float(np.median(offsets)) * sample_rate))
+    start = min(max(center - roi_samples // 2, 0), whitened_strain.shape[1] - roi_samples)
+    stop = start + roi_samples
+    by_ifo = {
+        ifo: whitened_strain[model_ifos.index(ifo), start:stop] for ifo in valid_ifos
+    }
+    features = pairwise_lag_coherence(
+        by_ifo,
+        sample_rate,
+        limits_seconds,
+        timing_uncertainty_seconds,
+    )
+    absolute = np.asarray([row["absolute_coherence"] for row in features])
+    mean_absolute = float(absolute.mean())
+    minimum_absolute = float(absolute.min())
+    score = float(morphology_ranking_score) * math.sqrt(max(mean_absolute, 0.0))
+    return {
+        "coherence_evaluable": True,
+        "coherence_reason": None,
+        "coherence_assisted_score": score,
+        "coherence_score_definition": (
+            "second-highest valid-IFO chirp maximum multiplied by square root of mean "
+            "absolute pairwise correlation within physical lag windows"
+        ),
+        "coherence_roi_gps_offset_start": start / sample_rate,
+        "coherence_roi_duration_seconds": roi_samples / sample_rate,
+        "coherence_timing_uncertainty_seconds": timing_uncertainty_seconds,
+        "coherence_mean_absolute_correlation": mean_absolute,
+        "coherence_minimum_absolute_correlation": minimum_absolute,
+        "coherence_features": features,
+        "mask_peak_arrival_gate_applied": False,
+        "mask_peak_arrival_gate_reason": (
+            "coarse mask bins localize the common ROI; physical consistency is measured from "
+            "strain correlation inside predeclared pairwise lag limits"
+        ),
+    }
+
+
+def _coherence_settings(
+    config_path: str | Path | None, target_sample_rate: int
+) -> dict[str, Any] | None:
+    if config_path is None:
+        return None
+    config = load_yaml(config_path)
+    settings = config["physics_coherent_pilot"]["coherence"]
+    if int(settings["sample_rate"]) != target_sample_rate:
+        raise ValueError("coherence and score sample rates must match")
+    return {
+        "config_path": str(config_path),
+        "config_sha256": file_sha256(config_path),
+        "limits_seconds": {
+            str(pair): float(value)
+            for pair, value in settings["maximum_pair_delay_seconds"].items()
+        },
+        "timing_uncertainty_seconds": float(
+            settings["timing_uncertainty_seconds"]
+        ),
+        "roi_duration_seconds": float(settings.get("roi_duration_seconds", 1.0)),
+    }
+
+
 def _window_strain(
     row: dict[str, Any],
     model_ifos: tuple[str, ...],
@@ -202,6 +290,7 @@ def score_background_manifest(
     save_probabilities: bool = False,
     required_split: str | None = None,
     enabled_ifos: tuple[str, ...] | None = None,
+    coherence_config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -211,6 +300,7 @@ def score_background_manifest(
 
     config = load_yaml(config_path)
     tensor_config = training_tensor_config(config)
+    coherence = _coherence_settings(coherence_config_path, target_sample_rate)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     enabled_ifos = model_ifos if enabled_ifos is None else enabled_ifos
@@ -253,6 +343,9 @@ def score_background_manifest(
         "save_probabilities": save_probabilities,
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
+        "coherence_config_sha256": (
+            coherence["config_sha256"] if coherence is not None else None
+        ),
         "required_split": required_split,
         "code_commit": execution_provenance()["code_commit"],
     }
@@ -305,6 +398,20 @@ def score_background_manifest(
                 float(row["gps_start"]),
                 float(row["duration"]),
             )
+            if coherence is not None:
+                summary.update(
+                    coherence_assisted_summary(
+                        strain,
+                        model_ifos,
+                        valid_ifos,
+                        target_sample_rate,
+                        summary["peak_times"]["chirp"],
+                        summary["ranking_score"],
+                        coherence["limits_seconds"],
+                        coherence["timing_uncertainty_seconds"],
+                        coherence["roi_duration_seconds"],
+                    )
+                )
             probability_record = {}
             if save_probabilities:
                 probability_path = output / "probabilities" / f"{row['window_id']}.npz"
@@ -356,6 +463,7 @@ def score_background_manifest(
         "q_values": list(q_values),
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
+        "coherence": coherence,
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "probabilities_saved": save_probabilities,

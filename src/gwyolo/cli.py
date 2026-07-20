@@ -163,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
     physical_endpoint_series.add_argument("--bootstrap-replicates", type=int, default=10000)
     physical_endpoint_series.add_argument("--seed", type=int, default=20260720)
 
+    coherence_compare = subparsers.add_parser("coherence-validation-compare")
+    coherence_compare.add_argument("--background-score-report", required=True)
+    coherence_compare.add_argument("--injection-score-report", required=True)
+    coherence_compare.add_argument(
+        "--maximum-validation-false-alarms", required=True, type=int
+    )
+    coherence_compare.add_argument("--bootstrap-replicates", type=int, default=10000)
+    coherence_compare.add_argument("--seed", type=int, default=20260720)
+    coherence_compare.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -461,6 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--save-probabilities", action="store_true")
     trigger.add_argument("--required-split", choices=["train", "val", "test"])
     trigger.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
+    trigger.add_argument("--coherence-config")
 
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
@@ -562,6 +573,7 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--save-probabilities", action="store_true")
     injection_score.add_argument("--required-split", choices=["train", "val", "test"])
     injection_score.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
+    injection_score.add_argument("--coherence-config")
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -754,6 +766,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.maximum_validation_false_alarms,
                 args.context_duration,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "coherence-validation-compare":
+        from .search import run_coherence_validation_comparison
+
+        _print(
+            run_coherence_validation_comparison(
+                args.background_score_report,
+                args.injection_score_report,
+                args.output,
+                args.maximum_validation_false_alarms,
                 args.bootstrap_replicates,
                 args.seed,
             )
@@ -1177,6 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_probabilities=args.save_probabilities,
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
+                coherence_config_path=args.coherence_config,
             )
         )
     elif args.command == "candidate-extract":
@@ -1327,6 +1353,7 @@ def main(argv: list[str] | None = None) -> int:
                 save_probabilities=args.save_probabilities,
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
+                coherence_config_path=args.coherence_config,
             )
         )
     elif args.command == "pe-evaluate":
