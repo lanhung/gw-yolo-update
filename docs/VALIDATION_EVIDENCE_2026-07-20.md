@@ -474,6 +474,16 @@ budget. Because that endpoint checkpoint was originally selected on all 3,000 cu
 parents, the warm arm sets `calibration_evaluation_allowed: false`; even a strong selection result
 requires a new group-disjoint O4a calibration corpus before any threshold can be frozen.
 
+The endpoint-warm diagnostic completed exactly 3,000 updates at `6491461`. Selection AP is 0.4566,
+only 0.0068 above the from-scratch arm; timing median/p90 is 0.494/1.114 s and 10 ms coverage is
+3.59%. Calibration metrics are `null` by construction. Report/checkpoint SHA256 values are
+`fe3475fb253dd58bcdeead0aa50278f6cc0b44d169fd30dc5dd92fc005af1248` and
+`be0aa66cabad9b1d4b49db2f3c85cb6bb8d499fcfb6b460e7fc0e8c12c531b2b`.
+Representation transfer therefore produces no qualitative repair and does not justify more updates
+on the same 2,000 physical parents. The promoted diagnostic direction is an all-candidate set-level
+network ranker with explicit pairwise light-travel constraints, followed by calibration on newly
+acquired GPS blocks.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

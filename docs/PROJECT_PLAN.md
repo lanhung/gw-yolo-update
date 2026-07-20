@@ -250,6 +250,13 @@ same 3,000-update budget. It is a representation diagnostic only: the warm check
 seen all current validation parents during endpoint selection, so its configuration suppresses
 calibration evaluation and requires a fresh parent-disjoint corpus if transfer succeeds.
 
+The warm diagnostic does not succeed materially: selection AP 0.4566 and timing median/p90
+0.494/1.114 s after the same 3,000-update budget. No calibration metric was computed. Further local
+epochs are stopped by evidence, not schedule. Candidate selection now moves to a set-level network
+object that retains every proposal while using predeclared H1/L1/V1 light-travel limits and interval
+uncertainty; its threshold must be fitted on the new hash-stable O4a GPS-block shard, never on the
+already exposed 3k parents.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag
