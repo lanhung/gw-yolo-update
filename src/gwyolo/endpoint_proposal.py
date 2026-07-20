@@ -254,14 +254,24 @@ def _proposal_epoch(
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
             logits = model(strain, availability)
+            # The network deliberately writes -inf into unavailable detector slots.
+            # Index those slots out before BCE: BCEWithLogits(-inf, 0) is NaN, and
+            # multiplying that NaN by a zero validity mask would not remove it.
+            selected_logits = logits[availability]
+            selected_dense = dense[availability]
             raw = torch_functional.binary_cross_entropy_with_logits(
-                logits, dense, pos_weight=positive, reduction="none"
+                selected_logits,
+                selected_dense,
+                pos_weight=positive,
+                reduction="none",
             )
-            probability = torch.sigmoid(logits)
-            correct = probability * dense + (1.0 - probability) * (1.0 - dense)
+            probability = torch.sigmoid(selected_logits)
+            correct = (
+                probability * selected_dense
+                + (1.0 - probability) * (1.0 - selected_dense)
+            )
             loss_map = raw * ((1.0 - correct) ** focal_gamma)
-            valid = availability[:, :, None].to(loss_map.dtype)
-            loss = (loss_map * valid).sum() / (valid.sum() * output_bins)
+            loss = loss_map.mean()
             if training:
                 loss.backward()
                 optimizer.step()

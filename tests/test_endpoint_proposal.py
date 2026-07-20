@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
 from gwyolo.endpoint_proposal import (
+    _proposal_epoch,
     dense_endpoint_targets,
     extract_dense_endpoint_candidates,
     proposal_gate_record,
@@ -83,3 +85,32 @@ def test_dense_proposal_gate_requires_coverage_and_compactness() -> None:
     assert passing["qualified"] is True
     assert broad["qualified"] is False
     assert select_dense_proposal_record([broad, passing]) == passing
+
+
+def test_dense_proposal_loss_excludes_negative_infinity_missing_ifo() -> None:
+    torch = pytest.importorskip("torch")
+
+    class MissingDetectorModel(torch.nn.Module):
+        def forward(self, strain, availability):
+            logits = torch.zeros((strain.shape[0], 3, 8), device=strain.device)
+            return logits.masked_fill(~availability[:, :, None], -torch.inf)
+
+    loader = [
+        (
+            torch.zeros((1, 3, 64)),
+            torch.tensor([[True, True, False]]),
+            torch.tensor([[2, 4, -1]]),
+            torch.tensor([[1.0, 2.0, float("nan")]]),
+        )
+    ]
+    metrics = _proposal_epoch(
+        MissingDetectorModel(),
+        loader,
+        torch.device("cpu"),
+        None,
+        output_bins=8,
+        half_width_bins=0,
+        positive_weight=2.0,
+        focal_gamma=2.0,
+    )
+    assert np.isfinite(metrics["loss"])
