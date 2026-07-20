@@ -152,6 +152,9 @@ For the primary locked result, `search-calibrate` reads only validation backgrou
 threshold plus its source hash. `search-evaluate-frozen` accepts that artifact, test background and
 test injections, has no validation-data or threshold argument, and refuses to overwrite an existing
 result. This makes the no-test-tuning boundary executable rather than merely documentary.
+`search-validation-injections` separately measures family-stratified, weighted injection efficiency
+and rejects every non-validation row, so development diagnostics cannot accidentally consume the
+locked test injection corpus.
 
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ

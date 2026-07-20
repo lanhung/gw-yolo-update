@@ -123,6 +123,55 @@ def evaluate_search(
     }
 
 
+def summarize_injection_efficiency(
+    injections: Iterable[dict[str, Any]],
+    threshold: float,
+    score_field: str = "ranking_score",
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    rows = list(injections)
+    if not rows:
+        raise ValueError("at least one injection is required")
+    if bootstrap_replicates <= 0:
+        raise ValueError("bootstrap_replicates must be positive")
+    scores = np.asarray([float(row[score_field]) for row in rows], dtype=np.float64)
+    weights = np.asarray(
+        [float(row.get("vt_weight", row.get("weight", 1.0))) for row in rows],
+        dtype=np.float64,
+    )
+    if np.any(~np.isfinite(scores)) or np.any(~np.isfinite(weights)):
+        raise ValueError("injection scores and weights must be finite")
+    if np.any(weights < 0) or float(weights.sum()) <= 0:
+        raise ValueError("injection weights must be non-negative with positive sum")
+    recovered = scores >= threshold
+    recovered_count = int(recovered.sum())
+    recovered_weight = float(weights[recovered].sum())
+    rng = np.random.default_rng(seed)
+    bootstrap = []
+    for _ in range(bootstrap_replicates):
+        indices = rng.integers(0, len(rows), size=len(rows))
+        denominator = float(weights[indices].sum())
+        if denominator > 0:
+            bootstrap.append(
+                float((weights[indices] * recovered[indices]).sum() / denominator)
+            )
+    return {
+        "injections": len(rows),
+        "recovered": recovered_count,
+        "efficiency": recovered_count / len(rows),
+        "efficiency_wilson_95": list(wilson_interval(recovered_count, len(rows))),
+        "total_vt_weight": float(weights.sum()),
+        "recovered_vt": recovered_weight,
+        "weighted_efficiency": recovered_weight / float(weights.sum()),
+        "weighted_efficiency_bootstrap_95": [
+            float(np.percentile(bootstrap, 2.5)),
+            float(np.percentile(bootstrap, 97.5)),
+        ],
+        "bootstrap_replicates": bootstrap_replicates,
+    }
+
+
 def paired_vt_comparison(
     injections: Iterable[dict[str, Any]],
     threshold_a: float,
@@ -363,6 +412,60 @@ def run_frozen_search_evaluation(
         "evaluation": evaluation,
     }
     atomic_write_json(output_path, result)
+    return result
+
+
+def run_validation_injection_diagnostic(
+    calibration_report: str | Path,
+    validation_injections: str | Path,
+    output: str | Path,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    with Path(calibration_report).open("r", encoding="utf-8") as handle:
+        frozen = json.load(handle)
+    if frozen.get("status") != "validation_only_threshold_frozen":
+        raise ValueError("Calibration report is not a frozen validation-only threshold")
+    rows = load_jsonl(validation_injections)
+    if not rows:
+        raise ValueError("Validation injection manifest cannot be empty")
+    invalid_splits = sorted({str(row.get("split")) for row in rows if row.get("split") != "val"})
+    if invalid_splits:
+        raise ValueError(f"Validation diagnostic received non-val splits: {invalid_splits}")
+    score_field = str(frozen["score_field"])
+    threshold = float(frozen["calibration"]["threshold"])
+    overall = summarize_injection_efficiency(
+        rows, threshold, score_field, bootstrap_replicates, seed
+    )
+    stratum_field = "source_family" if all("source_family" in row for row in rows) else "stratum"
+    strata = {}
+    for index, stratum in enumerate(sorted({str(row.get(stratum_field, "all")) for row in rows})):
+        selected = [row for row in rows if str(row.get(stratum_field, "all")) == stratum]
+        strata[stratum] = summarize_injection_efficiency(
+            selected,
+            threshold,
+            score_field,
+            bootstrap_replicates,
+            seed + index + 1,
+        )
+    result = {
+        "status": "validation_only_physical_injection_diagnostic",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation injections may guide development; publication sensitivity requires "
+            "the independently locked test corpus and adequate background exposure"
+        ),
+        "score_field": score_field,
+        "threshold": threshold,
+        "calibration_report_path": str(calibration_report),
+        "calibration_report_sha256": file_sha256(calibration_report),
+        "validation_injections_path": str(validation_injections),
+        "validation_injections_sha256": file_sha256(validation_injections),
+        "bootstrap_seed": seed,
+        "overall": overall,
+        "strata": strata,
+    }
+    atomic_write_json(output, result)
     return result
 
 

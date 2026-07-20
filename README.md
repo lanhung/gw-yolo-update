@@ -47,6 +47,7 @@ gwyolo catalog-eval join predictions to GWOSC metadata
 gwyolo search-eval  freeze a validation FAR threshold and report test FAR/IFAR/weighted VT
 gwyolo search-calibrate write a validation-only immutable FAR-threshold artifact
 gwyolo search-evaluate-frozen evaluate locked test data once with the frozen threshold artifact
+gwyolo search-validation-injections measure physical validation efficiency without opening test data
 gwyolo scale-plan   audit a manifest and generate independent-data scaling targets
 gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
 gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing

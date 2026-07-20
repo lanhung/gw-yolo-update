@@ -17,6 +17,7 @@ from .search import (
     run_search_benchmark,
     run_search_calibration,
     run_search_comparison,
+    run_validation_injection_diagnostic,
 )
 from .scaling import run_curve_fit, run_scale_plan
 from .training import evaluate_checkpoint, train_candidate
@@ -94,6 +95,13 @@ def build_parser() -> argparse.ArgumentParser:
     search_frozen.add_argument("--bootstrap-replicates", type=int, default=2000)
     search_frozen.add_argument("--seed", type=int, default=20260719)
     search_frozen.add_argument("--output", required=True)
+
+    search_validation = subparsers.add_parser("search-validation-injections")
+    search_validation.add_argument("--calibration-report", required=True)
+    search_validation.add_argument("--validation-injections", required=True)
+    search_validation.add_argument("--bootstrap-replicates", type=int, default=2000)
+    search_validation.add_argument("--seed", type=int, default=20260719)
+    search_validation.add_argument("--output", required=True)
 
     scaling = subparsers.add_parser("scale-plan")
     scaling.add_argument("--manifest", required=True)
@@ -341,6 +349,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.test_background,
                 args.test_injections,
                 args.test_live_time_years,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "search-validation-injections":
+        _print(
+            run_validation_injection_diagnostic(
+                args.calibration_report,
+                args.validation_injections,
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,

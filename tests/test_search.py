@@ -11,6 +11,8 @@ from gwyolo.search import (
     paired_vt_comparison,
     run_frozen_search_evaluation,
     run_search_calibration,
+    run_validation_injection_diagnostic,
+    summarize_injection_efficiency,
 )
 
 
@@ -137,4 +139,62 @@ def test_frozen_search_command_never_recalibrates_on_test(tmp_path):
             20.0,
             output,
             bootstrap_replicates=20,
+        )
+
+
+def test_validation_injection_efficiency_is_weighted_and_split_locked(tmp_path):
+    summary = summarize_injection_efficiency(
+        [
+            {"score": 0.9, "vt_weight": 2},
+            {"score": 0.7, "vt_weight": 1},
+            {"score": 0.8, "vt_weight": 3},
+        ],
+        threshold=0.8,
+        score_field="score",
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert summary["recovered"] == 2
+    assert summary["recovered_vt"] == 5
+    assert summary["weighted_efficiency"] == 5 / 6
+
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_threshold_frozen",
+                "score_field": "score",
+                "calibration": {"threshold": 0.8},
+            }
+        ),
+        encoding="utf-8",
+    )
+    injections = tmp_path / "injections.jsonl"
+    injections.write_text(
+        json.dumps(
+            {
+                "split": "val",
+                "source_family": "BBH",
+                "score": 0.9,
+                "vt_weight": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = run_validation_injection_diagnostic(
+        calibration, injections, tmp_path / "diagnostic.json", bootstrap_replicates=20
+    )
+    assert result["strata"]["BBH"]["weighted_efficiency"] == 1
+
+    injections.write_text(
+        json.dumps(
+            {"split": "test", "source_family": "BBH", "score": 0.9, "vt_weight": 2}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="non-val splits"):
+        run_validation_injection_diagnostic(
+            calibration, injections, tmp_path / "must-not-write.json", bootstrap_replicates=20
         )
