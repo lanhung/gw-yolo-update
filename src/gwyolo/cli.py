@@ -227,6 +227,15 @@ def build_parser() -> argparse.ArgumentParser:
     physical_timing.add_argument("--output-dir", required=True)
     physical_timing.add_argument("--seed", type=int)
 
+    glitch_finetune = subparsers.add_parser("gravityspy-glitch-finetune")
+    glitch_finetune.add_argument("--config", required=True)
+    glitch_finetune.add_argument("--glitch-train-manifest", required=True)
+    glitch_finetune.add_argument("--glitch-validation-manifest", required=True)
+    glitch_finetune.add_argument("--chirp-validation-manifest", required=True)
+    glitch_finetune.add_argument("--pretrained-checkpoint", required=True)
+    glitch_finetune.add_argument("--output-dir", required=True)
+    glitch_finetune.add_argument("--seed", type=int)
+
     subset = subparsers.add_parser("recipe-subset")
     subset.add_argument("--manifest", required=True)
     subset.add_argument("--output", required=True)
@@ -700,6 +709,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.train_manifest,
                 args.validation_manifest,
+                args.pretrained_checkpoint,
+                args.output_dir,
+                args.seed,
+            )
+        )
+    elif args.command == "gravityspy-glitch-finetune":
+        from .glitch_training import run_gravityspy_glitch_finetune
+
+        _print(
+            run_gravityspy_glitch_finetune(
+                args.config,
+                args.glitch_train_manifest,
+                args.glitch_validation_manifest,
+                args.chirp_validation_manifest,
                 args.pretrained_checkpoint,
                 args.output_dir,
                 args.seed,

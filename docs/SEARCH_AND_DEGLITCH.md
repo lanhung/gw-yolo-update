@@ -213,6 +213,15 @@ The publication gate requires matching `backend_version`, `backend_model_hash`, 
 for absolute-bias changes, credible-width ratios and cleaning latency, plus paired coverage
 transitions. Development manifests may omit the gate, but no paper comparison may do so.
 
+`gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
+train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
+numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible
+only if its fixed-threshold physical-chirp validation IoU retains a configured fraction (0.95 by
+default) of the incoming checkpoint; among eligible epochs, validation glitch IoU is primary.
+Threshold calibration happens only after checkpoint selection on Gravity Spy validation. These are
+metadata-derived weak masks, so the command always withholds a segmentation claim until an
+independent human pixel-mask audit and mixture/search experiment exist.
+
 ## Oracle mask-deglitch upper bound
 
 The invertible cleaning baseline applies a Hamming-window complex STFT, suppresses
