@@ -222,6 +222,7 @@ def _chirp_epoch(
     optimizer: Any | None,
     positive_weight: float,
     distillation_weight: float,
+    focal_gamma: float = 0.0,
     threshold: float = 0.5,
 ) -> dict[str, Any]:
     training = optimizer is not None
@@ -239,8 +240,8 @@ def _chirp_epoch(
         with torch.set_grad_enabled(training):
             logits = model(features)
             chirp_logits = logits[:, 0:1]
-            bce = torch_functional.binary_cross_entropy_with_logits(
-                chirp_logits, target[:, None], pos_weight=positive
+            bce = focal_binary_cross_entropy(
+                chirp_logits, target[:, None], positive, focal_gamma
             )
             dice = _dice_loss(chirp_logits, target[:, None])
             with torch.no_grad():
@@ -266,6 +267,21 @@ def _chirp_epoch(
         "chirp_precision": true_positive / max(true_positive + false_positive, 1),
         "chirp_recall": true_positive / max(true_positive + false_negative, 1),
     }
+
+
+def focal_binary_cross_entropy(
+    logits: Any, target: Any, positive_weight: Any, gamma: float
+) -> Any:
+    if gamma < 0:
+        raise ValueError("focal gamma cannot be negative")
+    raw = torch_functional.binary_cross_entropy_with_logits(
+        logits, target, pos_weight=positive_weight, reduction="none"
+    )
+    if gamma == 0:
+        return raw.mean()
+    probability = torch.sigmoid(logits)
+    correct_probability = probability * target + (1.0 - probability) * (1.0 - target)
+    return (((1.0 - correct_probability) ** gamma) * raw).mean()
 
 
 def _calibrate_chirp_threshold(
@@ -411,6 +427,7 @@ def run_physical_finetune(
             optimizer,
             float(settings["chirp_positive_weight"]),
             float(settings["glitch_distillation_weight"]),
+            float(settings.get("focal_gamma", 0.0)),
         )
         validation_metrics = _chirp_epoch(
             model,
@@ -420,6 +437,7 @@ def run_physical_finetune(
             None,
             float(settings["chirp_positive_weight"]),
             float(settings["glitch_distillation_weight"]),
+            float(settings.get("focal_gamma", 0.0)),
         )
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
@@ -458,6 +476,7 @@ def run_physical_finetune(
         None,
         float(settings["chirp_positive_weight"]),
         float(settings["glitch_distillation_weight"]),
+        float(settings.get("focal_gamma", 0.0)),
         threshold,
     )
     report = {

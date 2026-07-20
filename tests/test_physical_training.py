@@ -9,6 +9,7 @@ import pytest
 from gwyolo.physical_training import (
     build_snr_curriculum_manifest,
     gate_component_by_ifo_snr,
+    focal_binary_cross_entropy,
     physical_split_audit,
     relative_component_mask,
     scale_component_for_transform,
@@ -21,6 +22,17 @@ def test_binary_mask_counts_are_hand_calculated() -> None:
     assert metrics["iou"] == pytest.approx(0.5)
     assert metrics["precision"] == pytest.approx(0.6)
     assert metrics["recall"] == pytest.approx(0.75)
+
+
+def test_focal_gamma_zero_matches_binary_cross_entropy() -> None:
+    torch = pytest.importorskip("torch")
+    logits = torch.zeros((1, 1, 1, 1))
+    target = torch.ones_like(logits)
+    positive = torch.ones((1, 1, 1, 1))
+    ordinary = focal_binary_cross_entropy(logits, target, positive, 0.0)
+    focal = focal_binary_cross_entropy(logits, target, positive, 2.0)
+    assert float(ordinary) == pytest.approx(np.log(2.0))
+    assert float(focal) == pytest.approx(np.log(2.0) / 4.0)
 
 
 def test_relative_component_mask_handles_physical_amplitudes() -> None:

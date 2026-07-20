@@ -6,6 +6,7 @@ physical_training:
   weight_decay: 0.0001
   chirp_positive_weight: 10.0
   glitch_distillation_weight: 0.25
+  focal_gamma: 0.0
   cache_in_memory: true
   minimum_training_network_snr: 4.0
   model_ifos: [H1, L1, V1]
