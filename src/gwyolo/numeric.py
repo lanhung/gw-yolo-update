@@ -181,6 +181,39 @@ if nn is not None:
             return logits.reshape(batch, 2, self.input_channels, frequency, time_bins)
 
 
+    class GlitchEmbeddingNet(nn.Module):
+        """Shared single-IFO Q encoder for known-family attribution and OOD scoring."""
+
+        def __init__(
+            self,
+            q_count: int,
+            class_count: int,
+            base_channels: int = 24,
+            embedding_dim: int = 32,
+        ):
+            super().__init__()
+            if q_count < 1 or class_count < 2 or embedding_dim < 2:
+                raise ValueError("glitch embedding dimensions are invalid")
+            self.q_count = int(q_count)
+            self.class_count = int(class_count)
+            self.embedding_dim = int(embedding_dim)
+            self.encoder = _ConvBlock(self.q_count, base_channels)
+            self.projection = nn.Linear(2 * base_channels, self.embedding_dim)
+            self.classifier = nn.Linear(self.embedding_dim, self.class_count)
+
+        def forward(self, value: Any) -> tuple[Any, Any]:
+            if value.ndim != 4 or value.shape[1] != self.q_count:
+                raise ValueError("glitch embedding input must have shape [batch, Q, F, T]")
+            encoded = self.encoder(value)
+            pooled = torch.cat(
+                [encoded.mean(dim=(2, 3)), encoded.amax(dim=(2, 3))], dim=1
+            )
+            embedding = torch_functional.normalize(
+                self.projection(pooled), p=2, dim=1
+            )
+            return self.classifier(embedding), embedding
+
+
     class CoalescenceTimingNet(nn.Module):
         """Candidate timing refiner with a mask-compatible convolutional backbone."""
 
@@ -212,6 +245,10 @@ else:
             _require_torch()
 
     class DetectorSetQNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class GlitchEmbeddingNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 

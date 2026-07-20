@@ -6,6 +6,7 @@ torch = pytest.importorskip("torch")
 
 from gwyolo.numeric import (  # noqa: E402
     DetectorSetQNet,
+    GlitchEmbeddingNet,
     MultiIFOQNet,
     initialize_detector_set_from_early_fusion,
     model_from_checkpoint,
@@ -86,3 +87,11 @@ def test_checkpoint_loader_preserves_architecture_and_detector_order() -> None:
     assert architecture == "detector_set"
     with pytest.raises(ValueError, match="detector ordering"):
         model_from_checkpoint(checkpoint, ("L1", "H1", "V1"), (4.0,))
+
+
+def test_glitch_embedding_is_normalized_and_classifies_known_families() -> None:
+    model = GlitchEmbeddingNet(q_count=3, class_count=4, base_channels=8, embedding_dim=6)
+    logits, embedding = model(torch.randn(5, 3, 12, 10))
+    assert logits.shape == (5, 4)
+    assert embedding.shape == (5, 6)
+    assert torch.allclose(torch.linalg.norm(embedding, dim=1), torch.ones(5), atol=1e-6)

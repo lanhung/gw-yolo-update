@@ -83,8 +83,12 @@ known-artifact abstention rate; ties are handled conservatively. Glitch and GPS 
 disjoint from evaluation. Held-out families and later observing runs are then evaluated once with
 Wilson intervals for known false abstention, unknown true abstention and unknown false acceptance,
 plus diagnostic AUROC and family/run strata. Unknown scores are explicitly prohibited from threshold
-selection. The remaining model task is to produce the score from known-only training embeddings once
-the verified Gravity Spy bank completes.
+selection. `glitch-ood-train` supplies a compact shared single-IFO Q encoder, known-family classifier
+and cosine-distance-to-known-prototype score. Checkpoint selection uses known calibration accuracy;
+prototypes use known training embeddings; held-out embeddings are first consumed after both are
+frozen. This head is auxiliary attribution/review evidence and is prohibited from vetoing a
+strain-coherent candidate. It remains an unpromoted candidate until the verified Gravity Spy bank
+completes and leave-one-family-out/O3→O4a results are available.
 
 ### C3 — Mask-conditioned search and inference robustness
 

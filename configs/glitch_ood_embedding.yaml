@@ -1,0 +1,12 @@
+glitch_ood_embedding:
+  seed: 20260720
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  base_channels: 24
+  embedding_dim: 32
+  cache_in_memory: true
+  maximum_known_abstention_rate: 0.05
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]

@@ -594,6 +594,14 @@ def build_parser() -> argparse.ArgumentParser:
     ood_split.add_argument("--held-out-family", required=True)
     ood_split.add_argument("--output-dir", required=True)
     ood_split.add_argument("--seed", type=int, default=20260720)
+
+    ood_train = subparsers.add_parser("glitch-ood-train")
+    ood_train.add_argument("--config", required=True)
+    ood_train.add_argument("--known-train-manifest", required=True)
+    ood_train.add_argument("--known-calibration-manifest", required=True)
+    ood_train.add_argument("--heldout-evaluation-manifest", required=True)
+    ood_train.add_argument("--output-dir", required=True)
+    ood_train.add_argument("--seed", type=int)
     return parser
 
 
@@ -1367,6 +1375,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_manifest,
                 args.validation_manifest,
                 args.held_out_family,
+                args.output_dir,
+                args.seed,
+            )
+        )
+    elif args.command == "glitch-ood-train":
+        from .ood import run_glitch_ood_embedding
+
+        _print(
+            run_glitch_ood_embedding(
+                args.config,
+                args.known_train_manifest,
+                args.known_calibration_manifest,
+                args.heldout_evaluation_manifest,
                 args.output_dir,
                 args.seed,
             )
