@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from gwyolo.ood import (
+    build_leave_one_family_out_split,
     calibrate_known_only_abstention,
     evaluate_frozen_ood_threshold,
     ood_auc,
@@ -70,3 +71,39 @@ def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
     leaked[0] = {**leaked[0], "glitch_id": "c0"}
     with pytest.raises(ValueError, match="group leakage"):
         evaluate_frozen_ood_threshold(calibration, leaked, 0.25)
+
+
+def test_leave_one_family_out_split_excludes_whole_gps_blocks(tmp_path) -> None:
+    import json
+
+    train = [
+        {"glitch_id": "t0", "network_gps_block": "tb0", "ml_label": "Held", "observing_run": "O3b", "split": "train"},
+        {"glitch_id": "t1", "network_gps_block": "tb0", "ml_label": "Known", "observing_run": "O3b", "split": "train"},
+        {"glitch_id": "t2", "network_gps_block": "tb1", "ml_label": "Known", "observing_run": "O3b", "split": "train"},
+    ]
+    validation = [
+        {"glitch_id": "v0", "network_gps_block": "vb0", "ml_label": "Held", "observing_run": "O3b", "split": "val"},
+        {"glitch_id": "v1", "network_gps_block": "vb1", "ml_label": "Known", "observing_run": "O3b", "split": "val"},
+        {"glitch_id": "v2", "network_gps_block": "vb2", "ml_label": "Known", "observing_run": "O3b", "split": "val"},
+    ]
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "val.jsonl"
+    train_path.write_text("".join(json.dumps(row) + "\n" for row in train), encoding="utf-8")
+    validation_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in validation), encoding="utf-8"
+    )
+    result = build_leave_one_family_out_split(
+        train_path, validation_path, "Held", tmp_path / "out", seed=1
+    )
+    known_train = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "known_train.jsonl").read_text().splitlines()
+    ]
+    evaluation = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "heldout_evaluation.jsonl").read_text().splitlines()
+    ]
+    assert {row["glitch_id"] for row in known_train} == {"t2"}
+    assert any(row["is_unknown"] for row in evaluation)
+    assert any(not row["is_unknown"] for row in evaluation)
+    assert result["split_audit"]["passed"] is True

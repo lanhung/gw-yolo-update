@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -197,4 +197,148 @@ def run_ood_abstention_evaluation(
         }
     )
     atomic_write_json(output, result)
+    return result
+
+
+def build_leave_one_family_out_split(
+    train_manifest: str | Path,
+    validation_manifest: str | Path,
+    held_out_family: str,
+    output_dir: str | Path,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Freeze group-disjoint known training/calibration and held-family evaluation rows."""
+    def load(path: str | Path) -> list[dict[str, Any]]:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    train = load(train_manifest)
+    validation = load(validation_manifest)
+    if not train or not validation or not held_out_family:
+        raise ValueError("leave-one-family-out split requires non-empty inputs and family")
+    if any(row.get("split") != "train" for row in train):
+        raise ValueError("leave-one-family-out training input must be train-only")
+    if any(row.get("split") != "val" for row in validation):
+        raise ValueError("leave-one-family-out validation input must be val-only")
+    required = {"glitch_id", "network_gps_block", "ml_label", "observing_run"}
+    if any(required - set(row) for row in train + validation):
+        raise ValueError("Gravity Spy OOD split inputs lack group/family/run metadata")
+    if held_out_family not in {str(row["ml_label"]) for row in train + validation}:
+        raise ValueError("held-out glitch family is absent from input manifests")
+    held_train_blocks = {
+        str(row["network_gps_block"])
+        for row in train
+        if str(row["ml_label"]) == held_out_family
+    }
+    known_train = [
+        row
+        for row in train
+        if str(row["network_gps_block"]) not in held_train_blocks
+        and str(row["ml_label"]) != held_out_family
+    ]
+    held_validation_blocks = {
+        str(row["network_gps_block"])
+        for row in validation
+        if str(row["ml_label"]) == held_out_family
+    }
+    if not held_validation_blocks:
+        raise ValueError("held-out family has no validation GPS blocks")
+    evaluation = [
+        row
+        for row in validation
+        if str(row["network_gps_block"]) in held_validation_blocks
+    ]
+    remaining_known_blocks = sorted(
+        {
+            str(row["network_gps_block"])
+            for row in validation
+            if str(row["network_gps_block"]) not in held_validation_blocks
+            and str(row["ml_label"]) != held_out_family
+        },
+        key=lambda block: canonical_hash(
+            {"gps_block": block, "seed": seed, "purpose": "ood_known_evaluation"}, 32
+        ),
+    )
+    if not any(str(row["ml_label"]) != held_out_family for row in evaluation):
+        if not remaining_known_blocks:
+            raise ValueError("no group-disjoint known validation block is available for evaluation")
+        selected_known_block = remaining_known_blocks.pop(0)
+        evaluation.extend(
+            row
+            for row in validation
+            if str(row["network_gps_block"]) == selected_known_block
+        )
+    evaluation_blocks = {str(row["network_gps_block"]) for row in evaluation}
+    calibration = [
+        row
+        for row in validation
+        if str(row["network_gps_block"]) not in evaluation_blocks
+        and str(row["ml_label"]) != held_out_family
+    ]
+    if not known_train or not calibration:
+        raise ValueError("leave-one-family-out split leaves empty known training/calibration data")
+
+    def normalize(row: dict[str, Any], role: str) -> dict[str, Any]:
+        return {
+            **row,
+            "gps_block": row["network_gps_block"],
+            "glitch_family": row["ml_label"],
+            "ood_role": role,
+            "is_unknown": str(row["ml_label"]) == held_out_family,
+            "held_out_family": held_out_family,
+        }
+
+    outputs = {
+        "known_train": [normalize(row, "known_train") for row in known_train],
+        "known_calibration": [
+            normalize(row, "known_calibration") for row in calibration
+        ],
+        "heldout_evaluation": [
+            normalize(row, "heldout_evaluation") for row in evaluation
+        ],
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for name, rows in outputs.items():
+        path = output / f"{name}.jsonl"
+        atomic_write_text(
+            path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        )
+        artifacts[name] = {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "rows": len(rows),
+            "unique_glitches": len({str(row["glitch_id"]) for row in rows}),
+            "unique_gps_blocks": len({str(row["gps_block"]) for row in rows}),
+        }
+    role_blocks = {
+        name: {str(row["gps_block"]) for row in rows} for name, rows in outputs.items()
+    }
+    overlaps = {
+        "train_calibration": sorted(role_blocks["known_train"] & role_blocks["known_calibration"]),
+        "train_evaluation": sorted(role_blocks["known_train"] & role_blocks["heldout_evaluation"]),
+        "calibration_evaluation": sorted(
+            role_blocks["known_calibration"] & role_blocks["heldout_evaluation"]
+        ),
+    }
+    if any(overlaps.values()):
+        raise AssertionError(f"leave-one-family-out GPS overlap after construction: {overlaps}")
+    result = {
+        "status": "frozen_leave_one_glitch_family_out_split",
+        "scientific_claim_allowed": False,
+        "held_out_family": held_out_family,
+        "seed": seed,
+        "train_manifest_sha256": file_sha256(train_manifest),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "excluded_train_gps_blocks_with_held_family": len(held_train_blocks),
+        "held_validation_gps_blocks": len(held_validation_blocks),
+        "split_audit": {"passed": True, "gps_block_overlaps": overlaps},
+        "artifacts": artifacts,
+        "evaluation_unknown_rows": sum(row["is_unknown"] for row in outputs["heldout_evaluation"]),
+        "evaluation_known_rows": sum(not row["is_unknown"] for row in outputs["heldout_evaluation"]),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "leave_one_family_out_report.json", result)
     return result

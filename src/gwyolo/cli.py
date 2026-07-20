@@ -587,6 +587,13 @@ def build_parser() -> argparse.ArgumentParser:
     ood.add_argument("--output", required=True)
     ood.add_argument("--maximum-known-abstention-rate", type=float, default=0.05)
     ood.add_argument("--score-field", default="ood_score")
+
+    ood_split = subparsers.add_parser("gravityspy-ood-split")
+    ood_split.add_argument("--train-manifest", required=True)
+    ood_split.add_argument("--validation-manifest", required=True)
+    ood_split.add_argument("--held-out-family", required=True)
+    ood_split.add_argument("--output-dir", required=True)
+    ood_split.add_argument("--seed", type=int, default=20260720)
     return parser
 
 
@@ -1350,6 +1357,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.maximum_known_abstention_rate,
                 args.score_field,
+            )
+        )
+    elif args.command == "gravityspy-ood-split":
+        from .ood import build_leave_one_family_out_split
+
+        _print(
+            build_leave_one_family_out_split(
+                args.train_manifest,
+                args.validation_manifest,
+                args.held_out_family,
+                args.output_dir,
+                args.seed,
             )
         )
     else:
