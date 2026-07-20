@@ -281,6 +281,9 @@ The first curriculum is itself imbalanced after the corrected audit: the 1,027 s
 therefore uses `physical-snr-quota` to assign exact train-only quotas of 40% at SNR 4–8, 35% at
 8–15, 20% at 15–30 and 5% at 30–50. Every assignment is deterministic by injection ID; it changes
 neither physical sample counts nor validation/test proposals and `<VT>` weights.
+`configs/physical_finetune_snr_quota.yaml` freezes the corresponding 20-epoch 2k ablation. It must
+use the same validation manifest and cannot be interpreted as a data-scaling point because it adds
+no waveform or GPS identity.
 
 The official Gravity Spy expansion now contains 80,496 unique high-confidence O1–O3b H1/L1 glitch
 IDs. IFO-independent network-GPS splitting gives zero train/validation/test overlap. Of 64,284 train
