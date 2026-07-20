@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -938,6 +939,115 @@ def build_snr_quota_manifest(
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
     }
     atomic_write_json(output / "snr_quota_report.json", report)
+    return report
+
+
+def build_physical_scale_subsets(
+    manifest_path: str | Path,
+    validation_manifest_path: str | Path,
+    output_dir: str | Path,
+    scales: tuple[int, ...] = (2_000, 5_000, 10_000),
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Build nested family/SNR-stratified train subsets against one frozen validation set."""
+    ordered_scales = tuple(sorted(set(int(value) for value in scales)))
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    with Path(validation_manifest_path).open("r", encoding="utf-8") as handle:
+        validation_rows = [json.loads(line) for line in handle if line.strip()]
+    if (
+        not rows
+        or not ordered_scales
+        or ordered_scales[0] <= 0
+        or ordered_scales[-1] > len(rows)
+    ):
+        raise ValueError("Physical scale subset sizes must be positive and within the train corpus")
+    if any(row.get("split") != "train" for row in rows):
+        raise ValueError("Physical scale subsets require a train-only source manifest")
+    required = ("injection_id", "waveform_id", "gps_block", "source_family", "training_snr_quota_bin")
+    if any(any(field not in row for field in required) for row in rows):
+        raise ValueError("Physical scale source is missing identity, family, or SNR quota fields")
+    if len({str(row["injection_id"]) for row in rows}) != len(rows) or len(
+        {str(row["waveform_id"]) for row in rows}
+    ) != len(rows):
+        raise ValueError("Physical scale source contains duplicate injection or waveform identities")
+    full_audit = physical_split_audit(rows, validation_rows)
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (str(row["source_family"]), str(row["training_snr_quota_bin"]))
+        buckets.setdefault(key, []).append(row)
+    for key, bucket in buckets.items():
+        bucket.sort(
+            key=lambda row: (
+                hashlib.sha256(f"{seed}:{row['injection_id']}".encode()).hexdigest(),
+                str(row["injection_id"]),
+            )
+        )
+    capacities = {key: len(bucket) for key, bucket in buckets.items()}
+    counts = {key: 0 for key in buckets}
+    previous_ids: set[str] = set()
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    scale_reports = []
+    for scale in ordered_scales:
+        while sum(counts.values()) < scale:
+            eligible = [key for key in sorted(buckets) if counts[key] < capacities[key]]
+            if not eligible:
+                raise RuntimeError("Physical scale allocation exhausted before reaching target")
+            selected_key = max(
+                eligible,
+                key=lambda key: (
+                    scale * capacities[key] / len(rows) - counts[key],
+                    -counts[key],
+                    key,
+                ),
+            )
+            counts[selected_key] += 1
+        selected_rows = [
+            row
+            for key in sorted(buckets)
+            for row in buckets[key][: counts[key]]
+        ]
+        selected_rows.sort(key=lambda row: str(row["injection_id"]))
+        selected_ids = {str(row["injection_id"]) for row in selected_rows}
+        if len(selected_rows) != scale or not previous_ids <= selected_ids:
+            raise RuntimeError("Physical scale allocation failed exact-size or nesting gate")
+        manifest = output / f"physical_train_scale_{scale}.jsonl"
+        atomic_write_text(manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_rows))
+        audit = physical_split_audit(selected_rows, validation_rows)
+        scale_reports.append(
+            {
+                "scale": scale,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "contains_previous_scale": previous_ids <= selected_ids,
+                "unique_injections": len(selected_ids),
+                "unique_waveforms": len({str(row["waveform_id"]) for row in selected_rows}),
+                "unique_gps_blocks": len({str(row["gps_block"]) for row in selected_rows}),
+                "stratum_counts": {
+                    f"{key[0]}|{key[1]}": counts[key] for key in sorted(counts)
+                },
+                "validation_split_audit": audit,
+            }
+        )
+        previous_ids = selected_ids
+    report = {
+        "status": "nested_physical_train_scale_subsets",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "subsets enable group-safe scaling but require multi-seed validation and fixed-FAR "
+            "locked sensitivity before a paper claim"
+        ),
+        "seed": seed,
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "validation_manifest_path": str(validation_manifest_path),
+        "validation_manifest_sha256": file_sha256(validation_manifest_path),
+        "full_split_audit": full_audit,
+        "scales": scale_reports,
+        "test_evaluation": None,
+    }
+    atomic_write_json(output / "physical_scale_subset_report.json", report)
     return report
 
 

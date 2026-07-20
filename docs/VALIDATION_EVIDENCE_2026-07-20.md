@@ -177,6 +177,13 @@ contains 1,350 BBH, 900 BNS and 750 NSBH; median network optimal SNR is 3.864 an
 is `1e2983abd128ca11b3f65792bd4d9c58a5ce18f717d4fa75bedc74014d5dbbb1`. This distribution is
 frozen for selection and calibration; it is not a locked test and is never SNR-rescaled.
 
+An identity audit also prevents a misleading reuse of the old 2k pilot in the new scale curve. All
+2,000 old waveform/injection IDs occur in the 10k core, but four old training GPS blocks overlap the
+new 3k validation GPS blocks. The old result remains an ablation only. Fresh nested 2k/5k/10k
+subsets will be generated from the new split-safe 10k SNR-quota manifest, and each starts from the
+same analytic checkpoint SHA256
+`61730b9734a90fd01e4678470026cacc8c3e78cdf008e68cbcaf88ebd3ae8e72`.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721

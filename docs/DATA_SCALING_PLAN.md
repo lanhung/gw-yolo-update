@@ -357,6 +357,16 @@ report. Thus every scale sees exactly 60,000 examples. A scale gain is attribute
 data only if it survives this fixed-update/fixed-seen-example control; disagreement between
 protocols is reported as a compute-data interaction, not hidden.
 
+The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
+injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
+frozen 3k validation split. `physical-scale-subsets` therefore constructs fresh, strictly nested
+2k/5k/10k prefixes from the SNR-quota 10k manifest, balanced jointly by source family and assigned
+SNR bin, and reruns the injection/waveform/GPS split audit against the shared validation manifest at
+every scale. All scale points start from the identical analytic checkpoint
+`61730b9734a90fd01e4678470026cacc8c3e78cdf008e68cbcaf88ebd3ae8e72`; using a physical 2k
+checkpoint as the 10k initializer is prohibited because it confounds initialization with prior
+physical exposure.
+
 An official O4a acquisition plan was also frozen with seed 20260720. The API exposed 3,309 aligned
 H1/L1 4-kHz files; 800 disjoint 4,096-second pairs were selected over GPS
 1368268800--1389408256. This is 3,276,800 seconds (37.93 raw coincident detector-days) before DQ,

@@ -10,6 +10,7 @@ from gwyolo.physical_training import (
     _chirp_epoch,
     build_snr_curriculum_manifest,
     build_snr_quota_manifest,
+    build_physical_scale_subsets,
     coalescence_bin_target,
     gate_component_by_ifo_snr,
     mask_endpoint_timing_error_seconds,
@@ -198,6 +199,49 @@ def test_snr_quota_assigns_exact_hand_calculated_counts(tmp_path) -> None:
         for row in output
     )
     assert report["validation_or_test_rows_modified"] == 0
+
+
+def test_physical_scale_subsets_are_stratified_nested_and_split_safe(tmp_path) -> None:
+    train = tmp_path / "train.jsonl"
+    rows = []
+    for index in range(12):
+        rows.append(
+            {
+                "split": "train",
+                "injection_id": f"i{index}",
+                "waveform_id": f"w{index}",
+                "gps_block": f"train-g{index % 3}",
+                "source_family": "BBH" if index % 2 else "BNS",
+                "training_snr_quota_bin": "4-8" if index % 4 < 2 else "8-15",
+            }
+        )
+    train.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    validation = tmp_path / "val.jsonl"
+    validation.write_text(
+        json.dumps(
+            {
+                "split": "val",
+                "injection_id": "vi",
+                "waveform_id": "vw",
+                "gps_block": "val-g",
+            }
+        )
+        + "\n"
+    )
+    report = build_physical_scale_subsets(
+        train, validation, tmp_path / "scales", (4, 8, 12), seed=11
+    )
+    selected = []
+    for expected, item in zip((4, 8, 12), report["scales"]):
+        current = {
+            json.loads(line)["injection_id"]
+            for line in Path(item["manifest_path"]).read_text().splitlines()
+        }
+        assert len(current) == expected
+        assert not selected or selected[-1] <= current
+        assert item["validation_split_audit"]["passed"]
+        selected.append(current)
+    assert sum(report["scales"][0]["stratum_counts"].values()) == 4
 
 
 def test_physical_split_audit_rejects_gps_or_waveform_leakage() -> None:

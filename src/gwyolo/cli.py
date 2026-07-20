@@ -212,6 +212,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     snr_quota.add_argument("--seed", type=int, default=20260720)
 
+    scale_subsets = subparsers.add_parser("physical-scale-subsets")
+    scale_subsets.add_argument("--manifest", required=True)
+    scale_subsets.add_argument("--validation-manifest", required=True)
+    scale_subsets.add_argument("--output-dir", required=True)
+    scale_subsets.add_argument("--scale", action="append", type=int)
+    scale_subsets.add_argument("--seed", type=int, default=20260720)
+
     physical_audit = subparsers.add_parser("physical-checkpoint-audit")
     physical_audit.add_argument("--config", required=True)
     physical_audit.add_argument("--validation-manifest", required=True)
@@ -700,6 +707,18 @@ def main(argv: list[str] | None = None) -> int:
         if bins is not None and any(len(item) != 3 for item in bins):
             raise ValueError("Each --snr-bin must be LOWER:UPPER:FRACTION")
         _print(build_snr_quota_manifest(args.manifest, args.output_dir, bins, args.seed))
+    elif args.command == "physical-scale-subsets":
+        from .physical_training import build_physical_scale_subsets
+
+        _print(
+            build_physical_scale_subsets(
+                args.manifest,
+                args.validation_manifest,
+                args.output_dir,
+                tuple(args.scale) if args.scale else (2_000, 5_000, 10_000),
+                args.seed,
+            )
+        )
     elif args.command == "physical-checkpoint-audit":
         from .physical_training import audit_physical_checkpoint
 
