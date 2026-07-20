@@ -147,6 +147,15 @@ but the empirical accuracy gate fails. Report SHA256 is
 `b958906308ac66ada621a0f1922254d2e49f5f29b2badf59fc1d2f491b744f44`. No additional independent
 full-window timing run is scheduled; ROI/correlation refinement is the promoted track.
 
+The first correlation-contract smoke at code commit `7006423` read 100 frozen O4a validation
+signals without opening test data. Every H1--L1 lag remained inside the strict 10 ms window; the
+largest discrete lag was 20/2048 s (9.766 ms), and median absolute signal-only correlation was
+0.983. Report SHA256 is
+`7634830534ef6d95249d3990a0473619467fa54fb2c7c896aadb9b1c1b8daf6b`. This establishes numerical
+feasibility only. It is explicitly not a real-background, false-alarm or ranking result; the next
+valid comparison must score identical continuous O4a background with morphology-only and
+coherence-assisted frozen candidates.
+
 ## Paper success hierarchy
 
 1. **PRD target:** paired fixed-FAR `<VT>` or overlap-efficiency improvement with clean-signal
