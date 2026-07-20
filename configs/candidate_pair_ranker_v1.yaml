@@ -7,7 +7,7 @@ candidate_pair_ranker:
   maximum_negative_pairs_per_parent: 64
   hidden_features: 64
   epochs: 50
-  max_optimizer_updates: 1000
+  max_optimizer_updates: 900
   batch_size: 2048
   evaluation_batch_size: 8192
   learning_rate: 0.001
