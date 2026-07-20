@@ -1,18 +1,48 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from gwyolo.io import file_sha256
-from gwyolo.mask_audit import binary_mask_iou, evaluate_gravityspy_mask_audit
+from gwyolo.mask_audit import (
+    binary_mask_iou,
+    evaluate_gravityspy_mask_audit,
+    plan_gravityspy_mask_audit,
+)
 
 
 def test_binary_mask_iou_is_hand_calculated() -> None:
     left = np.asarray([1, 1, 0, 0])
     right = np.asarray([1, 0, 1, 0])
     assert binary_mask_iou(left, right) == pytest.approx(1 / 3)
+
+
+def test_mask_audit_plan_requires_three_blinded_annotators(tmp_path) -> None:
+    sample = tmp_path / "sample.npz"
+    np.savez(sample, glitch_mask=np.asarray([[0, 1], [0, 0]], dtype=np.uint8))
+    manifest = tmp_path / "val.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "split": "val",
+                "glitch_id": "g1",
+                "ml_label": "Blip",
+                "ifo": "H1",
+                "observing_run": "O3a",
+                "network_gps_block": "O3a:1",
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+            }
+        )
+        + "\n"
+    )
+    report = plan_gravityspy_mask_audit(manifest, tmp_path / "audit", per_label=1)
+    task = json.loads(Path(report["task_manifest_path"]).read_text())
+    assert task["required_independent_annotators"] == 3
+    assert "three independent" in report["scientific_blocker"]
     assert binary_mask_iou(np.zeros(3), np.zeros(3)) == 1.0
 
 

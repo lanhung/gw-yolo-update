@@ -97,7 +97,7 @@ def plan_gravityspy_mask_audit(
         "status": "frozen_gravityspy_human_mask_audit_plan",
         "scientific_claim_allowed": False,
         "scientific_blocker": (
-            "tasks require two independent blinded human masks before weak-mask quality is known"
+            "tasks require three independent blinded human masks before weak-mask quality is known"
         ),
         "seed": seed,
         "per_label_target": per_label,
