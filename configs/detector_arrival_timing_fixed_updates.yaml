@@ -1,0 +1,15 @@
+detector_arrival_timing:
+  seed: 20260720
+  epochs: 99
+  max_optimizer_updates: 1500
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  label_smoothing: 0.02
+  base_channels: 32
+  cache_in_memory: true
+  minimum_training_network_snr: 4.0
+  analysis_duration: 8.0
+  target_sample_rate: 1024
+  output_bins: 1024
+  model_ifos: [H1, L1, V1]

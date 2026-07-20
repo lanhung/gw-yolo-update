@@ -190,12 +190,16 @@ def _epoch(
     output_bins: int,
     optimizer: Any | None,
     label_smoothing: float,
+    max_batches: int | None = None,
 ) -> dict[str, Any]:
     training = optimizer is not None
     model.train(training)
     losses = []
     errors = []
     examples = 0
+    batches = 0
+    if max_batches is not None and max_batches <= 0:
+        raise ValueError("arrival timing max batches must be positive")
     for strain, availability, targets, offsets in loader:
         strain = strain.to(device)
         availability = availability.to(device)
@@ -224,8 +228,13 @@ def _epoch(
         )
         losses.append(float(loss.detach().cpu()))
         examples += int(strain.shape[0])
+        batches += 1
+        if max_batches is not None and batches >= max_batches:
+            break
     result = _summary(errors)
-    result.update({"loss": float(np.mean(losses)), "examples": examples})
+    result.update(
+        {"loss": float(np.mean(losses)), "examples": examples, "batches": batches}
+    )
     return result
 
 
@@ -375,6 +384,18 @@ def run_detector_arrival_timing_training(
     best_key = (float("inf"), float("inf"), float("inf"))
     best_epoch = None
     start_epoch = 1
+    optimizer_updates = 0
+    optimizer_examples = 0
+    steps_per_full_epoch = len(loaders["train"])
+    max_optimizer_updates = settings.get("max_optimizer_updates")
+    if max_optimizer_updates is not None:
+        max_optimizer_updates = int(max_optimizer_updates)
+        maximum_possible_updates = int(settings["epochs"]) * steps_per_full_epoch
+        if max_optimizer_updates <= 0 or max_optimizer_updates > maximum_possible_updates:
+            raise ValueError(
+                "arrival timing max optimizer updates must be positive and no larger "
+                f"than epochs * steps_per_full_epoch ({maximum_possible_updates})"
+            )
     if resume_path.is_file():
         resume = torch.load(resume_path, map_location=device, weights_only=False)
         if resume.get("run_identity") != identity:
@@ -386,8 +407,17 @@ def run_detector_arrival_timing_training(
         best_key = tuple(float(value) for value in resume["best_key"])
         best_epoch = resume["best_epoch"]
         start_epoch = int(resume["epoch"]) + 1
+        optimizer_updates = int(resume.get("optimizer_updates", 0))
+        optimizer_examples = int(resume.get("optimizer_examples", 0))
     started = time.time()
     for epoch in range(start_epoch, int(settings["epochs"]) + 1):
+        remaining_updates = (
+            None
+            if max_optimizer_updates is None
+            else max_optimizer_updates - optimizer_updates
+        )
+        if remaining_updates is not None and remaining_updates <= 0:
+            break
         train_metrics = _epoch(
             model,
             loaders["train"],
@@ -396,7 +426,14 @@ def run_detector_arrival_timing_training(
             output_bins,
             optimizer,
             float(settings.get("label_smoothing", 0.0)),
+            max_batches=(
+                None
+                if remaining_updates is None
+                else min(remaining_updates, steps_per_full_epoch)
+            ),
         )
+        optimizer_updates += int(train_metrics["batches"])
+        optimizer_examples += int(train_metrics["examples"])
         validation_metrics = _epoch(
             model, loaders["val"], device, duration, output_bins, None, 0.0
         )
@@ -434,6 +471,8 @@ def run_detector_arrival_timing_training(
                 "history": history,
                 "best_key": best_key,
                 "best_epoch": best_epoch,
+                "optimizer_updates": optimizer_updates,
+                "optimizer_examples": optimizer_examples,
             },
         )
         atomic_write_json(output / "history.json", history)
@@ -479,6 +518,14 @@ def run_detector_arrival_timing_training(
         },
         "validation_groups": groups,
         "epochs": int(settings["epochs"]),
+        "completed_epochs": len(history),
+        "steps_per_full_epoch": steps_per_full_epoch,
+        "max_optimizer_updates": max_optimizer_updates,
+        "optimizer_updates": optimizer_updates,
+        "optimizer_examples": optimizer_examples,
+        "training_budget_reached": (
+            max_optimizer_updates is not None and optimizer_updates == max_optimizer_updates
+        ),
         "history": history,
         "device": str(device),
         "elapsed_seconds": time.time() - started,
