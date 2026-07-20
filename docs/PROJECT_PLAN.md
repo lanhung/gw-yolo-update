@@ -212,6 +212,10 @@ Before training that fallback, run `candidate-proposal-audit` on the frozen 10k 
 manifest. If true arrivals are not covered by retained proposal intervals (with the declared 0.5 s
 context padding), repair proposal recall first; conditional localization cannot recover absent
 instances.
+The 0.3 threshold covers nearly every arrival only because its median proposal union spans 92.7% of
+the analysis window and its median truth-containing interval is 7.42 s. Run the frozen 0.3--0.9
+threshold sweep and accept a proposal operating point only through the precommitted coverage-width
+gate; otherwise the mask proposal objective, not timing-head data scale, is the next bottleneck.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

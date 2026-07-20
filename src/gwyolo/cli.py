@@ -692,6 +692,11 @@ def build_parser() -> argparse.ArgumentParser:
     proposal_audit.add_argument("--output", required=True)
     proposal_audit.add_argument("--padding-seconds", type=float, default=0.5)
 
+    proposal_select = subparsers.add_parser("candidate-proposal-sweep-select")
+    proposal_select.add_argument("--config", required=True)
+    proposal_select.add_argument("--audit-report", action="append", required=True)
+    proposal_select.add_argument("--output", required=True)
+
     injection_candidate_rank = subparsers.add_parser("injection-candidate-rank")
     injection_candidate_rank.add_argument("--injection-triggers", required=True)
     injection_candidate_rank.add_argument("--candidates", required=True)
@@ -1798,6 +1803,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.candidate_manifest,
                 args.output,
                 args.padding_seconds,
+            )
+        )
+    elif args.command == "candidate-proposal-sweep-select":
+        from .candidates import run_candidate_proposal_threshold_selection
+
+        _print(
+            run_candidate_proposal_threshold_selection(
+                args.config,
+                args.audit_report,
+                args.output,
             )
         )
     elif args.command == "injection-candidate-rank":

@@ -1,0 +1,14 @@
+candidate_proposal_threshold_selection:
+  minimum_all_padded_coverage: 0.95
+  minimum_required_group_padded_coverage: 0.90
+  maximum_median_union_fraction: 0.50
+  maximum_p90_union_fraction: 0.80
+  maximum_median_containing_width_seconds: 2.0
+  required_groups:
+    - family:BBH
+    - family:BNS
+    - family:NSBH
+    - snr:snr_4_8
+    - snr:snr_8_15
+    - snr:snr_15_30
+    - snr:snr_ge_30

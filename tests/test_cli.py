@@ -158,3 +158,27 @@ def test_candidate_proposal_audit_cli_routes_all_instance_inputs() -> None:
     audit.assert_called_once_with(
         "injections.jsonl", "candidates.jsonl", "coverage.json", 0.5
     )
+
+    with patch(
+        "gwyolo.candidates.run_candidate_proposal_threshold_selection",
+        return_value={},
+    ) as select:
+        assert (
+            main(
+                [
+                    "candidate-proposal-sweep-select",
+                    "--config",
+                    "proposal.yaml",
+                    "--audit-report",
+                    "audit-03.json",
+                    "--audit-report",
+                    "audit-05.json",
+                    "--output",
+                    "selection.json",
+                ]
+            )
+            == 0
+        )
+    select.assert_called_once_with(
+        "proposal.yaml", ["audit-03.json", "audit-05.json"], "selection.json"
+    )

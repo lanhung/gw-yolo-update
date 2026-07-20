@@ -10,6 +10,7 @@ from gwyolo.candidates import (
     calibrate_candidate_timing_rows,
     candidate_proposal_coverage,
     extract_temporal_clusters,
+    select_candidate_proposal_threshold,
 )
 
 
@@ -122,6 +123,63 @@ def test_candidate_proposal_coverage_preserves_misses_by_hand() -> None:
 
     with pytest.raises(ValueError, match="duplicate proposal candidate"):
         candidate_proposal_coverage(injections, candidates + candidates[:1], 0.6)
+
+
+def _proposal_threshold_audit(
+    threshold: float, coverage: float, median_union: float, median_width: float
+) -> dict[str, object]:
+    all_group = {
+        "padded_coverage_fraction": coverage,
+        "proposal_union_fraction_of_analysis_quantiles": {
+            "0.5": median_union,
+            "0.9": median_union + 0.1,
+        },
+        "minimum_containing_proposal_width_seconds_quantiles": {
+            "0.5": median_width
+        },
+    }
+    return {
+        "status": "validation_only_all_instance_candidate_proposal_coverage",
+        "injection_manifest_sha256": "a" * 64,
+        "padding_seconds": 0.5,
+        "candidates": 10,
+        "audit_report_sha256": f"{int(threshold * 10)}" * 64,
+        "candidate_extraction_provenance": {
+            "available": True,
+            "chirp_threshold": threshold,
+            "scoring": {
+                "checkpoint_sha256": "b" * 64,
+                "config_sha256": "c" * 64,
+                "trigger_manifest_sha256": "d" * 64,
+            },
+        },
+        "groups": {
+            "all": all_group,
+            "family:BBH": {"padded_coverage_fraction": coverage},
+        },
+    }
+
+
+def test_candidate_proposal_threshold_requires_coverage_and_compactness() -> None:
+    settings = {
+        "required_groups": ["family:BBH"],
+        "minimum_all_padded_coverage": 0.95,
+        "minimum_required_group_padded_coverage": 0.9,
+        "maximum_median_union_fraction": 0.5,
+        "maximum_p90_union_fraction": 0.8,
+        "maximum_median_containing_width_seconds": 2.0,
+    }
+    wide = _proposal_threshold_audit(0.3, 0.99, 0.9, 7.0)
+    compact = _proposal_threshold_audit(0.5, 0.96, 0.4, 1.5)
+
+    result = select_candidate_proposal_threshold([wide, compact], settings)
+    assert result["promotion_allowed"] is True
+    assert result["selected"]["chirp_threshold"] == 0.5
+    assert result["records"][0]["qualified"] is False
+
+    failed = select_candidate_proposal_threshold([wide], settings)
+    assert failed["promotion_allowed"] is False
+    assert failed["selected"] is None
 
 
 def test_candidate_time_slides_use_all_candidates_but_cluster_network_events() -> None:

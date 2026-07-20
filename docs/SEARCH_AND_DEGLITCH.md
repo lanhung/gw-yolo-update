@@ -108,6 +108,13 @@ interval-union fraction and the narrowest truth-containing interval width. It de
 result proposal support rather than search recall; it consumes no background threshold and makes no
 FAR/`<VT>` claim.
 
+The proposal-threshold Pareto gate is frozen in
+`configs/candidate_proposal_threshold_selection.yaml`. A threshold qualifies only with >=95% padded
+coverage overall, >=90% in every BBH/BNS/NSBH and SNR>=4 stratum, median/p90 proposal-union fractions
+<=0.50/0.80, and median truth-containing width <=2 s. `candidate-proposal-sweep-select` verifies that
+all audits share one injection manifest, scoring checkpoint, preprocessing config and trigger
+manifest. If no threshold passes every check, no proposal threshold is selected.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

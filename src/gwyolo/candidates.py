@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 from .trigger import network_ranking
@@ -82,6 +82,8 @@ def _candidate_extraction_provenance(candidate_manifest: str | Path) -> dict[str
         "candidate_extraction_report_path": str(report_path),
         "candidate_extraction_report_sha256": file_sha256(report_path),
         "candidate_manifest_sha256": str(report["manifest_sha256"]),
+        "chirp_threshold": float(report["chirp_threshold"]),
+        "minimum_bins": int(report["minimum_bins"]),
         "scoring": scoring,
         "blocker": scoring.get("blocker") if not scoring.get("available") else None,
     }
@@ -481,6 +483,162 @@ def run_candidate_proposal_coverage_audit(
     destination = Path(output_path)
     if destination.is_file():
         raise ValueError("candidate proposal coverage output already exists")
+    atomic_write_json(destination, report)
+    return report
+
+
+def select_candidate_proposal_threshold(
+    audit_reports: list[dict[str, Any]], settings: dict[str, Any]
+) -> dict[str, Any]:
+    """Select a validation proposal threshold only when coverage and support gates pass."""
+
+    if not audit_reports:
+        raise ValueError("proposal threshold selection requires audit reports")
+    required_groups = tuple(str(value) for value in settings["required_groups"])
+    if not required_groups or len(set(required_groups)) != len(required_groups):
+        raise ValueError("proposal threshold required groups must be unique")
+    common = None
+    records = []
+    thresholds = set()
+    for report in audit_reports:
+        if report.get("status") != "validation_only_all_instance_candidate_proposal_coverage":
+            raise ValueError("proposal threshold input is not a validation coverage audit")
+        provenance = report.get("candidate_extraction_provenance", {})
+        scoring = provenance.get("scoring", {})
+        identity = {
+            "injection_manifest_sha256": str(report["injection_manifest_sha256"]),
+            "padding_seconds": float(report["padding_seconds"]),
+            "checkpoint_sha256": str(scoring.get("checkpoint_sha256")),
+            "config_sha256": str(scoring.get("config_sha256")),
+            "trigger_manifest_sha256": str(scoring.get("trigger_manifest_sha256")),
+        }
+        if not provenance.get("available") or any(
+            value in {"", "None"} for value in identity.values()
+        ):
+            raise ValueError("proposal threshold audit lacks complete scoring provenance")
+        if common is None:
+            common = identity
+        elif identity != common:
+            raise ValueError("proposal threshold audits do not share one scoring identity")
+        threshold = float(provenance["chirp_threshold"])
+        if threshold in thresholds:
+            raise ValueError(f"duplicate proposal threshold audit: {threshold}")
+        thresholds.add(threshold)
+        groups = report["groups"]
+        missing = [key for key in required_groups if key not in groups]
+        if missing:
+            raise ValueError(f"proposal threshold audit lacks required groups: {missing}")
+        all_group = groups["all"]
+        coverage_checks = {
+            key: float(groups[key]["padded_coverage_fraction"])
+            >= float(settings["minimum_required_group_padded_coverage"])
+            for key in required_groups
+        }
+        checks = {
+            "all_padded_coverage": float(all_group["padded_coverage_fraction"])
+            >= float(settings["minimum_all_padded_coverage"]),
+            "required_group_padded_coverage": all(coverage_checks.values()),
+            "median_union_fraction": float(
+                all_group["proposal_union_fraction_of_analysis_quantiles"]["0.5"]
+            )
+            <= float(settings["maximum_median_union_fraction"]),
+            "p90_union_fraction": float(
+                all_group["proposal_union_fraction_of_analysis_quantiles"]["0.9"]
+            )
+            <= float(settings["maximum_p90_union_fraction"]),
+            "median_containing_width": float(
+                all_group["minimum_containing_proposal_width_seconds_quantiles"][
+                    "0.5"
+                ]
+            )
+            <= float(settings["maximum_median_containing_width_seconds"]),
+        }
+        records.append(
+            {
+                "chirp_threshold": threshold,
+                "candidates": int(report["candidates"]),
+                "audit_report_sha256": str(report["audit_report_sha256"]),
+                "padded_coverage_fraction": float(
+                    all_group["padded_coverage_fraction"]
+                ),
+                "median_union_fraction": float(
+                    all_group["proposal_union_fraction_of_analysis_quantiles"]["0.5"]
+                ),
+                "p90_union_fraction": float(
+                    all_group["proposal_union_fraction_of_analysis_quantiles"]["0.9"]
+                ),
+                "median_containing_width_seconds": float(
+                    all_group[
+                        "minimum_containing_proposal_width_seconds_quantiles"
+                    ]["0.5"]
+                ),
+                "required_group_coverage_checks": coverage_checks,
+                "checks": checks,
+                "qualified": all(checks.values()),
+            }
+        )
+    qualified = [record for record in records if record["qualified"]]
+    selected = (
+        min(
+            qualified,
+            key=lambda record: (
+                record["median_union_fraction"],
+                record["p90_union_fraction"],
+                record["candidates"],
+                -record["chirp_threshold"],
+            ),
+        )
+        if qualified
+        else None
+    )
+    return {
+        "promotion_allowed": selected is not None,
+        "selected": selected,
+        "common_scoring_identity": common,
+        "records": sorted(records, key=lambda record: record["chirp_threshold"]),
+    }
+
+
+def run_candidate_proposal_threshold_selection(
+    config_path: str | Path,
+    audit_report_paths: list[str | Path],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    config = load_yaml(config_path)
+    settings = config["candidate_proposal_threshold_selection"]
+    reports = []
+    for path in audit_report_paths:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+        report["audit_report_sha256"] = file_sha256(path)
+        provenance = report.get("candidate_extraction_provenance", {})
+        if "chirp_threshold" not in provenance:
+            extraction_path = provenance.get("candidate_extraction_report_path")
+            if not extraction_path or not Path(extraction_path).is_file():
+                raise ValueError("proposal audit lacks its candidate extraction report")
+            with Path(extraction_path).open("r", encoding="utf-8") as handle:
+                extraction = json.load(handle)
+            provenance["chirp_threshold"] = float(extraction["chirp_threshold"])
+            provenance["minimum_bins"] = int(extraction["minimum_bins"])
+        reports.append(report)
+    selection = select_candidate_proposal_threshold(reports, settings)
+    report = {
+        "status": "validation_only_candidate_proposal_threshold_selection",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "proposal threshold selection is not a search threshold and requires candidate-level "
+            "timing, continuous background and frozen VT evaluation"
+        ),
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "audit_reports": [str(path) for path in audit_report_paths],
+        "audit_report_hashes": [file_sha256(path) for path in audit_report_paths],
+        **selection,
+        **execution_provenance(),
+    }
+    destination = Path(output_path)
+    if destination.is_file():
+        raise ValueError("candidate proposal threshold selection output already exists")
     atomic_write_json(destination, report)
     return report
 
