@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from .arrival_timing import DetectorArrivalDataset
 from .candidate_refiner import (
     candidate_average_precision,
     candidate_interval_pair_features,
@@ -87,6 +88,85 @@ def candidate_pair_feature_vector(
     return values
 
 
+def candidate_pair_strain_feature_vector(
+    first: dict[str, Any],
+    second: dict[str, Any],
+    strain: np.ndarray,
+    model_ifos: tuple[str, ...],
+    analysis_start_gps: float,
+    sample_rate: int,
+    physical_delay_limit_seconds: float,
+    width_scale_seconds: float,
+) -> np.ndarray:
+    """Summarize local cross-IFO strain coherence inside a compatible interval pair."""
+
+    values = np.asarray(strain, dtype=np.float32)
+    if (
+        values.ndim != 2
+        or values.shape[0] != len(model_ifos)
+        or str(first["ifo"]) not in model_ifos
+        or str(second["ifo"]) not in model_ifos
+        or sample_rate <= 0
+        or physical_delay_limit_seconds <= 0
+        or width_scale_seconds <= 0
+    ):
+        raise ValueError("candidate pair strain feature inputs are invalid")
+    analysis_stop = analysis_start_gps + values.shape[1] / sample_rate
+    roi_start = max(
+        float(first["gps_start"]) - physical_delay_limit_seconds,
+        float(second["gps_start"]) - physical_delay_limit_seconds,
+        analysis_start_gps,
+    )
+    roi_stop = min(
+        float(first["gps_end"]) + physical_delay_limit_seconds,
+        float(second["gps_end"]) + physical_delay_limit_seconds,
+        analysis_stop,
+    )
+    start = max(int(np.floor((roi_start - analysis_start_gps) * sample_rate)), 0)
+    stop = min(int(np.ceil((roi_stop - analysis_start_gps) * sample_rate)), values.shape[1])
+    if stop - start < 4:
+        return np.zeros(7, dtype=np.float32)
+    first_values = values[model_ifos.index(str(first["ifo"])), start:stop].astype(
+        np.float64
+    )
+    second_values = values[model_ifos.index(str(second["ifo"])), start:stop].astype(
+        np.float64
+    )
+    maximum_lag = max(int(np.ceil(physical_delay_limit_seconds * sample_rate)), 1)
+    correlations = []
+    for lag in range(-maximum_lag, maximum_lag + 1):
+        if lag < 0:
+            left, right = first_values[-lag:], second_values[:lag]
+        elif lag > 0:
+            left, right = first_values[:-lag], second_values[lag:]
+        else:
+            left, right = first_values, second_values
+        if left.size < 4:
+            continue
+        left = left - np.mean(left)
+        right = right - np.mean(right)
+        denominator = np.linalg.norm(left) * np.linalg.norm(right)
+        correlations.append(float(np.dot(left, right) / denominator) if denominator else 0.0)
+    if not correlations:
+        correlations = [0.0]
+    correlation = max(correlations, key=abs)
+    result = np.asarray(
+        [
+            abs(correlation),
+            correlation,
+            np.log1p(np.sqrt(np.mean(first_values**2))),
+            np.log1p(np.sqrt(np.mean(second_values**2))),
+            np.log1p(np.max(np.abs(first_values))),
+            np.log1p(np.max(np.abs(second_values))),
+            (stop - start) / sample_rate / width_scale_seconds,
+        ],
+        dtype=np.float32,
+    )
+    if not np.isfinite(result).all():
+        raise ValueError("candidate pair strain features are non-finite")
+    return result
+
+
 def candidate_parent_top1_metrics(
     parent_ids: list[str],
     example_parent_ids: list[str],
@@ -156,6 +236,9 @@ def _build_examples(
     padding_seconds: float,
     maximum_negative_pairs_per_parent: int | None,
     seed: int,
+    strain_contexts: dict[str, tuple[np.ndarray, float]] | None = None,
+    model_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
+    sample_rate: int = 1024,
 ) -> dict[str, Any]:
     parent_map = {str(row["injection_id"]): row for row in parents}
     by_parent: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
@@ -196,14 +279,34 @@ def _build_examples(
                 support = candidate_pair_truth_support(
                     first, second, arrivals, padding_seconds
                 )
+                feature_vector = candidate_pair_feature_vector(
+                    first,
+                    second,
+                    physical_delay_limit_seconds,
+                    width_scale_seconds,
+                )
+                if strain_contexts is not None:
+                    if injection_id not in strain_contexts:
+                        raise ValueError("candidate pair strain context is absent")
+                    strain, analysis_start = strain_contexts[injection_id]
+                    feature_vector = np.concatenate(
+                        [
+                            feature_vector,
+                            candidate_pair_strain_feature_vector(
+                                first,
+                                second,
+                                strain,
+                                model_ifos,
+                                analysis_start,
+                                sample_rate,
+                                physical_delay_limit_seconds,
+                                width_scale_seconds,
+                            ),
+                        ]
+                    ).astype(np.float32)
                 rows.append(
                     {
-                        "features": candidate_pair_feature_vector(
-                            first,
-                            second,
-                            physical_delay_limit_seconds,
-                            width_scale_seconds,
-                        ),
+                        "features": feature_vector,
                         "padded": bool(support["padded"]),
                         "exact": bool(support["exact"]),
                         "peak_error": float(support["maximum_peak_error_seconds"]),
@@ -243,6 +346,36 @@ def _build_examples(
         "available_negative_pairs": available_negative_pairs,
         "retained_negative_pairs": retained_negative_pairs,
     }
+
+
+def _build_strain_contexts(
+    parents: list[dict[str, Any]],
+    model_ifos: tuple[str, ...],
+    target_sample_rate: int,
+    analysis_duration_seconds: float,
+    parent_output_bins: int,
+) -> dict[str, tuple[np.ndarray, float]]:
+    dataset = DetectorArrivalDataset(
+        parents,
+        model_ifos,
+        target_sample_rate,
+        analysis_duration_seconds,
+        parent_output_bins,
+        True,
+    )
+    contexts = {}
+    for index, row in enumerate(parents):
+        strain, availability, _, offsets = dataset[index]
+        present = row.get("detector_arrival_gps", {})
+        starts = [
+            float(present[ifo]) - float(offsets[ifo_index])
+            for ifo_index, ifo in enumerate(model_ifos)
+            if availability[ifo_index] and ifo in present
+        ]
+        if not starts or not np.allclose(starts, starts[0], rtol=0, atol=1e-6):
+            raise ValueError("candidate pair parent analysis starts are inconsistent")
+        contexts[str(row["injection_id"])] = (strain, starts[0])
+    return contexts
 
 
 if nn is not None:
@@ -408,12 +541,40 @@ def run_candidate_pair_ranker_training(
         float(settings["width_scale_seconds"]),
         float(settings["positive_padding_seconds"]),
     )
+    use_strain_features = bool(settings.get("use_strain_pair_features", False))
+    model_ifos = tuple(str(value) for value in settings.get("model_ifos", ["H1", "L1", "V1"]))
+    target_sample_rate = int(settings.get("target_sample_rate", 1024))
+    train_contexts = (
+        _build_strain_contexts(
+            train_parents,
+            model_ifos,
+            target_sample_rate,
+            float(settings["analysis_duration_seconds"]),
+            int(settings["parent_output_bins"]),
+        )
+        if use_strain_features
+        else None
+    )
+    validation_contexts = (
+        _build_strain_contexts(
+            validation_parents,
+            model_ifos,
+            target_sample_rate,
+            float(settings["analysis_duration_seconds"]),
+            int(settings["parent_output_bins"]),
+        )
+        if use_strain_features
+        else None
+    )
     train_examples = _build_examples(
         train_parents,
         train_candidates,
         *common,
         int(settings["maximum_negative_pairs_per_parent"]),
         seed,
+        train_contexts,
+        model_ifos,
+        target_sample_rate,
     )
     validation_examples = _build_examples(
         validation_parents,
@@ -421,9 +582,15 @@ def run_candidate_pair_ranker_training(
         *common,
         None,
         seed,
+        validation_contexts,
+        model_ifos,
+        target_sample_rate,
     )
+    input_features = int(train_examples["features"].shape[1])
+    if validation_examples["features"].shape[1] != input_features:
+        raise ValueError("candidate pair train/validation features differ")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CandidatePairMLP(16, int(settings["hidden_features"])).to(device)
+    model = CandidatePairMLP(input_features, int(settings["hidden_features"])).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(settings["learning_rate"]),
@@ -499,9 +666,13 @@ def run_candidate_pair_ranker_training(
             _atomic_torch_save(
                 checkpoint_path,
                 {
-                    "architecture": "candidate_pair_mlp_v1",
+                    "architecture": (
+                        "candidate_pair_mlp_strain_coherence_v2"
+                        if use_strain_features
+                        else "candidate_pair_mlp_v1"
+                    ),
                     "model": model.state_dict(),
-                    "input_features": 16,
+                    "input_features": input_features,
                     "hidden_features": int(settings["hidden_features"]),
                     "epoch": epoch,
                     "validation_selection_key": key,
@@ -560,7 +731,18 @@ def run_candidate_pair_ranker_training(
         "test_evaluation": None,
         "run_identity": identity,
         "split_audit": split_audit,
-        "architecture": "candidate_pair_mlp_v1",
+        "architecture": (
+            "candidate_pair_mlp_strain_coherence_v2"
+            if use_strain_features
+            else "candidate_pair_mlp_v1"
+        ),
+        "input_features": input_features,
+        "strain_pair_features": use_strain_features,
+        "strain_feature_definition": (
+            "absolute/signed physical-lag correlation, local RMS/peak amplitudes and ROI duration"
+            if use_strain_features
+            else None
+        ),
         "detector_pair": [first_ifo, second_ifo],
         "physical_delay_limit_seconds": common[2],
         "all_validation_compatible_pairs_scored": True,

@@ -1,0 +1,21 @@
+candidate_pair_ranker:
+  seed: 20260720
+  detector_pair: [H1, L1]
+  physical_delay_limit_seconds: 0.01
+  width_scale_seconds: 0.25
+  positive_padding_seconds: 0.5
+  maximum_negative_pairs_per_parent: 64
+  use_strain_pair_features: true
+  model_ifos: [H1, L1, V1]
+  target_sample_rate: 1024
+  analysis_duration_seconds: 8.0
+  parent_output_bins: 1024
+  hidden_features: 64
+  epochs: 50
+  max_optimizer_updates: 900
+  batch_size: 2048
+  evaluation_batch_size: 8192
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  minimum_top1_padded_pair_fraction: 0.8
+  maximum_top1_peak_p90_seconds: 0.25

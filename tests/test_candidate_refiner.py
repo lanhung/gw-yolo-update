@@ -3,6 +3,7 @@ import pytest
 
 from gwyolo.candidate_set_training import (
     candidate_pair_feature_vector,
+    candidate_pair_strain_feature_vector,
     candidate_parent_top1_metrics,
 )
 from gwyolo.candidate_refiner import (
@@ -176,6 +177,21 @@ def test_candidate_interval_pair_features_by_hand() -> None:
     vector = candidate_pair_feature_vector(first, second, 0.01, 0.25)
     assert vector.shape == (16,)
     assert np.isfinite(vector).all()
+    wave = np.sin(np.linspace(0, 8 * np.pi, 100, dtype=np.float32))
+    strain_first = {**first, "gps_start": 0.2, "gps_end": 0.8, "gps_peak": 0.5}
+    strain_second = {**second, "gps_start": 0.205, "gps_end": 0.805, "gps_peak": 0.505}
+    strain_features = candidate_pair_strain_feature_vector(
+        strain_first,
+        strain_second,
+        np.stack([wave, wave]),
+        ("H1", "L1"),
+        0.0,
+        100,
+        0.01,
+        0.25,
+    )
+    assert strain_features.shape == (7,)
+    assert np.isclose(strain_features[0], 1.0)
 
 
 def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:
