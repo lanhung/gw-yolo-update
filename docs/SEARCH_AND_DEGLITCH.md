@@ -82,6 +82,26 @@ Each command first writes a hash-bound intent file and refuses an existing outpu
 bounded streaming without weakening the retained candidate, detector-duty, GPS-block or source
 provenance needed by time slides and locked evaluation.
 
+The resumable wrapper is:
+
+```bash
+python -m gwyolo.cli gwosc-plan-shard \
+  --plan o4a-parent-plan.json --shard-index 0 --pairs-per-shard 1 \
+  --output shard-000/acquisition-plan.json
+python -m gwyolo.cli background-stream-shard \
+  --parent-plan o4a-parent-plan.json --shard-index 0 --pairs-per-shard 1 \
+  --event-exclusions o4a-event-exclusions.json \
+  --timing-calibration-report frozen-validation-timing.json \
+  --checkpoint model.pt --config experiment.yaml \
+  --coherence-config configs/physics_coherent_yolo_pilot.yaml \
+  --cache-root artifacts/bounded-gwosc-cache --output-dir shard-000
+```
+
+The wrapper itself creates and verifies the child plan, so the first command is useful for audit or
+distributed scheduling but is not required before the second. The timing calibration must match the
+scoring checkpoint, config and code commit exactly; a calibration from an older code snapshot is a
+hard failure rather than an implicitly reused error bar.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and

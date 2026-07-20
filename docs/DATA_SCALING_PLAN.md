@@ -254,6 +254,15 @@ Training rows in a search-only shard are counted as intentionally unscored, neve
 evaluation exposure. Both reports retain public recovery instructions and byte-level hashes; model
 reports, manifests and candidates are never evicted.
 
+`gwosc-plan-shard` slices the frozen parent acquisition plan by pair index and records the parent
+hash, exact half-open index range and selected pair-ID hash. `background-stream-shard` consumes one
+such non-overlapping slice end to end: resumable verified download, event-vetoed stable block split,
+complete validation/test scoring, all-instance candidate extraction, application of the exact
+checkpoint/config/commit-matched timing calibration, probability eviction, and finally source-HDF
+eviction. A completed shard is immutable under its full run identity and can be resumed after cache
+release without attempting to redownload a deleted source. Shards containing only training blocks
+are explicitly counted and safely released for this search-only corpus.
+
 ## Storage and compute strategy
 
 At the current JPEG size, 100k plots would be only several GB, but RGB plots discard physical information. A float32 tensor with several Q planes and three IFOs can consume hundreds of GB per 100k scenes. Prefer:

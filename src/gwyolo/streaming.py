@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, canonical_hash, file_sha256
 from .runtime import execution_provenance
 
 
@@ -257,4 +257,242 @@ def evict_scored_background_batch_sources(
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)
+    return result
+
+
+def run_streamed_background_shard(
+    parent_plan: str | Path,
+    event_exclusions: str | Path,
+    timing_calibration_report: str | Path,
+    checkpoint: str | Path,
+    config: str | Path,
+    coherence_config: str | Path,
+    cache_root: str | Path,
+    output_dir: str | Path,
+    shard_index: int,
+    pairs_per_shard: int = 1,
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.2,
+    seed: int = 20260720,
+    model_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
+    q_values: tuple[float, ...] = (4.0, 8.0, 16.0),
+    target_sample_rate: int = 1024,
+    context_duration: float = 64.0,
+    chirp_threshold: float = 0.3,
+    minimum_bins: int = 1,
+    download_workers: int = 8,
+) -> dict[str, Any]:
+    """Download, score, reduce, and safely release one stable-split background shard."""
+
+    from .background import run_batch_background_plan
+    from .candidates import (
+        run_apply_candidate_timing_calibration,
+        run_candidate_extraction,
+    )
+    from .gwosc import run_gwosc_batch_download, run_gwosc_plan_shard
+    from .manifests import select_jsonl_split
+    from .trigger import score_background_manifest
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "parent_plan_sha256": file_sha256(parent_plan),
+        "event_exclusions_sha256": file_sha256(event_exclusions),
+        "timing_calibration_report_sha256": file_sha256(timing_calibration_report),
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "config_sha256": file_sha256(config),
+        "coherence_config_sha256": file_sha256(coherence_config),
+        "shard_index": shard_index,
+        "pairs_per_shard": pairs_per_shard,
+        "validation_fraction": validation_fraction,
+        "test_fraction": test_fraction,
+        "seed": seed,
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "target_sample_rate": target_sample_rate,
+        "context_duration": context_duration,
+        "chirp_threshold": chirp_threshold,
+        "minimum_bins": minimum_bins,
+        "download_workers": download_workers,
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    final_path = output / "streamed_background_shard_report.json"
+    if final_path.is_file():
+        prior = _load_json(final_path)
+        if prior.get("run_identity") != identity:
+            raise ValueError("completed streamed background shard has another identity")
+        return prior
+
+    shard_plan_path = output / "acquisition_plan_shard.json"
+    if shard_plan_path.is_file():
+        shard_plan = _load_json(shard_plan_path)
+        if (
+            shard_plan.get("parent_plan_sha256") != identity["parent_plan_sha256"]
+            or int(shard_plan.get("shard_index", -1)) != shard_index
+            or int(shard_plan.get("pairs_per_shard", -1)) != pairs_per_shard
+        ):
+            raise ValueError("existing acquisition shard plan has another identity")
+    else:
+        shard_plan = run_gwosc_plan_shard(
+            parent_plan, shard_plan_path, shard_index, pairs_per_shard
+        )
+
+    batch_dir = output / "download"
+    batch_report_path = batch_dir / "batch_download_report.json"
+    if batch_report_path.is_file():
+        batch = _load_json(batch_report_path)
+        if batch.get("plan_sha256") != file_sha256(shard_plan_path):
+            raise ValueError("existing download report belongs to another shard plan")
+    else:
+        batch = run_gwosc_batch_download(
+            shard_plan_path,
+            cache_root,
+            batch_dir,
+            None,
+            download_workers,
+        )
+
+    background_dir = output / "background"
+    background_report_path = background_dir / "background_plan_report.json"
+    if background_report_path.is_file():
+        background = _load_json(background_report_path)
+        if (
+            background.get("split_strategy") != "hash_threshold_v1"
+            or file_sha256(batch_report_path)
+            not in set(background.get("source_batch_report_sha256s", []))
+        ):
+            raise ValueError("existing background plan belongs to another streamed shard")
+    else:
+        background = run_batch_background_plan(
+            batch_report_path,
+            event_exclusions,
+            background_dir,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+            seed=seed,
+            split_strategy="hash_threshold_v1",
+        )
+
+    background_rows = _load_jsonl(background["manifest_path"])
+    split_counts = {
+        split: sum(str(row["split"]) == split for row in background_rows)
+        for split in ("train", "val", "test")
+    }
+    score_report_paths = []
+    candidate_report_paths = []
+    split_artifacts = {}
+    for split in ("val", "test"):
+        if not split_counts[split]:
+            continue
+        split_dir = output / split
+        score_report_path = split_dir / "score" / "trigger_score_report.json"
+        candidate_report_path = (
+            split_dir / "candidates" / "candidate_extraction_report.json"
+        )
+        calibrated_path = split_dir / "candidates_calibrated.jsonl"
+        calibrated_report_path = calibrated_path.with_suffix(
+            calibrated_path.suffix + ".report.json"
+        )
+        eviction_path = split_dir / "probability_eviction_report.json"
+        if eviction_path.is_file():
+            eviction = _load_json(eviction_path)
+            if (
+                eviction.get("status") != "verified_candidate_probability_eviction"
+                or eviction.get("score_report_sha256") != file_sha256(score_report_path)
+                or eviction.get("candidate_extraction_report_sha256")
+                != file_sha256(candidate_report_path)
+            ):
+                raise ValueError(f"existing {split} probability eviction is inconsistent")
+            calibrated = _load_json(calibrated_report_path)
+        else:
+            split_manifest_report = select_jsonl_split(
+                background["manifest_path"], split, split_dir / "manifest"
+            )
+            score = score_background_manifest(
+                split_manifest_report["manifest_path"],
+                checkpoint,
+                config,
+                split_dir / "score",
+                model_ifos,
+                q_values,
+                target_sample_rate,
+                context_duration,
+                True,
+                split,
+                None,
+                coherence_config,
+            )
+            candidates = run_candidate_extraction(
+                score["triggers_path"],
+                split_dir / "candidates",
+                chirp_threshold,
+                minimum_bins,
+            )
+            calibrated = run_apply_candidate_timing_calibration(
+                candidates["manifest_path"], timing_calibration_report, calibrated_path
+            )
+            if calibrated["uncalibrated_candidates"]:
+                raise RuntimeError(
+                    f"{split} shard candidates do not match the frozen timing calibration"
+                )
+            eviction = evict_candidate_probability_artifacts(
+                candidate_report_path,
+                score_report_path,
+                split_dir / "score" / "probabilities",
+                eviction_path,
+            )
+        score_report_paths.append(score_report_path)
+        candidate_report_paths.append(candidate_report_path)
+        split_artifacts[split] = {
+            "windows": split_counts[split],
+            "score_report_sha256": file_sha256(score_report_path),
+            "candidate_report_sha256": file_sha256(candidate_report_path),
+            "calibrated_candidate_manifest_path": str(calibrated_path),
+            "calibrated_candidate_manifest_sha256": file_sha256(calibrated_path),
+            "calibrated_candidate_report_sha256": file_sha256(calibrated_report_path),
+            "probability_eviction_report_sha256": file_sha256(eviction_path),
+            "probability_files_removed": int(eviction["removed_files"]),
+        }
+
+    source_eviction_path = output / "source_eviction_report.json"
+    if source_eviction_path.is_file():
+        source_eviction = _load_json(source_eviction_path)
+        if (
+            source_eviction.get("status") != "verified_scored_gwosc_source_eviction"
+            or source_eviction.get("batch_download_report_sha256")
+            != file_sha256(batch_report_path)
+            or source_eviction.get("background_plan_report_sha256")
+            != file_sha256(background_report_path)
+        ):
+            raise ValueError("existing source eviction report is inconsistent")
+    else:
+        source_eviction = evict_scored_background_batch_sources(
+            batch_report_path,
+            background_report_path,
+            score_report_paths,
+            candidate_report_paths,
+            cache_root,
+            source_eviction_path,
+        )
+    result = {
+        "status": "verified_streamed_candidate_background_shard",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "merge disjoint stable-hash shards, construct adequate time-slide exposure, freeze "
+            "the validation threshold, and evaluate the independently locked test partition"
+        ),
+        "run_identity": identity,
+        "run_identity_hash": canonical_hash(identity, 64),
+        "split_strategy": "hash_threshold_v1",
+        "background_manifest_path": str(background["manifest_path"]),
+        "background_manifest_sha256": file_sha256(background["manifest_path"]),
+        "split_counts": split_counts,
+        "split_artifacts": split_artifacts,
+        "source_eviction_report_sha256": file_sha256(source_eviction_path),
+        "source_files_removed": int(source_eviction["removed_files"]),
+        "source_bytes_removed": int(source_eviction["removed_bytes"]),
+        "recoverable": True,
+        **execution_provenance(),
+    }
+    atomic_write_json(final_path, result)
     return result

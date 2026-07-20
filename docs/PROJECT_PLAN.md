@@ -204,4 +204,9 @@ hash-verified probability arrays after complete candidate extraction, and may ev
 HDF sources only after every non-empty validation/test split is scored and converted to candidates.
 Immutable intent and recovery records survive each eviction, keeping multi-day acquisition bounded
 without silently reducing declared live time.
+
+Acquisition can now be distributed deterministically: each worker consumes a parent-hash-bound,
+non-overlapping GWOSC plan slice through `background-stream-shard`. The final shard report retains
+the stable split counts and calibrated candidate hashes while proving that temporary arrays and HDF
+sources were released only after all evaluation rows were reduced.
 6. reproducibility lead: CI, containers, artifact registry, paper tables.

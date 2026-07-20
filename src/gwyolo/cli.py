@@ -301,6 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_run_plan.add_argument("--seed", type=int, default=20260719)
     gwosc_run_plan.add_argument("--output", required=True)
 
+    gwosc_plan_shard = subparsers.add_parser("gwosc-plan-shard")
+    gwosc_plan_shard.add_argument("--plan", required=True)
+    gwosc_plan_shard.add_argument("--shard-index", type=int, required=True)
+    gwosc_plan_shard.add_argument("--pairs-per-shard", type=int, default=1)
+    gwosc_plan_shard.add_argument("--output", required=True)
+
     gwosc_batch = subparsers.add_parser("gwosc-batch-download")
     gwosc_batch.add_argument("--plan", required=True)
     gwosc_batch.add_argument("--cache-dir", required=True)
@@ -736,6 +742,28 @@ def build_parser() -> argparse.ArgumentParser:
     source_evict.add_argument("--candidate-report", action="append", default=[])
     source_evict.add_argument("--cache-root", required=True)
     source_evict.add_argument("--output", required=True)
+
+    stream_shard = subparsers.add_parser("background-stream-shard")
+    stream_shard.add_argument("--parent-plan", required=True)
+    stream_shard.add_argument("--event-exclusions", required=True)
+    stream_shard.add_argument("--timing-calibration-report", required=True)
+    stream_shard.add_argument("--checkpoint", required=True)
+    stream_shard.add_argument("--config", required=True)
+    stream_shard.add_argument("--coherence-config", required=True)
+    stream_shard.add_argument("--cache-root", required=True)
+    stream_shard.add_argument("--output-dir", required=True)
+    stream_shard.add_argument("--shard-index", type=int, required=True)
+    stream_shard.add_argument("--pairs-per-shard", type=int, default=1)
+    stream_shard.add_argument("--validation-fraction", type=float, default=0.2)
+    stream_shard.add_argument("--test-fraction", type=float, default=0.2)
+    stream_shard.add_argument("--seed", type=int, default=20260720)
+    stream_shard.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
+    stream_shard.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
+    stream_shard.add_argument("--target-sample-rate", type=int, default=1024)
+    stream_shard.add_argument("--context-duration", type=float, default=64.0)
+    stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
+    stream_shard.add_argument("--minimum-bins", type=int, default=1)
+    stream_shard.add_argument("--download-workers", type=int, default=8)
 
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
@@ -1184,6 +1212,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate_khz,
                 args.maximum_pairs,
                 args.seed,
+            )
+        )
+    elif args.command == "gwosc-plan-shard":
+        from .gwosc import run_gwosc_plan_shard
+
+        _print(
+            run_gwosc_plan_shard(
+                args.plan,
+                args.output,
+                args.shard_index,
+                args.pairs_per_shard,
             )
         )
     elif args.command == "gwosc-batch-download":
@@ -1776,6 +1815,33 @@ def main(argv: list[str] | None = None) -> int:
                 args.candidate_report,
                 args.cache_root,
                 args.output,
+            )
+        )
+    elif args.command == "background-stream-shard":
+        from .streaming import run_streamed_background_shard
+
+        _print(
+            run_streamed_background_shard(
+                args.parent_plan,
+                args.event_exclusions,
+                args.timing_calibration_report,
+                args.checkpoint,
+                args.config,
+                args.coherence_config,
+                args.cache_root,
+                args.output_dir,
+                args.shard_index,
+                args.pairs_per_shard,
+                args.validation_fraction,
+                args.test_fraction,
+                args.seed,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.download_workers,
             )
         )
     elif args.command == "time-slide-background":

@@ -19,9 +19,64 @@ from gwyolo.gwosc import (
     plan_run_strain_pairs,
     read_hdf5_segment,
     run_gwosc_event_exclusions,
+    run_gwosc_plan_shard,
     run_gwosc_pilot,
     verify_hdf5_against_detail,
 )
+
+
+def test_gwosc_plan_shards_are_disjoint_and_parent_bound(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.json"
+    pairs = [
+        {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://example/{ifo}-{gps}.json",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+        for gps in (100, 200, 300, 400, 500)
+    ]
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "run": "O4a",
+                "detectors": ["H1", "L1"],
+                "sample_rate_khz": 4,
+                "seed": 7,
+                "source_endpoint": "https://gwosc.org/api/v2/runs/O4a/strain-files",
+                "aligned_pairs_available": 5,
+                "selected_pairs": 5,
+                "pairs": pairs,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = run_gwosc_plan_shard(plan, tmp_path / "shard-0.json", 0, 2)
+    second = run_gwosc_plan_shard(plan, tmp_path / "shard-1.json", 1, 2)
+    last = run_gwosc_plan_shard(plan, tmp_path / "shard-2.json", 2, 2)
+
+    assert first["parent_plan_sha256"] == second["parent_plan_sha256"]
+    assert [row["gps_start"] for row in first["pairs"]] == [100, 200]
+    assert [row["gps_start"] for row in second["pairs"]] == [300, 400]
+    assert [row["gps_start"] for row in last["pairs"]] == [500]
+    selected = {
+        row["pair_id"] for report in (first, second, last) for row in report["pairs"]
+    }
+    assert selected == {row["pair_id"] for row in pairs}
+    with pytest.raises(ValueError, match="beyond"):
+        run_gwosc_plan_shard(plan, tmp_path / "shard-3.json", 3, 2)
 
 
 def test_reference_whitening_is_linear_for_signal_component() -> None:

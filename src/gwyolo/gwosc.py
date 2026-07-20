@@ -199,6 +199,64 @@ def run_gwosc_run_plan(
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
 
 
+def run_gwosc_plan_shard(
+    plan_path: str | Path,
+    output: str | Path,
+    shard_index: int,
+    pairs_per_shard: int = 1,
+) -> dict[str, Any]:
+    """Select one immutable, non-overlapping slice of a frozen acquisition plan."""
+
+    if shard_index < 0 or pairs_per_shard <= 0:
+        raise ValueError("shard index must be non-negative and pairs per shard must be positive")
+    with Path(plan_path).open("r", encoding="utf-8") as handle:
+        plan = json.load(handle)
+    if plan.get("status") != "development_acquisition_plan":
+        raise ValueError("GWOSC plan shard requires a development acquisition plan")
+    if plan.get("locked_evaluation_data") or str(plan.get("run", "")).lower().startswith(
+        "o4b"
+    ):
+        raise ValueError("O4b is locked evaluation data and cannot enter a development shard")
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row["pair_id"]) for row in pairs]
+    if not pairs or len(pair_ids) != len(set(pair_ids)):
+        raise ValueError("parent acquisition plan has no pairs or repeats pair IDs")
+    if int(plan.get("selected_pairs", len(pairs))) != len(pairs):
+        raise ValueError("parent acquisition plan selected-pair count is inconsistent")
+    start = shard_index * pairs_per_shard
+    stop = min(start + pairs_per_shard, len(pairs))
+    if start >= len(pairs):
+        raise ValueError(
+            f"shard {shard_index} starts beyond the {len(pairs)} parent plan pairs"
+        )
+    selected = pairs[start:stop]
+    result = {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": plan["run"],
+        "detectors": list(plan["detectors"]),
+        "sample_rate_khz": int(plan["sample_rate_khz"]),
+        "seed": int(plan["seed"]),
+        "source_endpoint": plan["source_endpoint"],
+        "aligned_pairs_available": int(plan["aligned_pairs_available"]),
+        "selected_pairs": len(selected),
+        "selected_gps_span": [selected[0]["gps_start"], selected[-1]["gps_start"]],
+        "pairs": selected,
+        "parent_plan_path": str(plan_path),
+        "parent_plan_sha256": file_sha256(plan_path),
+        "parent_selected_pairs": len(pairs),
+        "shard_index": shard_index,
+        "pairs_per_shard": pairs_per_shard,
+        "pair_index_start_inclusive": start,
+        "pair_index_stop_exclusive": stop,
+        "shard_count": (len(pairs) + pairs_per_shard - 1) // pairs_per_shard,
+        "selected_pair_ids_hash": canonical_hash(pair_ids[start:stop], 64),
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
+
+
 def run_gwosc_event_exclusions(
     run: str,
     output: str | Path,

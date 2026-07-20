@@ -9,6 +9,7 @@ from gwyolo.io import atomic_write_json, atomic_write_text, file_sha256
 from gwyolo.streaming import (
     evict_candidate_probability_artifacts,
     evict_scored_background_batch_sources,
+    run_streamed_background_shard,
 )
 
 
@@ -223,3 +224,122 @@ def test_background_source_eviction_rejects_unscored_required_window(
     with pytest.raises(ValueError, match="non-empty required splits"):
         evict_scored_background_batch_sources(batch, plan, [], [], cache, tmp_path / "out.json")
     assert h1.exists()
+
+
+def test_streamed_background_shard_resumes_after_verified_source_eviction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gwyolo import background as background_module
+    from gwyolo import gwosc as gwosc_module
+
+    parent_plan = tmp_path / "parent-plan.json"
+    exclusions = tmp_path / "exclusions.json"
+    timing = tmp_path / "timing.json"
+    checkpoint = tmp_path / "model.pt"
+    config = tmp_path / "config.yaml"
+    coherence = tmp_path / "coherence.yaml"
+    for path in (parent_plan, exclusions, timing, config, coherence):
+        path.write_text("{}\n", encoding="utf-8")
+    checkpoint.write_bytes(b"checkpoint")
+    cache = tmp_path / "bounded" / "gwosc-cache"
+    output = tmp_path / "stream-shard"
+
+    def fake_plan(_parent: Path, destination: Path, index: int, count: int) -> dict:
+        value = {
+            "status": "development_acquisition_plan",
+            "parent_plan_sha256": file_sha256(parent_plan),
+            "shard_index": index,
+            "pairs_per_shard": count,
+        }
+        atomic_write_json(destination, value)
+        return value
+
+    def fake_download(
+        plan_path: Path,
+        cache_root: Path,
+        output_dir: Path,
+        _maximum_pairs: None,
+        _workers: int,
+    ) -> dict:
+        cache_path = Path(cache_root)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        h1 = cache_path / "H1.hdf5"
+        l1 = cache_path / "L1.hdf5"
+        h1.write_bytes(b"H1 strain")
+        l1.write_bytes(b"L1 strain")
+        value = {
+            "status": "verified_development_strain_batch",
+            "passed": True,
+            "plan_sha256": file_sha256(plan_path),
+            "files": [
+                {"path": str(h1), "sha256": file_sha256(h1)},
+                {"path": str(l1), "sha256": file_sha256(l1)},
+            ],
+        }
+        atomic_write_json(Path(output_dir) / "batch_download_report.json", value)
+        return value
+
+    def fake_background(
+        batch_path: Path,
+        _exclusions: Path,
+        output_dir: Path,
+        **kwargs: object,
+    ) -> dict:
+        batch = json.loads(Path(batch_path).read_text(encoding="utf-8"))
+        sources = {
+            Path(row["path"]).stem: {"path": row["path"], "sha256": row["sha256"]}
+            for row in batch["files"]
+        }
+        manifest = Path(output_dir) / "background_windows.jsonl"
+        _jsonl(
+            manifest,
+            [
+                {
+                    "window_id": "train-only-window",
+                    "split": "train",
+                    "source_files": sources,
+                }
+            ],
+        )
+        value = {
+            "status": "verified_multi_segment_development_background",
+            "passed": True,
+            "split_strategy": kwargs["split_strategy"],
+            "source_batch_report_sha256s": [file_sha256(batch_path)],
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+        }
+        atomic_write_json(Path(output_dir) / "background_plan_report.json", value)
+        return value
+
+    monkeypatch.setattr(gwosc_module, "run_gwosc_plan_shard", fake_plan)
+    monkeypatch.setattr(gwosc_module, "run_gwosc_batch_download", fake_download)
+    monkeypatch.setattr(background_module, "run_batch_background_plan", fake_background)
+
+    result = run_streamed_background_shard(
+        parent_plan,
+        exclusions,
+        timing,
+        checkpoint,
+        config,
+        coherence,
+        cache,
+        output,
+        0,
+    )
+
+    assert result["status"] == "verified_streamed_candidate_background_shard"
+    assert result["split_counts"] == {"train": 1, "val": 0, "test": 0}
+    assert result["source_files_removed"] == 2
+    assert not (cache / "H1.hdf5").exists()
+    assert run_streamed_background_shard(
+        parent_plan,
+        exclusions,
+        timing,
+        checkpoint,
+        config,
+        coherence,
+        cache,
+        output,
+        0,
+    ) == result
