@@ -124,6 +124,10 @@ The next timing ablation adds a train-only temporal-profile loss: chirp logits a
 IFO/Q/frequency and supervised against whether each time bin contains any target-mask pixel. This
 directly penalizes window-spanning false activation while retaining the full pixel mask objective.
 It is promoted to 1,024 bins only if the 96-bin endpoint audit improves materially.
+Because both per-bin temporal BCE weightings failed, the next frozen ablation instead applies a
+softmax cross-entropy to the last active target-mask bin. All time bins compete for one endpoint,
+which directly suppresses distant rival peaks; samples with no visible target are excluded only
+from this auxiliary term, not from the primary mask loss.
 
 `gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
 from each injection's own full real-noise context, but integrates signal power only over the recorded
