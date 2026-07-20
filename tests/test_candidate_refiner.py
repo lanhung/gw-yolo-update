@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -6,6 +8,7 @@ from gwyolo.candidate_set_training import (
     candidate_pair_feature_vector,
     candidate_pair_strain_feature_vector,
     candidate_parent_top1_metrics,
+    run_candidate_pair_scaling_plan,
 )
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
@@ -218,6 +221,70 @@ def test_candidate_pair_aligned_crop_uses_one_truth_free_gps_axis() -> None:
     assert crop.shape == (2, 20)
     assert np.array_equal(crop[0], np.arange(10, 30, dtype=np.float16))
     assert np.array_equal(crop[1], 100 + np.arange(10, 30, dtype=np.float16))
+
+
+def test_candidate_pair_scaling_plan_counts_physical_parents_not_candidates(
+    tmp_path,
+) -> None:
+    parents = [
+        {
+            "injection_id": f"i{index}",
+            "waveform_id": f"w{index}",
+            "gps_block": f"b{index}",
+            "split": "train",
+        }
+        for index in range(3)
+    ]
+    candidates = [
+        {
+            "candidate_id": "c0a",
+            "injection_id": "i0",
+            "split": "train",
+            "ifo": "H1",
+        },
+        {
+            "candidate_id": "c0b",
+            "injection_id": "i0",
+            "split": "train",
+            "ifo": "L1",
+        },
+        {
+            "candidate_id": "c2",
+            "injection_id": "i2",
+            "split": "train",
+            "ifo": "H1",
+        },
+    ]
+    parent_path = tmp_path / "parents.jsonl"
+    candidate_path = tmp_path / "candidates.jsonl"
+    scale2_path = tmp_path / "scale2.jsonl"
+    scale3_path = tmp_path / "scale3.jsonl"
+    parent_path.write_text("".join(json.dumps(row) + "\n" for row in parents))
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in candidates)
+    )
+    scale2_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in parents[:2])
+    )
+    scale3_path.write_text("".join(json.dumps(row) + "\n" for row in parents))
+    report = run_candidate_pair_scaling_plan(
+        parent_path,
+        candidate_path,
+        [f"2={scale2_path}", f"3={scale3_path}"],
+        tmp_path / "output",
+    )
+    assert [row["physical_parent_count"] for row in report["scale_records"]] == [
+        2,
+        3,
+    ]
+    assert report["scale_records"][0]["candidates"] == 2
+    assert report["scale_records"][0]["zero_candidate_parents"] == 1
+    planned = [
+        json.loads(line)
+        for line in open(report["scale_records"][1]["candidate_manifest"])
+    ]
+    assert all(row["refiner_role"] == "train" for row in planned)
+    assert all(row["training_parent_scale"] == 3 for row in planned)
 
 
 def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:

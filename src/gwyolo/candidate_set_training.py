@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from .candidate_refiner import (
     candidate_interval_pair_features,
     candidate_pair_truth_support,
 )
-from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .numeric import _atomic_torch_save
 from .physical_training import physical_split_audit
@@ -36,6 +36,154 @@ except ImportError:  # pragma: no cover
 
 def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line]
+
+
+def _parse_scale_manifest_specs(specs: list[str]) -> list[tuple[int, Path]]:
+    parsed = []
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError("candidate pair scale manifests require SIZE=PATH")
+        raw_size, raw_path = spec.split("=", 1)
+        try:
+            size = int(raw_size)
+        except ValueError as error:
+            raise ValueError("candidate pair scale size must be an integer") from error
+        path = Path(raw_path)
+        if size <= 0 or not raw_path or not path.is_file():
+            raise ValueError("candidate pair scale manifest specification is invalid")
+        parsed.append((size, path))
+    parsed.sort()
+    if not parsed or len({size for size, _ in parsed}) != len(parsed):
+        raise ValueError("candidate pair scale sizes must be nonempty and unique")
+    return parsed
+
+
+def run_candidate_pair_scaling_plan(
+    train_injection_manifest: str | Path,
+    train_candidate_manifest: str | Path,
+    scale_manifest_specs: list[str],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Create nested, physical-parent-counted ranker manifests without candidate pruning."""
+
+    scale_specs = _parse_scale_manifest_specs(scale_manifest_specs)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "train_injection_manifest_sha256": file_sha256(train_injection_manifest),
+        "train_candidate_manifest_sha256": file_sha256(train_candidate_manifest),
+        "scale_manifests": [
+            {"size": size, "sha256": file_sha256(path)} for size, path in scale_specs
+        ],
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report_path = output / "candidate_pair_scaling_plan_report.json"
+    if report_path.is_file():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if report.get("run_identity") != identity:
+            raise ValueError("completed candidate pair scaling plan has another identity")
+        return report
+    if any(output.iterdir()):
+        raise FileExistsError("candidate pair scaling plan output must be empty")
+    parents = _read_jsonl(train_injection_manifest)
+    candidates = _read_jsonl(train_candidate_manifest)
+    if not parents or any(row.get("split") != "train" for row in parents):
+        raise ValueError("candidate pair scaling parents must be nonempty train rows")
+    parent_map = {str(row["injection_id"]): row for row in parents}
+    if len(parent_map) != len(parents):
+        raise ValueError("candidate pair scaling parents repeat injection IDs")
+    candidate_ids = [str(row["candidate_id"]) for row in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("candidate pair scaling candidates repeat candidate IDs")
+    if any(
+        row.get("split") != "train"
+        or str(row["injection_id"]) not in parent_map
+        or row.get("refiner_role") not in (None, "train")
+        for row in candidates
+    ):
+        raise ValueError("candidate pair scaling candidates differ from train parents")
+    candidate_parent_ids = {str(row["injection_id"]) for row in candidates}
+    previous_ids: set[str] = set()
+    records = []
+    for size, source_path in scale_specs:
+        source_rows = _read_jsonl(source_path)
+        selected_ids = {str(row["injection_id"]) for row in source_rows}
+        if len(source_rows) != size or len(selected_ids) != size:
+            raise ValueError("candidate pair scale size differs from unique physical rows")
+        if not previous_ids.issubset(selected_ids):
+            raise ValueError("candidate pair scale manifests are not nested")
+        if not selected_ids.issubset(parent_map):
+            raise ValueError("candidate pair scale contains an unknown injection")
+        for row in source_rows:
+            parent = parent_map[str(row["injection_id"])]
+            if (
+                str(row["waveform_id"]) != str(parent["waveform_id"])
+                or str(row["gps_block"]) != str(parent["gps_block"])
+            ):
+                raise ValueError("candidate pair scale physical identity differs")
+        selected_parents = [
+            row for row in parents if str(row["injection_id"]) in selected_ids
+        ]
+        selected_candidates = [
+            {**row, "refiner_role": "train", "training_parent_scale": size}
+            for row in candidates
+            if str(row["injection_id"]) in selected_ids
+        ]
+        parent_path = output / f"candidate_pair_scale_{size}_parents.jsonl"
+        candidate_path = output / f"candidate_pair_scale_{size}_candidates.jsonl"
+        atomic_write_text(
+            parent_path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_parents),
+        )
+        atomic_write_text(
+            candidate_path,
+            "".join(
+                json.dumps(row, sort_keys=True) + "\n" for row in selected_candidates
+            ),
+        )
+        parents_with_candidates = len(selected_ids & candidate_parent_ids)
+        records.append(
+            {
+                "physical_parent_count": size,
+                "parent_manifest": str(parent_path),
+                "parent_manifest_sha256": file_sha256(parent_path),
+                "candidate_manifest": str(candidate_path),
+                "candidate_manifest_sha256": file_sha256(candidate_path),
+                "candidates": len(selected_candidates),
+                "parents_with_candidates": parents_with_candidates,
+                "zero_candidate_parents": size - parents_with_candidates,
+                "unique_waveforms": len(
+                    {str(row["waveform_id"]) for row in selected_parents}
+                ),
+                "unique_gps_blocks": len(
+                    {str(row["gps_block"]) for row in selected_parents}
+                ),
+                "candidate_counts_by_ifo": dict(
+                    sorted(
+                        Counter(str(row["ifo"]) for row in selected_candidates).items()
+                    )
+                ),
+                "all_connected_candidates_retained": True,
+                "top_k_pruning": None,
+            }
+        )
+        previous_ids = selected_ids
+    result = {
+        "status": "verified_nested_candidate_pair_scaling_plan",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "fixed-update and fixed-epoch ranker controls plus fresh calibration remain required"
+        ),
+        "test_evaluation": None,
+        "run_identity": identity,
+        "scale_records": records,
+        "physical_sample_definition": "unique injection/waveform parent, never candidate rows",
+        "all_connected_candidates_retained": True,
+        "top_k_pruning": None,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
+    return result
 
 
 def candidate_pair_feature_vector(

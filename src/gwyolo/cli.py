@@ -497,6 +497,14 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pair_ranker.add_argument("--output-dir", required=True)
     candidate_pair_ranker.add_argument("--seed", type=int)
 
+    candidate_pair_scaling = subparsers.add_parser("candidate-pair-scaling-plan")
+    candidate_pair_scaling.add_argument("--train-injection-manifest", required=True)
+    candidate_pair_scaling.add_argument("--train-candidate-manifest", required=True)
+    candidate_pair_scaling.add_argument(
+        "--scale-manifest", action="append", required=True, metavar="SIZE=PATH"
+    )
+    candidate_pair_scaling.add_argument("--output-dir", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1622,6 +1630,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_selection_candidate_manifest,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "candidate-pair-scaling-plan":
+        from .candidate_set_training import run_candidate_pair_scaling_plan
+
+        _print(
+            run_candidate_pair_scaling_plan(
+                args.train_injection_manifest,
+                args.train_candidate_manifest,
+                args.scale_manifest,
+                args.output_dir,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":
