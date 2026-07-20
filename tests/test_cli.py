@@ -32,6 +32,7 @@ def test_trigger_cli_routes_only_declared_arguments() -> None:
         q_values=(4, 8, 16),
         target_sample_rate=1024,
         context_duration=64.0,
+        save_probabilities=False,
     )
 
 

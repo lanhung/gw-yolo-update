@@ -11,6 +11,7 @@ import numpy as np
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
+from .waveforms import _atomic_save_npz
 
 
 def _load_resumable_trigger_rows(
@@ -48,6 +49,11 @@ def _load_resumable_trigger_rows(
         window_id = str(row["window_id"])
         if window_id not in requested or window_id in completed:
             raise ValueError("Partial background scores contain unexpected or duplicate IDs")
+        if run_identity.get("save_probabilities"):
+            path = row.get("probability_path")
+            expected_sha = row.get("probability_sha256")
+            if not path or not expected_sha or file_sha256(path) != expected_sha:
+                raise ValueError(f"Partial probability hash mismatch for {window_id}")
         completed.add(window_id)
     return rows
 
@@ -175,6 +181,7 @@ def score_background_manifest(
     q_values: tuple[float, ...] = (4.0, 8.0, 16.0),
     target_sample_rate: int = 1024,
     context_duration: float = 64.0,
+    save_probabilities: bool = False,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -211,6 +218,7 @@ def score_background_manifest(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
+        "save_probabilities": save_probabilities,
     }
     resumed_rows = _load_resumable_trigger_rows(output, run_identity, manifest_rows)
     resumed_by_id = {str(row["window_id"]): row for row in resumed_rows}
@@ -252,6 +260,20 @@ def score_background_manifest(
                 float(row["gps_start"]),
                 float(row["duration"]),
             )
+            probability_record = {}
+            if save_probabilities:
+                probability_path = output / "probabilities" / f"{row['window_id']}.npz"
+                _atomic_save_npz(
+                    probability_path,
+                    chirp_probability=probabilities[0].astype(np.float16),
+                    glitch_probability=probabilities[1].astype(np.float16),
+                    ifos=np.asarray(model_ifos),
+                    q_values=np.asarray(q_values, dtype=np.float32),
+                )
+                probability_record = {
+                    "probability_path": str(probability_path),
+                    "probability_sha256": file_sha256(probability_path),
+                }
             rows.append(
                 {
                     "window_id": row["window_id"],
@@ -260,6 +282,7 @@ def score_background_manifest(
                     "gps_end": row["gps_end"],
                     "gps_block": row["gps_block"],
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
+                    **probability_record,
                     **summary,
                 }
             )
@@ -286,6 +309,7 @@ def score_background_manifest(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
+        "probabilities_saved": save_probabilities,
         "run_identity_hash": canonical_hash(run_identity, 64),
         "input_windows": len(manifest_rows),
         "resumed_windows": len(resumed_rows),

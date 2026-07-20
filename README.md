@@ -68,6 +68,7 @@ gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound i
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes
 gwyolo learned-deglitch apply frozen soft masks and measure injected-signal retention
 gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking triggers
+gwyolo candidate-extract retain every per-IFO temporal cluster from saved probability maps
 gwyolo time-slide-background build split-safe nonzero time-slide background exposure
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain

@@ -41,6 +41,12 @@ hand-calculated test covers both ranking and exposure.
 Background scoring checkpoints atomically every five windows under a manifest/checkpoint/config and
 preprocessing identity. Restarts reuse only matching window IDs. Any unreadable accepted window is
 reported and forces a nonzero exit, rather than quietly shrinking the declared live time.
+With `--save-probabilities`, the run identity also covers probability storage and every float16
+per-window mask is hash-checked on resume; these maps feed multi-candidate temporal clustering.
+`candidate-extract` keeps every contiguous per-IFO chirp cluster instead of only one window maximum,
+adds three-bin parabolic peak refinement and states the underlying half-bin timing floor. The present
+96-bin/8-second model therefore still fails the <=10 ms publication timing gate; interpolation is not
+misrepresented as new information.
 
 The present scorer has only 96 time bins over an 8-second window, so its time resolution is about
 83 ms. Every time-slide report therefore says `window_level_time_slide_integration_only` and forbids

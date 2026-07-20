@@ -262,6 +262,13 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
     trigger.add_argument("--target-sample-rate", type=int, default=1024)
     trigger.add_argument("--context-duration", type=float, default=64.0)
+    trigger.add_argument("--save-probabilities", action="store_true")
+
+    candidates = subparsers.add_parser("candidate-extract")
+    candidates.add_argument("--triggers", required=True)
+    candidates.add_argument("--output-dir", required=True)
+    candidates.add_argument("--chirp-threshold", type=float, default=0.3)
+    candidates.add_argument("--minimum-bins", type=int, default=1)
 
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
@@ -610,6 +617,18 @@ def main(argv: list[str] | None = None) -> int:
                 q_values=tuple(args.q_values),
                 target_sample_rate=args.target_sample_rate,
                 context_duration=args.context_duration,
+                save_probabilities=args.save_probabilities,
+            )
+        )
+    elif args.command == "candidate-extract":
+        from .candidates import run_candidate_extraction
+
+        _print(
+            run_candidate_extraction(
+                args.triggers,
+                args.output_dir,
+                args.chirp_threshold,
+                args.minimum_bins,
             )
         )
     elif args.command == "time-slide-background":
