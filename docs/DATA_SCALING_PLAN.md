@@ -166,6 +166,30 @@ The data factory must ultimately produce trigger-level outputs. At a frozen thre
 - a 0.01/year FAR claim (IFAR 100 years) requires about 230 years;
 - stronger claims require proportionally more time slides or background.
 
+`candidate-exposure-plan` now computes the exact detector-duty-cycle-correct exposure before any
+GPU scoring. On the frozen 824-window O4a validation manifest, 4,096 sequential non-cyclic 8-second
+offsets give only 475 nonempty shifts and 388,000 seconds (`0.012295 yr`) of equivalent exposure.
+With zero surviving candidates, the 90% FAR upper limit is still `187.28/yr`. Even an ideal schedule
+using every one of the 339,076 available positive-lag window pairs only reaches `0.08596 yr`, whose
+zero-count upper limit is `26.79/yr`. Thus the current corpus cannot measure an astrophysical FAR,
+regardless of model score.
+
+For a zero-count 90% upper limit at FAR `0.1/yr` (IFAR 10 yr), the all-pairs best case needs at least
+13,479 valid 8-second dual-IFO windows, or 1.248 zero-lag detector-days in each independently frozen
+partition. That is 16.36 times the current validation window count before allowing for gaps,
+segment-boundary restrictions, unavailable IFOs or reserved test data. The corresponding best-case
+window requirements are:
+
+| Target IFAR | Target FAR | Equivalent background for 90% zero-count bound | Minimum 8 s windows | Minimum zero-lag time |
+|---:|---:|---:|---:|---:|
+| 1 yr | 1/yr | 2.303 yr | 4,263 | 9.47 h |
+| 10 yr | 0.1/yr | 23.026 yr | 13,479 | 1.248 d |
+| 100 yr | 0.01/yr | 230.259 yr | 42,623 | 3.946 d |
+
+These are lower bounds, not acquisition quotas. The operational target remains at least 30
+coincident detector-days across runs because run transfer, glitch diversity, calibration drift,
+independent validation/test partitions and bounded shift schedules all consume additional live time.
+
 ## 2026-07-20 physical-domain checkpoint
 
 The five-seed 10k analytic curve is now statistically stable enough to reject a simple “only add
@@ -180,7 +204,8 @@ This combination indicates a domain-and-exposure bottleneck, not merely insuffic
 
 - 10k analytic scenes are nearing their in-domain scaling asymptote;
 - the physical pilot has only 300 injections and six GPS blocks;
-- the continuous background is one 4,096-second O4a file and 31 short nonzero shifts;
+- the expanded O4a validation background has 824 windows in 26 GPS blocks, but even all positive
+  window pairs provide only 0.086 equivalent years;
 - the waveform backend still lacks an external equivalence certificate;
 - the network time grid is 83 ms, too coarse for publication coincidence.
 
@@ -419,7 +444,7 @@ is a matrix of independent physical axes rather than a single row-count target:
 | detector set | primary corpus is H1/L1 | O3 H1/L1/V1 and missing-IFO subsets | each subset independently calibrated; clean non-inferiority |
 | real glitch overlap | analytic overlap is not adequate | unique Gravity Spy glitch and GPS groups mixed in strain | weak-mask audit plus paired contaminated gain |
 | open-set morphology | O1--O3 labels are closed set | held-family and later-run unknowns | known false abstention and unknown false acceptance intervals |
-| background exposure | validation windows cannot support astrophysical FAR | >=30 coincident days plus time slides | FAR/IFAR and `<VT>` at a common frozen threshold |
+| background exposure | 824 validation windows; all-pairs upper exposure 0.086 yr | >=13,479 windows per split for IFAR 10 yr lower bound, operationally >=30 coincident days across runs | FAR/IFAR and `<VT>` at a common frozen threshold |
 
 `physical-overlap-materialize` now pairs unique waveform/injection identities with unique real
 Gravity Spy glitches without reuse, adds them in the time domain, performs a fresh whitening and

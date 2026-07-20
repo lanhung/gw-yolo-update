@@ -702,6 +702,17 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline.add_argument("--bootstrap-replicates", type=int, default=10000)
     candidate_pipeline.add_argument("--seed", type=int, default=20260720)
 
+    exposure_plan = subparsers.add_parser("candidate-exposure-plan")
+    exposure_plan.add_argument("--background-manifest", required=True)
+    exposure_plan.add_argument("--output", required=True)
+    exposure_plan.add_argument("--split", choices=("val", "test"), required=True)
+    exposure_plan.add_argument("--reference-ifo", default="H1")
+    exposure_plan.add_argument("--shifted-ifo", default="L1")
+    exposure_plan.add_argument("--slide-count", type=int, required=True)
+    exposure_plan.add_argument("--step-seconds", type=float, required=True)
+    exposure_plan.add_argument("--target-far-per-year", type=float, required=True)
+    exposure_plan.add_argument("--zero-count-confidence", type=float, default=0.90)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -1699,6 +1710,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.bootstrap_replicates,
                 args.seed,
+            )
+        )
+    elif args.command == "candidate-exposure-plan":
+        from .exposure import run_candidate_background_exposure_plan
+
+        _print(
+            run_candidate_background_exposure_plan(
+                args.background_manifest,
+                args.output,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.slide_count,
+                args.step_seconds,
+                args.target_far_per_year,
+                args.zero_count_confidence,
             )
         )
     elif args.command == "time-slide-background":

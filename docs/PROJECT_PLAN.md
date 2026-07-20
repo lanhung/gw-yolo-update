@@ -192,4 +192,10 @@ application to all candidates; detector-duty-cycle-correct non-cyclic time slide
 network rankings that retain misses in the `<VT>` denominator; then a separate frozen-test command.
 The 96-bin mask is a region proposal, not the arrival-time measurement. The old window-maximum slide
 path remains an integration baseline and cannot support a FAR/IFAR claim.
+
+The pre-scoring exposure audit makes this the immediate data priority: 824 validation windows yield
+at most 0.086 equivalent years even if every positive-lag pair is used. IFAR 10 years needs at least
+13,479 valid 8-second dual-IFO windows per independent partition in the all-pairs best case; IFAR
+100 years needs at least 42,623. Acquisition should therefore expand continuous H1/L1(/V1) GPS/run
+coverage before promoting 25k/50k versions of the same waveform/GPS distribution.
 6. reproducibility lead: CI, containers, artifact registry, paper tables.
