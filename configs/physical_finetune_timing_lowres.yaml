@@ -8,6 +8,7 @@ physical_training:
   glitch_distillation_weight: 0.25
   focal_gamma: 2.0
   temporal_localization_weight: 1.0
+  temporal_positive_weight: 1.0
   cache_in_memory: true
   minimum_training_network_snr: 4.0
   model_ifos: [H1, L1, V1]
