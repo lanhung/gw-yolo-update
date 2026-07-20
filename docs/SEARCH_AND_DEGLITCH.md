@@ -77,6 +77,12 @@ now reports per-IFO detectability, worst-IFO error and pairwise-delay error with
 all-injection metric. Candidate-level coverage and timing at a frozen morphology threshold remain
 the only route to a search timing claim.
 
+The paired-visibility audit makes the remaining failure concrete: among 275 injections with both
+H1 and L1 optimal SNR >=8, only 56.73% have both predictions within 10 ms and worst-IFO p90 is
+0.875 s. At both-IFO SNR >=10, worst-IFO p90 is still 26.77 ms. These results forbid promotion based
+on the sub-10-ms conditional median; the tail, pairwise delay and retained-candidate coverage must
+all pass together.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

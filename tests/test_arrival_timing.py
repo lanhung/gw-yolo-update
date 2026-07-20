@@ -6,6 +6,7 @@ import pytest
 from gwyolo.arrival_timing import (
     detector_arrival_bin_targets,
     detector_arrival_errors_seconds,
+    detector_arrival_receptive_field_samples,
     detector_network_arrival_errors_seconds,
 )
 
@@ -64,6 +65,18 @@ def test_detector_network_arrival_errors_include_pair_delay_by_hand() -> None:
             8.0,
             8,
         )
+
+
+def test_detector_arrival_receptive_fields_cover_declared_context() -> None:
+    assert detector_arrival_receptive_field_samples("detector_arrival_timing_net_v1") == 129
+    assert (
+        detector_arrival_receptive_field_samples(
+            "detector_arrival_timing_context_net_v2"
+        )
+        == 8257
+    )
+    with pytest.raises(ValueError, match="unsupported"):
+        detector_arrival_receptive_field_samples("unknown")
 
 
 def test_detector_arrival_network_emits_per_ifo_high_resolution_logits() -> None:

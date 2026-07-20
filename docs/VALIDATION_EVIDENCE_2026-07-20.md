@@ -332,6 +332,15 @@ gate unchanged while adding per-IFO-SNR groups, worst-IFO error and pairwise rel
 Those conditional strata are diagnostic only until combined with candidate coverage at a frozen
 search threshold. No 5k/10k timing scale is promoted from this result.
 
+The explicit detectability stratification confirms that this is a bimodal miss problem rather than
+a uniformly coarse estimator. For individual IFO arrivals with optimal SNR >=8, the median is
+7.23 ms but p90 is 2.093 s and only 60.21% lie within 10 ms. Requiring both IFOs to have SNR >=8
+leaves 275 injections: worst-IFO median/p90 is 8.82 ms/0.875 s, both-IFO 10 ms coverage is 56.73%,
+and pairwise-delay p90 is 16.34 ms. Even the 149 injections with both IFOs at SNR >=10 have
+worst-IFO p90 26.77 ms and pairwise-delay p90 10.55 ms. Reporting the good conditional medians alone
+would therefore hide catastrophic outliers. Stratification-report SHA256 is
+`4dc5ef0a29dffc64ec450656581047859571ba582214e780a4bd5d78f01464c3`.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

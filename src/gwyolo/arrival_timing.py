@@ -41,6 +41,16 @@ def _build_detector_arrival_model(
     raise ValueError(f"unsupported detector arrival timing architecture: {architecture}")
 
 
+def detector_arrival_receptive_field_samples(architecture: str) -> int:
+    """Return the analytically derived raw-sample receptive field of a timing logit."""
+
+    if architecture == "detector_arrival_timing_net_v1":
+        return 129
+    if architecture == "detector_arrival_timing_context_net_v2":
+        return 8257
+    raise ValueError(f"unsupported detector arrival timing architecture: {architecture}")
+
+
 def detector_arrival_bin_targets(
     detector_arrivals_gps: dict[str, float],
     model_ifos: tuple[str, ...],
@@ -652,6 +662,15 @@ def run_detector_arrival_timing_training(
         "config_hash": canonical_hash(config),
         "split_audit": split_audit,
         "model_ifos": list(model_ifos),
+        "architecture": architecture,
+        "model_parameters": sum(parameter.numel() for parameter in model.parameters()),
+        "receptive_field_samples": detector_arrival_receptive_field_samples(
+            architecture
+        ),
+        "receptive_field_seconds": detector_arrival_receptive_field_samples(
+            architecture
+        )
+        / target_rate,
         "seed": seed,
         "best_epoch": best_epoch,
         "selection_metric": "validation p90 per-detector absolute arrival-time error",
@@ -789,6 +808,15 @@ def run_detector_arrival_timing_validation_stratification(
         "checkpoint_epoch": int(checkpoint["epoch"]),
         "validation_rows": len(rows),
         "model_ifos": list(model_ifos),
+        "architecture": architecture,
+        "model_parameters": sum(parameter.numel() for parameter in model.parameters()),
+        "receptive_field_samples": detector_arrival_receptive_field_samples(
+            architecture
+        ),
+        "receptive_field_seconds": detector_arrival_receptive_field_samples(
+            architecture
+        )
+        / target_rate,
         "validation_ifo_snr_thresholds": list(thresholds),
         "timing": {
             "bin_width_seconds": bin_width,
