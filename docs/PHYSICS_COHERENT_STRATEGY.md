@@ -123,6 +123,15 @@ interval. Future coherence work must expose timing/correlation as separately cal
 a learned reranker and must preserve a morphology-only fallback; the multiplicative formula is not
 a candidate for the locked search.
 
+The all-instance diagnostic further shows that sample-resolution envelope refinement cannot rescue
+a temporally wrong mask: its 99th-percentile absolute error is 245.8 ms. The next timing arm is
+therefore an independent `DetectorArrivalTimingNet`, not another mask-peak heuristic. It consumes
+numeric whitened time-domain strain, uses a shared per-IFO encoder plus an availability-masked
+network context, and predicts 1,024 categorical bins per available detector over eight seconds
+(7.8125 ms bins). Targets are exact geometric detector arrivals, not geocentric time or mask
+endpoints. Checkpoint selection is validation p90 per-detector error; both the representation and
+p90 must be <=10 ms before its output may enter candidate coincidence.
+
 ### Stage B — shortlisted evidence
 
 Run only the best two arms for three seeds at 10k. Compare 10k with 25k under fixed-epoch and

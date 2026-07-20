@@ -186,6 +186,12 @@ Revised priority order:
 6. promote only the best validation arm to five seeds, then run paired raw/contaminated/mask-conditioned DINGO and AMPLFI inference;
 7. freeze code, data, thresholds, OOD policy and access log before the one-time O4b/GWTC-5 evaluation.
 
+The native-rate timing item now has an executable replacement for the rejected mask-envelope path:
+`detector-arrival-timing-train` trains a variable-detector time-domain head against per-IFO geometric
+arrival GPS and selects only on validation p90. Start with the group-safe 2k subset; promote 5k/10k
+only if p90 improves materially under a matched update/epoch control. Candidate integration remains
+blocked until the 10 ms empirical gate passes.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag

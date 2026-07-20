@@ -305,6 +305,13 @@ publication timing even though their saved strain gives sub-ms numerical resolut
 gate now additionally caps the empirical uncertainty at a predeclared 10 ms, so this method fails
 instead of converting a truncated ±250 ms association window into a misleading physical allowance.
 
+Commit following that diagnosis adds a separate time-domain detector-arrival head. Unlike the prior
+1,024-bin multi-Q classifier, it preserves IFO identity, incorporates an explicit availability-masked
+network context, and supervises H1/L1/V1 against their geometric detector arrival times. Its 7.8125
+ms grid only passes representation, not accuracy; validation p90 <=10 ms is still mandatory. The
+bounded scale order is 2k then 5k/10k only after measured p90 improvement, so this architecture does
+not justify blind data expansion by itself.
+
 ## Real-glitch physical overlap and aligned network contexts
 
 Commit `bcb7c8e` introduced a time-domain real-glitch overlap factory. A remote two-row validation

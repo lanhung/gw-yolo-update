@@ -394,6 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
     physical_timing.add_argument("--output-dir", required=True)
     physical_timing.add_argument("--seed", type=int)
 
+    detector_arrival_timing = subparsers.add_parser("detector-arrival-timing-train")
+    detector_arrival_timing.add_argument("--config", required=True)
+    detector_arrival_timing.add_argument("--train-manifest", required=True)
+    detector_arrival_timing.add_argument("--validation-manifest", required=True)
+    detector_arrival_timing.add_argument("--output-dir", required=True)
+    detector_arrival_timing.add_argument("--seed", type=int)
+
     glitch_finetune = subparsers.add_parser("gravityspy-glitch-finetune")
     glitch_finetune.add_argument("--config", required=True)
     glitch_finetune.add_argument("--glitch-train-manifest", required=True)
@@ -1357,6 +1364,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_manifest,
                 args.validation_manifest,
                 args.pretrained_checkpoint,
+                args.output_dir,
+                args.seed,
+            )
+        )
+    elif args.command == "detector-arrival-timing-train":
+        from .arrival_timing import run_detector_arrival_timing_training
+
+        _print(
+            run_detector_arrival_timing_training(
+                args.config,
+                args.train_manifest,
+                args.validation_manifest,
                 args.output_dir,
                 args.seed,
             )

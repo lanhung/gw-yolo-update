@@ -234,6 +234,57 @@ if nn is not None:
             temporal = torch.amax(decoded, dim=2)
             return self.timing_head(temporal)[:, 0]
 
+
+    class DetectorArrivalTimingNet(nn.Module):
+        """Shared time-domain encoder with explicit detector-set fusion and per-IFO timing."""
+
+        def __init__(self, detector_count: int, base_channels: int = 32):
+            super().__init__()
+            if detector_count < 2 or base_channels < 4:
+                raise ValueError("arrival timing network dimensions are invalid")
+            self.detector_count = detector_count
+            groups = min(8, base_channels)
+            self.encoder = nn.Sequential(
+                nn.Conv1d(1, base_channels, 17, stride=4, padding=8, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(
+                    base_channels, base_channels, 9, stride=2, padding=4, bias=False
+                ),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, base_channels, 7, padding=3, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.head = nn.Sequential(
+                nn.Conv1d(2 * base_channels, base_channels, 5, padding=2, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, 1, 1),
+            )
+
+        def forward(self, value: Any, availability: Any) -> Any:
+            if value.ndim != 3 or value.shape[1] != self.detector_count:
+                raise ValueError("arrival timing strain must have shape [batch, IFO, time]")
+            if availability.shape != value.shape[:2]:
+                raise ValueError("arrival timing availability shape differs from strain")
+            batch, detectors, samples = value.shape
+            encoded = self.encoder(value.reshape(batch * detectors, 1, samples))
+            encoded = encoded.reshape(batch, detectors, encoded.shape[1], encoded.shape[2])
+            mask = availability.to(encoded.dtype)[:, :, None, None]
+            if torch.any(mask.sum(dim=1) < 1):
+                raise ValueError("arrival timing batch contains no available detector")
+            network = (encoded * mask).sum(dim=1, keepdim=True) / mask.sum(
+                dim=1, keepdim=True
+            )
+            network = network.expand(-1, detectors, -1, -1)
+            fused = torch.cat([encoded, network], dim=2).reshape(
+                batch * detectors, 2 * encoded.shape[2], encoded.shape[3]
+            )
+            logits = self.head(fused).reshape(batch, detectors, -1)
+            return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
+
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
@@ -245,6 +296,10 @@ else:
             _require_torch()
 
     class DetectorSetQNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class DetectorArrivalTimingNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 
