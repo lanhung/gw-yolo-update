@@ -72,6 +72,7 @@ def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
         )
         reports.append(report)
     result = merge_gravityspy_numeric_manifests(reports, tmp_path / "merged", "train")
+    assert "exact_command" in result and "environment" in result
     assert result["rows"] == result["unique_glitch_ids"] == 2
     assert result["weak_masks"] == 2
     assert result["human_pixel_masks"] == 0
@@ -109,6 +110,7 @@ def test_gravityspy_source_selection_fills_deficits_with_whole_files(tmp_path) -
         maximum_files=2,
         existing_manifest_path=existing,
     )
+    assert "exact_command" in report and "environment" in report
     assert report["target_met"]
     assert report["selected_source_files"] == 2
     assert report["selected_rows"] == 5
@@ -194,6 +196,7 @@ def test_glitch_strain_shards_never_split_a_source_file(tmp_path) -> None:
             )
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
     report = shard_gravityspy_strain_plan(manifest, tmp_path / "out", files_per_shard=2)
+    assert "exact_command" in report and "environment" in report
     assert report["shards"] == 3
     assert report["all_rows_preserved"]
     output = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]

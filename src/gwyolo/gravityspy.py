@@ -42,6 +42,19 @@ ZENODO_API = "https://zenodo.org/api/records"
 DEFAULT_EXCLUDED_LABELS = ("Chirp", "No_Glitch", "None_of_the_Above")
 
 
+def _execution_provenance() -> dict[str, Any]:
+    return {
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+    }
+
+
 def gravityspy_weak_mask(
     ifo: str,
     model_ifos: tuple[str, ...],
@@ -346,6 +359,9 @@ def select_gravityspy_source_files(
             "require a frozen human pixel-mask audit"
         ),
         "split": split,
+        **_execution_provenance(),
+        "config_hash": None,
+        "model_hash": None,
         "seed": seed,
         "per_label_target": per_label,
         "maximum_files": maximum_files,
@@ -449,6 +465,9 @@ def shard_gravityspy_strain_plan(
     report = {
         "status": "bounded_gravityspy_strain_shards",
         "scientific_claim_allowed": False,
+        **_execution_provenance(),
+        "config_hash": None,
+        "model_hash": None,
         "source_manifest_path": str(manifest_path),
         "source_manifest_sha256": file_sha256(manifest_path),
         "manifest_path": str(target),
@@ -506,6 +525,7 @@ def materialize_gravityspy_strain_shard(
     output.mkdir(parents=True, exist_ok=True)
     cache = Path(cache_dir)
     run_identity = {
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "source_manifest_sha256": file_sha256(manifest_path),
         "config_hash": canonical_hash(config),
         "shard": shard,
@@ -703,6 +723,10 @@ def materialize_gravityspy_strain_shard(
             "files remain cached until verified retention or controlled eviction is implemented"
         ),
         "run_identity": run_identity,
+        **_execution_provenance(),
+        "config_hash": run_identity["config_hash"],
+        "model_hash": None,
+        "seed": None,
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
         "rows": len(completed),
@@ -803,14 +827,7 @@ def merge_gravityspy_numeric_manifests(
             "weak masks require a frozen pixel-mask audit before segmentation claims"
         ),
         "split": expected_split,
-        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
-        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
-        "environment": {
-            "hostname": platform.node(),
-            "platform": platform.platform(),
-            "python": platform.python_version(),
-            "numpy": np.__version__,
-        },
+        **_execution_provenance(),
         "config_hash": None,
         "model_hash": None,
         "seed": None,
