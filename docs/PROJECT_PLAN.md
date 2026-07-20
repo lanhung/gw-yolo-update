@@ -178,7 +178,7 @@ Each epoch also writes `best_target.pt` when the configured primary metric impro
 
 Revised priority order:
 
-1. finish the fixed-epoch 2k/5k/10k endpoint and keep 25k/50k blocked unless it agrees materially with the fixed-update control;
+1. retain the completed 10k/30-epoch arm, but keep 25k/50k blocked because its strong fixed-epoch gain does not agree with the fixed-update plateau;
 2. complete bounded Gravity Spy train/validation materialization, human weak-mask tasks and cross-split mixture audit;
 3. materialize aligned H1/L1/V1 Gravity Spy contexts and train the clean-retaining dual-mask detector-set arm;
 4. finish O3b detector-set acquisition, held-family OOD abstention and native-rate physical timing validation;

@@ -462,12 +462,17 @@ necessary; repeating the same 76 GPS blocks with more waveforms is not the neede
 
 ### Updated data decision: scale independent domains, not rendered rows
 
-The fixed-update result changes the acquisition plan materially. The next training-data increment
-is a matrix of independent physical axes rather than a single row-count target:
+The fixed-update result and completed equal-epoch control change the acquisition plan materially.
+Equal epochs improve weighted efficiency from 0.08000 to 0.12452 to 0.14897, but also increase seen
+examples from 60k to 150k to 300k; fixed 60k examples change only 0.08340 to 0.08543 to 0.08698.
+The defensible interpretation is compute/data interaction, not permission for blind waveform
+generation. Retain the 10k/30-epoch candidate, increase independent physical axes, and adjudicate
+them at fixed updates and fixed epochs. The next increment is a matrix rather than one row-count
+target:
 
 | Axis | Current evidence | Next promotion unit | Gate |
 |---|---|---|---|
-| waveform/injection identity | 10k core plateaus under 60k seen examples | no 25k promotion yet | fixed-epoch and fixed-update endpoint agreement |
+| waveform/injection identity | fixed-update plateau but strong update-coupled equal-epoch gain | no 25k promotion yet; retain 10k/30-epoch arm | fixed-epoch and fixed-update endpoint agreement |
 | background GPS/run | only 76 train blocks in the scale curve | new globally split O1--O4a blocks | frozen O4a efficiency or hard-subset interval improves |
 | detector set | primary corpus is H1/L1 | O3 H1/L1/V1 and missing-IFO subsets | each subset independently calibrated; clean non-inferiority |
 | real glitch overlap | analytic overlap is not adequate | unique Gravity Spy glitch and GPS groups mixed in strain | weak-mask audit plus paired contaminated gain |

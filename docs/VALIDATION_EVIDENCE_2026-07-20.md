@@ -266,7 +266,34 @@ for that step crosses zero. The 2k→5k comparison is positive with a nonzero in
 three seeds. This is evidence of a waveform-count plateau under fixed examples, not evidence that
 the total physical/OOD corpus is large enough. It rejects blind 25k/50k waveform duplication while
 strengthening the case for new GPS/run, V1 and glitch-family coverage. The equal-epoch control is
-still running and scale promotion remains false.
+now complete and scale promotion remains false.
+
+The independent 30-epoch control completed all nine endpoints at training commit `b1071a2` and
+scoring commit `f33e1b3`. Mean weighted efficiencies are 0.08000, 0.12452 and 0.14897 at 2k, 5k and
+10k, with seed sample standard deviations 0.00035, 0.00913 and 0.00408. Every seed improves at both
+steps. The mean gains are +0.04452 and +0.02446, and all six injection-paired 95% bootstrap
+intervals exclude zero. Summary SHA256 is
+`9902a38df90c8b6ba46dfc6b1ad90768d62d6c7d1efbeb17c510f3f9c217438a`. This does not overturn
+the fixed-update plateau: equal epochs couple data scale to 3,750/9,390/18,750 optimizer updates and
+60k/150k/300k seen examples. Jointly, the controls say the present 10k corpus is under-trained at
+3,750 updates, while additional unique waveforms at a fixed 60k-example budget have not shown a
+material gain. The next action is therefore to retain the trained 10k equal-epoch arm as a
+validation candidate and scale independent run/IFO/glitch coverage; 25k/50k remains blocked.
+
+The first validation-only physical-coherence reranker is also a retained negative result. At eight
+surviving background windows, morphology alone reaches weighted efficiency 0.08745, while
+`morphology × sqrt(mean absolute lag correlation)` reaches 0.02109. The paired recovered-`VT`
+change is -397,711.28, or -75.88%, with 95% bootstrap interval
+[-494,680.72, -305,603.05]. This rejects that hand-designed multiplicative score. Coherence remains
+useful as a separately calibrated physical coincidence feature or learned validation-only reranker;
+it must not suppress morphology by construction.
+
+When the all-instance candidate pipeline first enabled the same coherence summary, its resumable
+JSONL checkpoint correctly failed after five windows because the nested arrival gate contained a
+NumPy boolean scalar. Commit `a15e682` converts that boundary value explicitly to a JSON-native
+boolean and adds end-to-end serialization regressions. The failed output is non-claimable and a new
+same-commit validation run was started in a separate directory; no threshold or test data were
+consumed.
 
 ## Real-glitch physical overlap and aligned network contexts
 

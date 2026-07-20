@@ -116,6 +116,13 @@ No arm is promoted on IoU alone. It must improve weighted efficiency at the froz
 background operating point or a predeclared overlap/OOD endpoint, while retaining at least 98% of
 the clean baseline efficiency.
 
+The first hand-designed coherence arm is now rejected: multiplying morphology by the square root
+of mean absolute lag correlation reduced validation weighted efficiency from 0.08745 to 0.02109 at
+the same background count, with paired recovered-`VT` change -75.88% and a wholly negative 95%
+interval. Future coherence work must expose timing/correlation as separately calibrated features or
+a learned reranker and must preserve a morphology-only fallback; the multiplicative formula is not
+a candidate for the locked search.
+
 ### Stage B — shortlisted evidence
 
 Run only the best two arms for three seeds at 10k. Compare 10k with 25k under fixed-epoch and
