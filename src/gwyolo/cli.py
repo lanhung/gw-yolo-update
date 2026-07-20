@@ -765,6 +765,10 @@ def build_parser() -> argparse.ArgumentParser:
     stream_shard.add_argument("--minimum-bins", type=int, default=1)
     stream_shard.add_argument("--download-workers", type=int, default=8)
 
+    stream_merge = subparsers.add_parser("background-stream-merge")
+    stream_merge.add_argument("--shard-report", action="append", required=True)
+    stream_merge.add_argument("--output-dir", required=True)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -1844,6 +1848,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.download_workers,
             )
         )
+    elif args.command == "background-stream-merge":
+        from .streaming import merge_streamed_background_shards
+
+        _print(merge_streamed_background_shards(args.shard_report, args.output_dir))
     elif args.command == "time-slide-background":
         from .timeslides import run_window_time_slides
 

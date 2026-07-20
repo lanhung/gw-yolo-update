@@ -109,6 +109,12 @@ only afterward builds calibrated candidates, slides and the frozen threshold. Bo
 are resumable identity checkpoints, so a later failure cannot cause a deleted array to be silently
 treated as a reusable scorer output.
 
+Use `background-stream-merge --shard-report ... --output-dir ...` after a tranche. The merge refuses
+overlapping acquisition ranges, repeated GPS windows/candidate IDs, cross-split GPS blocks, mixed
+checkpoint/config/commit/timing identities, or a calibrated-candidate hash mismatch. Its report
+distinguishes a complete parent plan from a partial exposure tranche before any time-slide command
+is allowed to consume the combined manifests.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and

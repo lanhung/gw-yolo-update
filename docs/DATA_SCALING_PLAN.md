@@ -263,6 +263,12 @@ eviction. A completed shard is immutable under its full run identity and can be 
 release without attempting to redownload a deleted source. Shards containing only training blocks
 are explicitly counted and safely released for this search-only corpus.
 
+After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
+timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one
+split per GPS block across every shard. It writes globally ordered background plus val/test
+calibrated-candidate manifests and records whether the supplied ranges cover the complete parent
+plan. Partial merges are useful for preregistered exposure audits but remain explicitly incomplete.
+
 ## Storage and compute strategy
 
 At the current JPEG size, 100k plots would be only several GB, but RGB plots discard physical information. A float32 tensor with several Q planes and three IFOs can consume hundreds of GB per 100k scenes. Prefer:

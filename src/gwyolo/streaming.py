@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from .io import atomic_write_json, canonical_hash, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 from .runtime import execution_provenance
 
 
@@ -484,6 +484,14 @@ def run_streamed_background_shard(
         "run_identity": identity,
         "run_identity_hash": canonical_hash(identity, 64),
         "split_strategy": "hash_threshold_v1",
+        "acquisition_shard_plan_sha256": file_sha256(shard_plan_path),
+        "parent_selected_pairs": int(shard_plan["parent_selected_pairs"]),
+        "shard_count": int(shard_plan["shard_count"]),
+        "pair_index_start_inclusive": int(shard_plan["pair_index_start_inclusive"]),
+        "pair_index_stop_exclusive": int(shard_plan["pair_index_stop_exclusive"]),
+        "selected_pair_ids_hash": str(shard_plan["selected_pair_ids_hash"]),
+        "batch_download_report_sha256": file_sha256(batch_report_path),
+        "background_plan_report_sha256": file_sha256(background_report_path),
         "background_manifest_path": str(background["manifest_path"]),
         "background_manifest_sha256": file_sha256(background["manifest_path"]),
         "split_counts": split_counts,
@@ -495,4 +503,177 @@ def run_streamed_background_shard(
         **execution_provenance(),
     }
     atomic_write_json(final_path, result)
+    return result
+
+
+def merge_streamed_background_shards(
+    shard_reports: Iterable[str | Path], output_dir: str | Path
+) -> dict[str, Any]:
+    """Merge stable-split background/candidate shards with global overlap checks."""
+
+    report_paths = [Path(path) for path in shard_reports]
+    if not report_paths:
+        raise ValueError("at least one streamed background shard is required")
+    reports = [_load_json(path) for path in report_paths]
+    for report in reports:
+        if report.get("status") != "verified_streamed_candidate_background_shard":
+            raise ValueError("streamed background shard report has the wrong status")
+        if report.get("split_strategy") != "hash_threshold_v1":
+            raise ValueError("only stable hash-threshold shards can be merged")
+    common_fields = (
+        "parent_plan_sha256",
+        "event_exclusions_sha256",
+        "timing_calibration_report_sha256",
+        "checkpoint_sha256",
+        "config_sha256",
+        "coherence_config_sha256",
+        "validation_fraction",
+        "test_fraction",
+        "seed",
+        "model_ifos",
+        "q_values",
+        "target_sample_rate",
+        "context_duration",
+        "chirp_threshold",
+        "minimum_bins",
+        "code_commit",
+    )
+    reference = reports[0]["run_identity"]
+    if any(
+        any(report["run_identity"].get(field) != reference.get(field) for field in common_fields)
+        for report in reports[1:]
+    ):
+        raise ValueError("streamed shards do not share one scoring/split identity")
+    indices = [int(report["run_identity"]["shard_index"]) for report in reports]
+    if len(indices) != len(set(indices)):
+        raise ValueError("streamed shard indices repeat")
+    parent_counts = {int(report["parent_selected_pairs"]) for report in reports}
+    shard_counts = {int(report["shard_count"]) for report in reports}
+    if len(parent_counts) != 1 or len(shard_counts) != 1:
+        raise ValueError("streamed shards disagree on parent plan size")
+    ranges = sorted(
+        (
+            int(report["pair_index_start_inclusive"]),
+            int(report["pair_index_stop_exclusive"]),
+        )
+        for report in reports
+    )
+    if any(start >= stop for start, stop in ranges) or any(
+        right_start < left_stop
+        for (_, left_stop), (right_start, _) in zip(ranges, ranges[1:])
+    ):
+        raise ValueError("streamed acquisition pair ranges overlap or are empty")
+
+    background_rows = []
+    candidates_by_split: dict[str, list[dict[str, Any]]] = {"val": [], "test": []}
+    for report in reports:
+        manifest = Path(report["background_manifest_path"])
+        if file_sha256(manifest) != str(report["background_manifest_sha256"]):
+            raise ValueError("streamed background manifest hash mismatch")
+        background_rows.extend(_load_jsonl(manifest))
+        for split, artifact in report.get("split_artifacts", {}).items():
+            if split not in candidates_by_split:
+                raise ValueError(f"unexpected streamed candidate split: {split}")
+            candidate_manifest = Path(artifact["calibrated_candidate_manifest_path"])
+            if file_sha256(candidate_manifest) != str(
+                artifact["calibrated_candidate_manifest_sha256"]
+            ):
+                raise ValueError("streamed calibrated candidate manifest hash mismatch")
+            split_rows = _load_jsonl(candidate_manifest)
+            if any(str(row["split"]) != split for row in split_rows):
+                raise ValueError("calibrated candidate appears in the wrong split")
+            candidates_by_split[split].extend(split_rows)
+    window_ids = [str(row["window_id"]) for row in background_rows]
+    if len(window_ids) != len(set(window_ids)):
+        raise ValueError("streamed background shards repeat window IDs")
+    window_intervals = [
+        (float(row["gps_start"]), float(row["gps_end"])) for row in background_rows
+    ]
+    if len(window_intervals) != len(set(window_intervals)):
+        raise ValueError("streamed background shards repeat GPS windows")
+    block_splits: dict[str, str] = {}
+    for row in background_rows:
+        block = str(row["gps_block"])
+        split = str(row["split"])
+        prior = block_splits.setdefault(block, split)
+        if prior != split:
+            raise ValueError(f"GPS block {block} crosses streamed splits")
+    known_windows = set(window_ids)
+    candidate_ids = []
+    for split, rows in candidates_by_split.items():
+        for row in rows:
+            if str(row["window_id"]) not in known_windows:
+                raise ValueError("streamed candidate references an unknown window")
+            if not row.get("timing_empirically_calibrated"):
+                raise ValueError("streamed candidate lacks empirical timing calibration")
+            candidate_ids.append(str(row["candidate_id"]))
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("streamed candidate IDs repeat")
+
+    output = Path(output_dir)
+    report_path = output / "streamed_background_merge_report.json"
+    if report_path.exists():
+        raise FileExistsError("streamed background merge reports are immutable")
+    output.mkdir(parents=True, exist_ok=True)
+    background_path = output / "background_windows.jsonl"
+    ordered_background = sorted(
+        background_rows, key=lambda row: (float(row["gps_start"]), str(row["window_id"]))
+    )
+    atomic_write_text(
+        background_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in ordered_background),
+    )
+    candidate_outputs = {}
+    for split, rows in candidates_by_split.items():
+        path = output / f"{split}_calibrated_candidates.jsonl"
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                float(row["gps_peak"]),
+                str(row["ifo"]),
+                str(row["candidate_id"]),
+            ),
+        )
+        atomic_write_text(
+            path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in ordered)
+        )
+        candidate_outputs[split] = {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "candidates": len(ordered),
+        }
+    parent_count = next(iter(parent_counts))
+    covered_indices = {index for start, stop in ranges for index in range(start, stop)}
+    complete_parent = covered_indices == set(range(parent_count))
+    split_counts = {
+        split: sum(str(row["split"]) == split for row in background_rows)
+        for split in ("train", "val", "test")
+    }
+    result = {
+        "status": "verified_merged_streamed_candidate_background",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "adequate time-slide exposure, validation-only threshold freeze and an independent "
+            "locked test evaluation remain required"
+        ),
+        "common_run_identity": {field: reference.get(field) for field in common_fields},
+        "shard_reports": [
+            {"path": str(path), "sha256": file_sha256(path)} for path in report_paths
+        ],
+        "shard_count_merged": len(reports),
+        "parent_shard_count": next(iter(shard_counts)),
+        "parent_selected_pairs": parent_count,
+        "covered_pair_ranges": [list(value) for value in ranges],
+        "covered_parent_pair_indices": len(covered_indices),
+        "complete_parent_plan": complete_parent,
+        "background_windows": len(background_rows),
+        "gps_blocks": len(block_splits),
+        "cross_split_gps_block_overlap": False,
+        "split_counts": split_counts,
+        "background_manifest_path": str(background_path),
+        "background_manifest_sha256": file_sha256(background_path),
+        "candidate_manifests": candidate_outputs,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
     return result

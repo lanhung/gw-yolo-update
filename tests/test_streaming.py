@@ -9,6 +9,7 @@ from gwyolo.io import atomic_write_json, atomic_write_text, file_sha256
 from gwyolo.streaming import (
     evict_candidate_probability_artifacts,
     evict_scored_background_batch_sources,
+    merge_streamed_background_shards,
     run_streamed_background_shard,
 )
 
@@ -248,8 +249,13 @@ def test_streamed_background_shard_resumes_after_verified_source_eviction(
         value = {
             "status": "development_acquisition_plan",
             "parent_plan_sha256": file_sha256(parent_plan),
+            "parent_selected_pairs": 1,
+            "shard_count": 1,
             "shard_index": index,
             "pairs_per_shard": count,
+            "pair_index_start_inclusive": 0,
+            "pair_index_stop_exclusive": 1,
+            "selected_pair_ids_hash": "pair-hash",
         }
         atomic_write_json(destination, value)
         return value
@@ -343,3 +349,90 @@ def test_streamed_background_shard_resumes_after_verified_source_eviction(
         output,
         0,
     ) == result
+
+
+def test_streamed_background_merge_checks_global_groups_and_pair_ranges(
+    tmp_path: Path,
+) -> None:
+    reports = []
+    for index, split in enumerate(("val", "test")):
+        shard = tmp_path / f"shard-{index}"
+        shard.mkdir()
+        background = shard / "background.jsonl"
+        window_id = f"window-{index}"
+        _jsonl(
+            background,
+            [
+                {
+                    "window_id": window_id,
+                    "split": split,
+                    "gps_block": f"block-{index}",
+                    "gps_start": 100.0 + 8 * index,
+                    "gps_end": 108.0 + 8 * index,
+                }
+            ],
+        )
+        candidates = shard / f"{split}-candidates.jsonl"
+        _jsonl(
+            candidates,
+            [
+                {
+                    "candidate_id": f"candidate-{index}",
+                    "window_id": window_id,
+                    "split": split,
+                    "ifo": "H1",
+                    "gps_peak": 104.0 + 8 * index,
+                    "timing_empirically_calibrated": True,
+                }
+            ],
+        )
+        report_path = shard / "report.json"
+        atomic_write_json(
+            report_path,
+            {
+                "status": "verified_streamed_candidate_background_shard",
+                "split_strategy": "hash_threshold_v1",
+                "run_identity": {
+                    "parent_plan_sha256": "parent",
+                    "event_exclusions_sha256": "events",
+                    "timing_calibration_report_sha256": "timing",
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "coherence_config_sha256": "coherence",
+                    "validation_fraction": 0.2,
+                    "test_fraction": 0.2,
+                    "seed": 7,
+                    "model_ifos": ["H1", "L1", "V1"],
+                    "q_values": [4.0, 8.0, 16.0],
+                    "target_sample_rate": 1024,
+                    "context_duration": 64.0,
+                    "chirp_threshold": 0.3,
+                    "minimum_bins": 1,
+                    "code_commit": "commit",
+                    "shard_index": index,
+                },
+                "parent_selected_pairs": 2,
+                "shard_count": 2,
+                "pair_index_start_inclusive": index,
+                "pair_index_stop_exclusive": index + 1,
+                "background_manifest_path": str(background),
+                "background_manifest_sha256": file_sha256(background),
+                "split_artifacts": {
+                    split: {
+                        "calibrated_candidate_manifest_path": str(candidates),
+                        "calibrated_candidate_manifest_sha256": file_sha256(candidates),
+                    }
+                },
+            },
+        )
+        reports.append(report_path)
+
+    result = merge_streamed_background_shards(reports, tmp_path / "merged")
+
+    assert result["complete_parent_plan"] is True
+    assert result["cross_split_gps_block_overlap"] is False
+    assert result["split_counts"] == {"train": 0, "val": 1, "test": 1}
+    assert result["candidate_manifests"]["val"]["candidates"] == 1
+    assert result["candidate_manifests"]["test"]["candidates"] == 1
+    with pytest.raises(FileExistsError, match="immutable"):
+        merge_streamed_background_shards(reports, tmp_path / "merged")
