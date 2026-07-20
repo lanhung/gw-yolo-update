@@ -630,7 +630,7 @@ def load_materialized_context(
         "analysis_start_index": analysis_start_index,
         "analysis_stop_index": analysis_stop_index,
         "noise": noise,
-        "signal": signal,
+        "signal": signal.astype(np.float32),
         "mixture": mixture,
     }
 
@@ -702,6 +702,7 @@ def materialize_recipe(
         "analysis_start_index": analysis_start_index,
         "analysis_stop_index": analysis_stop_index,
         "storage_mode": storage_mode,
+        "signal_dtype": "float32",
         "signal_summary": signal_summary,
         "time_alignment": "integer_copy_or_lanczos_sinc_half_width_16",
         "background_source_files": {
@@ -765,6 +766,7 @@ def run_injection_materialization(
         "sample_rate": sample_rate,
         "context_duration": context_duration,
         "storage_mode": storage_mode,
+        "signal_dtype": "float32",
         "backend": backend.metadata,
         "backend_validation_report_sha256": (
             file_sha256(backend_validation_report) if backend_validation_report else None
@@ -843,6 +845,7 @@ def run_injection_materialization(
         "sample_rate": sample_rate,
         "context_duration": context_duration,
         "storage_mode": storage_mode,
+        "signal_dtype": "float32",
         "identity_audit": identity_audit,
         "backend": backend.metadata,
         "recipe_manifest_sha256": file_sha256(recipe_manifest),

@@ -110,6 +110,9 @@ The default `signal_only` mode stores the projected waveform and a hash-addresse
 GWOSC source instead of duplicating noise and mixture for every injection. `injection-score` verifies
 each source hash and reconstructs the mixture before whitening. A `full` mode remains available for
 small immutable debugging sets; it is not the scalable default.
+Signal-only materialization stores strain as float32 (with dtype in run identity and reports), then
+promotes it to float64 for reconstruction and whitening. This preserves the physical strain dynamic
+range while roughly halving the dominant per-injection storage for 10k/50k scaling.
 Materialization writes a run-identity state and an atomic partial manifest every ten injections. A
 restart verifies every indexed artifact hash, rejects a changed manifest/config/backend, and resumes
 without regenerating completed rows. Waveform-domain failures remain nonzero exits and are never
