@@ -4,13 +4,17 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
+
 from gwyolo.gravityspy import (
     gravityspy_weak_mask,
     index_gravityspy_csv,
     match_glitch_to_strain_file,
+    merge_gravityspy_numeric_manifests,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
+from gwyolo.io import file_sha256
 
 
 def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
@@ -33,6 +37,43 @@ def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
     assert int(mask[0].sum()) == 0
     assert int(mask[1].sum()) == 18
     assert int(mask[2].sum()) == 0
+
+
+def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
+    reports = []
+    for index in range(2):
+        sample = tmp_path / f"sample-{index}.npz"
+        np.savez(sample, features=np.asarray([index], dtype=np.float32))
+        manifest = tmp_path / f"manifest-{index}.jsonl"
+        row = {
+            "glitch_id": f"g-{index}",
+            "split": "train",
+            "path": str(sample),
+            "sha256": file_sha256(sample),
+            "network_gps_block": f"block-{index}",
+            "ml_label": "Blip",
+            "observing_run": "O3a",
+            "ifo": "H1",
+            "human_pixel_mask": False,
+        }
+        manifest.write_text(json.dumps(row) + "\n")
+        report = tmp_path / f"report-{index}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "verified_gravityspy_numeric_weak_masks",
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "rows": 1,
+                }
+            )
+        )
+        reports.append(report)
+    result = merge_gravityspy_numeric_manifests(reports, tmp_path / "merged", "train")
+    assert result["rows"] == result["unique_glitch_ids"] == 2
+    assert result["weak_masks"] == 2
+    assert result["human_pixel_masks"] == 0
+    assert result["labels"] == {"Blip": 2}
 
 
 def test_glitch_strain_match_requires_full_context_in_one_file() -> None:

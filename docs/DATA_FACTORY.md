@@ -102,6 +102,9 @@ converted to an 8-second numeric multi-Q tensor. The accompanying masks are cons
 derived from Gravity Spy duration, peak frequency and Q metadata. They are explicitly marked as
 non-human masks and cannot support a segmentation-accuracy claim until a pixel-mask audit is frozen.
 The command does not evict verified source files automatically.
+`gwyolo gravityspy-numeric-merge` then verifies every shard report, manifest and numeric-sample hash
+before merging one declared split. Duplicate glitch IDs and mixed train/validation/test rows are
+fatal; weak and human pixel-mask counts remain separate in the merged report.
 
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9

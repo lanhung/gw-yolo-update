@@ -550,6 +550,82 @@ def materialize_gravityspy_strain_shard(
     return report
 
 
+def merge_gravityspy_numeric_manifests(
+    report_paths: Iterable[str | Path],
+    output_dir: str | Path,
+    expected_split: str,
+) -> dict[str, Any]:
+    """Hash-verify and merge completed numeric shards from one frozen split."""
+    if expected_split not in {"train", "val", "test"}:
+        raise ValueError("expected Gravity Spy split must be train, val or test")
+    paths = [Path(path) for path in report_paths]
+    if not paths:
+        raise ValueError("at least one Gravity Spy numeric report is required")
+    rows = []
+    source_reports = []
+    seen_glitches: set[str] = set()
+    for path in paths:
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") != "verified_gravityspy_numeric_weak_masks":
+            raise ValueError(f"Gravity Spy numeric report is incomplete: {path}")
+        manifest = Path(report["manifest_path"])
+        if file_sha256(manifest) != report["manifest_sha256"]:
+            raise ValueError(f"Gravity Spy numeric manifest hash mismatch: {manifest}")
+        with manifest.open("r", encoding="utf-8") as handle:
+            source_rows = [json.loads(line) for line in handle if line.strip()]
+        if len(source_rows) != int(report["rows"]):
+            raise ValueError(f"Gravity Spy numeric row count mismatch: {manifest}")
+        for row in source_rows:
+            glitch_id = str(row["glitch_id"])
+            if glitch_id in seen_glitches:
+                raise ValueError(f"Duplicate Gravity Spy glitch across shards: {glitch_id}")
+            if row.get("split") != expected_split:
+                raise ValueError(
+                    f"Gravity Spy shard mixes split {row.get('split')} into {expected_split}"
+                )
+            if file_sha256(row["path"]) != row["sha256"]:
+                raise ValueError(f"Gravity Spy numeric sample hash mismatch: {row['path']}")
+            seen_glitches.add(glitch_id)
+            rows.append(row)
+        source_reports.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "manifest_sha256": report["manifest_sha256"],
+                "rows": len(source_rows),
+            }
+        )
+    rows.sort(key=lambda row: str(row["glitch_id"]))
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / f"gravityspy_numeric_{expected_split}.jsonl"
+    atomic_write_text(
+        manifest_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    result = {
+        "status": "verified_merged_gravityspy_numeric_split",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "weak masks require a frozen pixel-mask audit before segmentation claims"
+        ),
+        "split": expected_split,
+        "source_reports": source_reports,
+        "source_reports_hash": canonical_hash(source_reports, 64),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "rows": len(rows),
+        "unique_glitch_ids": len(seen_glitches),
+        "unique_network_gps_blocks": len({row["network_gps_block"] for row in rows}),
+        "labels": dict(sorted(Counter(str(row["ml_label"]) for row in rows).items())),
+        "runs": dict(sorted(Counter(str(row["observing_run"]) for row in rows).items())),
+        "ifos": dict(sorted(Counter(str(row["ifo"]) for row in rows).items())),
+        "human_pixel_masks": sum(bool(row.get("human_pixel_mask")) for row in rows),
+        "weak_masks": sum(not bool(row.get("human_pixel_mask")) for row in rows),
+    }
+    atomic_write_json(output / "gravityspy_numeric_merge_report.json", result)
+    return result
+
+
 def _file_md5(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.md5()  # noqa: S324 - required to verify the publisher-provided checksum
     with Path(path).open("rb") as handle:

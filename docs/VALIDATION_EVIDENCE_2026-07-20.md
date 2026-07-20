@@ -21,6 +21,26 @@
   The bounded 32-file shard plan contains 510 shards, preserves all anchors/files once, and has
   manifest SHA256 `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
 
+## Corrected-SNR training ablations
+
+The 30-epoch focal-loss run on the corrected eight-second SNR curriculum selected epoch 29 and
+reached calibrated validation IoU 0.03615 (checkpoint SHA256
+`3219b677173550dc0bf7eaaa4600c49e89711ae4ece662b0fb7c1f3635ba1648`). It is a negative result:
+focal loss did not recover the earlier 0.04725 validation value. Under the current per-IFO visibility
+target, however, the earlier checkpoint scores only 0.03317, so the focal checkpoint is the fair
+same-target promotion source.
+
+The first curriculum over-concentrated about 81% of rows at SNR 4--8. The train-only exact-quota
+manifest now contains 800/700/400/100 rows at SNR 4--8/8--15/15--30/30--50, respectively, with
+SHA256 `b0c46d40f540bb667a6d567eaa1e5ef69987d8bf86e2af3de243c11dc1a5e7a9`. It still represents
+exactly 2,000 waveforms and 38 GPS blocks and is not a data-scaling point.
+
+The first one-file Gravity Spy execution completed on an O3a H1 `Extremely_Loud` anchor. Official
+full-file statistics and DQ bit sums passed; the finite 3-IFO x 3-Q x 96 x 96 tensor manifest has
+SHA256 `88fb6bb414088faccf6cdd3c60eb6ee341bdc592f3131c65d439eeb31a7e5659`. Its mask is explicitly
+weak metadata supervision (`human_pixel_masks=0`), so it validates acquisition and preprocessing,
+not segmentation quality.
+
 ## Evidence boundary
 
 This checkpoint uses only analytic training data and O4a development/validation data. It is not a

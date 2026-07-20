@@ -265,6 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_materialize.add_argument("--download-workers", type=int, default=8)
     gravityspy_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
 
+    gravityspy_merge = subparsers.add_parser("gravityspy-numeric-merge")
+    gravityspy_merge.add_argument("--report", action="append", required=True)
+    gravityspy_merge.add_argument("--output-dir", required=True)
+    gravityspy_merge.add_argument("--split", choices=("train", "val", "test"), required=True)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -725,6 +730,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.chunk_samples,
             )
         )
+    elif args.command == "gravityspy-numeric-merge":
+        from .gravityspy import merge_gravityspy_numeric_manifests
+
+        _print(merge_gravityspy_numeric_manifests(args.report, args.output_dir, args.split))
     elif args.command == "fit-curve":
         _print(run_curve_fit(args.points, args.output))
     elif args.command == "background-plan":
