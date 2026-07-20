@@ -505,6 +505,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_pair_scaling.add_argument("--output-dir", required=True)
 
+    candidate_pair_scaling_evaluate = subparsers.add_parser(
+        "candidate-pair-scaling-evaluate"
+    )
+    candidate_pair_scaling_evaluate.add_argument("--config", required=True)
+    candidate_pair_scaling_evaluate.add_argument(
+        "--scaling-plan-report", required=True
+    )
+    candidate_pair_scaling_evaluate.add_argument(
+        "--fixed-update-report", action="append", required=True, metavar="SIZE=PATH"
+    )
+    candidate_pair_scaling_evaluate.add_argument(
+        "--fixed-epoch-report", action="append", required=True, metavar="SIZE=PATH"
+    )
+    candidate_pair_scaling_evaluate.add_argument("--output", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1641,6 +1656,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_candidate_manifest,
                 args.scale_manifest,
                 args.output_dir,
+            )
+        )
+    elif args.command == "candidate-pair-scaling-evaluate":
+        from .candidate_set_training import run_candidate_pair_scaling_evaluation
+
+        _print(
+            run_candidate_pair_scaling_evaluation(
+                args.config,
+                args.scaling_plan_report,
+                args.fixed_update_report,
+                args.fixed_epoch_report,
+                args.output,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":

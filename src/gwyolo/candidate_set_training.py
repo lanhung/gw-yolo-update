@@ -186,6 +186,197 @@ def run_candidate_pair_scaling_plan(
     return result
 
 
+def _parse_scale_report_specs(specs: list[str]) -> dict[int, Path]:
+    parsed = _parse_scale_manifest_specs(specs)
+    return {size: path for size, path in parsed}
+
+
+def run_candidate_pair_scaling_evaluation(
+    config_path: str | Path,
+    scaling_plan_report_path: str | Path,
+    fixed_update_report_specs: list[str],
+    fixed_epoch_report_specs: list[str],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Evaluate predeclared 2k/5k/10k controls without authorizing larger scale."""
+
+    config = load_yaml(config_path)
+    settings = config["candidate_pair_scaling_evaluation"]
+    expected_scales = tuple(int(value) for value in settings["expected_scales"])
+    if expected_scales != tuple(sorted(expected_scales)) or len(expected_scales) < 2:
+        raise ValueError("candidate pair scaling expected scales are invalid")
+    plan = json.loads(Path(scaling_plan_report_path).read_text(encoding="utf-8"))
+    if plan.get("status") != "verified_nested_candidate_pair_scaling_plan":
+        raise ValueError("candidate pair scaling evaluation requires a verified plan")
+    plan_records = {
+        int(row["physical_parent_count"]): row for row in plan["scale_records"]
+    }
+    if tuple(sorted(plan_records)) != expected_scales:
+        raise ValueError("candidate pair scaling plan differs from expected scales")
+    modes = {
+        "fixed_updates": _parse_scale_report_specs(fixed_update_report_specs),
+        "fixed_epochs": _parse_scale_report_specs(fixed_epoch_report_specs),
+    }
+    if any(tuple(sorted(paths)) != expected_scales for paths in modes.values()):
+        raise ValueError("candidate pair scaling reports differ from expected scales")
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "scaling_plan_report_sha256": file_sha256(scaling_plan_report_path),
+        "reports": {
+            mode: [
+                {"scale": scale, "sha256": file_sha256(paths[scale])}
+                for scale in expected_scales
+            ]
+            for mode, paths in modes.items()
+        },
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    target = Path(output_path)
+    if target.is_file():
+        result = json.loads(target.read_text(encoding="utf-8"))
+        if result.get("run_identity") != identity:
+            raise ValueError("completed candidate pair scaling evaluation has another identity")
+        return result
+    reports: dict[str, dict[int, dict[str, Any]]] = {}
+    common_validation_identity = None
+    common_architecture = None
+    common_seed = None
+    curves = {}
+    for mode, paths in modes.items():
+        reports[mode] = {}
+        curve = []
+        for scale in expected_scales:
+            report = json.loads(paths[scale].read_text(encoding="utf-8"))
+            if report.get("status") != "validation_selection_candidate_pair_ranker":
+                raise ValueError("candidate pair scaling input is not a completed ranker")
+            if report.get("test_evaluation") is not None:
+                raise ValueError("candidate pair scaling evaluation cannot consume test results")
+            if report.get("budget_mode") != mode:
+                raise ValueError("candidate pair scaling report has the wrong budget mode")
+            if int(report.get("train_physical_parents", -1)) != scale:
+                raise ValueError("candidate pair scaling report miscounts physical parents")
+            if report["run_identity"]["train_injection_manifest_sha256"] != plan_records[
+                scale
+            ]["parent_manifest_sha256"]:
+                raise ValueError("candidate pair scaling parent manifest differs from plan")
+            if report["run_identity"]["train_candidate_manifest_sha256"] != plan_records[
+                scale
+            ]["candidate_manifest_sha256"]:
+                raise ValueError("candidate pair scaling candidate manifest differs from plan")
+            validation_identity = (
+                report["run_identity"]["validation_injection_manifest_sha256"],
+                report["run_identity"][
+                    "validation_selection_candidate_manifest_sha256"
+                ],
+            )
+            common_validation_identity = common_validation_identity or validation_identity
+            common_architecture = common_architecture or report["architecture"]
+            common_seed = common_seed if common_seed is not None else report["run_identity"]["seed"]
+            if (
+                validation_identity != common_validation_identity
+                or report["architecture"] != common_architecture
+                or report["run_identity"]["seed"] != common_seed
+            ):
+                raise ValueError("candidate pair scaling reports are not paired controls")
+            metrics = report["selected_validation_metrics"]
+            strata = report["selected_validation_strata"]
+            record = {
+                "physical_parents": scale,
+                "optimizer_updates": int(report["optimizer_updates"]),
+                "top1_padded_truth_pair_fraction": float(
+                    metrics["top1_padded_truth_pair_fraction"]
+                ),
+                "top1_peak_p90_seconds": float(
+                    metrics["top1_peak_error_seconds_quantiles"]["0.9"]
+                ),
+                "pair_average_precision": float(metrics["pair_average_precision"]),
+                "snr_8_15_top1_padded_truth_pair_fraction": float(
+                    strata["snr:snr_8_15"]["top1_padded_truth_pair_fraction"]
+                ),
+                "report_sha256": file_sha256(paths[scale]),
+            }
+            reports[mode][scale] = report
+            curve.append(record)
+        baseline = curve[0]
+        for record in curve:
+            record["top1_gain_from_smallest"] = (
+                record["top1_padded_truth_pair_fraction"]
+                - baseline["top1_padded_truth_pair_fraction"]
+            )
+            record["snr_8_15_top1_gain_from_smallest"] = (
+                record["snr_8_15_top1_padded_truth_pair_fraction"]
+                - baseline["snr_8_15_top1_padded_truth_pair_fraction"]
+            )
+            record["peak_p90_reduction_from_smallest_seconds"] = (
+                baseline["top1_peak_p90_seconds"] - record["top1_peak_p90_seconds"]
+            )
+        curves[mode] = curve
+    final_records = {mode: curves[mode][-1] for mode in modes}
+    checks = {
+        "top1_gain_both_controls": all(
+            row["top1_gain_from_smallest"]
+            >= float(settings["minimum_final_top1_gain"])
+            for row in final_records.values()
+        ),
+        "snr_8_15_gain_both_controls": all(
+            row["snr_8_15_top1_gain_from_smallest"]
+            >= float(settings["minimum_final_snr_8_15_top1_gain"])
+            for row in final_records.values()
+        ),
+        "peak_p90_reduction_both_controls": all(
+            row["peak_p90_reduction_from_smallest_seconds"]
+            >= float(settings["minimum_final_peak_p90_reduction_seconds"])
+            for row in final_records.values()
+        ),
+        "top1_nearly_monotonic_both_controls": all(
+            all(
+                current["top1_padded_truth_pair_fraction"]
+                + float(settings["maximum_intermediate_top1_regression"])
+                >= previous["top1_padded_truth_pair_fraction"]
+                for previous, current in zip(curve, curve[1:])
+            )
+            for curve in curves.values()
+        ),
+    }
+    representation_gain = all(checks.values())
+    fixed_epoch_gain = (
+        final_records["fixed_epochs"]["top1_gain_from_smallest"]
+        >= float(settings["minimum_final_top1_gain"])
+    )
+    fixed_update_gain = (
+        final_records["fixed_updates"]["top1_gain_from_smallest"]
+        >= float(settings["minimum_final_top1_gain"])
+    )
+    diagnosis = (
+        "data_limited_signal"
+        if representation_gain
+        else "update_limited_signal"
+        if fixed_epoch_gain and not fixed_update_gain
+        else "representation_or_domain_limited"
+    )
+    result = {
+        "status": "validation_only_candidate_pair_scaling_evaluation",
+        "scientific_claim_allowed": False,
+        "test_evaluation": None,
+        "run_identity": identity,
+        "validation_identity": list(common_validation_identity),
+        "architecture": common_architecture,
+        "seed": common_seed,
+        "curves": curves,
+        "predeclared_checks": checks,
+        "representation_scaling_gate_passed": representation_gain,
+        "scaling_diagnosis": diagnosis,
+        "scale_beyond_10000_allowed": False,
+        "larger_scale_blocker": (
+            "fresh group-disjoint O4a calibration, continuous-background FAR/VT, and a positive "
+            "fixed-update plus fixed-epoch endpoint are required before 25k/50k"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def candidate_pair_feature_vector(
     first: dict[str, Any],
     second: dict[str, Any],

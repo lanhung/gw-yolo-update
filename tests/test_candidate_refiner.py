@@ -10,6 +10,7 @@ from gwyolo.candidate_set_training import (
     candidate_pair_strain_feature_vector,
     candidate_parent_top1_metrics,
     run_candidate_pair_scaling_plan,
+    run_candidate_pair_scaling_evaluation,
 )
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
@@ -305,6 +306,98 @@ def test_candidate_pair_budget_separates_fixed_updates_from_fixed_epochs() -> No
             },
             7,
         )
+
+
+def test_candidate_pair_scaling_evaluation_requires_gain_in_both_controls(
+    tmp_path,
+) -> None:
+    scales = (2000, 5000, 10000)
+    config_path = tmp_path / "scaling.yaml"
+    config_path.write_text(
+        """
+candidate_pair_scaling_evaluation:
+  expected_scales: [2000, 5000, 10000]
+  minimum_final_top1_gain: 0.05
+  minimum_final_snr_8_15_top1_gain: 0.03
+  minimum_final_peak_p90_reduction_seconds: 0.25
+  maximum_intermediate_top1_regression: 0.01
+""".lstrip()
+    )
+    plan_records = [
+        {
+            "physical_parent_count": scale,
+            "parent_manifest_sha256": f"parent-{scale}",
+            "candidate_manifest_sha256": f"candidate-{scale}",
+        }
+        for scale in scales
+    ]
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "status": "verified_nested_candidate_pair_scaling_plan",
+                "scale_records": plan_records,
+            }
+        )
+    )
+    specs = {"fixed_updates": [], "fixed_epochs": []}
+    top1 = {2000: 0.30, 5000: 0.34, 10000: 0.36}
+    snr = {2000: 0.60, 5000: 0.62, 10000: 0.64}
+    p90 = {2000: 4.0, 5000: 3.9, 10000: 3.7}
+    for mode in specs:
+        for scale in scales:
+            report_path = tmp_path / f"{mode}-{scale}.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "validation_selection_candidate_pair_ranker",
+                        "test_evaluation": None,
+                        "budget_mode": mode,
+                        "train_physical_parents": scale,
+                        "architecture": "candidate_pair_trainable_stft_cnn_v3",
+                        "optimizer_updates": scale // 2,
+                        "run_identity": {
+                            "train_injection_manifest_sha256": f"parent-{scale}",
+                            "train_candidate_manifest_sha256": f"candidate-{scale}",
+                            "validation_injection_manifest_sha256": "validation-parent",
+                            "validation_selection_candidate_manifest_sha256": (
+                                "validation-candidate"
+                            ),
+                            "seed": 7,
+                        },
+                        "selected_validation_metrics": {
+                            "top1_padded_truth_pair_fraction": top1[scale],
+                            "top1_peak_error_seconds_quantiles": {"0.9": p90[scale]},
+                            "pair_average_precision": 0.2,
+                        },
+                        "selected_validation_strata": {
+                            "snr:snr_8_15": {
+                                "top1_padded_truth_pair_fraction": snr[scale]
+                            }
+                        },
+                    }
+                )
+            )
+            specs[mode].append(f"{scale}={report_path}")
+    result = run_candidate_pair_scaling_evaluation(
+        config_path,
+        plan_path,
+        specs["fixed_updates"],
+        specs["fixed_epochs"],
+        tmp_path / "evaluation.json",
+    )
+    assert result["representation_scaling_gate_passed"] is True
+    assert result["scaling_diagnosis"] == "data_limited_signal"
+    assert np.isclose(
+        result["curves"]["fixed_updates"][-1]["top1_gain_from_smallest"],
+        0.06,
+    )
+    assert np.isclose(
+        result["curves"]["fixed_epochs"][-1][
+            "peak_p90_reduction_from_smallest_seconds"
+        ],
+        0.3,
+    )
 
 
 def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:

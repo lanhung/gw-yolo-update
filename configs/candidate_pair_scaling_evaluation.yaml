@@ -1,0 +1,6 @@
+candidate_pair_scaling_evaluation:
+  expected_scales: [2000, 5000, 10000]
+  minimum_final_top1_gain: 0.05
+  minimum_final_snr_8_15_top1_gain: 0.03
+  minimum_final_peak_p90_reduction_seconds: 0.25
+  maximum_intermediate_top1_regression: 0.01
