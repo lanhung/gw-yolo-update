@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten_with_reference
+from .gwosc import _fft_downsample, _whiten, _whiten_with_reference
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .numeric import MultiIFOQNet, _atomic_torch_save, _dice_loss
 from .waveforms import load_materialized_context
@@ -177,15 +177,31 @@ class PhysicalInjectionDataset:
             signal_context = _fft_downsample(
                 target_signal[ifo_index], source_rate, self.target_sample_rate
             )
+            whitening = str(self.tensor_config.get("whitening", "self"))
+            if whitening == "self":
+                whitened_mixture = _whiten(mixture_context)
+            elif whitening == "noise_reference":
+                whitened_mixture = _whiten_with_reference(noise_context, mixture_context)
+            else:
+                raise ValueError("physical whitening must be self or noise_reference")
             mixture_planes.append(
-                _whiten_with_reference(noise_context, mixture_context)[
-                    target_start : target_start + output_samples
-                ]
+                whitened_mixture[target_start : target_start + output_samples]
             )
+            target_whitening = str(
+                self.tensor_config.get("target_whitening", "morphology")
+            )
+            if target_whitening == "morphology":
+                transformed_signal = signal_context
+            elif target_whitening == "noise_reference":
+                transformed_signal = _whiten_with_reference(
+                    noise_context, signal_context, component=True
+                )
+            else:
+                raise ValueError(
+                    "physical target whitening must be morphology or noise_reference"
+                )
             signal_planes.append(
-                _whiten_with_reference(noise_context, signal_context, component=True)[
-                    target_start : target_start + output_samples
-                ]
+                transformed_signal[target_start : target_start + output_samples]
             )
         mixture_array = np.stack(mixture_planes)
         signal_array = np.stack(signal_planes)

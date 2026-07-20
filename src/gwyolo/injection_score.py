@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten_with_reference
+from .gwosc import _fft_downsample, _whiten, _whiten_with_reference
 from .io import (
     atomic_write_json,
     atomic_write_text,
@@ -133,7 +133,7 @@ def score_materialized_injections(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "save_probabilities": save_probabilities,
-        "whitening": "empirical_noise_reference",
+        "whitening": str(tensor_config.get("whitening", "self")),
     }
     resumed_rows = _load_resumable_rows(output, run_identity, manifest_rows)
     resumed_by_id = {str(row["injection_id"]): row for row in resumed_rows}
@@ -170,10 +170,16 @@ def score_materialized_injections(
                 ifo_index = ifos.index(ifo)
                 values = mixture[ifo_index]
                 values = _fft_downsample(values, source_rate, target_sample_rate)
-                reference = _fft_downsample(
-                    noise[ifo_index], source_rate, target_sample_rate
-                )
-                whitened = _whiten_with_reference(reference, values)
+                whitening = str(tensor_config.get("whitening", "self"))
+                if whitening == "self":
+                    whitened = _whiten(values)
+                elif whitening == "noise_reference":
+                    reference = _fft_downsample(
+                        noise[ifo_index], source_rate, target_sample_rate
+                    )
+                    whitened = _whiten_with_reference(reference, values)
+                else:
+                    raise ValueError("injection whitening must be self or noise_reference")
                 transformed.append(whitened[target_start : target_start + output_samples])
             strain = np.stack(transformed)
             if strain.shape[1] != output_samples:

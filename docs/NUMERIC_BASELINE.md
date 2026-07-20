@@ -149,3 +149,8 @@ Physical fine-tuning now estimates the whitening PSD from the known real-noise c
 the same linear filter to mixture and signal-only target. Injection scoring uses the same stored
 noise reference; continuous background is the special case where reference and input are identical.
 This removes the earlier unwhitened-target versus whitened-input frequency mismatch.
+The reference-whitened run then produced only 0.0124 validation IoU: filtering the target itself
+introduced a label definition that the compact model did not learn. Whitening and target construction
+are therefore explicit tensor-config axes. The promoted baseline returns to self-whitened inputs and
+amplitude-normalized morphology masks; the failed noise-reference setting remains reproducible in
+`physical_finetune_reference_whitened.yaml`.
