@@ -6,6 +6,7 @@ import pytest
 from gwyolo.arrival_timing import (
     detector_arrival_bin_targets,
     detector_arrival_errors_seconds,
+    detector_network_arrival_errors_seconds,
 )
 
 
@@ -40,6 +41,28 @@ def test_detector_arrival_targets_reject_single_ifo_and_out_of_window() -> None:
     with pytest.raises(ValueError, match="outside"):
         detector_arrival_bin_targets(
             {"H1": 109.0, "L1": 104.0}, ("H1", "L1"), 100.0, 8.0, 1024
+        )
+
+
+def test_detector_network_arrival_errors_include_pair_delay_by_hand() -> None:
+    maximum, pairwise = detector_network_arrival_errors_seconds(
+        predicted_bins=np.array([[1, 2, 0], [0, 3, 7]]),
+        exact_offsets_seconds=np.array([[1.4, 2.7, np.nan], [0.4, np.nan, 7.4]]),
+        availability=np.array([[True, True, False], [True, False, True]]),
+        analysis_duration_seconds=8.0,
+        output_bins=8,
+    )
+
+    assert maximum == pytest.approx([0.2, 0.1])
+    assert pairwise == pytest.approx([0.3, 0.0])
+
+    with pytest.raises(ValueError, match="two available"):
+        detector_network_arrival_errors_seconds(
+            np.array([[1, 2]]),
+            np.array([[1.4, np.nan]]),
+            np.array([[True, False]]),
+            8.0,
+            8,
         )
 
 

@@ -69,6 +69,14 @@ The 10k/30-epoch checkpoint improves the within-250-ms association count to 464/
 246.7 ms p99 error; it is likewise stopped before slides. More epochs improve window sensitivity,
 not the missing temporal representation.
 
+The independent 2k time-domain detector-arrival head also fails the unconditional gate: its selected
+checkpoint has 1.769 s median and 4.626 s p90 error over all 6,000 validation arrivals. Its high-SNR
+tail is informative but not sufficient (network-SNR >=30 p90 is 12.68 ms). Because more than half
+of the physical validation injections have network SNR below 4, `detector-arrival-timing-validation-stratify`
+now reports per-IFO detectability, worst-IFO error and pairwise-delay error without replacing the
+all-injection metric. Candidate-level coverage and timing at a frozen morphology threshold remain
+the only route to a search timing claim.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

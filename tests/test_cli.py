@@ -81,3 +81,27 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
     assert score.call_args.kwargs["required_split"] is None
     assert score.call_args.kwargs["enabled_ifos"] is None
     assert score.call_args.kwargs["coherence_config_path"] is None
+
+
+def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
+    target = "gwyolo.arrival_timing.run_detector_arrival_timing_validation_stratification"
+    with patch(target, return_value={}) as stratify:
+        assert (
+            main(
+                [
+                    "detector-arrival-timing-validation-stratify",
+                    "--config",
+                    "timing.yaml",
+                    "--validation-manifest",
+                    "validation.jsonl",
+                    "--checkpoint",
+                    "timing.pt",
+                    "--output",
+                    "strata.json",
+                ]
+            )
+            == 0
+        )
+    stratify.assert_called_once_with(
+        "timing.yaml", "validation.jsonl", "timing.pt", "strata.json"
+    )

@@ -188,9 +188,11 @@ Revised priority order:
 
 The native-rate timing item now has an executable replacement for the rejected mask-envelope path:
 `detector-arrival-timing-train` trains a variable-detector time-domain head against per-IFO geometric
-arrival GPS and selects only on validation p90. Start with the group-safe 2k subset; promote 5k/10k
-only if p90 improves materially under a matched update/epoch control. Candidate integration remains
-blocked until the 10 ms empirical gate passes.
+arrival GPS and selects only on validation p90. The group-safe 2k run completed, but its selected
+checkpoint has 4.626 s all-validation p90 and therefore blocks 5k/10k promotion. Its strong SNR
+dependence is now measured separately with per-IFO-SNR, worst-IFO and relative-delay diagnostics;
+these must be paired with candidate coverage at a frozen threshold and may not replace the failed
+all-population metric. Candidate integration remains blocked until the 10 ms empirical gate passes.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

@@ -401,6 +401,14 @@ def build_parser() -> argparse.ArgumentParser:
     detector_arrival_timing.add_argument("--output-dir", required=True)
     detector_arrival_timing.add_argument("--seed", type=int)
 
+    detector_arrival_stratify = subparsers.add_parser(
+        "detector-arrival-timing-validation-stratify"
+    )
+    detector_arrival_stratify.add_argument("--config", required=True)
+    detector_arrival_stratify.add_argument("--validation-manifest", required=True)
+    detector_arrival_stratify.add_argument("--checkpoint", required=True)
+    detector_arrival_stratify.add_argument("--output", required=True)
+
     glitch_finetune = subparsers.add_parser("gravityspy-glitch-finetune")
     glitch_finetune.add_argument("--config", required=True)
     glitch_finetune.add_argument("--glitch-train-manifest", required=True)
@@ -1378,6 +1386,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_manifest,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "detector-arrival-timing-validation-stratify":
+        from .arrival_timing import (
+            run_detector_arrival_timing_validation_stratification,
+        )
+
+        _print(
+            run_detector_arrival_timing_validation_stratification(
+                args.config,
+                args.validation_manifest,
+                args.checkpoint,
+                args.output,
             )
         )
     elif args.command == "gravityspy-glitch-finetune":

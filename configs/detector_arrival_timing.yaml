@@ -8,6 +8,7 @@ detector_arrival_timing:
   base_channels: 32
   cache_in_memory: true
   minimum_training_network_snr: 4.0
+  validation_ifo_snr_thresholds: [4.0, 6.0, 8.0, 10.0]
   analysis_duration: 8.0
   target_sample_rate: 1024
   output_bins: 1024

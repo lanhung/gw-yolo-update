@@ -84,6 +84,51 @@ def detector_arrival_errors_seconds(
     return np.abs(centers - offsets[valid])
 
 
+def detector_network_arrival_errors_seconds(
+    predicted_bins: np.ndarray,
+    exact_offsets_seconds: np.ndarray,
+    availability: np.ndarray,
+    analysis_duration_seconds: float,
+    output_bins: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-example worst-IFO and pairwise relative-delay errors."""
+
+    predicted = np.asarray(predicted_bins, dtype=np.int64)
+    offsets = np.asarray(exact_offsets_seconds, dtype=np.float64)
+    valid = np.asarray(availability, dtype=bool)
+    if predicted.ndim != 2 or predicted.shape != offsets.shape or valid.shape != offsets.shape:
+        raise ValueError("network arrival timing arrays must share shape [example, IFO]")
+    if analysis_duration_seconds <= 0 or output_bins < 2:
+        raise ValueError("network arrival timing grid is invalid")
+    centers = (
+        predicted.astype(np.float64) + 0.5
+    ) * analysis_duration_seconds / output_bins
+    maximum_errors = []
+    pairwise_delay_errors = []
+    for index in range(predicted.shape[0]):
+        indices = np.flatnonzero(valid[index])
+        if indices.size < 2:
+            raise ValueError("network arrival timing requires two available IFOs per example")
+        if (
+            np.any(predicted[index, indices] < 0)
+            or np.any(predicted[index, indices] >= output_bins)
+            or not np.isfinite(offsets[index, indices]).all()
+        ):
+            raise ValueError("available network arrival prediction is invalid")
+        maximum_errors.append(
+            float(np.max(np.abs(centers[index, indices] - offsets[index, indices])))
+        )
+        for left_offset, left in enumerate(indices[:-1]):
+            for right in indices[left_offset + 1 :]:
+                predicted_delay = centers[index, left] - centers[index, right]
+                exact_delay = offsets[index, left] - offsets[index, right]
+                pairwise_delay_errors.append(abs(predicted_delay - exact_delay))
+    return (
+        np.asarray(maximum_errors, dtype=np.float64),
+        np.asarray(pairwise_delay_errors, dtype=np.float64),
+    )
+
+
 def _summary(errors: list[float]) -> dict[str, Any]:
     values = np.asarray(errors, dtype=np.float64)
     if values.size == 0 or not np.isfinite(values).all():
@@ -99,6 +144,34 @@ def _summary(errors: list[float]) -> dict[str, Any]:
         "within_10ms": within,
         "within_10ms_fraction": within / values.size,
         "within_10ms_wilson_95": list(wilson_interval(within, int(values.size))),
+    }
+
+
+def _network_summary(
+    maximum_errors: list[float], pairwise_delay_errors: list[float]
+) -> dict[str, Any]:
+    maximum = np.asarray(maximum_errors, dtype=np.float64)
+    pairwise = np.asarray(pairwise_delay_errors, dtype=np.float64)
+    if maximum.size == 0 or pairwise.size == 0:
+        raise ValueError("network timing summary requires examples and detector pairs")
+    if not np.isfinite(maximum).all() or not np.isfinite(pairwise).all():
+        raise ValueError("network timing summary requires finite errors")
+    within = int(np.count_nonzero(maximum <= 0.01))
+    quantiles = (0.0, 0.5, 0.9, 0.99, 1.0)
+    return {
+        "network_examples": int(maximum.size),
+        "pairwise_delays": int(pairwise.size),
+        "all_available_ifos_within_10ms": within,
+        "all_available_ifos_within_10ms_fraction": within / maximum.size,
+        "all_available_ifos_within_10ms_wilson_95": list(
+            wilson_interval(within, int(maximum.size))
+        ),
+        "maximum_ifo_absolute_error_seconds_quantiles": {
+            str(q): float(np.quantile(maximum, q)) for q in quantiles
+        },
+        "pairwise_delay_absolute_error_seconds_quantiles": {
+            str(q): float(np.quantile(pairwise, q)) for q in quantiles
+        },
     }
 
 
@@ -246,9 +319,13 @@ def _grouped_evaluation(
     device: Any,
     duration: float,
     output_bins: int,
-) -> dict[str, Any]:
+    ifo_snr_thresholds: tuple[float, ...],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     model.eval()
     groups: dict[str, list[float]] = defaultdict(list)
+    network_groups: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: {"maximum_errors": [], "pairwise_delay_errors": []}
+    )
     offset = 0
     with torch.no_grad():
         for strain, availability, _, exact_offsets in loader:
@@ -259,6 +336,37 @@ def _grouped_evaluation(
             exact_values = exact_offsets.numpy()
             for batch_index in range(strain.shape[0]):
                 row = rows[offset + batch_index]
+                row_snr = {
+                    str(ifo): float(value)
+                    for ifo, value in row.get("optimal_snr_by_ifo", {}).items()
+                }
+                maximum_errors, pairwise_errors = detector_network_arrival_errors_seconds(
+                    predicted[batch_index : batch_index + 1],
+                    exact_values[batch_index : batch_index + 1],
+                    available_values[batch_index : batch_index + 1],
+                    duration,
+                    output_bins,
+                )
+                network_keys = ["all"]
+                available_ifos = [
+                    ifo
+                    for ifo_index, ifo in enumerate(model_ifos)
+                    if available_values[batch_index, ifo_index]
+                ]
+                if row_snr and all(ifo in row_snr for ifo in available_ifos):
+                    minimum_ifo_snr = min(row_snr[ifo] for ifo in available_ifos)
+                    network_keys.extend(
+                        f"minimum_ifo_snr_ge_{threshold:g}"
+                        for threshold in ifo_snr_thresholds
+                        if minimum_ifo_snr >= threshold
+                    )
+                for key in network_keys:
+                    network_groups[key]["maximum_errors"].extend(
+                        maximum_errors.tolist()
+                    )
+                    network_groups[key]["pairwise_delay_errors"].extend(
+                        pairwise_errors.tolist()
+                    )
                 for ifo_index, ifo in enumerate(model_ifos):
                     if not available_values[batch_index, ifo_index]:
                         continue
@@ -278,10 +386,22 @@ def _grouped_evaluation(
                         f"snr:{row.get('optimal_snr_stratum', 'unassigned')}",
                     ):
                         groups[key].append(error)
+                    if ifo in row_snr:
+                        for threshold in ifo_snr_thresholds:
+                            if row_snr[ifo] >= threshold:
+                                groups[f"ifo_snr_ge_{threshold:g}"].append(error)
             offset += int(strain.shape[0])
     if offset != len(rows):
         raise RuntimeError("arrival timing evaluation did not consume every validation row")
-    return {key: _summary(values) for key, values in sorted(groups.items())}
+    return (
+        {key: _summary(values) for key, values in sorted(groups.items())},
+        {
+            key: _network_summary(
+                values["maximum_errors"], values["pairwise_delay_errors"]
+            )
+            for key, values in sorted(network_groups.items())
+        },
+    )
 
 
 def run_detector_arrival_timing_training(
@@ -478,7 +598,19 @@ def run_detector_arrival_timing_training(
         atomic_write_json(output / "history.json", history)
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(selected["model"])
-    groups = _grouped_evaluation(
+    ifo_snr_thresholds = tuple(
+        float(value)
+        for value in settings.get(
+            "validation_ifo_snr_thresholds", (4.0, 6.0, 8.0, 10.0)
+        )
+    )
+    if (
+        not ifo_snr_thresholds
+        or any(value <= 0 for value in ifo_snr_thresholds)
+        or tuple(sorted(set(ifo_snr_thresholds))) != ifo_snr_thresholds
+    ):
+        raise ValueError("validation IFO SNR thresholds must be positive and increasing")
+    groups, network_groups = _grouped_evaluation(
         model,
         loaders["val"],
         validation_rows,
@@ -486,6 +618,7 @@ def run_detector_arrival_timing_training(
         device,
         duration,
         output_bins,
+        ifo_snr_thresholds,
     )
     bin_width = duration / output_bins
     p90 = float(groups["all"]["absolute_error_seconds_quantiles"]["0.9"])
@@ -517,6 +650,8 @@ def run_detector_arrival_timing_training(
             "accuracy_gate_passed": bin_width <= 0.01 and p90 <= 0.01,
         },
         "validation_groups": groups,
+        "validation_network_groups": network_groups,
+        "validation_ifo_snr_thresholds": list(ifo_snr_thresholds),
         "epochs": int(settings["epochs"]),
         "completed_epochs": len(history),
         "steps_per_full_epoch": steps_per_full_epoch,
@@ -533,3 +668,124 @@ def run_detector_arrival_timing_training(
     }
     atomic_write_json(report_path, result)
     return result
+
+
+def run_detector_arrival_timing_validation_stratification(
+    config_path: str | Path,
+    validation_manifest: str | Path,
+    checkpoint_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Stratify a frozen timing checkpoint without redefining its all-sample gate."""
+
+    if torch is None:
+        raise RuntimeError("Detector arrival timing validation requires torch")
+    config = load_yaml(config_path)
+    settings = config["detector_arrival_timing"]
+    with Path(validation_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or {str(row.get("split")) for row in rows} != {"val"}:
+        raise ValueError("arrival timing stratification accepts validation rows only")
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    target_rate = int(settings["target_sample_rate"])
+    duration = float(settings["analysis_duration"])
+    output_bins = int(settings["output_bins"])
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    expected = {
+        "architecture": "detector_arrival_timing_net_v1",
+        "model_ifos": model_ifos,
+        "target_sample_rate": target_rate,
+        "analysis_duration": duration,
+        "output_bins": output_bins,
+    }
+    for key, value in expected.items():
+        observed = checkpoint.get(key)
+        if key == "model_ifos":
+            observed = tuple(observed or ())
+        if observed != value:
+            raise ValueError(f"arrival timing checkpoint {key} differs from configuration")
+    dataset = DetectorArrivalDataset(
+        rows,
+        model_ifos,
+        target_rate,
+        duration,
+        output_bins,
+        bool(settings.get("cache_in_memory", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DetectorArrivalTimingNet(
+        len(model_ifos), int(checkpoint["base_channels"])
+    ).to(device)
+    model.load_state_dict(checkpoint["model"])
+    thresholds = tuple(
+        float(value)
+        for value in settings.get(
+            "validation_ifo_snr_thresholds", (4.0, 6.0, 8.0, 10.0)
+        )
+    )
+    if (
+        not thresholds
+        or any(value <= 0 for value in thresholds)
+        or tuple(sorted(set(thresholds))) != thresholds
+    ):
+        raise ValueError("validation IFO SNR thresholds must be positive and increasing")
+    groups, network_groups = _grouped_evaluation(
+        model,
+        loader,
+        rows,
+        model_ifos,
+        device,
+        duration,
+        output_bins,
+        thresholds,
+    )
+    bin_width = duration / output_bins
+    all_p90 = float(groups["all"]["absolute_error_seconds_quantiles"]["0.9"])
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report = {
+        "status": "validation_only_detector_arrival_timing_stratification",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "SNR-conditioned strata diagnose detectability but may not replace candidate-level "
+            "coverage and timing calibration at a frozen search threshold"
+        ),
+        "run_identity": identity,
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "validation_manifest": str(validation_manifest),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_training_identity": checkpoint.get("run_identity"),
+        "checkpoint_epoch": int(checkpoint["epoch"]),
+        "validation_rows": len(rows),
+        "model_ifos": list(model_ifos),
+        "validation_ifo_snr_thresholds": list(thresholds),
+        "timing": {
+            "bin_width_seconds": bin_width,
+            "representation_gate_passed": bin_width <= 0.01,
+            "all_validation_accuracy_gate_passed": bin_width <= 0.01
+            and all_p90 <= 0.01,
+        },
+        "validation_groups": groups,
+        "validation_network_groups": network_groups,
+        "device": str(device),
+        **execution_provenance(torch),
+    }
+    destination = Path(output_path)
+    if destination.is_file():
+        existing = json.loads(destination.read_text(encoding="utf-8"))
+        if existing.get("run_identity") != identity:
+            raise ValueError("arrival timing stratification output has another identity")
+        return existing
+    atomic_write_json(destination, report)
+    return report

@@ -312,6 +312,26 @@ ms grid only passes representation, not accuracy; validation p90 <=10 ms is stil
 bounded scale order is 2k then 5k/10k only after measured p90 improvement, so this architecture does
 not justify blind data expansion by itself.
 
+The first 2k detector-arrival run at commit `8826228` completed all 12 epochs in 303.4 seconds and
+selected epoch 8 using validation p90. Its split audit has zero waveform, injection or GPS-block
+overlap (2,000/3,000 unique train/validation waveforms over 76/26 GPS blocks). The 7.8125 ms output
+grid passes the representation gate, but the frozen all-validation accuracy gate fails: median/p90
+per-IFO error is 1.769/4.626 seconds and only 9.48% of 6,000 detector arrivals are within 10 ms.
+BBH reaches 20.48% within 10 ms, while BNS and NSBH reach only 0.33% and 0.67%. The checkpoint SHA256
+is `0a7392240ea58b60d1dbab9a87d230eca0ffe8c7f8031506fdeca60ddf7cb4ac`; the train and validation
+arrival-manifest SHA256 values are `e4e8d6f3e0580b6df84f5921915e3ca3a319dde014c950a11e18763fd97dfbb4`
+and `422fa08528bdc57c8d65e6123fb58209282d0ce755d404832d4951abfcfd09cd`.
+
+That aggregate is deliberately not interpreted as timing conditional on detection. The physical
+validation population contains 1,559/3,000 injections below network optimal SNR 4 and only 585 at
+SNR >=8. At network SNR >=30, 81.25% of arrivals are within 10 ms and p90 is 12.68 ms; at SNR 15--30,
+the corresponding values are 68.84% and 144.7 ms. This bimodality shows real learned timing at high
+SNR but does not pass the search gate. It also exposes a needed separation between injection
+coverage and conditional timing accuracy. The validation stratifier therefore keeps the all-sample
+gate unchanged while adding per-IFO-SNR groups, worst-IFO error and pairwise relative-delay error.
+Those conditional strata are diagnostic only until combined with candidate coverage at a frozen
+search threshold. No 5k/10k timing scale is promoted from this result.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
