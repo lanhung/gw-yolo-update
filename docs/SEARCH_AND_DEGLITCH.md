@@ -107,6 +107,12 @@ python -m gwyolo.cli candidate-search-evaluate-frozen \
 
 Intermediate extraction, calibration application, slide and ranking commands are deliberately kept
 separate so their JSON reports can be audited before the locked command receives access to test data.
+For routine O4a development, `candidate-search-validation-pipeline` executes those validation-only
+stages in order, resumes the two expensive scorers by run identity, selects only the calibrated local
+per-cluster strain method, derives the coincidence width from the configured detector-pair light
+travel time and measured uncertainty, and writes a frozen threshold artifact with
+`test_evaluation: null`. It has no test-manifest argument. The separate locked command remains the
+only route to test FAR/IFAR/`<VT>`.
 
 The initially downloaded H1 file subsequently failed a complete HDF5 Fletcher32 scan, while L1
 matched all 16,777,216 samples, official strain statistics and DQ/injection bit sums. Consequently,

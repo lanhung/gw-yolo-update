@@ -672,6 +672,36 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_slides.add_argument("--physical-delay-limit-seconds", type=float)
     candidate_slides.add_argument("--empirical-timing-uncertainty-seconds", type=float)
 
+    candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
+    candidate_pipeline.add_argument("--background-manifest", required=True)
+    candidate_pipeline.add_argument("--injection-manifest", required=True)
+    candidate_pipeline.add_argument("--checkpoint", required=True)
+    candidate_pipeline.add_argument("--config", required=True)
+    candidate_pipeline.add_argument("--coherence-config", required=True)
+    candidate_pipeline.add_argument("--output-dir", required=True)
+    candidate_pipeline.add_argument("--reference-ifo", default="H1")
+    candidate_pipeline.add_argument("--second-ifo", default="L1")
+    candidate_pipeline.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
+    candidate_pipeline.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
+    candidate_pipeline.add_argument("--target-sample-rate", type=int, default=1024)
+    candidate_pipeline.add_argument("--context-duration", type=float, default=64.0)
+    candidate_pipeline.add_argument("--chirp-threshold", type=float, default=0.3)
+    candidate_pipeline.add_argument("--minimum-bins", type=int, default=1)
+    candidate_pipeline.add_argument(
+        "--timing-association-window-seconds", type=float, default=0.25
+    )
+    candidate_pipeline.add_argument("--timing-uncertainty-quantile", type=float, default=0.99)
+    candidate_pipeline.add_argument("--minimum-timing-matches", type=int, default=30)
+    candidate_pipeline.add_argument(
+        "--truth-association-window-seconds", type=float, default=0.25
+    )
+    candidate_pipeline.add_argument("--slide-count", type=int, default=512)
+    candidate_pipeline.add_argument("--slide-step-seconds", type=float, default=8.0)
+    candidate_pipeline.add_argument("--cluster-window-seconds", type=float, default=0.1)
+    candidate_pipeline.add_argument("--target-far-per-year", type=float, default=100.0)
+    candidate_pipeline.add_argument("--bootstrap-replicates", type=int, default=10000)
+    candidate_pipeline.add_argument("--seed", type=int, default=20260720)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -1638,6 +1668,37 @@ def main(argv: list[str] | None = None) -> int:
                 args.cluster_window_seconds,
                 args.physical_delay_limit_seconds,
                 args.empirical_timing_uncertainty_seconds,
+            )
+        )
+    elif args.command == "candidate-search-validation-pipeline":
+        from .candidate_pipeline import run_candidate_validation_pipeline
+
+        _print(
+            run_candidate_validation_pipeline(
+                args.background_manifest,
+                args.injection_manifest,
+                args.checkpoint,
+                args.config,
+                args.coherence_config,
+                args.output_dir,
+                args.reference_ifo,
+                args.second_ifo,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.timing_association_window_seconds,
+                args.timing_uncertainty_quantile,
+                args.minimum_timing_matches,
+                args.truth_association_window_seconds,
+                args.slide_count,
+                args.slide_step_seconds,
+                args.cluster_window_seconds,
+                args.target_far_per_year,
+                args.bootstrap_replicates,
+                args.seed,
             )
         )
     elif args.command == "time-slide-background":
