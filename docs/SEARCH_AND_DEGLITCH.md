@@ -152,6 +152,14 @@ candidate, freezes the highest predeclared presence threshold retaining at least
 arrivals, and writes every refined prediction. Even a passed timing gate cannot promote search use
 until signal-free continuous background supplies false acceptance and FAR/IFAR evidence.
 
+The corrected from-scratch arm does not pass that gate. It reaches calibration AP 0.4601 and
+median/p90 continuous timing errors 0.461/1.126 s; at the selected 0.5 threshold, top-score 20 ms
+accuracy is 13.12% despite 99.83% arrival acceptance. Search promotion therefore remains false.
+The endpoint-warm arm is allowed to answer only whether reuse of the dense proposal representation
+repairs local optimization. Since the warm checkpoint was selected on all current validation
+parents, that arm disables calibration metrics and cannot freeze a candidate/search threshold until
+a newly acquired group-disjoint O4a calibration set exists.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

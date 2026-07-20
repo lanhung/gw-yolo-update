@@ -451,6 +451,29 @@ physical arrival-in-crop, keeps the original interval label as a proposal audit 
 Gaussian timing distribution plus continuous coordinate loss. Its result must still pass the frozen
 `8f3554f` validation gate before background calibration.
 
+The corrected from-scratch v2 arm completed 3,000 updates at `d4d0330`. On the 596-parent
+checkpoint-selection partition, candidate AP rises to 0.4498, but remains below the frozen 0.50
+gate. Its training report/checkpoint SHA256 values are
+`7de6cd1ba465f089f2d5555a7e17b9e3862ff95494620419e753d7460adfbabb` and
+`1d011387b5e49d4309e15aec010e481bd2ec7899f0d51d7370dfd35d581e3ca5`.
+Commit `b318fdf` froze probability expectation—not post-hoc argmax switching—as the continuous
+timing estimator before scoring the 2,404 calibration parents. The completed `26cc330` report has
+candidate AP 0.4601 and localizable-candidate median/p90 timing errors 0.461/1.126 s. Threshold 0.5
+retains 99.83% of 4,808 physical detector arrivals, but retains a median 10 candidates per arrival;
+the top-score refined time is within 20 ms for only 13.12% of all arrivals. AP, p90 timing and top
+score timing gates all fail, while search promotion remains explicitly false. Validation-report and
+prediction-manifest SHA256 values are
+`900d31239835e3836337b8bba81e7890f2ac5f92bd79cbaa03e7bda1f950b41f` and
+`2c0e86885cf1b89fde5234ebbf0a282936af06edd1fb0c465f8be9af09e1c6f9`.
+
+This failure does not authorize blind physical-scale growth: the local network was trained from
+scratch even though the frozen dense endpoint arm already learned an informative representation on
+the same 2,000 physical train parents. Commit `6491461` therefore defines a bounded transfer
+diagnostic that loads the exact dense endpoint backbone and sharpens it with the same 3,000-update
+budget. Because that endpoint checkpoint was originally selected on all 3,000 current validation
+parents, the warm arm sets `calibration_evaluation_allowed: false`; even a strong selection result
+requires a new group-disjoint O4a calibration corpus before any threshold can be frozen.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

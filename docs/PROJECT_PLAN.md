@@ -242,6 +242,14 @@ using that audit label as local strain supervision creates contradictory negativ
 distribution plus coordinate loss. Only validation AP/timing and then signal-free background false
 acceptance may promote it; candidate repetitions are not counted as new physical waveforms.
 
+The corrected v2 result still fails: selection AP is 0.4498, while validation-calibration AP is
+0.4601 and continuous timing median/p90 is 0.461/1.126 s. A 0.5 score threshold accepts 99.83% of
+arrivals but leaves a median ten candidates per arrival and only 13.12% unconditional top-score
+20 ms accuracy. The next bounded arm transfers the already trained dense-endpoint backbone under the
+same 3,000-update budget. It is a representation diagnostic only: the warm checkpoint has already
+seen all current validation parents during endpoint selection, so its configuration suppresses
+calibration evaluation and requires a fresh parent-disjoint corpus if transfer succeeds.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag
