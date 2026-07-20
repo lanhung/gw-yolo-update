@@ -17,6 +17,7 @@ from .injection_score import score_materialized_injections
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 from .search import run_candidate_search_calibration
+from .streaming import evict_candidate_probability_artifacts
 from .trigger import score_background_manifest
 
 
@@ -103,55 +104,114 @@ def run_candidate_validation_pipeline(
         if prior.get("run_identity") != run_identity:
             raise ValueError("completed candidate validation pipeline has another identity")
         return prior
-    background_score = score_background_manifest(
-        background_manifest,
-        checkpoint,
-        config,
-        output / "background_score",
-        model_ifos,
-        q_values,
-        target_sample_rate,
-        context_duration,
-        True,
-        "val",
-        None,
-        coherence_config,
+    background_score_path = output / "background_score" / "trigger_score_report.json"
+    background_candidate_path = (
+        output / "background_candidates" / "candidate_extraction_report.json"
     )
-    injection_score = score_materialized_injections(
-        injection_manifest,
-        checkpoint,
-        config,
-        output / "injection_score",
-        model_ifos,
-        q_values,
-        target_sample_rate,
-        True,
-        "val",
-        None,
-        coherence_config,
-    )
-    background_candidates = run_candidate_extraction(
-        background_score["triggers_path"],
-        output / "background_candidates",
-        chirp_threshold,
-        minimum_bins,
-    )
-    injection_candidates = run_injection_candidate_extraction(
-        injection_score["triggers_path"],
-        output / "injection_candidates",
-        chirp_threshold,
-        minimum_bins,
-    )
+    background_eviction_path = output / "background_probability_eviction.json"
+    if background_eviction_path.is_file():
+        with background_eviction_path.open("r", encoding="utf-8") as handle:
+            background_eviction = json.load(handle)
+        with background_score_path.open("r", encoding="utf-8") as handle:
+            background_score = json.load(handle)
+        with background_candidate_path.open("r", encoding="utf-8") as handle:
+            background_candidates = json.load(handle)
+        if (
+            background_eviction.get("status")
+            != "verified_candidate_probability_eviction"
+            or background_eviction.get("score_report_sha256")
+            != file_sha256(background_score_path)
+            or background_eviction.get("candidate_extraction_report_sha256")
+            != file_sha256(background_candidate_path)
+        ):
+            raise ValueError("existing background probability eviction is inconsistent")
+    else:
+        background_score = score_background_manifest(
+            background_manifest,
+            checkpoint,
+            config,
+            output / "background_score",
+            model_ifos,
+            q_values,
+            target_sample_rate,
+            context_duration,
+            True,
+            "val",
+            None,
+            coherence_config,
+        )
+        background_candidates = run_candidate_extraction(
+            background_score["triggers_path"],
+            output / "background_candidates",
+            chirp_threshold,
+            minimum_bins,
+        )
+        background_eviction = evict_candidate_probability_artifacts(
+            background_candidate_path,
+            background_score_path,
+            output / "background_score" / "probabilities",
+            background_eviction_path,
+        )
+
     timing_report_path = output / "candidate_timing_calibration.json"
-    timing = run_candidate_timing_calibration(
-        injection_score["triggers_path"],
-        timing_report_path,
-        chirp_threshold,
-        minimum_bins,
-        timing_association_window_seconds,
-        timing_uncertainty_quantile,
-        minimum_timing_matches,
+    injection_score_path = output / "injection_score" / "injection_score_report.json"
+    injection_candidate_path = (
+        output / "injection_candidates" / "injection_candidate_extraction_report.json"
     )
+    injection_eviction_path = output / "injection_probability_eviction.json"
+    if injection_eviction_path.is_file():
+        with injection_eviction_path.open("r", encoding="utf-8") as handle:
+            injection_eviction = json.load(handle)
+        with injection_score_path.open("r", encoding="utf-8") as handle:
+            injection_score = json.load(handle)
+        with injection_candidate_path.open("r", encoding="utf-8") as handle:
+            injection_candidates = json.load(handle)
+        with timing_report_path.open("r", encoding="utf-8") as handle:
+            timing = json.load(handle)
+        if (
+            injection_eviction.get("status")
+            != "verified_candidate_probability_eviction"
+            or injection_eviction.get("score_report_sha256")
+            != file_sha256(injection_score_path)
+            or injection_eviction.get("candidate_extraction_report_sha256")
+            != file_sha256(injection_candidate_path)
+        ):
+            raise ValueError("existing injection probability eviction is inconsistent")
+    else:
+        injection_score = score_materialized_injections(
+            injection_manifest,
+            checkpoint,
+            config,
+            output / "injection_score",
+            model_ifos,
+            q_values,
+            target_sample_rate,
+            True,
+            "val",
+            None,
+            coherence_config,
+        )
+        injection_candidates = run_injection_candidate_extraction(
+            injection_score["triggers_path"],
+            output / "injection_candidates",
+            chirp_threshold,
+            minimum_bins,
+        )
+        timing = run_candidate_timing_calibration(
+            injection_score["triggers_path"],
+            timing_report_path,
+            chirp_threshold,
+            minimum_bins,
+            timing_association_window_seconds,
+            timing_uncertainty_quantile,
+            minimum_timing_matches,
+        )
+        injection_eviction = evict_candidate_probability_artifacts(
+            injection_candidate_path,
+            injection_score_path,
+            output / "injection_score" / "probabilities",
+            injection_eviction_path,
+        )
     timing_method, timing_uncertainty = select_candidate_timing_method(timing)
     calibrated_background_path = output / "background_candidates_calibrated.jsonl"
     calibrated_injection_path = output / "injection_candidates_calibrated.jsonl"
@@ -240,6 +300,16 @@ def run_candidate_validation_pipeline(
             output / "injection_rankings" / "val_injection_candidate_ranking_report.json"
         ),
         "frozen_calibration_report_sha256": file_sha256(frozen_threshold_path),
+        "background_probability_eviction_report_sha256": file_sha256(
+            background_eviction_path
+        ),
+        "injection_probability_eviction_report_sha256": file_sha256(
+            injection_eviction_path
+        ),
+        "probability_files_removed": int(background_eviction["removed_files"])
+        + int(injection_eviction["removed_files"]),
+        "probability_bytes_removed": int(background_eviction["removed_bytes"])
+        + int(injection_eviction["removed_bytes"]),
         "timing_calibration": timing,
         "time_slides": slides,
         "injection_rankings": injection_rankings,

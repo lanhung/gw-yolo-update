@@ -102,6 +102,13 @@ distributed scheduling but is not required before the second. The timing calibra
 scoring checkpoint, config and code commit exactly; a calibration from an older code snapshot is a
 hard failure rather than an implicitly reused error bar.
 
+The validation-only candidate pipeline applies the same bounded-storage rule internally. It scores
+and extracts background candidates first, certifies and releases those probability arrays, then
+scores injections, freezes the timing calibration, certifies and releases the injection arrays, and
+only afterward builds calibrated candidates, slides and the frozen threshold. Both eviction stages
+are resumable identity checkpoints, so a later failure cannot cause a deleted array to be silently
+treated as a reusable scorer output.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and
