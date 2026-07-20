@@ -147,6 +147,15 @@ gate passed. A 100-case scaled-float16 storage pilot used 12,409,144 bytes and h
 reconstruction error 2.14e-4; full 10k train materialization is therefore running resumably under
 the <=1e-3 storage gate.
 
+The full 10k train materialization is now complete: 10,000 unique selected train recipes occupy
+1,207,608,352 bytes with maximum signal reconstruction relative L2 `2.1813e-4`, passing the
+pre-registered `<=1e-3` gate. The manifest SHA256 is
+`6a9a491f513c83579374c51431a09064340a4bf652c7bbd01ff28d97053f0b79`; its waveform certificate,
+recipe and background hashes remain `c768b6a65b...`, `90d258fdeeec...` and `8f2285bd2dfa...` as
+recorded in the machine report. Eight-second empirical-SNR annotation is running on train, while the
+unchanged 3k validation proposal is being materialized separately. Neither process consumes test
+recipes.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721
