@@ -7,6 +7,7 @@ import random
 import shlex
 import sys
 import time
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -672,6 +673,125 @@ def build_snr_curriculum_manifest(
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
     }
     atomic_write_json(output / "snr_curriculum_report.json", report)
+    return report
+
+
+def build_snr_quota_manifest(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    bins: list[tuple[float, float, float]] | None = None,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Deterministically reweight a train-only injection pool to exact SNR quotas."""
+    requested_bins = bins or [
+        (4.0, 8.0, 0.40),
+        (8.0, 15.0, 0.35),
+        (15.0, 30.0, 0.20),
+        (30.0, 50.0, 0.05),
+    ]
+    if not requested_bins:
+        raise ValueError("SNR quota requires at least one bin")
+    normalized_bins = []
+    previous_upper = None
+    for lower, upper, fraction in requested_bins:
+        lower, upper, fraction = float(lower), float(upper), float(fraction)
+        if lower <= 0 or upper <= lower or fraction <= 0:
+            raise ValueError("SNR quota bins require 0 < lower < upper and positive fraction")
+        if previous_upper is not None and lower < previous_upper:
+            raise ValueError("SNR quota bins cannot overlap")
+        normalized_bins.append((lower, upper, fraction))
+        previous_upper = upper
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(row.get("split") != "train" for row in rows):
+        raise ValueError("SNR quota accepts a non-empty train-only manifest")
+    if any("network_optimal_snr" not in row for row in rows):
+        raise ValueError("SNR quota requires an optimal-SNR annotated manifest")
+    total_fraction = sum(item[2] for item in normalized_bins)
+    exact = [len(rows) * item[2] / total_fraction for item in normalized_bins]
+    counts = [int(value) for value in exact]
+    remainders = sorted(
+        range(len(counts)), key=lambda index: (exact[index] - counts[index], -index), reverse=True
+    )
+    for index in remainders[: len(rows) - sum(counts)]:
+        counts[index] += 1
+    ordered = sorted(
+        rows,
+        key=lambda row: canonical_hash(
+            f"{seed}:{row['injection_id']}:snr-quota-assignment", 64
+        ),
+    )
+    assigned: dict[str, tuple[int, float, float]] = {}
+    cursor = 0
+    for bin_index, ((lower, upper, _), count) in enumerate(zip(normalized_bins, counts)):
+        for row in ordered[cursor : cursor + count]:
+            uniform = int(
+                canonical_hash(f"{seed}:{row['injection_id']}:snr-quota-target", 16), 16
+            ) / 16**16
+            target = lower * (upper / lower) ** uniform
+            assigned[str(row["injection_id"])] = (bin_index, lower, target)
+        cursor += count
+    quota_rows = []
+    for row in rows:
+        original = float(row["network_optimal_snr"])
+        if not np.isfinite(original) or original <= 0:
+            raise ValueError(f"Invalid network optimal SNR for {row['injection_id']}")
+        bin_index, lower, target = assigned[str(row["injection_id"])]
+        upper = normalized_bins[bin_index][1]
+        quota_rows.append(
+            {
+                **row,
+                "training_original_network_optimal_snr": original,
+                "training_network_optimal_snr": target,
+                "training_signal_scale": target / original,
+                "training_snr_quota_bin": f"{lower:g}-{upper:g}",
+                "training_snr_curriculum": (
+                    "train-only deterministic log-uniform target within exact quota bin"
+                ),
+            }
+        )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target_path = output / "physical_train_snr_quota.jsonl"
+    atomic_write_text(
+        target_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in quota_rows)
+    )
+    achieved = Counter(str(row["training_snr_quota_bin"]) for row in quota_rows)
+    report = {
+        "status": "train_only_exact_snr_quota",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "SNR quota changes only the training proposal and adds no independent waveform, "
+            "background, validation or locked-test evidence"
+        ),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(target_path),
+        "manifest_sha256": file_sha256(target_path),
+        "seed": seed,
+        "rows": len(quota_rows),
+        "bins": [
+            {
+                "lower": lower,
+                "upper": upper,
+                "fraction": fraction / total_fraction,
+                "count": count,
+            }
+            for (lower, upper, fraction), count in zip(normalized_bins, counts)
+        ],
+        "achieved_counts": dict(sorted(achieved.items())),
+        "unique_injection_ids": len({row["injection_id"] for row in quota_rows}),
+        "unique_waveform_ids": len({row["waveform_id"] for row in quota_rows}),
+        "unique_gps_blocks": len({row["gps_block"] for row in quota_rows}),
+        "signal_scale_quantiles": {
+            str(q): float(np.quantile([row["training_signal_scale"] for row in quota_rows], q))
+            for q in (0.0, 0.1, 0.5, 0.9, 1.0)
+        },
+        "validation_or_test_rows_modified": 0,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+    }
+    atomic_write_json(output / "snr_quota_report.json", report)
     return report
 
 

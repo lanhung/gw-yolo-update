@@ -201,6 +201,17 @@ def build_parser() -> argparse.ArgumentParser:
     snr_curriculum.add_argument("--rescale-upper-snr", type=float, default=8.0)
     snr_curriculum.add_argument("--seed", type=int, default=20260720)
 
+    snr_quota = subparsers.add_parser("physical-snr-quota")
+    snr_quota.add_argument("--manifest", required=True)
+    snr_quota.add_argument("--output-dir", required=True)
+    snr_quota.add_argument(
+        "--snr-bin",
+        action="append",
+        metavar="LOWER:UPPER:FRACTION",
+        help="repeat for custom non-overlapping bins; default is 4:8:0.4, 8:15:0.35, 15:30:0.2, 30:50:0.05",
+    )
+    snr_quota.add_argument("--seed", type=int, default=20260720)
+
     physical_audit = subparsers.add_parser("physical-checkpoint-audit")
     physical_audit.add_argument("--config", required=True)
     physical_audit.add_argument("--validation-manifest", required=True)
@@ -617,6 +628,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "physical-snr-quota":
+        from .physical_training import build_snr_quota_manifest
+
+        bins = (
+            [tuple(float(value) for value in item.split(":")) for item in args.snr_bin]
+            if args.snr_bin
+            else None
+        )
+        if bins is not None and any(len(item) != 3 for item in bins):
+            raise ValueError("Each --snr-bin must be LOWER:UPPER:FRACTION")
+        _print(build_snr_quota_manifest(args.manifest, args.output_dir, bins, args.seed))
     elif args.command == "physical-checkpoint-audit":
         from .physical_training import audit_physical_checkpoint
 

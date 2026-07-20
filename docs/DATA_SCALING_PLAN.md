@@ -272,8 +272,13 @@ Thus the corrected audit finds just over 51% of the volume-drawn pilot below the
 Future training generation
 must deliberately cover SNR 4–50 (especially 4–15), rather than drawing distance only from the
 astrophysical evaluation proposal. Validation/test must retain the population proposal and weights.
-A train-only curriculum may rescale the existing 935 sub-floor signals into SNR 4–8, but it still
+A train-only curriculum may rescale the existing 1,027 sub-floor signals into SNR 4–8, but it still
 counts as exactly 2,000 unique waveforms and 38 GPS blocks—not 2,935 samples and not new evidence.
+The first curriculum is itself imbalanced after the corrected audit: the 1,027 sub-floor rows join
+596 native rows in SNR 4–8, placing about 81% of training in one band. The promoted scale protocol
+therefore uses `physical-snr-quota` to assign exact train-only quotas of 40% at SNR 4–8, 35% at
+8–15, 20% at 15–30 and 5% at 30–50. Every assignment is deterministic by injection ID; it changes
+neither physical sample counts nor validation/test proposals and `<VT>` weights.
 
 The official Gravity Spy expansion now contains 80,496 unique high-confidence O1–O3b H1/L1 glitch
 IDs. IFO-independent network-GPS splitting gives zero train/validation/test overlap. Of 64,284 train

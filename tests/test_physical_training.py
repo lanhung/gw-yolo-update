@@ -8,6 +8,7 @@ import pytest
 
 from gwyolo.physical_training import (
     build_snr_curriculum_manifest,
+    build_snr_quota_manifest,
     gate_component_by_ifo_snr,
     focal_binary_cross_entropy,
     physical_split_audit,
@@ -80,6 +81,34 @@ def test_snr_curriculum_rescales_only_subfloor_training_rows(tmp_path) -> None:
     assert output[0]["training_signal_scale"] > 1.0
     assert output[1]["training_network_optimal_snr"] == 6.0
     assert output[1]["training_signal_scale"] == 1.0
+
+
+def test_snr_quota_assigns_exact_hand_calculated_counts(tmp_path) -> None:
+    manifest = tmp_path / "train.jsonl"
+    rows = [
+        {
+            "split": "train",
+            "injection_id": f"i{index}",
+            "waveform_id": f"w{index}",
+            "gps_block": f"g{index}",
+            "network_optimal_snr": 10.0,
+        }
+        for index in range(10)
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = build_snr_quota_manifest(
+        manifest, tmp_path / "quota", [(4, 8, 0.6), (8, 16, 0.4)], seed=7
+    )
+    assert report["achieved_counts"] == {"4-8": 6, "8-16": 4}
+    output = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]
+    assert len({row["injection_id"] for row in output}) == 10
+    assert all(
+        (4 <= row["training_network_optimal_snr"] < 8)
+        if row["training_snr_quota_bin"] == "4-8"
+        else (8 <= row["training_network_optimal_snr"] < 16)
+        for row in output
+    )
+    assert report["validation_or_test_rows_modified"] == 0
 
 
 def test_physical_split_audit_rejects_gps_or_waveform_leakage() -> None:
