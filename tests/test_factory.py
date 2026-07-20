@@ -4,6 +4,7 @@ import numpy as np
 
 from gwyolo.factory import (
     _allocate_counts,
+    _linear_resample_axis,
     multiresolution_power,
     plan_recipes,
     run_data_factory,
@@ -11,6 +12,18 @@ from gwyolo.factory import (
 )
 from gwyolo.io import load_yaml
 from gwyolo.provenance import audit_provenance
+
+
+def test_vectorized_linear_resampling_matches_numpy_interp() -> None:
+    source = np.asarray([0.0, 0.25, 1.0])
+    values = np.asarray([[0.0, 2.0], [1.0, -1.0], [4.0, 5.0]])
+    target = np.linspace(0.0, 1.0, 11)
+    actual = _linear_resample_axis(source, values, target)
+    expected = np.stack(
+        [np.interp(target, source, values[:, column]) for column in range(values.shape[1])],
+        axis=1,
+    )
+    assert np.allclose(actual, expected)
 
 
 def test_count_allocation_preserves_total() -> None:

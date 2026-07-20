@@ -111,3 +111,8 @@ best validation IoU was about `0.1034`; audit then showed BNS target-mask occupa
 before the relative mask threshold, causing underflow and quantization. Physical target construction
 now scales each signal-only IFO to unit peak before power construction. This scaling affects only the
 amplitude-invariant target morphology; the real-noise mixture input retains its physical amplitude.
+
+The `physical_finetune_highres.yaml` promotion configuration uses 1,024 time bins over eight seconds
+(7.8125 ms nominal bins). Its STFT path uses batched FFTs and vectorized frequency/time interpolation,
+with a hand-checked equivalence test against `numpy.interp`; this makes the <=10 ms timing experiment
+computationally executable without changing physical split identities.

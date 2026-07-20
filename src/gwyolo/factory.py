@@ -168,26 +168,42 @@ def _stft_power(
     window_size = min(max(16, window_size), signal.size)
     nfft = 1 << int(math.ceil(math.log2(window_size)))
     hop = max(1, (signal.size - window_size) // max(time_bins - 1, 1))
-    starts = list(range(0, signal.size - window_size + 1, hop))
-    if not starts:
-        starts = [0]
+    starts = np.arange(0, signal.size - window_size + 1, hop, dtype=np.int64)
+    if starts.size == 0:
+        starts = np.asarray([0], dtype=np.int64)
     window = np.hanning(window_size)
-    columns = []
-    for start in starts:
-        frame = signal[start : start + window_size] * window
-        columns.append(np.abs(np.fft.rfft(frame, n=nfft)) ** 2)
-    power = np.stack(columns, axis=1)
+    sample_indices = starts[:, None] + np.arange(window_size, dtype=np.int64)[None, :]
+    frames = signal[sample_indices] * window[None, :]
+    power = (np.abs(np.fft.rfft(frames, n=nfft, axis=1)) ** 2).T
     frequencies = np.fft.rfftfreq(nfft, 1.0 / sample_rate)
     target_frequencies = np.linspace(fmin, min(fmax, sample_rate / 2), frequency_bins)
-    frequency_resampled = np.stack(
-        [np.interp(target_frequencies, frequencies, power[:, column]) for column in range(power.shape[1])],
-        axis=1,
-    )
+    frequency_resampled = _linear_resample_axis(frequencies, power, target_frequencies)
     old_time = np.linspace(0.0, 1.0, frequency_resampled.shape[1])
     new_time = np.linspace(0.0, 1.0, time_bins)
-    return np.stack(
-        [np.interp(new_time, old_time, row) for row in frequency_resampled], axis=0
-    ).astype(np.float32)
+    return _linear_resample_axis(old_time, frequency_resampled.T, new_time).T.astype(np.float32)
+
+
+def _linear_resample_axis(
+    source_coordinates: np.ndarray,
+    values: np.ndarray,
+    target_coordinates: np.ndarray,
+) -> np.ndarray:
+    """Vectorized equivalent of applying ``np.interp`` to every trailing column."""
+    source = np.asarray(source_coordinates, dtype=np.float64)
+    targets = np.asarray(target_coordinates, dtype=np.float64)
+    data = np.asarray(values)
+    if source.ndim != 1 or targets.ndim != 1 or data.ndim != 2:
+        raise ValueError("linear resampling expects 1D coordinates and a 2D value array")
+    if source.size != data.shape[0] or source.size == 0:
+        raise ValueError("source coordinate count does not match values")
+    if source.size == 1:
+        return np.repeat(data, targets.size, axis=0)
+    upper = np.searchsorted(source, targets, side="left")
+    upper = np.clip(upper, 1, source.size - 1)
+    lower = upper - 1
+    denominator = source[upper] - source[lower]
+    fractions = (targets - source[lower]) / denominator
+    return data[lower] * (1.0 - fractions[:, None]) + data[upper] * fractions[:, None]
 
 
 def multiresolution_power(
