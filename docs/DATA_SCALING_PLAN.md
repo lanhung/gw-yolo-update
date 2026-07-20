@@ -356,6 +356,10 @@ exactly at that many updates, validates the final partial epoch, and records
 report. Thus every scale sees exactly 60,000 examples. A scale gain is attributed to independent
 data only if it survives this fixed-update/fixed-seen-example control; disagreement between
 protocols is reported as a compute-data interaction, not hidden.
+Because different scales complete different numbers of epochs within 3,750 updates, this control
+selects only the final-update checkpoint. Per-epoch validation is retained as a diagnostic but
+cannot grant smaller datasets more checkpoint-selection opportunities. The primary fixed-epoch
+protocol continues to select its checkpoint only by the shared validation metric.
 
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new

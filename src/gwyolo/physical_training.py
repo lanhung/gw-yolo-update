@@ -534,6 +534,9 @@ def run_physical_finetune(
     )
     checkpoint_path = output / "best_physical_finetune.pt"
     resume_path = output / "last_physical_finetune.pt"
+    checkpoint_selection = str(settings.get("checkpoint_selection", "best_validation"))
+    if checkpoint_selection not in {"best_validation", "final_update"}:
+        raise ValueError("checkpoint_selection must be best_validation or final_update")
     history = []
     best_iou = -1.0
     best_epoch = None
@@ -628,15 +631,18 @@ def run_physical_finetune(
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
         )
-        if float(validation_metrics["chirp_iou"]) > best_iou:
+        improved = float(validation_metrics["chirp_iou"]) > best_iou
+        if improved:
             best_iou = float(validation_metrics["chirp_iou"])
             best_epoch = epoch
+        if improved or checkpoint_selection == "final_update":
             _atomic_torch_save(
                 checkpoint_path,
                 {
                     "model": model.state_dict(),
                     "epoch": epoch,
-                    "validation_chirp_iou": best_iou,
+                    "validation_chirp_iou": float(validation_metrics["chirp_iou"]),
+                    "checkpoint_selection": checkpoint_selection,
                     "input_channels": channels,
                     "base_channels": base_channels,
                     "seed": seed,
@@ -718,8 +724,13 @@ def run_physical_finetune(
         "train_manifest_sha256": file_sha256(train_manifest),
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "best_epoch": best_epoch,
+        "selected_epoch": int(selected["epoch"]),
+        "checkpoint_selection": checkpoint_selection,
         "resumed_from_epoch": start_epoch - 1,
         "best_validation_chirp_iou_precalibration": best_iou,
+        "selected_validation_chirp_iou_precalibration": float(
+            selected["validation_chirp_iou"]
+        ),
         "selected_chirp_threshold": threshold,
         "threshold_curve": threshold_curve,
         "calibrated_validation": calibrated,

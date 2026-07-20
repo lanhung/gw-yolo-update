@@ -4,6 +4,7 @@ physical_training:
   # 30 epochs x ceil(2,000 / 16) from the frozen 2k reference. This control
   # exposes every scale to the same optimizer-step/seen-example budget.
   max_optimizer_updates: 3750
+  checkpoint_selection: final_update
   batch_size: 16
   drop_last: true
   learning_rate: 0.0001
