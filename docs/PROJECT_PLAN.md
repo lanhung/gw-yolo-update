@@ -271,6 +271,14 @@ only truth-free strain evidence measured inside every compatible interval—abso
 correlation over the predeclared 10 ms lag, local RMS and peak amplitudes—under the identical pair
 set, parent split and update budget.
 
+That strain-summary arm yields 31.71% padded top-1 overall and 68.49% at SNR 8--15, versus
+31.21%/69.86% without strain summaries. It is retained as a negative result and retired. The data
+question is now narrower: the set learner has only 2,000 independent waveforms over 76 training GPS
+blocks, but more examples can matter only with a representation that exposes chirp content. Apply
+the frozen proposal model to the existing group-safe 10k corpus, then compare 2k/5k/10k candidate
+embedding/set rankers under identical fixed-update and fixed-epoch controls. Do not interpret the
+result as support for duplicated rendered images or an immediate 50k promotion.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag

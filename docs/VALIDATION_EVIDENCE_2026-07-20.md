@@ -504,6 +504,17 @@ padded top-1 with 35.5/29.3 ms p90, SNR 8--15 reaches 69.86%, and SNR<8 reaches 
 This motivates strain-content/coherence features at the intermediate-SNR boundary, not a larger MLP
 over the same proposal geometry.
 
+The matched-budget strain-feature arm at `d9aef12` adds absolute/signed H1/L1 correlation within
+the 10 ms physical lag, local RMS/peak amplitudes and interval duration for every compatible pair.
+It also fails: best-epoch padded top-1 is 31.71%, peak p90 4.58 s and SNR 8--15 coverage 68.49%,
+statistically indistinguishable from or slightly worse than the geometry-only 31.21%/69.86% arm.
+Report/checkpoint SHA256 values are
+`de7c67531b5452d02048b55360143fed4b7171a6d865e9f048dbfa5b945824a0` and
+`794e5e2bd5f1a47afc0223703062127d2cdc3546bf7ebe918d84197478f02bc6`.
+Simple local correlation is therefore retired. The next data-scaling experiment must combine richer
+time-frequency candidate embeddings with 2k/5k/10k independent physical parents under fixed-update
+control; expanding the same 16--23 scalar pair features is not justified.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
