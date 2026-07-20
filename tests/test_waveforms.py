@@ -147,6 +147,7 @@ def test_signal_only_materialization_references_hashed_background(tmp_path) -> N
     assert report["background_source_files"]["H1"]["sha256"] == file_sha256(source)
     loaded = load_materialized_context(report)
     assert loaded["noise"].shape == (1, 16)
+    assert loaded["signal"].dtype == np.float64
     assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
 
     scaled_output = tmp_path / "injection-scaled.npz"
@@ -164,5 +165,6 @@ def test_signal_only_materialization_references_hashed_background(tmp_path) -> N
         assert arrays["signal_scaled"].dtype == np.float16
         assert arrays["signal_peak_scale"].dtype == np.float64
     scaled_loaded = load_materialized_context(scaled_report)
+    assert scaled_loaded["signal"].dtype == np.float64
     assert scaled_loaded["signal"] == pytest.approx(loaded["signal"], rel=1e-3)
     assert scaled_report["signal_reconstruction"]["relative_l2_error"] <= 1e-3

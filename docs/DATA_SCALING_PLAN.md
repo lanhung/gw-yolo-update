@@ -326,3 +326,17 @@ download units and greedily fills frozen per-label deficits, accounting for alre
 numeric rows and excluding their source files. Its report exposes every underfilled class, run/IFO
 coverage, and source/output hash. This controls bounded acquisition; it does not turn
 metadata-derived weak masks into human segmentation labels.
+
+The O4a waveform axis is now frozen as a strictly nested 10k/25k/50k plan. The existing 10k core
+is preserved exactly; the next levels add 15k and 25k unique waveforms, with BBH/BNS/NSBH counts
+of 4,500/3,000/2,500, 11,250/7,500/6,250 and 22,500/15,000/12,500. Every scale has zero injection,
+waveform and GPS-block overlap with the shared 3k validation proposal. The machine report SHA256 is
+`77b8ff6ae2ae7e9ddb84235bf229527d2c2aeb711f832771e2533113e1323ad9`; the 50k manifest SHA256 is
+`2b20664721f668f8f0f52507ba5a3e55af136011cc36a7d5711d209612a23139`. Thirty supplemental-only
+direct-LAL cases passed (report SHA256
+`1c6fddd1bf717ce89d09eec061340749258b4a45ec9ab9cf4e812604f48d4a9a`).
+
+All three levels currently reuse 76 O4a training GPS blocks. This is intentionally reported as
+`gps_diversity_saturated=true`: it isolates waveform-count scaling but does not satisfy the domain
+diversity endpoint. More globally split O1--O4a blocks must be added as a separate scaling axis
+before interpreting a plateau as waveform-data saturation.

@@ -675,7 +675,7 @@ def load_materialized_context(
         "analysis_start_index": analysis_start_index,
         "analysis_stop_index": analysis_stop_index,
         "noise": noise,
-        "signal": signal.astype(np.float32),
+        "signal": signal,
         "mixture": mixture,
     }
 
