@@ -130,3 +130,6 @@ Mask supervision is also visibility-aware per detector: an IFO plane below the c
 floor is target-negative even when the network injection is retained, while the physically scaled
 signal remains in the mixture input. This prevents the loss from demanding a resolved mask in an
 antenna-suppressed detector and preserves the louder detector's instance mask.
+Background and injection scorers resolve tensors from either `numeric_training` or
+`physical_training`, so a promoted physical checkpoint can enter the same resumable probability,
+candidate, FAR and sensitivity interfaces without a parallel ad-hoc runner.

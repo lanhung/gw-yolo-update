@@ -10,7 +10,14 @@ import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+    load_yaml,
+    training_tensor_config,
+)
 from .trigger import probability_summaries
 from .waveforms import _atomic_save_npz, load_materialized_context
 
@@ -98,7 +105,7 @@ def score_materialized_injections(
     from .numeric import MultiIFOQNet
 
     config = load_yaml(config_path)
-    tensor_config = config["numeric_training"]["tensor"]
+    tensor_config = training_tensor_config(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     expected_channels = len(model_ifos) * len(q_values)

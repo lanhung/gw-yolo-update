@@ -18,6 +18,18 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return value
 
 
+def training_tensor_config(config: dict[str, Any]) -> dict[str, Any]:
+    sections = [name for name in ("numeric_training", "physical_training") if name in config]
+    if len(sections) != 1:
+        raise ValueError(
+            "Configuration must contain exactly one numeric_training or physical_training section"
+        )
+    tensor = config[sections[0]].get("tensor")
+    if not isinstance(tensor, dict):
+        raise ValueError(f"{sections[0]} requires a tensor mapping")
+    return tensor
+
+
 def canonical_hash(value: Any, length: int = 16) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:length]
