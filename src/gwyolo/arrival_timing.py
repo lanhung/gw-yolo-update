@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from .gwosc import _fft_downsample, _whiten
-from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .numeric import (
     DetectorArrivalTimingContextNet,
@@ -344,12 +344,13 @@ def _grouped_evaluation(
     duration: float,
     output_bins: int,
     ifo_snr_thresholds: tuple[float, ...],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     model.eval()
     groups: dict[str, list[float]] = defaultdict(list)
     network_groups: dict[str, dict[str, list[float]]] = defaultdict(
         lambda: {"maximum_errors": [], "pairwise_delay_errors": []}
     )
+    prediction_rows = []
     offset = 0
     with torch.no_grad():
         for strain, availability, _, exact_offsets in loader:
@@ -377,6 +378,47 @@ def _grouped_evaluation(
                     for ifo_index, ifo in enumerate(model_ifos)
                     if available_values[batch_index, ifo_index]
                 ]
+                predicted_offsets = (
+                    predicted[batch_index].astype(np.float64) + 0.5
+                ) * duration / output_bins
+                detector_predictions = {}
+                for ifo_index, ifo in enumerate(model_ifos):
+                    if not available_values[batch_index, ifo_index]:
+                        continue
+                    detector_predictions[ifo] = {
+                        "predicted_bin": int(predicted[batch_index, ifo_index]),
+                        "predicted_offset_seconds": float(predicted_offsets[ifo_index]),
+                        "exact_offset_seconds": float(exact_values[batch_index, ifo_index]),
+                        "absolute_error_seconds": float(
+                            abs(
+                                predicted_offsets[ifo_index]
+                                - exact_values[batch_index, ifo_index]
+                            )
+                        ),
+                        "optimal_snr": row_snr.get(ifo),
+                    }
+                prediction_rows.append(
+                    {
+                        "row_index": offset + batch_index,
+                        "split": str(row["split"]),
+                        "injection_id": str(row["injection_id"]),
+                        "waveform_id": str(row["waveform_id"]),
+                        "background_window_id": str(row["background_window_id"]),
+                        "source_family": str(row["source_family"]),
+                        "network_optimal_snr": float(row["network_optimal_snr"]),
+                        "optimal_snr_stratum": str(row["optimal_snr_stratum"]),
+                        "minimum_available_ifo_optimal_snr": (
+                            min(row_snr[ifo] for ifo in available_ifos)
+                            if row_snr and all(ifo in row_snr for ifo in available_ifos)
+                            else None
+                        ),
+                        "detector_predictions": detector_predictions,
+                        "maximum_ifo_absolute_error_seconds": float(maximum_errors[0]),
+                        "maximum_pairwise_delay_absolute_error_seconds": float(
+                            np.max(pairwise_errors)
+                        ),
+                    }
+                )
                 if row_snr and all(ifo in row_snr for ifo in available_ifos):
                     minimum_ifo_snr = min(row_snr[ifo] for ifo in available_ifos)
                     network_keys.extend(
@@ -425,6 +467,7 @@ def _grouped_evaluation(
             )
             for key, values in sorted(network_groups.items())
         },
+        prediction_rows,
     )
 
 
@@ -637,7 +680,7 @@ def run_detector_arrival_timing_training(
         or tuple(sorted(set(ifo_snr_thresholds))) != ifo_snr_thresholds
     ):
         raise ValueError("validation IFO SNR thresholds must be positive and increasing")
-    groups, network_groups = _grouped_evaluation(
+    groups, network_groups, _ = _grouped_evaluation(
         model,
         loaders["val"],
         validation_rows,
@@ -711,6 +754,7 @@ def run_detector_arrival_timing_validation_stratification(
     validation_manifest: str | Path,
     checkpoint_path: str | Path,
     output_path: str | Path,
+    predictions_output_path: str | Path,
 ) -> dict[str, Any]:
     """Stratify a frozen timing checkpoint without redefining its all-sample gate."""
 
@@ -774,7 +818,7 @@ def run_detector_arrival_timing_validation_stratification(
         or tuple(sorted(set(thresholds))) != thresholds
     ):
         raise ValueError("validation IFO SNR thresholds must be positive and increasing")
-    groups, network_groups = _grouped_evaluation(
+    groups, network_groups, prediction_rows = _grouped_evaluation(
         model,
         loader,
         rows,
@@ -792,6 +836,17 @@ def run_detector_arrival_timing_validation_stratification(
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "code_commit": execution_provenance()["code_commit"],
     }
+    prediction_destination = Path(predictions_output_path)
+    if prediction_destination.is_file():
+        raise ValueError("arrival timing prediction output already exists")
+    atomic_write_text(
+        prediction_destination,
+        "\n".join(
+            json.dumps(row, sort_keys=True, allow_nan=False)
+            for row in prediction_rows
+        )
+        + "\n",
+    )
     report = {
         "status": "validation_only_detector_arrival_timing_stratification",
         "scientific_claim_allowed": False,
@@ -806,6 +861,9 @@ def run_detector_arrival_timing_validation_stratification(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_training_identity": checkpoint.get("run_identity"),
         "checkpoint_epoch": int(checkpoint["epoch"]),
+        "predictions_path": str(prediction_destination),
+        "predictions_sha256": file_sha256(prediction_destination),
+        "prediction_rows": len(prediction_rows),
         "validation_rows": len(rows),
         "model_ifos": list(model_ifos),
         "architecture": architecture,
@@ -835,5 +893,275 @@ def run_detector_arrival_timing_validation_stratification(
         if existing.get("run_identity") != identity:
             raise ValueError("arrival timing stratification output has another identity")
         return existing
+    atomic_write_json(destination, report)
+    return report
+
+
+def compare_detector_arrival_prediction_rows(
+    reference_rows: list[dict[str, Any]],
+    candidate_rows: list[dict[str, Any]],
+    ifo_snr_thresholds: tuple[float, ...],
+    bootstrap_replicates: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Paired comparison of timing predictions on identical validation injections."""
+
+    if not reference_rows or bootstrap_replicates <= 0:
+        raise ValueError("timing comparison requires rows and bootstrap replicates")
+    if (
+        not ifo_snr_thresholds
+        or any(value <= 0 for value in ifo_snr_thresholds)
+        or tuple(sorted(set(ifo_snr_thresholds))) != ifo_snr_thresholds
+    ):
+        raise ValueError("timing comparison SNR thresholds must be unique and increasing")
+
+    def keyed(rows: list[dict[str, Any]], label: str) -> dict[str, dict[str, Any]]:
+        result = {}
+        for row in rows:
+            injection_id = str(row["injection_id"])
+            if injection_id in result:
+                raise ValueError(f"duplicate {label} timing injection: {injection_id}")
+            result[injection_id] = row
+        return result
+
+    reference = keyed(reference_rows, "reference")
+    candidate = keyed(candidate_rows, "candidate")
+    if set(reference) != set(candidate):
+        raise ValueError("reference and candidate timing injections differ")
+    paired = []
+    for injection_id in sorted(reference):
+        left = reference[injection_id]
+        right = candidate[injection_id]
+        for field in ("waveform_id", "background_window_id", "source_family"):
+            if str(left[field]) != str(right[field]):
+                raise ValueError(f"paired timing {field} differs for {injection_id}")
+        for field in ("network_optimal_snr", "minimum_available_ifo_optimal_snr"):
+            if not np.isclose(
+                float(left[field]), float(right[field]), rtol=0, atol=1e-12
+            ):
+                raise ValueError(f"paired timing {field} differs for {injection_id}")
+        left_detectors = left["detector_predictions"]
+        right_detectors = right["detector_predictions"]
+        if set(left_detectors) != set(right_detectors):
+            raise ValueError(f"paired timing detector set differs for {injection_id}")
+        for ifo in left_detectors:
+            if not np.isclose(
+                float(left_detectors[ifo]["exact_offset_seconds"]),
+                float(right_detectors[ifo]["exact_offset_seconds"]),
+                rtol=0,
+                atol=1e-12,
+            ):
+                raise ValueError(f"paired timing target differs for {injection_id}/{ifo}")
+        paired.append((left, right))
+
+    group_indices: dict[str, list[int]] = {"all": list(range(len(paired)))}
+    for index, (left, _) in enumerate(paired):
+        family_key = f"family:{left['source_family']}"
+        group_indices.setdefault(family_key, []).append(index)
+        minimum_snr = left.get("minimum_available_ifo_optimal_snr")
+        if minimum_snr is not None:
+            for threshold in ifo_snr_thresholds:
+                if float(minimum_snr) >= threshold:
+                    group_indices.setdefault(
+                        f"minimum_ifo_snr_ge_{threshold:g}", []
+                    ).append(index)
+
+    rng = np.random.default_rng(seed)
+    groups = {}
+    for group, indices in sorted(group_indices.items()):
+        if not indices:
+            continue
+        reference_max = np.asarray(
+            [
+                float(paired[index][0]["maximum_ifo_absolute_error_seconds"])
+                for index in indices
+            ]
+        )
+        candidate_max = np.asarray(
+            [
+                float(paired[index][1]["maximum_ifo_absolute_error_seconds"])
+                for index in indices
+            ]
+        )
+        reference_pair = np.asarray(
+            [
+                float(
+                    paired[index][0][
+                        "maximum_pairwise_delay_absolute_error_seconds"
+                    ]
+                )
+                for index in indices
+            ]
+        )
+        candidate_pair = np.asarray(
+            [
+                float(
+                    paired[index][1][
+                        "maximum_pairwise_delay_absolute_error_seconds"
+                    ]
+                )
+                for index in indices
+            ]
+        )
+        reference_within = reference_max <= 0.01
+        candidate_within = candidate_max <= 0.01
+        bootstrap = {
+            "mean_maximum_ifo_error_delta": [],
+            "p90_maximum_ifo_error_delta": [],
+            "within_10ms_fraction_delta": [],
+            "p90_pairwise_delay_error_delta": [],
+        }
+        for _ in range(bootstrap_replicates):
+            sampled = rng.integers(0, len(indices), size=len(indices))
+            bootstrap["mean_maximum_ifo_error_delta"].append(
+                float(candidate_max[sampled].mean() - reference_max[sampled].mean())
+            )
+            bootstrap["p90_maximum_ifo_error_delta"].append(
+                float(
+                    np.quantile(candidate_max[sampled], 0.9)
+                    - np.quantile(reference_max[sampled], 0.9)
+                )
+            )
+            bootstrap["within_10ms_fraction_delta"].append(
+                float(
+                    candidate_within[sampled].mean()
+                    - reference_within[sampled].mean()
+                )
+            )
+            bootstrap["p90_pairwise_delay_error_delta"].append(
+                float(
+                    np.quantile(candidate_pair[sampled], 0.9)
+                    - np.quantile(reference_pair[sampled], 0.9)
+                )
+            )
+
+        def endpoint(maximum: np.ndarray, pairwise: np.ndarray) -> dict[str, float]:
+            return {
+                "mean_maximum_ifo_error_seconds": float(maximum.mean()),
+                "p90_maximum_ifo_error_seconds": float(np.quantile(maximum, 0.9)),
+                "within_10ms_fraction": float(np.mean(maximum <= 0.01)),
+                "p90_pairwise_delay_error_seconds": float(np.quantile(pairwise, 0.9)),
+            }
+
+        groups[group] = {
+            "injections": len(indices),
+            "reference": endpoint(reference_max, reference_pair),
+            "candidate": endpoint(candidate_max, candidate_pair),
+            "delta_candidate_minus_reference": {
+                "mean_maximum_ifo_error_seconds": float(
+                    candidate_max.mean() - reference_max.mean()
+                ),
+                "p90_maximum_ifo_error_seconds": float(
+                    np.quantile(candidate_max, 0.9)
+                    - np.quantile(reference_max, 0.9)
+                ),
+                "within_10ms_fraction": float(
+                    candidate_within.mean() - reference_within.mean()
+                ),
+                "p90_pairwise_delay_error_seconds": float(
+                    np.quantile(candidate_pair, 0.9)
+                    - np.quantile(reference_pair, 0.9)
+                ),
+            },
+            "paired_bootstrap_95": {
+                key: [
+                    float(np.percentile(values, 2.5)),
+                    float(np.percentile(values, 97.5)),
+                ]
+                for key, values in bootstrap.items()
+            },
+        }
+    return {
+        "paired_injections": len(paired),
+        "ifo_snr_thresholds": list(ifo_snr_thresholds),
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        "groups": groups,
+    }
+
+
+def run_detector_arrival_timing_validation_comparison(
+    config_path: str | Path,
+    reference_predictions_path: str | Path,
+    candidate_predictions_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    config = load_yaml(config_path)
+    settings = config["detector_arrival_timing_promotion"]
+
+    def load_rows(path: str | Path) -> list[dict[str, Any]]:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    thresholds = tuple(float(value) for value in settings["ifo_snr_thresholds"])
+    required_thresholds = {
+        float(settings["primary_ifo_snr"]),
+        float(settings["high_ifo_snr"]),
+    }
+    if not required_thresholds.issubset(thresholds):
+        raise ValueError("promotion SNR thresholds must include primary and high strata")
+    comparison = compare_detector_arrival_prediction_rows(
+        load_rows(reference_predictions_path),
+        load_rows(candidate_predictions_path),
+        thresholds,
+        int(settings["bootstrap_replicates"]),
+        int(settings["seed"]),
+    )
+    all_group = comparison["groups"]["all"]
+    conditional_key = f"minimum_ifo_snr_ge_{float(settings['primary_ifo_snr']):g}"
+    high_key = f"minimum_ifo_snr_ge_{float(settings['high_ifo_snr']):g}"
+    conditional = comparison["groups"][conditional_key]
+    high = comparison["groups"][high_key]
+    all_relative = -float(
+        all_group["delta_candidate_minus_reference"]["p90_maximum_ifo_error_seconds"]
+    ) / float(all_group["reference"]["p90_maximum_ifo_error_seconds"])
+    conditional_relative = -float(
+        conditional["delta_candidate_minus_reference"][
+            "p90_maximum_ifo_error_seconds"
+        ]
+    ) / float(conditional["reference"]["p90_maximum_ifo_error_seconds"])
+    checks = {
+        "all_p90_relative_improvement": all_relative
+        >= float(settings["minimum_all_p90_relative_improvement"]),
+        "all_p90_bootstrap_upper_below_zero": float(
+            all_group["paired_bootstrap_95"]["p90_maximum_ifo_error_delta"][1]
+        )
+        < 0,
+        "conditional_p90_relative_improvement": conditional_relative
+        >= float(settings["minimum_conditional_p90_relative_improvement"]),
+        "conditional_coverage_gain": float(
+            conditional["delta_candidate_minus_reference"]["within_10ms_fraction"]
+        )
+        >= float(settings["minimum_conditional_within_10ms_gain"]),
+        "conditional_coverage_bootstrap_lower_above_zero": float(
+            conditional["paired_bootstrap_95"]["within_10ms_fraction_delta"][0]
+        )
+        > 0,
+        "high_snr_worst_ifo_p90": float(
+            high["candidate"]["p90_maximum_ifo_error_seconds"]
+        )
+        <= float(settings["maximum_high_snr_worst_ifo_p90_seconds"]),
+        "high_snr_pairwise_p90": float(
+            high["candidate"]["p90_pairwise_delay_error_seconds"]
+        )
+        <= float(settings["maximum_high_snr_pairwise_p90_seconds"]),
+    }
+    report = {
+        "status": "validation_only_detector_arrival_timing_paired_comparison",
+        "scientific_claim_allowed": False,
+        "promotion_allowed": all(checks.values()),
+        "promotion_checks": checks,
+        "all_p90_relative_improvement": all_relative,
+        "conditional_p90_relative_improvement": conditional_relative,
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "reference_predictions_sha256": file_sha256(reference_predictions_path),
+        "candidate_predictions_sha256": file_sha256(candidate_predictions_path),
+        "comparison": comparison,
+        **execution_provenance(),
+    }
+    destination = Path(output_path)
+    if destination.is_file():
+        raise ValueError("arrival timing comparison output already exists")
     atomic_write_json(destination, report)
     return report

@@ -141,6 +141,14 @@ budget: the 2k comparison uses the identical manifests, seed, 1,500 optimizer up
 selection rule. Scaling remains blocked unless this representation change improves the frozen
 all-sample and detectable-stratum endpoints without weakening pairwise-delay accuracy.
 
+The v2 scale decision is frozen before reading its result in
+`configs/detector_arrival_timing_promotion.yaml`. Predictions are paired by injection rather than
+compared as independent summaries. Promotion requires: at least 20% all-validation p90 reduction
+with a negative paired-bootstrap upper endpoint; at both-IFO SNR >=8, at least 50% p90 reduction,
+10 percentage points more joint 10 ms coverage and a positive paired-bootstrap lower endpoint; and
+at both-IFO SNR >=10, worst-IFO p90 <=20 ms plus pairwise-delay p90 <=10 ms. Every check must pass.
+This is a scale gate, not a scientific search claim.
+
 ### Stage B — shortlisted evidence
 
 Run only the best two arms for three seeds at 10k. Compare 10k with 25k under fixed-epoch and

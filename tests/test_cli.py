@@ -98,10 +98,38 @@ def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
                     "timing.pt",
                     "--output",
                     "strata.json",
+                    "--predictions-output",
+                    "predictions.jsonl",
                 ]
             )
             == 0
         )
     stratify.assert_called_once_with(
-        "timing.yaml", "validation.jsonl", "timing.pt", "strata.json"
+        "timing.yaml",
+        "validation.jsonl",
+        "timing.pt",
+        "strata.json",
+        "predictions.jsonl",
+    )
+
+    target = "gwyolo.arrival_timing.run_detector_arrival_timing_validation_comparison"
+    with patch(target, return_value={}) as compare:
+        assert (
+            main(
+                [
+                    "detector-arrival-timing-validation-compare",
+                    "--config",
+                    "promotion.yaml",
+                    "--reference-predictions",
+                    "v1.jsonl",
+                    "--candidate-predictions",
+                    "v2.jsonl",
+                    "--output",
+                    "comparison.json",
+                ]
+            )
+            == 0
+        )
+    compare.assert_called_once_with(
+        "promotion.yaml", "v1.jsonl", "v2.jsonl", "comparison.json"
     )

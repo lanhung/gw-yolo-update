@@ -1,0 +1,11 @@
+detector_arrival_timing_promotion:
+  seed: 20260720
+  bootstrap_replicates: 10000
+  ifo_snr_thresholds: [8.0, 10.0]
+  primary_ifo_snr: 8.0
+  high_ifo_snr: 10.0
+  minimum_all_p90_relative_improvement: 0.20
+  minimum_conditional_p90_relative_improvement: 0.50
+  minimum_conditional_within_10ms_gain: 0.10
+  maximum_high_snr_worst_ifo_p90_seconds: 0.020
+  maximum_high_snr_pairwise_p90_seconds: 0.010

@@ -197,6 +197,10 @@ Before increasing waveform count, run the full-context v2 timing arm on the iden
 and exact 1,500-update budget. Its only intended change is an eight-second dilated receptive field;
 failure to improve BNS/NSBH and pairwise-delay strata will retire this time-domain family rather than
 trigger a larger training-data run.
+The machine gate is `detector-arrival-timing-validation-compare`, using per-injection prediction
+manifests and 10,000 paired bootstrap replicates. The thresholds are committed in
+`configs/detector_arrival_timing_promotion.yaml` before the v2 endpoint is inspected; a failed check
+retires scaling even if an unregistered subgroup looks favorable.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

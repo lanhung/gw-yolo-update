@@ -408,6 +408,15 @@ def build_parser() -> argparse.ArgumentParser:
     detector_arrival_stratify.add_argument("--validation-manifest", required=True)
     detector_arrival_stratify.add_argument("--checkpoint", required=True)
     detector_arrival_stratify.add_argument("--output", required=True)
+    detector_arrival_stratify.add_argument("--predictions-output", required=True)
+
+    detector_arrival_compare = subparsers.add_parser(
+        "detector-arrival-timing-validation-compare"
+    )
+    detector_arrival_compare.add_argument("--config", required=True)
+    detector_arrival_compare.add_argument("--reference-predictions", required=True)
+    detector_arrival_compare.add_argument("--candidate-predictions", required=True)
+    detector_arrival_compare.add_argument("--output", required=True)
 
     glitch_finetune = subparsers.add_parser("gravityspy-glitch-finetune")
     glitch_finetune.add_argument("--config", required=True)
@@ -1398,6 +1407,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.validation_manifest,
                 args.checkpoint,
+                args.output,
+                args.predictions_output,
+            )
+        )
+    elif args.command == "detector-arrival-timing-validation-compare":
+        from .arrival_timing import run_detector_arrival_timing_validation_comparison
+
+        _print(
+            run_detector_arrival_timing_validation_comparison(
+                args.config,
+                args.reference_predictions,
+                args.candidate_predictions,
                 args.output,
             )
         )
