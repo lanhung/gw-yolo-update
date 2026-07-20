@@ -310,8 +310,10 @@ def _chirp_epoch(
                 chirp_logits, target[:, None], positive, focal_gamma
             )
             dice = _dice_loss(chirp_logits, target[:, None])
-            temporal_logits = torch.amax(chirp_logits, dim=(2, 3))
-            temporal_target = torch.amax(target, dim=(1, 2))[:, None]
+            # Collapse frequency only: the localization objective must retain the
+            # full time axis for endpoint classification.
+            temporal_logits = torch.amax(chirp_logits, dim=2)
+            temporal_target = torch.amax(target, dim=1)[:, None]
             temporal_bce = torch_functional.binary_cross_entropy_with_logits(
                 temporal_logits,
                 temporal_target,

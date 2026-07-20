@@ -46,6 +46,7 @@ def test_chirp_epoch_honors_exact_batch_budget() -> None:
     )
     assert metrics["batches"] == 2
     assert metrics["examples"] == 2
+    assert np.isfinite(metrics["loss"])
     with pytest.raises(ValueError, match="max_batches"):
         _chirp_epoch(
             model,
