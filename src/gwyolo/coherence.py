@@ -134,7 +134,7 @@ def pairwise_lag_coherence(
     for first, second in combinations(sorted(series), 2):
         physical_limit = _pair_limit(first, second, limits_seconds)
         search_limit = physical_limit + 2.0 * uncertainty
-        maximum_lag = min(int(np.ceil(search_limit * rate)), length - 1)
+        maximum_lag = min(int(np.floor(search_limit * rate)), length - 1)
         best_lag = 0
         best_signed = 0.0
         best_absolute = -1.0

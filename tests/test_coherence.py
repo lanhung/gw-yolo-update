@@ -50,6 +50,20 @@ def test_pairwise_lag_coherence_recovers_one_sample_delay() -> None:
     assert result["absolute_coherence"] == pytest.approx(1.0)
 
 
+def test_pairwise_lag_search_never_exceeds_physical_window() -> None:
+    h1 = np.zeros(64)
+    l1 = np.zeros(64)
+    h1[10] = 1
+    l1[31] = 1
+    result = pairwise_lag_coherence(
+        {"H1": h1, "L1": l1},
+        sample_rate=2048.0,
+        limits_seconds={"H1-L1": 0.010},
+    )[0]
+    assert abs(result["lag_seconds"]) <= 0.010
+    assert abs(result["lag_samples"]) == 20
+
+
 def test_coherence_rejects_missing_pair_contract() -> None:
     with pytest.raises(ValueError, match="missing physical delay limit"):
         arrival_time_coherence_gate({"H1": 1.0, "V1": 1.0}, {"H1-L1": 0.01})

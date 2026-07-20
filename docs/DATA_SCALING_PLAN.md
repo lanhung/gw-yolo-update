@@ -229,7 +229,7 @@ of compute on new GPS blocks, observing runs, real/held-out glitches, detector s
 perturbations or hard negatives rather than duplicated waveform scenes. See
 `PHYSICS_COHERENT_STRATEGY.md`.
 
-On the current RTX 4090 D, a 100k-scene YOLO26m experiment is expected to be an order of roughly one day rather than minutes, before multi-Q generation overhead. Measure generator throughput before committing to a 1M-scene run.
+On the current RTX 4090 D, a 100k-scene YOLO26m experiment is expected to be an order of roughly one day rather than minutes, before multi-Q generation overhead. Measure generator throughput before committing to a 1M-scene run, and do not start it without the preceding promotion evidence.
 
 ## Promotion gates
 
