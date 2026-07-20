@@ -156,6 +156,19 @@ feasibility only. It is explicitly not a real-background, false-alarm or ranking
 valid comparison must score identical continuous O4a background with morphology-only and
 coherence-assisted frozen candidates.
 
+The first detector-set architecture boundary is now implemented separately from the running
+fixed-channel control. `DetectorSetQNet` applies one shared Q-plane encoder to every configured IFO,
+uses an explicit binary availability tensor to mask set-attention, fuses only available detectors,
+and applies a shared per-IFO decoder/head. Missing IFO logits are forced inactive rather than inferred
+from zero-valued strain. A deterministic warm-start maps the fixed-channel encoder/head by averaging
+only the IFO axis, copies shape-compatible bottleneck/decoder weights, and initializes attention
+uniformly. This is a candidate arm, not a promoted model.
+
+The frozen 10k/3k physical corpus contains H1/L1 only; V1 is an explicit missing slot. It can test
+that missing-detector masking works, but cannot establish H1/V1, L1/V1 or H1/L1/V1 generalization.
+Detector-set training therefore remains blocked on a group-safe O1--O4a corpus with real detector-set
+coverage. No fixed-channel result is relabeled as variable-detector evidence.
+
 ## Paper success hierarchy
 
 1. **PRD target:** paired fixed-FAR `<VT>` or overlap-efficiency improvement with clean-signal

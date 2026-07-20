@@ -102,6 +102,85 @@ if nn is not None:
             return logits.reshape(value.shape[0], 2, self.input_channels, *value.shape[-2:])
 
 
+    class DetectorSetQNet(nn.Module):
+        """Shared-IFO encoder with explicit availability-masked set fusion."""
+
+        def __init__(self, ifo_count: int, q_count: int, base_channels: int = 24):
+            super().__init__()
+            if ifo_count < 2 or q_count < 1:
+                raise ValueError("DetectorSetQNet requires at least two IFO slots and one Q plane")
+            self.ifo_count = int(ifo_count)
+            self.q_count = int(q_count)
+            self.input_channels = self.ifo_count * self.q_count
+            self.base_channels = int(base_channels)
+            self.shared_encoder = _ConvBlock(self.q_count, base_channels)
+            self.attention_score = nn.Conv2d(base_channels, 1, 1)
+            self.bottleneck = _ConvBlock(base_channels, base_channels * 2)
+            self.shared_decoder = _ConvBlock(base_channels * 3, base_channels)
+            self.shared_head = nn.Conv2d(base_channels, 2 * self.q_count, 1)
+
+        def forward(self, value: Any, detector_availability: Any) -> Any:
+            if value.ndim != 4 or value.shape[1] != self.input_channels:
+                raise ValueError(
+                    "DetectorSetQNet input must have shape [batch, IFO*Q, frequency, time]"
+                )
+            if detector_availability.ndim != 2 or tuple(detector_availability.shape) != (
+                value.shape[0],
+                self.ifo_count,
+            ):
+                raise ValueError("detector availability must have shape [batch, IFO]")
+            availability = detector_availability.to(device=value.device, dtype=value.dtype)
+            if not torch.all((availability == 0) | (availability == 1)):
+                raise ValueError("detector availability must be binary")
+            if torch.any(availability.sum(dim=1) < 1):
+                raise ValueError("every sample requires at least one available detector")
+            batch, _, frequency, time_bins = value.shape
+            planes = value.reshape(
+                batch, self.ifo_count, self.q_count, frequency, time_bins
+            )
+            encoded = self.shared_encoder(
+                planes.reshape(batch * self.ifo_count, self.q_count, frequency, time_bins)
+            ).reshape(batch, self.ifo_count, self.base_channels, frequency, time_bins)
+            attention_logits = self.attention_score(
+                encoded.reshape(
+                    batch * self.ifo_count, self.base_channels, frequency, time_bins
+                )
+            ).reshape(batch, self.ifo_count, 1, frequency, time_bins)
+            available_map = availability[:, :, None, None, None].to(dtype=torch.bool)
+            attention = torch.softmax(
+                attention_logits.masked_fill(~available_map, -torch.inf), dim=1
+            )
+            fused = torch.sum(attention * encoded, dim=1)
+            low = self.bottleneck(torch_functional.max_pool2d(fused, 2))
+            up = torch_functional.interpolate(
+                low, size=(frequency, time_bins), mode="bilinear", align_corners=False
+            )
+            repeated_up = up[:, None].expand(-1, self.ifo_count, -1, -1, -1)
+            decoded = self.shared_decoder(
+                torch.cat([encoded, repeated_up], dim=2).reshape(
+                    batch * self.ifo_count,
+                    self.base_channels * 3,
+                    frequency,
+                    time_bins,
+                )
+            )
+            logits = self.shared_head(decoded).reshape(
+                batch,
+                self.ifo_count,
+                2,
+                self.q_count,
+                frequency,
+                time_bins,
+            )
+            logits = logits.permute(0, 2, 1, 3, 4, 5)
+            logits = torch.where(
+                availability[:, None, :, None, None, None].to(dtype=torch.bool),
+                logits,
+                torch.full_like(logits, -20.0),
+            )
+            return logits.reshape(batch, 2, self.input_channels, frequency, time_bins)
+
+
     class CoalescenceTimingNet(nn.Module):
         """Candidate timing refiner with a mask-compatible convolutional backbone."""
 
@@ -131,6 +210,74 @@ else:
     class CoalescenceTimingNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
+
+    class DetectorSetQNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+
+def initialize_detector_set_from_early_fusion(
+    model: Any,
+    checkpoint_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Warm-start a detector-set arm from a fixed-channel MultiIFOQNet state."""
+    _require_torch()
+    source = checkpoint_state.get("model", checkpoint_state)
+    if not isinstance(source, dict):
+        raise ValueError("early-fusion checkpoint state must be a state dictionary")
+    expected_channels = model.ifo_count * model.q_count
+    first = source.get("encoder.layers.0.weight")
+    head_weight = source.get("head.weight")
+    head_bias = source.get("head.bias")
+    if first is None or tuple(first.shape[1:2]) != (expected_channels,):
+        raise ValueError("early-fusion encoder channel count differs from detector-set model")
+    if head_weight is None or head_bias is None or head_weight.shape[0] != 2 * expected_channels:
+        raise ValueError("early-fusion head shape differs from detector-set model")
+    target = model.state_dict()
+    mapped = []
+    first_reshaped = first.reshape(
+        first.shape[0], model.ifo_count, model.q_count, *first.shape[2:]
+    )
+    target["shared_encoder.layers.0.weight"] = first_reshaped.mean(dim=1)
+    mapped.append("encoder first convolution averaged across configured IFO slots")
+    for suffix in (
+        "layers.1.weight",
+        "layers.1.bias",
+        "layers.3.weight",
+        "layers.4.weight",
+        "layers.4.bias",
+    ):
+        target[f"shared_encoder.{suffix}"] = source[f"encoder.{suffix}"].clone()
+    for prefix in ("bottleneck",):
+        for key, value in source.items():
+            if key.startswith(f"{prefix}."):
+                target[key] = value.clone()
+    for key, value in source.items():
+        if key.startswith("decoder."):
+            target[f"shared_decoder.{key[len('decoder.'):]}"] = value.clone()
+    target["shared_head.weight"] = head_weight.reshape(
+        2, model.ifo_count, model.q_count, *head_weight.shape[1:]
+    ).mean(dim=1).reshape(2 * model.q_count, *head_weight.shape[1:])
+    target["shared_head.bias"] = head_bias.reshape(
+        2, model.ifo_count, model.q_count
+    ).mean(dim=1).reshape(2 * model.q_count)
+    target["attention_score.weight"].zero_()
+    target["attention_score.bias"].zero_()
+    model.load_state_dict(target)
+    return {
+        "status": "detector_set_warm_start",
+        "source_architecture": "MultiIFOQNet",
+        "target_architecture": "DetectorSetQNet",
+        "ifo_count": model.ifo_count,
+        "q_count": model.q_count,
+        "input_channels": expected_channels,
+        "mapping": mapped
+        + [
+            "shared encoder/bottleneck/decoder copied where shapes match",
+            "class/Q head averaged across configured IFO slots",
+            "set-attention logits initialized uniformly",
+        ],
+    }
 
 
 def _dice_loss(logits: Any, targets: Any, class_weights: Any | None = None) -> Any:
