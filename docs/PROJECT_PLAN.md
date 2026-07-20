@@ -201,6 +201,11 @@ The machine gate is `detector-arrival-timing-validation-compare`, using per-inje
 manifests and 10,000 paired bootstrap replicates. The thresholds are committed in
 `configs/detector_arrival_timing_promotion.yaml` before the v2 endpoint is inspected; a failed check
 retires scaling even if an unregistered subgroup looks favorable.
+The full-context raw-strain v2 arm fails those conditional requirements despite a lower global p90.
+Run one final same-budget representation control, the high-time-resolution numeric-spectrogram v3
+arm. Do not scale it unless the already frozen paired v1 comparison passes every promotion check;
+otherwise move timing supervision into the all-instance candidate model rather than testing another
+standalone single-arrival classifier.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

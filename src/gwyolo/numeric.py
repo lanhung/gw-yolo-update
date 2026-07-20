@@ -363,6 +363,112 @@ if nn is not None:
             logits = self.head(fused).reshape(batch, detectors, -1)
             return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
 
+
+    class DetectorArrivalSpectrogramNet(nn.Module):
+        """High-time-resolution numeric spectrogram head for chirp endpoint timing."""
+
+        def __init__(self, detector_count: int, base_channels: int = 32):
+            super().__init__()
+            if detector_count < 2 or base_channels < 4:
+                raise ValueError("arrival spectrogram network dimensions are invalid")
+            self.detector_count = detector_count
+            self.n_fft = 256
+            self.hop_length = 8
+            self.output_bins = 1024
+            self.register_buffer("stft_window", torch.hann_window(self.n_fft))
+            groups = min(8, base_channels)
+            self.spectral_encoder = nn.Sequential(
+                nn.Conv2d(
+                    1,
+                    base_channels,
+                    (9, 5),
+                    stride=(2, 1),
+                    padding=(4, 2),
+                    bias=False,
+                ),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.MaxPool2d((2, 1)),
+                nn.Conv2d(
+                    base_channels,
+                    base_channels,
+                    (7, 5),
+                    padding=(3, 2),
+                    groups=base_channels,
+                    bias=False,
+                ),
+                nn.Conv2d(base_channels, base_channels, 1, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.MaxPool2d((2, 1)),
+                nn.Conv2d(
+                    base_channels,
+                    base_channels,
+                    (5, 5),
+                    padding=(2, 2),
+                    groups=base_channels,
+                    bias=False,
+                ),
+                nn.Conv2d(base_channels, base_channels, 1, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.frequency_projection = nn.Sequential(
+                nn.Conv1d(2 * base_channels, base_channels, 1, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.temporal_context = nn.Sequential(
+                *(
+                    _DilatedResidual1D(base_channels, dilation)
+                    for dilation in (1, 2, 4, 8)
+                )
+            )
+            self.head = nn.Sequential(
+                nn.Conv1d(2 * base_channels, base_channels, 5, padding=2, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, 1, 1),
+            )
+
+        def forward(self, value: Any, availability: Any) -> Any:
+            if value.ndim != 3 or value.shape[1] != self.detector_count:
+                raise ValueError("arrival timing strain must have shape [batch, IFO, time]")
+            if availability.shape != value.shape[:2]:
+                raise ValueError("arrival timing availability shape differs from strain")
+            batch, detectors, samples = value.shape
+            flat = value.reshape(batch * detectors, samples)
+            spectrum = torch.stft(
+                flat,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.n_fft,
+                window=self.stft_window,
+                center=True,
+                return_complex=True,
+            )
+            if spectrum.shape[-1] < self.output_bins:
+                raise ValueError("arrival spectrogram has too few temporal bins")
+            power = torch.log1p(spectrum[..., : self.output_bins].abs().square())
+            encoded_2d = self.spectral_encoder(power[:, None])
+            frequency_pooled = torch.cat(
+                [encoded_2d.mean(dim=2), encoded_2d.amax(dim=2)], dim=1
+            )
+            encoded = self.temporal_context(
+                self.frequency_projection(frequency_pooled)
+            ).reshape(batch, detectors, -1, self.output_bins)
+            mask = availability.to(encoded.dtype)[:, :, None, None]
+            if torch.any(mask.sum(dim=1) < 1):
+                raise ValueError("arrival timing batch contains no available detector")
+            network = (encoded * mask).sum(dim=1, keepdim=True) / mask.sum(
+                dim=1, keepdim=True
+            )
+            fused = torch.cat(
+                [encoded, network.expand(-1, detectors, -1, -1)], dim=2
+            ).reshape(batch * detectors, 2 * encoded.shape[2], self.output_bins)
+            logits = self.head(fused).reshape(batch, detectors, self.output_bins)
+            return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
+
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
@@ -382,6 +488,10 @@ else:
             _require_torch()
 
     class DetectorArrivalTimingContextNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class DetectorArrivalSpectrogramNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 

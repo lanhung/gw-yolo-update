@@ -1,0 +1,17 @@
+detector_arrival_timing:
+  architecture: detector_arrival_spectrogram_net_v3
+  seed: 20260720
+  epochs: 12
+  max_optimizer_updates: 1500
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  label_smoothing: 0.02
+  base_channels: 16
+  cache_in_memory: true
+  minimum_training_network_snr: 4.0
+  validation_ifo_snr_thresholds: [4.0, 6.0, 8.0, 10.0]
+  analysis_duration: 8.0
+  target_sample_rate: 1024
+  output_bins: 1024
+  model_ifos: [H1, L1, V1]

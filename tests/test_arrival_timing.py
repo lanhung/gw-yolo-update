@@ -76,6 +76,12 @@ def test_detector_arrival_receptive_fields_cover_declared_context() -> None:
         )
         == 8257
     )
+    assert (
+        detector_arrival_receptive_field_samples(
+            "detector_arrival_spectrogram_net_v3"
+        )
+        == 624
+    )
     with pytest.raises(ValueError, match="unsupported"):
         detector_arrival_receptive_field_samples("unknown")
 
@@ -132,7 +138,11 @@ def test_detector_arrival_prediction_comparison_is_paired_by_hand() -> None:
 
 def test_detector_arrival_network_emits_per_ifo_high_resolution_logits() -> None:
     torch = pytest.importorskip("torch")
-    from gwyolo.numeric import DetectorArrivalTimingContextNet, DetectorArrivalTimingNet
+    from gwyolo.numeric import (
+        DetectorArrivalSpectrogramNet,
+        DetectorArrivalTimingContextNet,
+        DetectorArrivalTimingNet,
+    )
 
     strain = torch.zeros((2, 3, 64), dtype=torch.float32)
     availability = torch.tensor([[True, True, False], [True, False, True]])
@@ -145,3 +155,13 @@ def test_detector_arrival_network_emits_per_ifo_high_resolution_logits() -> None
         assert logits.shape == (2, 3, 8)
         assert torch.isfinite(logits[availability]).all()
         assert torch.isneginf(logits[~availability]).all()
+
+    spectrogram_model = DetectorArrivalSpectrogramNet(
+        detector_count=3, base_channels=8
+    )
+    spectrogram_logits = spectrogram_model(
+        torch.zeros((2, 3, 8192), dtype=torch.float32), availability
+    )
+    assert spectrogram_logits.shape == (2, 3, 1024)
+    assert torch.isfinite(spectrogram_logits[availability]).all()
+    assert torch.isneginf(spectrogram_logits[~availability]).all()

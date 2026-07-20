@@ -13,6 +13,7 @@ from .gwosc import _fft_downsample, _whiten
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .numeric import (
+    DetectorArrivalSpectrogramNet,
     DetectorArrivalTimingContextNet,
     DetectorArrivalTimingNet,
     _atomic_torch_save,
@@ -38,6 +39,8 @@ def _build_detector_arrival_model(
         return DetectorArrivalTimingNet(detector_count, base_channels)
     if architecture == "detector_arrival_timing_context_net_v2":
         return DetectorArrivalTimingContextNet(detector_count, base_channels)
+    if architecture == "detector_arrival_spectrogram_net_v3":
+        return DetectorArrivalSpectrogramNet(detector_count, base_channels)
     raise ValueError(f"unsupported detector arrival timing architecture: {architecture}")
 
 
@@ -48,6 +51,8 @@ def detector_arrival_receptive_field_samples(architecture: str) -> int:
         return 129
     if architecture == "detector_arrival_timing_context_net_v2":
         return 8257
+    if architecture == "detector_arrival_spectrogram_net_v3":
+        return 624
     raise ValueError(f"unsupported detector arrival timing architecture: {architecture}")
 
 

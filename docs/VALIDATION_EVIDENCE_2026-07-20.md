@@ -341,6 +341,17 @@ worst-IFO p90 26.77 ms and pairwise-delay p90 10.55 ms. Reporting the good condi
 would therefore hide catastrophic outliers. Stratification-report SHA256 is
 `4dc5ef0a29dffc64ec450656581047859571ba582214e780a4bd5d78f01464c3`.
 
+The same-budget full-context v2 arm then completed exactly 1,500 updates/24,000 examples. Validation
+p90 selected epoch 1: all-arrival p90 falls to 3.512 s, but the estimator has not learned usable
+chirp timing. All-arrival 10 ms coverage collapses from 9.48% to 0.67%; among 275 both-IFO-SNR >=8
+injections, joint 10 ms coverage falls from 56.73% to 0.73% and worst-IFO p90 rises from 0.875 s to
+3.877 s. At both-IFO SNR >=10, worst-IFO and pairwise-delay p90 are 3.850 s and 2.489 s. Thus the
+aggregate all-sample p90 improvement is a positional-prior artifact, not a timing improvement. The
+checkpoint SHA256 is `24869d2312bc2bfaac62f76749c676625377da67ad0dbf998c15b4d7ee2cca76` and
+report SHA256 is `b43dfa4c9ab8fa1ccea74dc556f7f163c51d865ac6f75a468745cd3b16155530`.
+The precommitted paired gate remains the authoritative adjudicator, but these endpoint values already
+exclude 5k/10k promotion under its conditional requirements.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

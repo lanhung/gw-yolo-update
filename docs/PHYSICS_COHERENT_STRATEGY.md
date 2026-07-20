@@ -149,6 +149,14 @@ with a negative paired-bootstrap upper endpoint; at both-IFO SNR >=8, at least 5
 at both-IFO SNR >=10, worst-IFO p90 <=20 ms plus pairwise-delay p90 <=10 ms. Every check must pass.
 This is a scale gate, not a scientific search claim.
 
+The v2 endpoint improves only the unconditional positional error while destroying detectable-event
+coverage, so adding more dilated raw-strain blocks is not the next arm. The bounded v3 representation
+computes a numeric 256-sample Hann STFT at an eight-sample hop, keeps 1,024 temporal bins, learns
+frequency-local chirp features with depthwise-separable convolutions, and predicts the same per-IFO
+geometric targets. It is not a rendered image and uses the identical 2k/3k manifests, seed, batch
+size and 1,500-update budget. v3 is compared against v1 with the same paired promotion gate; failure
+retires the standalone timing-head branch in favor of a candidate-conditioned multi-instance head.
+
 ### Stage B — shortlisted evidence
 
 Run only the best two arms for three seeds at 10k. Compare 10k with 25k under fixed-epoch and
