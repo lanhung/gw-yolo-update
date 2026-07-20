@@ -154,3 +154,6 @@ introduced a label definition that the compact model did not learn. Whitening an
 are therefore explicit tensor-config axes. The promoted baseline returns to self-whitened inputs and
 amplitude-normalized morphology masks; the failed noise-reference setting remains reproducible in
 `physical_finetune_reference_whitened.yaml`.
+`physical_finetune_highres_focal.yaml` is the promotion run: it warm-starts from the selected
+physical checkpoint, retains the focal loss and expands only the temporal grid to 1,024 bins
+(7.8125 ms). This isolates the timing representation needed by the coincidence gate.
