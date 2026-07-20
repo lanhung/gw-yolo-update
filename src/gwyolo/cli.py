@@ -300,6 +300,17 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_evict.add_argument("--cache-dir", required=True)
     gravityspy_evict.add_argument("--output", required=True)
 
+    mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
+    mask_audit_plan.add_argument("--manifest", required=True)
+    mask_audit_plan.add_argument("--output-dir", required=True)
+    mask_audit_plan.add_argument("--per-label", type=int, default=5)
+    mask_audit_plan.add_argument("--seed", type=int, default=20260720)
+
+    mask_audit_evaluate = subparsers.add_parser("gravityspy-mask-audit-evaluate")
+    mask_audit_evaluate.add_argument("--tasks", required=True)
+    mask_audit_evaluate.add_argument("--annotations", required=True)
+    mask_audit_evaluate.add_argument("--output", required=True)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -827,6 +838,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.materialization_report, args.cache_dir, args.output
             )
         )
+    elif args.command == "gravityspy-mask-audit-plan":
+        from .mask_audit import plan_gravityspy_mask_audit
+
+        _print(
+            plan_gravityspy_mask_audit(
+                args.manifest, args.output_dir, args.per_label, args.seed
+            )
+        )
+    elif args.command == "gravityspy-mask-audit-evaluate":
+        from .mask_audit import evaluate_gravityspy_mask_audit
+
+        _print(evaluate_gravityspy_mask_audit(args.tasks, args.annotations, args.output))
     elif args.command == "fit-curve":
         _print(run_curve_fit(args.points, args.output))
     elif args.command == "background-plan":

@@ -340,3 +340,11 @@ All three levels currently reuse 76 O4a training GPS blocks. This is intentional
 `gps_diversity_saturated=true`: it isolates waveform-count scaling but does not satisfy the domain
 diversity endpoint. More globally split O1--O4a blocks must be added as a separate scaling axis
 before interpreting a plateau as waveform-data saturation.
+
+The weak-mask gate is executable rather than rhetorical. `gravityspy-mask-audit-plan` samples only
+the frozen numeric validation split, deterministically stratified by morphology. Each task requires
+an odd panel of at least three independent annotators blinded to the metadata-derived mask, so
+pixelwise majority consensus has no ties. `gravityspy-mask-audit-evaluate`
+hash-verifies NPZ masks and reports inter-annotator IoU, weak-versus-consensus IoU, per-label
+agreement and Wilson intervals. Only that narrow weak-mask agreement claim is enabled by a completed
+audit; segmentation, deglitch and search claims remain separate locked evaluations.
