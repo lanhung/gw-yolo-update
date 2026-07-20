@@ -1,0 +1,10 @@
+candidate_network_set_ranker:
+  required_validation_role: selection
+  detector_pair: [H1, L1]
+  physical_delay_limit_seconds: 0.01
+  width_scale_seconds: 0.25
+  audit_padding_seconds: 0.5
+  center_penalty_weights: [0.0, 0.25, 0.5, 1.0, 2.0]
+  width_penalty_weights: [0.0, 0.1, 0.25, 0.5, 1.0]
+  minimum_padded_pair_fraction: 0.8
+  maximum_selected_pair_peak_p90_seconds: 0.25

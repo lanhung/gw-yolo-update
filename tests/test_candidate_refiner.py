@@ -5,6 +5,7 @@ from gwyolo.candidate_refiner import (
     candidate_average_precision,
     candidate_arrival_threshold_metrics,
     candidate_crop_contains_arrival,
+    candidate_interval_pair_features,
     candidate_positive_timing_error_quantiles,
     label_candidate_refiner_rows,
 )
@@ -137,6 +138,27 @@ def test_candidate_positive_timing_summary_uses_local_crop_label() -> None:
     summary = candidate_positive_timing_error_quantiles(rows)
     assert summary["0.5"] == 0.02
     assert summary["1.0"] == 0.03
+
+
+def test_candidate_interval_pair_features_by_hand() -> None:
+    first = {
+        "ifo": "H1",
+        "gps_start": 0.0,
+        "gps_end": 1.0,
+        "proposal_score": 0.5,
+    }
+    second = {
+        "ifo": "L1",
+        "gps_start": 1.005,
+        "gps_end": 2.005,
+        "proposal_score": 0.5,
+    }
+    features = candidate_interval_pair_features(first, second, 0.01, 0.25)
+    assert features["compatible"] is True
+    assert np.isclose(features["interval_gap_seconds"], 0.005)
+    assert np.isclose(features["center_excess_normalized"], 0.995)
+    assert features["width_sum_normalized"] == 8.0
+    assert features["proposal_logit_sum"] == 0.0
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

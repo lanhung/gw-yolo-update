@@ -403,6 +403,263 @@ def candidate_positive_timing_error_quantiles(
     }
 
 
+def candidate_interval_pair_features(
+    first: dict[str, Any],
+    second: dict[str, Any],
+    physical_delay_limit_seconds: float,
+    width_scale_seconds: float,
+) -> dict[str, float | bool]:
+    """Build truth-free features for one cross-IFO interval pair."""
+
+    if str(first["ifo"]) == str(second["ifo"]):
+        raise ValueError("candidate interval pair requires distinct detectors")
+    if physical_delay_limit_seconds <= 0 or width_scale_seconds <= 0:
+        raise ValueError("candidate interval pair scales must be positive")
+    first_start, first_stop = float(first["gps_start"]), float(first["gps_end"])
+    second_start, second_stop = float(second["gps_start"]), float(second["gps_end"])
+    scores = [float(first["proposal_score"]), float(second["proposal_score"])]
+    if (
+        not np.isfinite([first_start, first_stop, second_start, second_stop, *scores]).all()
+        or first_stop <= first_start
+        or second_stop <= second_start
+        or any(not 0 <= score <= 1 for score in scores)
+    ):
+        raise ValueError("candidate interval pair geometry or score is invalid")
+    widths = [first_stop - first_start, second_stop - second_start]
+    gap = max(first_start - second_stop, second_start - first_stop, 0.0)
+    centers = [(first_start + first_stop) / 2, (second_start + second_stop) / 2]
+    center_excess = max(
+        abs(centers[0] - centers[1]) - physical_delay_limit_seconds, 0.0
+    )
+    center_scale = max(sum(widths) / 2, width_scale_seconds)
+    clipped = [min(max(score, 1e-7), 1.0 - 1e-7) for score in scores]
+    logits = [np.log(score / (1.0 - score)) for score in clipped]
+    return {
+        "compatible": bool(gap <= physical_delay_limit_seconds),
+        "interval_gap_seconds": gap,
+        "center_excess_normalized": center_excess / center_scale,
+        "width_sum_normalized": sum(widths) / width_scale_seconds,
+        "proposal_logit_sum": float(sum(logits)),
+    }
+
+
+def _interval_distance(row: dict[str, Any], arrival: float) -> float:
+    return max(float(row["gps_start"]) - arrival, 0.0, arrival - float(row["gps_end"]))
+
+
+def run_candidate_network_set_audit(
+    config_path: str | Path,
+    injection_manifest: str | Path,
+    candidate_manifest: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Select a truth-free cross-IFO set-ranking rule on parent-grouped validation rows."""
+
+    config = load_yaml(config_path)
+    settings = config["candidate_network_set_ranker"]
+    role = str(settings["required_validation_role"])
+    first_ifo, second_ifo = (str(value) for value in settings["detector_pair"])
+    limit = float(settings["physical_delay_limit_seconds"])
+    width_scale = float(settings["width_scale_seconds"])
+    padding = float(settings["audit_padding_seconds"])
+    center_weights = [float(value) for value in settings["center_penalty_weights"]]
+    width_weights = [float(value) for value in settings["width_penalty_weights"]]
+    if (
+        first_ifo == second_ifo
+        or padding < 0
+        or center_weights != sorted(set(center_weights))
+        or width_weights != sorted(set(width_weights))
+        or any(value < 0 for value in center_weights + width_weights)
+    ):
+        raise ValueError("candidate network set ranker configuration is invalid")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "injection_manifest_sha256": file_sha256(injection_manifest),
+        "candidate_manifest_sha256": file_sha256(candidate_manifest),
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report_path = output / "candidate_network_set_audit.json"
+    if report_path.is_file():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if report.get("run_identity") != identity:
+            raise ValueError("candidate network set audit has another identity")
+        return report
+    if any(output.iterdir()):
+        raise FileExistsError("candidate network set audit output must be empty")
+    candidates = _read_jsonl(candidate_manifest)
+    if not candidates or any(str(row.get("refiner_role")) != role for row in candidates):
+        raise ValueError("candidate network set audit received the wrong validation role")
+    parent_ids = {str(row["injection_id"]) for row in candidates}
+    parents = {
+        str(row["injection_id"]): row
+        for row in _read_jsonl(injection_manifest)
+        if str(row["injection_id"]) in parent_ids
+    }
+    if len(parents) != len(parent_ids) or any(
+        row.get("split") != "val" for row in parents.values()
+    ):
+        raise ValueError("candidate network set audit lacks validation parents")
+    by_parent: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for row in candidates:
+        by_parent[str(row["injection_id"])][str(row["ifo"])].append(row)
+    prepared = {}
+    eligible_parents = []
+    for injection_id, parent in sorted(parents.items()):
+        arrivals = parent.get("detector_arrival_gps", {})
+        if first_ifo not in arrivals or second_ifo not in arrivals:
+            continue
+        eligible_parents.append(injection_id)
+        pairs = []
+        for first in by_parent[injection_id].get(first_ifo, []):
+            for second in by_parent[injection_id].get(second_ifo, []):
+                features = candidate_interval_pair_features(
+                    first, second, limit, width_scale
+                )
+                if features["compatible"]:
+                    pairs.append((first, second, features))
+        prepared[injection_id] = pairs
+    if not eligible_parents:
+        raise ValueError("candidate network set audit has no eligible detector pairs")
+    if not any(prepared.values()):
+        raise ValueError("candidate network set audit has no physically compatible pairs")
+    rule_records = []
+    selections_by_rule = {}
+    for center_weight in center_weights:
+        for width_weight in width_weights:
+            rule_id = f"center-{center_weight:g}_width-{width_weight:g}"
+            selections = []
+            padded = 0
+            exact = 0
+            peak_errors = []
+            for injection_id in eligible_parents:
+                pairs = prepared[injection_id]
+                if not pairs:
+                    continue
+                selected = min(
+                    pairs,
+                    key=lambda item: (
+                        -(
+                            float(item[2]["proposal_logit_sum"])
+                            - center_weight
+                            * float(item[2]["center_excess_normalized"])
+                            - width_weight * float(item[2]["width_sum_normalized"])
+                        ),
+                        str(item[0]["candidate_id"]),
+                        str(item[1]["candidate_id"]),
+                    ),
+                )
+                first, second, features = selected
+                arrivals = parents[injection_id]["detector_arrival_gps"]
+                distances = [
+                    _interval_distance(first, float(arrivals[first_ifo])),
+                    _interval_distance(second, float(arrivals[second_ifo])),
+                ]
+                errors = [
+                    abs(float(first["gps_peak"]) - float(arrivals[first_ifo])),
+                    abs(float(second["gps_peak"]) - float(arrivals[second_ifo])),
+                ]
+                exact += max(distances) <= 0
+                padded += max(distances) <= padding
+                peak_errors.append(max(errors))
+                selections.append(
+                    {
+                        "injection_id": injection_id,
+                        "first_candidate_id": str(first["candidate_id"]),
+                        "second_candidate_id": str(second["candidate_id"]),
+                        "maximum_interval_distance_seconds": max(distances),
+                        "maximum_peak_error_seconds": max(errors),
+                        **features,
+                    }
+                )
+            errors_array = np.asarray(peak_errors, dtype=np.float64)
+            found = len(selections)
+            rule_records.append(
+                {
+                    "rule_id": rule_id,
+                    "center_penalty_weight": center_weight,
+                    "width_penalty_weight": width_weight,
+                    "eligible_parents": len(eligible_parents),
+                    "parents_with_compatible_pair": found,
+                    "compatible_pair_fraction": found / len(eligible_parents),
+                    "padded_truth_pair_fraction": padded / len(eligible_parents),
+                    "padded_truth_pair_wilson_95": list(
+                        wilson_interval(padded, len(eligible_parents))
+                    ),
+                    "exact_interval_truth_pair_fraction": exact
+                    / len(eligible_parents),
+                    "selected_pair_maximum_peak_error_seconds_quantiles": (
+                        {
+                            str(q): float(np.quantile(errors_array, q))
+                            for q in (0.5, 0.9, 0.99, 1.0)
+                        }
+                        if errors_array.size
+                        else None
+                    ),
+                }
+            )
+            selections_by_rule[rule_id] = selections
+    selected_rule = min(
+        rule_records,
+        key=lambda row: (
+            -float(row["padded_truth_pair_fraction"]),
+            -float(row["exact_interval_truth_pair_fraction"]),
+            float(row["selected_pair_maximum_peak_error_seconds_quantiles"]["0.9"]),
+            float(row["center_penalty_weight"]),
+            float(row["width_penalty_weight"]),
+        ),
+    )
+    selected_rows = selections_by_rule[str(selected_rule["rule_id"])]
+    selected_path = output / "candidate_network_set_selected_pairs.jsonl"
+    atomic_write_text(
+        selected_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_rows),
+    )
+    gate_checks = {
+        "minimum_padded_pair_fraction": float(
+            selected_rule["padded_truth_pair_fraction"]
+        )
+        >= float(settings["minimum_padded_pair_fraction"]),
+        "maximum_selected_pair_peak_p90": float(
+            selected_rule["selected_pair_maximum_peak_error_seconds_quantiles"]["0.9"]
+        )
+        <= float(settings["maximum_selected_pair_peak_p90_seconds"]),
+    }
+    result = {
+        "status": "validation_selection_candidate_network_set_ranking_audit",
+        "scientific_claim_allowed": False,
+        "search_promotion_allowed": False,
+        "scientific_blocker": (
+            "this is a validation-selection interval-ranking diagnostic; fresh calibration, "
+            "continuous background FAR/IFAR and locked-test VT remain required"
+        ),
+        "run_identity": identity,
+        "validation_role": role,
+        "detector_pair": [first_ifo, second_ifo],
+        "physical_delay_limit_seconds": limit,
+        "timing_uncertainty_seconds": None,
+        "all_candidates_retained": True,
+        "top_k_pruning": None,
+        "candidate_rows": len(candidates),
+        "eligible_parents": len(eligible_parents),
+        "rule_selection_metric": (
+            "maximum padded pair coverage, then exact interval coverage, then minimum peak p90"
+        ),
+        "selected_rule": selected_rule,
+        "rule_records": rule_records,
+        "selection_gate_checks": gate_checks,
+        "selection_gate_passed": all(gate_checks.values()),
+        "selected_pairs_path": str(selected_path),
+        "selected_pairs_sha256": file_sha256(selected_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
 class CandidateLocalDataset:
     def __init__(
         self,

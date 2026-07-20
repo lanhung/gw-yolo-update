@@ -477,6 +477,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_refiner_validation.add_argument("--output-dir", required=True)
 
+    candidate_network_set = subparsers.add_parser("candidate-network-set-audit")
+    candidate_network_set.add_argument("--config", required=True)
+    candidate_network_set.add_argument("--injection-manifest", required=True)
+    candidate_network_set.add_argument("--candidate-manifest", required=True)
+    candidate_network_set.add_argument("--output-dir", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1575,6 +1581,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.checkpoint,
                 args.validation_injection_manifest,
                 args.validation_candidate_manifest,
+                args.output_dir,
+            )
+        )
+    elif args.command == "candidate-network-set-audit":
+        from .candidate_refiner import run_candidate_network_set_audit
+
+        _print(
+            run_candidate_network_set_audit(
+                args.config,
+                args.injection_manifest,
+                args.candidate_manifest,
                 args.output_dir,
             )
         )
