@@ -34,6 +34,11 @@ The first curriculum over-concentrated about 81% of rows at SNR 4--8. The train-
 manifest now contains 800/700/400/100 rows at SNR 4--8/8--15/15--30/30--50, respectively, with
 SHA256 `b0c46d40f540bb667a6d567eaa1e5ef69987d8bf86e2af3de243c11dc1a5e7a9`. It still represents
 exactly 2,000 waveforms and 38 GPS blocks and is not a data-scaling point.
+The resulting 20-epoch quota ablation selected epoch 12 and reached calibrated validation IoU
+0.03946, a 9.1% relative increase over the same-target focal result (checkpoint SHA256
+`72b6b6fafdd5050ef6b6d1bad14d1e41a3e3c4c52bf92a8cc247fa22a30e511c`). This is evidence that
+training-proposal coverage matters, but the absolute result remains inadequate. Its 96-bin endpoint
+audit still fails badly: 3.17 s median and 5.83 s 90th-percentile absolute error.
 
 The first one-file Gravity Spy execution completed on an O3a H1 `Extremely_Loud` anchor. Official
 full-file statistics and DQ bit sums passed; the finite 3-IFO x 3-Q x 96 x 96 tensor manifest has
