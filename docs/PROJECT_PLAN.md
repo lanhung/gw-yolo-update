@@ -14,7 +14,7 @@ The primary scientific success criterion is not screenshot accuracy. It is a sta
 
 ## 2. Work packages
 
-The July 2026 audit changes the priority order: data scaling and a statistically useful evaluation corpus now precede major architecture expansion. The current training split contains only 251 independent groups, including 83 chirp+noise and three quiet groups. See `DATA_SCALING_PLAN.md` for the controlling targets and promotion gates.
+The July 2026 audit and literature/GWTC-5 review change the priority order: a statistically useful evaluation corpus, real-noise transfer and physics-coherent detector-set fusion precede capacity scaling. The project no longer treats a 200k corpus or a giant backbone as a scheduled milestone. See `PHYSICS_COHERENT_STRATEGY.md` for the controlling scientific question and `DATA_SCALING_PLAN.md` for conditional promotion gates.
 
 ### WP0 — Reproducibility and governance (weeks 1–2)
 
@@ -49,7 +49,7 @@ Deliverables:
 
 - frozen 5k–10k validation and 20k–50k injection test corpora;
 - manifest fields for waveform, injection, glitch, GPS block, IFO, run, SNR, source family, duration, Q, and overlap severity;
-- group-safe learning curve at 250/500/1k/2k/5k/10k/25k/50k groups;
+- group-safe learning curve at 2k/5k/10k, followed by 25k/50k only when frozen transfer endpoints justify it;
 - at least three seeds per scaling point;
 - in-domain and O4-transfer curves reported separately.
 
@@ -66,11 +66,12 @@ Build strain-to-tensor generation with:
 - physical time-domain signal and glitch composition;
 - deterministic provenance IDs.
 
-Scale targets:
+Conditional scale targets:
 
 - 10k independent scenes for the first credible representation baseline;
-- 200k scenes for the first publication-scale training corpus;
-- 0.5M–2M on-the-fly scenes after generator throughput and learning-curve validation.
+- 25k scenes only after a controlled 10k scale gain;
+- 50k scenes only after a controlled 25k gain;
+- 200k or online generation only if the compact model remains demonstrably data-limited after GPS/run/glitch diversity is expanded.
 
 Use O1–O3 for training, O4a for development/calibration, and keep O4b locked.
 
@@ -78,13 +79,14 @@ Exit gate: numeric input materially improves O3→O4 transfer relative to render
 
 ### WP3 — Multi-detector scene model (weeks 5–9)
 
-Architecture tracks:
+Architecture tracks, in promotion order:
 
-- early fusion: Q planes × detectors as channels;
-- late fusion: shared per-IFO encoder plus cross-attention;
-- coherence head: time-delay and morphology consistency;
+- fixed-channel early fusion as a baseline only;
+- shared per-IFO encoder plus variable-detector set fusion as the primary track;
+- coherence features/head with predeclared time-delay limits and timing uncertainty;
 - instance segmentation heads for chirp and glitch;
-- OOD/uncertainty head.
+- OOD/abstention head evaluated by held-out glitch family and observing run;
+- optional bounded auxiliary-evidence branch, separately ablated from strain-only.
 
 Exit gate: at fixed validation FAR, multi-IFO fusion beats the best single-IFO model with paired confidence intervals excluding zero.
 
@@ -112,7 +114,7 @@ Exit gate: background exposure is sufficient for the claimed FAR. With zero fals
 
 Track A: add GW-YOLO mask/coherence/OOD outputs to a search reranker.
 Track B: mask-informed gating, inpainting, or BayesWave guidance, followed by matched filtering.
-Track C: cleaned data and rapid chirp-mass/time summaries passed into AMPLFI/DINGO.
+Track C: paired raw/contaminated/mask-conditioned data passed into AMPLFI/DINGO/Bilby; GW-YOLO is evaluated as a robust front end, not a replacement posterior estimator.
 
 Metrics:
 
@@ -146,9 +148,11 @@ The revised research ladder adds a prerequisite data program:
 2. audit physical provenance and two-axis mixture leakage;
 3. run a compact-model learning curve over independent group counts;
 4. diagnose data, domain, label, and representation bottlenecks;
-5. build the 10k baseline, then the 200k numeric multi-Q corpus;
-6. only then freeze the primary multi-IFO architecture;
-7. replace mAP gating with fixed-FAR efficiency and `<VT>`.
+5. build the 10k baseline and run fixed-epoch/fixed-update scale controls;
+6. shortlist compact numeric YOLO, detector-set fusion, coherence, small masked-Q pretraining and OOD arms;
+7. expand to 25k/50k only after a frozen O4a promotion gate;
+8. freeze the primary multi-IFO architecture;
+9. replace mAP gating with fixed-FAR efficiency and `<VT>`.
 
 The initial gate `mask mAP50 ≥ 0.72` is deliberately attainable on a harder, leakage-safe split. It is a baseline gate, not a paper success criterion. Later configs must replace it with fixed-FAR efficiency and `<VT>` gates.
 
@@ -164,6 +168,9 @@ Each epoch also writes `best_target.pt` when the configured primary metric impro
 | single-IFO Q-scan misses network events | non-monotonic SNR response | explicit H1/L1/V1 fusion and validity masks |
 | catalog positives have no background denominator | inflated claims | continuous background and time slides |
 | AMPLFI/DINGO task mismatch | invalid comparison | compare end-to-end PE latency/coverage; position masks as complementary |
+| closed-set Gravity Spy labels miss new O4 glitches | confident false classifications | OOD abstention, held-out-family and O3→O4 audits |
+| fixed H1/L1/V1 channels learn missing-IFO shortcuts | brittle O4b transfer | shared encoder, detector availability mask, set fusion and detector dropout |
+| scale consumes schedule without transfer gain | long experiments with no paper evidence | fixed-update control and stop at the first frozen endpoint plateau |
 | O4b becomes contaminated during tuning | invalid locked test | access log, config freeze, one-time evaluation |
 | long GPU runs become irreproducible | lost results | atomic state, checkpoint hashes, resumable run directories |
 

@@ -2,7 +2,7 @@
 
 ## Mission
 
-Build a reproducible, publication-grade gravitational-wave transient system that separates compact-binary chirps from detector glitches, preserves instance masks, and is evaluated on continuous detector data with injection-based sensitivity and false-alarm metrics.
+Build a reproducible, publication-grade, physics-coherent GW-YOLO front end that separates compact-binary chirps from detector glitches, preserves instance masks, supports variable H1/L1/V1 detector sets, and improves search or downstream inference robustness on continuous detector data. The primary paper question is whether explicit masks and network coherence recover sensitivity or posterior reliability under nonstationary and overlapping artifacts; it is not whether GW-YOLO replaces DINGO/AMPLFI on clean-data parameter estimation.
 
 ## Non-negotiable scientific rules
 
@@ -19,6 +19,13 @@ Build a reproducible, publication-grade gravitational-wave transient system that
 11. Never report augmented/rendered image count as physical sample count. Report unique waveform/injection, glitch, GPS block, IFO, and run counts.
 12. Generated chirp+glitch mixtures require disjoint waveform IDs and disjoint glitch/GPS IDs across splits; splitting mixture rows alone is leakage.
 13. Freeze a statistically useful evaluation corpus before using its results to choose the primary architecture.
+14. Treat detector availability as data. A missing IFO requires an explicit validity mask or set representation; zero filling alone is not detector-set fusion.
+15. A network-coherence claim requires predeclared pairwise light-travel-time limits and an empirical timing-uncertainty allowance. A morphology score alone is not coherence.
+16. Unknown glitches must be allowed to abstain or receive an OOD label. Do not force every O4 artifact into an O1--O3 Gravity Spy class.
+17. Auxiliary channels may provide glitch evidence or attribution, but may not silently veto a strain-coherent candidate. Report strain-only and auxiliary-assisted results separately.
+18. DINGO/AMPLFI are downstream PE systems, not detection-mAP baselines. Compare paired raw/contaminated/mask-conditioned inputs using coverage, bias, width, sample efficiency, sky area and latency.
+19. Do not scale to 50k/200k by schedule alone. Promote a scale only after the frozen O4a endpoint or a predeclared hard subset improves materially under both fixed-epoch and fixed-update controls.
+20. Calibration perturbations, missing detectors, new glitch families and observing-run transfer are required robustness strata, not optional image augmentation.
 
 ## Repository conventions
 
@@ -52,6 +59,11 @@ Before a paper claim is accepted:
 - a group-safe data-scaling curve demonstrates whether the endpoint is data-, domain-, or representation-limited;
 - rendered-image, physical-group, injection, and background-live-time counts are reported separately;
 - O4 transfer is evaluated independently of in-domain mAP.
+- the primary model supports all predeclared detector subsets without retraining, or clearly limits its claim;
+- a leave-one-glitch-family-out or later-run OOD audit quantifies abstention and false acceptance;
+- clean injections satisfy the frozen non-inferiority margin before deglitch gains are promoted;
+- any PE claim is based on paired raw/contaminated/mask-conditioned analyses with identical priors and waveform assumptions;
+- the O4b/GWTC-5 strain access log shows no model, threshold, veto, calibration, or OOD selection before the one-time locked evaluation.
 
 ## Safety and remote execution
 

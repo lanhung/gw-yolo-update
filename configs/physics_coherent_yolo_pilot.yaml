@@ -1,0 +1,44 @@
+physics_coherent_pilot:
+  status: o4a_validation_only
+  seed: 20260720
+  primary_endpoint: population_weighted_efficiency_at_frozen_background_threshold
+  clean_efficiency_retention_minimum: 0.98
+  scale_promotion_absolute_gain: 0.01
+  maximum_parameters: 20000000
+  bounded_optimizer_updates: 5000
+  detector_order: [H1, L1, V1]
+  allowed_detector_sets:
+    - [H1, L1]
+    - [H1, V1]
+    - [L1, V1]
+    - [H1, L1, V1]
+  q_values: [4, 8, 16]
+  numeric_input_only: true
+  shared_ifo_encoder: true
+  explicit_detector_availability: true
+  fixed_channel_baseline_required: true
+  instance_classes: [chirp, glitch]
+  unknown_artifact_abstention: true
+  weak_glitch_masks_are_human_truth: false
+  coherence:
+    sample_rate: 1024
+    timing_uncertainty_seconds: 0.001
+    maximum_pair_delay_seconds:
+      H1-L1: 0.010
+      H1-V1: 0.027
+      L1-V1: 0.026
+    morphology_only_baseline_required: true
+  robustness_strata:
+    detector_dropout: true
+    calibration_amplitude_phase: true
+    leave_one_glitch_family_out: true
+    observing_run_transfer: true
+    clean_signal_noninferiority: true
+  auxiliary_evidence:
+    enabled_for_first_pilot: false
+    maximum_channels_if_promoted: 20
+    may_veto_strain_coherent_candidate: false
+  locked_data:
+    o4b_gwtc5_model_selection_allowed: false
+    o4b_gwtc5_threshold_selection_allowed: false
+    one_time_evaluation_after_freeze: true

@@ -2,19 +2,20 @@
 
 ## 1. Recommended paper claim
 
-**A multi-detector, multi-Q, instance-segmentation framework provides interpretable chirp/glitch masks that improve glitch-overlap recovery and/or search sensitivity at fixed false-alarm rate, while preserving low-latency compatibility with neural parameter-estimation systems.**
+**A variable-detector, physics-coherent, multi-Q instance-segmentation front end provides interpretable chirp/glitch masks that improve fixed-FAR search sensitivity or downstream posterior reliability under nonstationary and overlapping artifacts, while satisfying clean-signal non-inferiority.**
 
 This claim is stronger and more defensible than “YOLO classifies GWTC screenshots accurately.”
 
 ## 2. Relationship to AMPLFI and DINGO
 
-AMPLFI is likelihood-free BBH parameter estimation based on normalizing flows. Its accelerated Aframe+AMPLFI workflow reports an end-to-end latency around six seconds in a mock stream. DINGO performs neural posterior estimation, with importance sampling available for reliability and calibration. Both answer “what are the source parameters?” after a candidate exists.
+AMPLFI is likelihood-free BBH parameter estimation based on normalizing flows. Its accelerated Aframe+AMPLFI workflow reports an end-to-end latency around six seconds in a mock stream. DINGO performs neural posterior estimation, with importance sampling available for likelihood correction and failure diagnosis; Dingo-T1 supports flexible detector/frequency configurations. Both answer “what are the source parameters?” after a candidate exists.
 
 GW-YOLO answers complementary questions:
 
 - is the time-frequency scene chirp, glitch, both, multiple instances, or OOD?
 - where is each component?
 - can the glitch component be removed or down-ranked without erasing the chirp?
+- is a candidate coherent across the detectors that were actually operating?
 
 Fair common comparisons:
 
@@ -35,7 +36,9 @@ Primary references:
 - AMPLFI public-alert validation: https://arxiv.org/abs/2509.22561
 - DINGO: https://github.com/dingo-gw/dingo
 - DINGO importance sampling: https://arxiv.org/abs/2210.05686
+- Dingo-T1: https://arxiv.org/abs/2512.02968
 - GW-YOLO: https://arxiv.org/abs/2508.17399
+- GWTC-5.0 results: https://arxiv.org/abs/2605.27225
 
 ### Frozen joint-comparison contract
 
@@ -97,10 +100,12 @@ This is the most realistic first target if the team releases a high-quality benc
 4. FAR/IFAR versus efficiency and `<VT>` comparison.
 5. Performance versus overlap severity and glitch class.
 6. Single-Q/single-IFO versus multi-Q/multi-IFO ablation.
-7. Before/after deglitch Q-maps and matched-filter recovery.
-8. Posterior coverage/PP plots before and after mask cleaning, alongside AMPLFI/DINGO-compatible results.
-9. Latency and compute table.
-10. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
+7. Fixed-channel versus variable-detector set fusion, with calibration and missing-IFO strata.
+8. Before/after deglitch Q-maps and matched-filter recovery.
+9. Known versus held-out/O4 glitch OOD and abstention results.
+10. Posterior coverage/PP plots before and after mask cleaning, alongside AMPLFI/DINGO-compatible results.
+11. Latency and compute table.
+12. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
 
 ## 5. Required baselines
 
@@ -109,6 +114,10 @@ This is the most realistic first target if the team releases a high-quality benc
 - numeric single-Q model;
 - multi-Q single-IFO model;
 - multi-Q multi-IFO model;
+- fixed-channel versus shared-encoder detector-set model;
+- morphology-only versus physical-coherence ranking;
+- supervised-only versus small masked-Q pretraining;
+- closed-set versus OOD/abstention model;
 - model without glitch mask/deglitching;
 - conventional gating or a documented deglitch baseline;
 - matched-filter/search statistic before and after reranking;
@@ -145,7 +154,7 @@ The current 414-image/300-group release cannot support the primary paper claim b
 - a group-safe learning curve over at least 250→10k independent scenes;
 - a table separating rendered scenes from unique injections, glitches, GPS blocks, IFOs, and observing runs;
 - at least 10k independent training scenes for an image-method claim, or a learning-curve justification for less;
-- a target of roughly 200k numeric/generated scenes for the multi-Q/multi-IFO search study;
+- a 10k physical baseline followed by evidence-triggered 25k/50k expansion; 200k is not required if controlled transfer curves plateau;
 - 5k–10k validation and 20k–50k locked-test injection scenes;
 - continuous/time-slide background exposure commensurate with the claimed FAR;
 - BBH/BNS/NSBH, low-SNR, overlap-severity, glitch-morphology, detector, and run strata;
