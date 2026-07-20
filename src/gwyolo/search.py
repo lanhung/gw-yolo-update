@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from itertools import combinations
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -571,6 +572,23 @@ def run_physical_validation_endpoint(
         if len(values) != 1:
             raise ValueError(f"Background/injection score reports disagree on {field}")
         identities[field] = next(iter(values))
+    architectures = {
+        str(background_report.get("architecture", "fixed_channel")),
+        str(injection_report.get("architecture", "fixed_channel")),
+    }
+    if len(architectures) != 1:
+        raise ValueError("Background/injection score reports disagree on architecture")
+    architecture = next(iter(architectures))
+    enabled_contracts = {
+        tuple(report.get("enabled_ifos", report["model_ifos"]))
+        for report in (background_report, injection_report)
+    }
+    if len(enabled_contracts) != 1:
+        raise ValueError("Background/injection score reports disagree on enabled_ifos")
+    enabled_ifos = next(iter(enabled_contracts))
+    training_architecture = str(training.get("architecture", "fixed_channel"))
+    if training_architecture != architecture:
+        raise ValueError("Scoring architecture differs from the training report")
     if identities["checkpoint_sha256"] != str(training["checkpoint_sha256"]):
         raise ValueError("Scored checkpoint differs from training report checkpoint")
     if identities["config_sha256"] != file_sha256(training["config_path"]):
@@ -639,6 +657,11 @@ def run_physical_validation_endpoint(
             "checkpoint's validation injections"
         ),
         **identities,
+        "detector_contract": {
+            "architecture": architecture,
+            "model_ifos": list(injection_report["model_ifos"]),
+            "enabled_ifos": list(enabled_ifos),
+        },
         "training": {
             "report_path": str(training_report),
             "report_sha256": file_sha256(training_report),
@@ -673,6 +696,175 @@ def run_physical_validation_endpoint(
             "overall": overall,
             "strata": strata,
         },
+        "bootstrap_seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def detector_subset_noninferiority(
+    paired_comparison: dict[str, Any],
+    relative_margin: float,
+) -> dict[str, Any]:
+    """Apply a predeclared one-sided loss margin to a paired VT bootstrap."""
+    if not 0 <= relative_margin < 1:
+        raise ValueError("detector subset non-inferiority margin must be in [0, 1)")
+    reference_vt = float(paired_comparison["method_a"]["recovered_vt"])
+    lower = float(paired_comparison["paired_bootstrap_95"][0])
+    allowed_loss = relative_margin * reference_vt
+    return {
+        "relative_margin": relative_margin,
+        "reference_recovered_vt": reference_vt,
+        "maximum_allowed_absolute_vt_loss": allowed_loss,
+        "paired_delta_lower_95": lower,
+        "passed": lower >= -allowed_loss,
+    }
+
+
+def summarize_detector_subset_endpoints(
+    endpoint_reports: list[str | Path],
+    output: str | Path,
+    reference_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
+    relative_noninferiority_margin: float = 0.1,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Compare one checkpoint across independently calibrated detector subsets."""
+    if len(endpoint_reports) < 2:
+        raise ValueError("detector-subset summary requires at least two endpoint reports")
+    records: dict[tuple[str, ...], dict[str, Any]] = {}
+    controls: dict[str, set[str]] = {
+        "checkpoint_sha256": set(),
+        "config_sha256": set(),
+        "training_report_sha256": set(),
+        "training_seed": set(),
+        "injection_manifest_sha256": set(),
+        "background_manifest_sha256": set(),
+        "maximum_validation_false_alarms": set(),
+    }
+    model_contract: tuple[str, ...] | None = None
+    architecture: str | None = None
+    for endpoint_value in endpoint_reports:
+        endpoint_path = Path(endpoint_value)
+        with endpoint_path.open("r", encoding="utf-8") as handle:
+            endpoint = json.load(handle)
+        if endpoint.get("status") != "validation_only_exposure_limited_physical_endpoint":
+            raise ValueError(f"invalid detector-subset endpoint: {endpoint_path}")
+        contract = endpoint.get("detector_contract")
+        if not contract:
+            raise ValueError(f"endpoint lacks an explicit detector contract: {endpoint_path}")
+        current_model = tuple(str(ifo) for ifo in contract["model_ifos"])
+        current_architecture = str(contract["architecture"])
+        if model_contract is None:
+            model_contract = current_model
+            architecture = current_architecture
+        if current_model != model_contract or current_architecture != architecture:
+            raise ValueError("detector-subset endpoints use different model contracts")
+        enabled_set = set(str(ifo) for ifo in contract["enabled_ifos"])
+        enabled = tuple(ifo for ifo in current_model if ifo in enabled_set)
+        if len(enabled) < 2 or len(enabled) != len(enabled_set):
+            raise ValueError("detector-subset endpoints require unique network-mode IFO sets")
+        if enabled in records:
+            raise ValueError(f"duplicate detector-subset endpoint: {enabled}")
+        injection_report, injection_rows = _verified_score_artifact(
+            endpoint["injection_score_report_path"], "injection"
+        )
+        background_report, _ = _verified_score_artifact(
+            endpoint["background_score_report_path"], "background"
+        )
+        records[enabled] = {
+            "endpoint_path": str(endpoint_path),
+            "endpoint_sha256": file_sha256(endpoint_path),
+            "threshold": float(endpoint["calibration"]["threshold"]),
+            "overall": endpoint["injections"]["overall"],
+            "rows": injection_rows,
+        }
+        controls["checkpoint_sha256"].add(str(endpoint["checkpoint_sha256"]))
+        controls["config_sha256"].add(str(endpoint["config_sha256"]))
+        controls["training_report_sha256"].add(str(endpoint["training"]["report_sha256"]))
+        controls["training_seed"].add(str(endpoint["training"]["seed"]))
+        controls["injection_manifest_sha256"].add(str(injection_report["manifest_sha256"]))
+        controls["background_manifest_sha256"].add(str(background_report["manifest_sha256"]))
+        controls["maximum_validation_false_alarms"].add(
+            str(endpoint["calibration"]["maximum_validation_false_alarms"])
+        )
+    disagreements = {name: sorted(values) for name, values in controls.items() if len(values) != 1}
+    if disagreements:
+        raise ValueError(f"detector-subset endpoints disagree on controls: {disagreements}")
+    assert model_contract is not None and architecture is not None
+    if reference_ifos not in records:
+        raise ValueError("reference detector set is absent from endpoint reports")
+    expected_subsets = {
+        tuple(subset)
+        for size in range(2, len(model_contract) + 1)
+        for subset in combinations(model_contract, size)
+    }
+    reference = records[reference_ifos]
+    reference_by_id = {str(row["injection_id"]): row for row in reference["rows"]}
+    comparisons = {}
+    for subset, record in sorted(records.items()):
+        candidate_by_id = {str(row["injection_id"]): row for row in record["rows"]}
+        if set(candidate_by_id) != set(reference_by_id):
+            raise ValueError("detector-subset endpoints use different injection IDs")
+        joined = []
+        for injection_id in sorted(reference_by_id):
+            reference_row = reference_by_id[injection_id]
+            candidate_row = candidate_by_id[injection_id]
+            if (
+                str(reference_row["waveform_id"]) != str(candidate_row["waveform_id"])
+                or float(reference_row["vt_weight"]) != float(candidate_row["vt_weight"])
+            ):
+                raise ValueError("detector-subset injection provenance differs")
+            joined.append(
+                {
+                    **reference_row,
+                    "stratum": reference_row.get("source_family", "all"),
+                    "reference_score": reference_row["ranking_score"],
+                    "subset_score": candidate_row["ranking_score"],
+                }
+            )
+        comparison = paired_vt_comparison(
+            joined,
+            float(reference["threshold"]),
+            float(record["threshold"]),
+            "reference_score",
+            "subset_score",
+            bootstrap_replicates,
+            seed + len(comparisons),
+        )
+        comparisons["+".join(subset)] = {
+            "enabled_ifos": list(subset),
+            "endpoint_path": record["endpoint_path"],
+            "endpoint_sha256": record["endpoint_sha256"],
+            "weighted_efficiency": record["overall"]["weighted_efficiency"],
+            "paired_vs_reference": comparison,
+            "noninferiority": detector_subset_noninferiority(
+                comparison, relative_noninferiority_margin
+            ),
+        }
+    complete = set(records) == expected_subsets
+    all_passed = complete and all(
+        row["noninferiority"]["passed"] for row in comparisons.values()
+    )
+    result = {
+        "status": "validation_only_detector_subset_robustness",
+        "scientific_claim_allowed": False,
+        "protocol": (
+            "same checkpoint and paired injections; each detector subset threshold is calibrated "
+            "only on its matching validation background"
+        ),
+        "architecture": architecture,
+        "model_ifos": list(model_contract),
+        "reference_ifos": list(reference_ifos),
+        "expected_network_subsets": [list(item) for item in sorted(expected_subsets)],
+        "observed_network_subsets": [list(item) for item in sorted(records)],
+        "complete_predeclared_subset_gate": complete,
+        "all_subset_noninferiority_passed": all_passed,
+        "relative_noninferiority_margin": relative_noninferiority_margin,
+        "controls": {name: next(iter(values)) for name, values in controls.items()},
+        "comparisons": comparisons,
+        "bootstrap_replicates": bootstrap_replicates,
         "bootstrap_seed": seed,
         **execution_provenance(),
     }

@@ -158,10 +158,18 @@ def _window_strain(
     model_ifos: tuple[str, ...],
     target_sample_rate: int,
     context_duration: float,
+    enabled_ifos: tuple[str, ...] | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     center = (float(row["gps_start"]) + float(row["gps_end"])) / 2.0
     window_duration = float(row["duration"])
-    valid_ifos = [str(item) for item in row["ifos"]]
+    source_ifos = [str(item) for item in row["ifos"]]
+    valid_ifos = [
+        ifo
+        for ifo in model_ifos
+        if ifo in source_ifos and (enabled_ifos is None or ifo in enabled_ifos)
+    ]
+    if not valid_ifos:
+        raise ValueError("background window has no enabled detector")
     context_by_ifo = {}
     for ifo in valid_ifos:
         source = row["source_files"][ifo]["path"]
@@ -193,6 +201,7 @@ def score_background_manifest(
     context_duration: float = 64.0,
     save_probabilities: bool = False,
     required_split: str | None = None,
+    enabled_ifos: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -204,6 +213,13 @@ def score_background_manifest(
     tensor_config = training_tensor_config(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    enabled_ifos = model_ifos if enabled_ifos is None else enabled_ifos
+    if (
+        not enabled_ifos
+        or len(set(enabled_ifos)) != len(enabled_ifos)
+        or not set(enabled_ifos).issubset(model_ifos)
+    ):
+        raise ValueError("enabled_ifos must be a non-empty unique subset of model_ifos")
     expected_channels = len(model_ifos) * len(q_values)
     if int(checkpoint["input_channels"]) != expected_channels:
         raise ValueError(
@@ -236,6 +252,7 @@ def score_background_manifest(
         "context_duration": context_duration,
         "save_probabilities": save_probabilities,
         "architecture": architecture,
+        "enabled_ifos": list(enabled_ifos),
         "required_split": required_split,
         "code_commit": execution_provenance()["code_commit"],
     }
@@ -252,7 +269,7 @@ def score_background_manifest(
             continue
         try:
             strain, valid_ifos = _window_strain(
-                row, model_ifos, target_sample_rate, context_duration
+                row, model_ifos, target_sample_rate, context_duration, enabled_ifos
             )
             power = multiresolution_power(
                 strain,
@@ -309,6 +326,7 @@ def score_background_manifest(
                     "gps_start": row["gps_start"],
                     "gps_end": row["gps_end"],
                     "gps_block": row["gps_block"],
+                    "enabled_ifos": list(enabled_ifos),
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
                     **probability_record,
                     **summary,
@@ -337,6 +355,7 @@ def score_background_manifest(
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "architecture": architecture,
+        "enabled_ifos": list(enabled_ifos),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "probabilities_saved": save_probabilities,

@@ -131,6 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
     physical_validation_summary.add_argument("--seed", type=int, default=20260720)
     physical_validation_summary.add_argument("--output", required=True)
 
+    detector_subset_summary = subparsers.add_parser(
+        "detector-subset-summarize"
+    )
+    detector_subset_summary.add_argument(
+        "--endpoint-report", action="append", required=True
+    )
+    detector_subset_summary.add_argument(
+        "--reference-ifos", nargs="+", default=["H1", "L1", "V1"]
+    )
+    detector_subset_summary.add_argument(
+        "--relative-noninferiority-margin", type=float, default=0.1
+    )
+    detector_subset_summary.add_argument("--bootstrap-replicates", type=int, default=10000)
+    detector_subset_summary.add_argument("--seed", type=int, default=20260720)
+    detector_subset_summary.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -428,6 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--context-duration", type=float, default=64.0)
     trigger.add_argument("--save-probabilities", action="store_true")
     trigger.add_argument("--required-split", choices=["train", "val", "test"])
+    trigger.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
 
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
@@ -528,6 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--target-sample-rate", type=int, default=1024)
     injection_score.add_argument("--save-probabilities", action="store_true")
     injection_score.add_argument("--required-split", choices=["train", "val", "test"])
+    injection_score.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -658,6 +676,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.endpoint_report,
                 args.scale_subset_report,
                 args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "detector-subset-summarize":
+        from .search import summarize_detector_subset_endpoints
+
+        _print(
+            summarize_detector_subset_endpoints(
+                args.endpoint_report,
+                args.output,
+                tuple(args.reference_ifos),
+                args.relative_noninferiority_margin,
                 args.bootstrap_replicates,
                 args.seed,
             )
@@ -1080,6 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
                 context_duration=args.context_duration,
                 save_probabilities=args.save_probabilities,
                 required_split=args.required_split,
+                enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
             )
         )
     elif args.command == "candidate-extract":
@@ -1229,6 +1261,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_sample_rate=args.target_sample_rate,
                 save_probabilities=args.save_probabilities,
                 required_split=args.required_split,
+                enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
             )
         )
     elif args.command == "pe-evaluate":

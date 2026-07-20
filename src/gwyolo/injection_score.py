@@ -99,6 +99,7 @@ def score_materialized_injections(
     target_sample_rate: int = 1024,
     save_probabilities: bool = False,
     required_split: str | None = None,
+    enabled_ifos: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -110,6 +111,13 @@ def score_materialized_injections(
     tensor_config = training_tensor_config(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    enabled_ifos = model_ifos if enabled_ifos is None else enabled_ifos
+    if (
+        not enabled_ifos
+        or len(set(enabled_ifos)) != len(enabled_ifos)
+        or not set(enabled_ifos).issubset(model_ifos)
+    ):
+        raise ValueError("enabled_ifos must be a non-empty unique subset of model_ifos")
     expected_channels = len(model_ifos) * len(q_values)
     if int(checkpoint["input_channels"]) != expected_channels:
         raise ValueError(
@@ -141,6 +149,7 @@ def score_materialized_injections(
         "target_sample_rate": target_sample_rate,
         "save_probabilities": save_probabilities,
         "architecture": architecture,
+        "enabled_ifos": list(enabled_ifos),
         "whitening": str(tensor_config.get("whitening", "self")),
         "required_split": required_split,
         "code_commit": execution_provenance()["code_commit"],
@@ -171,10 +180,13 @@ def score_materialized_injections(
             if source_rate < target_sample_rate or source_rate % target_sample_rate:
                 raise ValueError("materialized sample rate must be an integer multiple of target")
             transformed = []
+            valid_ifos = [ifo for ifo in model_ifos if ifo in ifos and ifo in enabled_ifos]
+            if not valid_ifos:
+                raise ValueError("materialized context has no enabled detector")
             output_samples = int(round(source_duration * target_sample_rate))
             target_start = int(round((analysis_start - context_start) * target_sample_rate))
             for ifo in model_ifos:
-                if ifo not in ifos:
+                if ifo not in valid_ifos:
                     transformed.append(np.zeros(output_samples, dtype=np.float32))
                     continue
                 ifo_index = ifos.index(ifo)
@@ -210,7 +222,7 @@ def score_materialized_injections(
                 feature_tensor = torch.from_numpy(features).to(device)
                 if architecture == "detector_set":
                     availability = torch.as_tensor(
-                        [[ifo in ifos for ifo in model_ifos]],
+                        [[ifo in valid_ifos for ifo in model_ifos]],
                         dtype=feature_tensor.dtype,
                         device=device,
                     )
@@ -224,7 +236,7 @@ def score_materialized_injections(
             summary = probability_summaries(
                 probabilities,
                 model_ifos,
-                ifos,
+                valid_ifos,
                 analysis_start,
                 source_duration,
             )
@@ -255,7 +267,9 @@ def score_materialized_injections(
                     "vt_weight": row["vt_weight"],
                     "vt_weight_unit": row["vt_weight_unit"],
                     "materialized_sha256": row["materialized_sha256"],
-                    "padded_ifos": [ifo for ifo in model_ifos if ifo not in ifos],
+                    "source_ifos": ifos,
+                    "enabled_ifos": list(enabled_ifos),
+                    "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
                     **probability_record,
                     **summary,
                 }
@@ -283,6 +297,7 @@ def score_materialized_injections(
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "architecture": architecture,
+        "enabled_ifos": list(enabled_ifos),
         "target_sample_rate": target_sample_rate,
         "probabilities_saved": save_probabilities,
         "required_split": required_split,

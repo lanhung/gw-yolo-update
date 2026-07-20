@@ -8,6 +8,7 @@ from gwyolo.search import (
     aggregate_physical_endpoint_records,
     calibrate_threshold,
     compare_search_methods,
+    detector_subset_noninferiority,
     evaluate_search,
     far_upper_limit_zero_count,
     paired_vt_comparison,
@@ -93,6 +94,18 @@ def test_paired_vt_delta_matches_hand_calculation():
     assert result["delta_recovered_vt_b_minus_a"] == -2
     assert result["relative_delta"] == -2 / 5
     assert result["strata"]["overlap"]["weighted_efficiency_b"] == 1.0
+
+
+def test_detector_subset_noninferiority_uses_paired_lower_bound() -> None:
+    comparison = {
+        "method_a": {"recovered_vt": 100.0},
+        "paired_bootstrap_95": [-8.0, 2.0],
+    }
+    result = detector_subset_noninferiority(comparison, 0.1)
+    assert result["maximum_allowed_absolute_vt_loss"] == 10.0
+    assert result["passed"] is True
+    comparison["paired_bootstrap_95"][0] = -11.0
+    assert detector_subset_noninferiority(comparison, 0.1)["passed"] is False
 
 
 def test_search_comparison_calibrates_each_method_on_validation_only():
@@ -292,6 +305,9 @@ def test_physical_validation_endpoint_verifies_identity_exposure_and_weighted_ef
         "code_commit": "commit",
         "exact_command": "python -m gwyolo.cli score",
         "environment": {"python": "test"},
+        "architecture": "fixed_channel",
+        "model_ifos": ["H1", "L1", "V1"],
+        "enabled_ifos": ["H1", "L1", "V1"],
     }
     background_report = tmp_path / "background_report.json"
     injection_report = tmp_path / "injection_report.json"

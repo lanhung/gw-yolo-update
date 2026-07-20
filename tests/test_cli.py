@@ -34,6 +34,7 @@ def test_trigger_cli_routes_only_declared_arguments() -> None:
         context_duration=64.0,
         save_probabilities=False,
         required_split=None,
+        enabled_ifos=None,
     )
 
 
@@ -77,3 +78,4 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
         )
     assert score.call_args.kwargs["save_probabilities"] is True
     assert score.call_args.kwargs["required_split"] is None
+    assert score.call_args.kwargs["enabled_ifos"] is None
