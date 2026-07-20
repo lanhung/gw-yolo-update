@@ -211,6 +211,13 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy.add_argument("--seed", type=int, default=20260719)
     gravityspy.add_argument("--download-workers", type=int, default=8)
 
+    gravityspy_split = subparsers.add_parser("gravityspy-split")
+    gravityspy_split.add_argument("--manifest", required=True)
+    gravityspy_split.add_argument("--output-dir", required=True)
+    gravityspy_split.add_argument("--validation-fraction", type=float, default=0.1)
+    gravityspy_split.add_argument("--test-fraction", type=float, default=0.1)
+    gravityspy_split.add_argument("--seed", type=int, default=20260720)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -577,6 +584,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.per_label,
                 args.seed,
                 args.download_workers,
+            )
+        )
+    elif args.command == "gravityspy-split":
+        from .gravityspy import split_gravityspy_anchors
+
+        _print(
+            split_gravityspy_anchors(
+                args.manifest,
+                args.output_dir,
+                args.validation_fraction,
+                args.test_fraction,
+                args.seed,
             )
         )
     elif args.command == "fit-curve":

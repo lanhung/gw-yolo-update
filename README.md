@@ -62,6 +62,7 @@ gwyolo physical-finetune adapt the selected model to split-safe physical injecti
 gwyolo waveform-validate compare stratified PyCBC waveforms to the direct LALSimulation API
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
+gwyolo gravityspy-split split all IFOs in a network GPS block as one leakage-safe group
 gwyolo fit-curve fit an exploratory power-law learning curve to controlled scale points
 gwyolo background-plan require verified sources, then build DQ-safe multi-IFO live-time windows
 gwyolo background-batch-plan globally split verified multi-file background and catalog vetoes

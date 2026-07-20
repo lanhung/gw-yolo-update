@@ -1,8 +1,41 @@
 from __future__ import annotations
 
 import csv
+import json
+from pathlib import Path
 
-from gwyolo.gravityspy import index_gravityspy_csv
+from gwyolo.gravityspy import index_gravityspy_csv, split_gravityspy_anchors
+
+
+def test_gravityspy_split_keeps_network_gps_blocks_together(tmp_path) -> None:
+    manifest = tmp_path / "anchors.jsonl"
+    rows = []
+    for block in range(40):
+        for ifo in ("H1", "L1"):
+            rows.append(
+                {
+                    "glitch_id": f"{ifo}-{block}",
+                    "gravityspy_id": f"{ifo}-{block}",
+                    "ifo": ifo,
+                    "observing_run": "O3a",
+                    "event_time": 1000000000.0 + block * 64,
+                    "ml_label": "Blip",
+                }
+            )
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = split_gravityspy_anchors(manifest, tmp_path / "split", seed=9)
+    assert report["passed"]
+    assert all(
+        count == 0
+        for pair in report["cross_split_overlaps"].values()
+        for count in pair.values()
+    )
+    assignments = {}
+    for split in ("train", "val", "test"):
+        for line in Path(report["manifests"][split]["path"]).read_text().splitlines():
+            row = json.loads(line)
+            assignments.setdefault(row["network_gps_block"], set()).add(row["split"])
+    assert all(len(splits) == 1 for splits in assignments.values())
 
 
 def test_gravityspy_index_filters_and_groups(tmp_path) -> None:

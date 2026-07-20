@@ -85,6 +85,11 @@ the corresponding L1 file must be validated and aligned before any multi-detecto
 
 ## Gravity Spy anchor index
 
+`gwyolo gravityspy-split` derives an IFO-independent `network_gps_block` from observing run and
+64-second GPS epoch, then hashes that group into train/validation/test. All H1/L1 records and all
+glitch IDs in the same network interval therefore remain together; the report explicitly audits
+glitch-ID and network-block overlap.
+
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9
 ML-confidence threshold after excluding Chirp/No_Glitch/None_of_the_Above. Stratifying at up to 100

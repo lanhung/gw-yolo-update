@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .gwosc import USER_AGENT, _api_json, download_resumable
-from .io import atomic_write_json, atomic_write_text, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
 
 ZENODO_API = "https://zenodo.org/api/records"
@@ -67,14 +67,18 @@ def index_gravityspy_csv(
             if label in excluded or confidence < minimum_confidence:
                 continue
             event_time = float(row["event_time"])
+            observing_run = _infer_run(source_file)
             candidates[label].append(
                 {
                     "gravityspy_id": str(row["gravityspy_id"]),
                     "glitch_id": f"gravityspy:{row['gravityspy_id']}",
                     "ifo": str(row["ifo"]),
-                    "observing_run": _infer_run(source_file),
+                    "observing_run": observing_run,
                     "event_time": event_time,
                     "gps_block": f"{row['ifo']}:{int(event_time // 64) * 64}:64",
+                    "network_gps_block": (
+                        f"{observing_run}:{int(event_time // 64) * 64}:64"
+                    ),
                     "duration": float(row["duration"]),
                     "peak_frequency": float(row["peak_frequency"]),
                     "snr": float(row["snr"]),
@@ -169,4 +173,121 @@ def run_gravityspy_index(
         "sources": source_reports,
     }
     atomic_write_json(output / "gravityspy_index_report.json", report)
+    return report
+
+
+def split_gravityspy_anchors(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    validation_fraction: float = 0.1,
+    test_fraction: float = 0.1,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    if validation_fraction <= 0 or test_fraction <= 0:
+        raise ValueError("Gravity Spy validation and test fractions must be positive")
+    if validation_fraction + test_fraction >= 1:
+        raise ValueError("Gravity Spy validation and test fractions must sum to less than one")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Gravity Spy anchor manifest cannot be empty")
+    seen_glitches = set()
+    split_rows = []
+    for original in rows:
+        row = dict(original)
+        glitch_id = str(row["glitch_id"])
+        if glitch_id in seen_glitches:
+            raise ValueError(f"Duplicate Gravity Spy glitch ID: {glitch_id}")
+        seen_glitches.add(glitch_id)
+        network_block = str(
+            row.get(
+                "network_gps_block",
+                f"{row['observing_run']}:{int(float(row['event_time']) // 64) * 64}:64",
+            )
+        )
+        uniform = int(canonical_hash(f"{seed}:{network_block}", 16), 16) / 16**16
+        if uniform < test_fraction:
+            split = "test"
+        elif uniform < test_fraction + validation_fraction:
+            split = "val"
+        else:
+            split = "train"
+        row["network_gps_block"] = network_block
+        row["split"] = split
+        split_rows.append(row)
+    block_splits: dict[str, set[str]] = defaultdict(set)
+    for row in split_rows:
+        block_splits[str(row["network_gps_block"])].add(str(row["split"]))
+    leaking_blocks = sorted(block for block, splits in block_splits.items() if len(splits) != 1)
+    if leaking_blocks:
+        raise ValueError(f"Network GPS blocks cross splits: {leaking_blocks[:10]}")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    split_manifests = {}
+    split_counts = {}
+    for split in ("train", "val", "test"):
+        selected = sorted(
+            (row for row in split_rows if row["split"] == split),
+            key=lambda row: (str(row["observing_run"]), float(row["event_time"]), str(row["ifo"])),
+        )
+        if not selected:
+            raise ValueError(f"Gravity Spy split {split} is empty")
+        target = output / f"gravityspy_{split}.jsonl"
+        atomic_write_text(
+            target,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+        )
+        split_manifests[split] = {
+            "path": str(target),
+            "sha256": file_sha256(target),
+        }
+        split_counts[split] = {
+            "rows": len(selected),
+            "unique_glitches": len({row["glitch_id"] for row in selected}),
+            "unique_network_gps_blocks": len(
+                {row["network_gps_block"] for row in selected}
+            ),
+            "labels": dict(sorted(Counter(row["ml_label"] for row in selected).items())),
+            "runs": dict(sorted(Counter(row["observing_run"] for row in selected).items())),
+            "ifos": dict(sorted(Counter(row["ifo"] for row in selected).items())),
+        }
+    split_sets = {
+        split: {
+            "glitches": {str(row["glitch_id"]) for row in split_rows if row["split"] == split},
+            "network_blocks": {
+                str(row["network_gps_block"])
+                for row in split_rows
+                if row["split"] == split
+            },
+        }
+        for split in ("train", "val", "test")
+    }
+    overlaps = {}
+    for left, right in (("train", "val"), ("train", "test"), ("val", "test")):
+        overlaps[f"{left}_{right}"] = {
+            field: len(split_sets[left][field] & split_sets[right][field])
+            for field in ("glitches", "network_blocks")
+        }
+    report = {
+        "status": "group_safe_gravityspy_split",
+        "passed": all(
+            count == 0
+            for pair in overlaps.values()
+            for count in pair.values()
+        ),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "seed": seed,
+        "fractions": {
+            "train": 1.0 - validation_fraction - test_fraction,
+            "val": validation_fraction,
+            "test": test_fraction,
+        },
+        "rows": len(split_rows),
+        "unique_network_gps_blocks": len(block_splits),
+        "split_counts": split_counts,
+        "cross_split_overlaps": overlaps,
+        "manifests": split_manifests,
+    }
+    atomic_write_json(output / "gravityspy_split_report.json", report)
     return report
