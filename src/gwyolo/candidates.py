@@ -31,6 +31,62 @@ def _available_ifos(row: dict[str, Any]) -> set[str]:
     return ifos
 
 
+def _scoring_provenance(
+    trigger_manifest: str | Path, report_filename: str
+) -> dict[str, Any]:
+    """Verify the scorer report adjacent to a trigger manifest when available."""
+
+    manifest = Path(trigger_manifest)
+    report_path = manifest.parent / report_filename
+    if not report_path.is_file():
+        return {"available": False, "blocker": f"missing {report_path}"}
+    with report_path.open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if str(report.get("triggers_sha256")) != file_sha256(manifest):
+        raise ValueError("adjacent score report does not bind the trigger manifest")
+    required = ("checkpoint_sha256", "config_sha256", "code_commit")
+    missing = [field for field in required if not report.get(field)]
+    if missing:
+        raise ValueError(f"adjacent score report lacks provenance: {missing}")
+    return {
+        "available": True,
+        "score_report_path": str(report_path),
+        "score_report_sha256": file_sha256(report_path),
+        "checkpoint_sha256": str(report["checkpoint_sha256"]),
+        "config_sha256": str(report["config_sha256"]),
+        "code_commit": str(report["code_commit"]),
+        "source_manifest_sha256": str(report["manifest_sha256"]),
+        "trigger_manifest_sha256": str(report["triggers_sha256"]),
+    }
+
+
+def _candidate_extraction_provenance(candidate_manifest: str | Path) -> dict[str, Any]:
+    manifest = Path(candidate_manifest)
+    names = (
+        "candidate_extraction_report.json",
+        "injection_candidate_extraction_report.json",
+    )
+    reports = [manifest.parent / name for name in names if (manifest.parent / name).is_file()]
+    if not reports:
+        return {"available": False, "blocker": "missing adjacent candidate extraction report"}
+    if len(reports) != 1:
+        raise ValueError("candidate manifest has ambiguous adjacent extraction reports")
+    report_path = reports[0]
+    with report_path.open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if str(report.get("manifest_sha256")) != file_sha256(manifest):
+        raise ValueError("candidate extraction report does not bind its manifest")
+    scoring = report.get("source_scoring_provenance", {})
+    return {
+        "available": bool(scoring.get("available")),
+        "candidate_extraction_report_path": str(report_path),
+        "candidate_extraction_report_sha256": file_sha256(report_path),
+        "candidate_manifest_sha256": str(report["manifest_sha256"]),
+        "scoring": scoring,
+        "blocker": scoring.get("blocker") if not scoring.get("available") else None,
+    }
+
+
 def _active_runs(active: np.ndarray) -> list[tuple[int, int]]:
     padded = np.pad(active.astype(np.int8), (1, 1))
     changes = np.diff(padded)
@@ -285,6 +341,9 @@ def run_candidate_extraction(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in output_rows),
     )
     maximum_bin_width = max(bin_widths) if bin_widths else None
+    source_scoring_provenance = _scoring_provenance(
+        trigger_manifest, "trigger_score_report.json"
+    )
     report = {
         "status": "subwindow_cluster_integration_only",
         "scientific_claim_allowed": False,
@@ -294,6 +353,7 @@ def run_candidate_extraction(
         ),
         "trigger_manifest_path": str(trigger_manifest),
         "trigger_manifest_sha256": file_sha256(trigger_manifest),
+        "source_scoring_provenance": source_scoring_provenance,
         "input_windows": len(trigger_rows),
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
@@ -439,6 +499,9 @@ def run_candidate_timing_calibration(
         uncertainty_quantile,
         minimum_matches_per_method,
     )
+    source_scoring_provenance = _scoring_provenance(
+        injection_trigger_manifest, "injection_score_report.json"
+    )
     result = {
         "status": "validation_only_candidate_timing_calibration",
         "scientific_claim_allowed": False,
@@ -448,6 +511,7 @@ def run_candidate_timing_calibration(
         "injection_trigger_manifest_sha256": file_sha256(injection_trigger_manifest),
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
+        "source_scoring_provenance": source_scoring_provenance,
         **calibration,
         **execution_provenance(),
     }
@@ -467,12 +531,27 @@ def run_apply_candidate_timing_calibration(
     with Path(candidate_manifest).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
     report_sha = file_sha256(calibration_report)
+    candidate_provenance = _candidate_extraction_provenance(candidate_manifest)
+    calibration_scoring = calibration.get("source_scoring_provenance", {})
+    candidate_scoring = candidate_provenance.get("scoring", {})
+    provenance_matches = bool(
+        calibration_scoring.get("available")
+        and candidate_provenance.get("available")
+        and all(
+            str(calibration_scoring.get(field)) == str(candidate_scoring.get(field))
+            for field in ("checkpoint_sha256", "config_sha256", "code_commit")
+        )
+    )
     calibrated = 0
     output_rows = []
     for source in rows:
         row = dict(source)
         method = calibration.get("methods", {}).get(str(row.get("timing_method")))
-        if method is not None and bool(method.get("calibration_gate_passed")):
+        if (
+            method is not None
+            and bool(method.get("calibration_gate_passed"))
+            and provenance_matches
+        ):
             if float(row["timing_resolution_seconds"]) > float(
                 method["maximum_resolution_seconds"]
             ):
@@ -485,6 +564,14 @@ def run_apply_candidate_timing_calibration(
                     ],
                     "timing_uncertainty_quantile": method["uncertainty_quantile"],
                     "timing_calibration_report_sha256": report_sha,
+                    "candidate_extraction_report_sha256": candidate_provenance[
+                        "candidate_extraction_report_sha256"
+                    ],
+                    "candidate_checkpoint_sha256": candidate_scoring[
+                        "checkpoint_sha256"
+                    ],
+                    "candidate_config_sha256": candidate_scoring["config_sha256"],
+                    "candidate_code_commit": candidate_scoring["code_commit"],
                 }
             )
             calibrated += 1
@@ -501,6 +588,9 @@ def run_apply_candidate_timing_calibration(
         "uncalibrated_candidates": len(rows) - calibrated,
         "candidate_manifest_sha256": file_sha256(candidate_manifest),
         "calibration_report_sha256": report_sha,
+        "candidate_extraction_provenance": candidate_provenance,
+        "calibration_scoring_provenance": calibration_scoring,
+        "scoring_provenance_matches": provenance_matches,
         "output_path": str(output_path),
         "output_sha256": file_sha256(output_path),
     }
@@ -552,11 +642,15 @@ def run_injection_candidate_extraction(
         manifest,
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in output_rows),
     )
+    source_scoring_provenance = _scoring_provenance(
+        injection_trigger_manifest, "injection_score_report.json"
+    )
     report = {
         "status": "single_ifo_physical_injection_candidates",
         "scientific_claim_allowed": False,
         "trigger_manifest_path": str(injection_trigger_manifest),
         "trigger_manifest_sha256": file_sha256(injection_trigger_manifest),
+        "source_scoring_provenance": source_scoring_provenance,
         "input_injections": len(scored_rows),
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
@@ -612,6 +706,9 @@ def build_injection_candidate_rankings(
     eligible = 0
     recovered_candidate_pairs = 0
     calibration_hashes = set()
+    checkpoint_hashes = set()
+    config_hashes = set()
+    code_commits = set()
     for injection_id, parent in sorted(by_id.items()):
         valid_ifos = set(parent["valid_ifos"])
         arrivals = {
@@ -655,7 +752,26 @@ def build_injection_candidate_rankings(
                 }
                 if len(hashes) != 1:
                     continue
+                if any(
+                    not row.get("candidate_checkpoint_sha256")
+                    or not row.get("candidate_config_sha256")
+                    or not row.get("candidate_code_commit")
+                    for row in pair
+                ):
+                    continue
+                pair_checkpoints = {
+                    str(row["candidate_checkpoint_sha256"]) for row in pair
+                }
+                pair_configs = {str(row["candidate_config_sha256"]) for row in pair}
+                pair_commits = {str(row["candidate_code_commit"]) for row in pair}
+                if not (
+                    len(pair_checkpoints) == len(pair_configs) == len(pair_commits) == 1
+                ):
+                    continue
                 calibration_hashes.update(hashes)
+                checkpoint_hashes.update(pair_checkpoints)
+                config_hashes.update(pair_configs)
+                code_commits.update(pair_commits)
                 chirp_scores = {
                     reference_ifo: float(first["chirp_score"]),
                     second_ifo: float(second["chirp_score"]),
@@ -717,6 +833,16 @@ def build_injection_candidate_rankings(
             next(iter(calibration_hashes)) if len(calibration_hashes) == 1 else None
         ),
         "timing_calibration_consistent": len(calibration_hashes) == 1,
+        "candidate_checkpoint_sha256": (
+            next(iter(checkpoint_hashes)) if len(checkpoint_hashes) == 1 else None
+        ),
+        "candidate_config_sha256": (
+            next(iter(config_hashes)) if len(config_hashes) == 1 else None
+        ),
+        "candidate_code_commit": next(iter(code_commits)) if len(code_commits) == 1 else None,
+        "candidate_scoring_provenance_consistent": (
+            len(checkpoint_hashes) == len(config_hashes) == len(code_commits) == 1
+        ),
     }
     return outputs, report
 
@@ -978,6 +1104,27 @@ def build_candidate_time_slides(
             if row.get("timing_calibration_report_sha256")
         }
     )
+    checkpoint_hashes = sorted(
+        {
+            str(row["candidate_checkpoint_sha256"])
+            for row in relevant_candidates
+            if row.get("candidate_checkpoint_sha256")
+        }
+    )
+    config_hashes = sorted(
+        {
+            str(row["candidate_config_sha256"])
+            for row in relevant_candidates
+            if row.get("candidate_config_sha256")
+        }
+    )
+    code_commits = sorted(
+        {
+            str(row["candidate_code_commit"])
+            for row in relevant_candidates
+            if row.get("candidate_code_commit")
+        }
+    )
     timing_resolutions = [
         float(row.get("timing_resolution_seconds", row["bin_width_seconds"]))
         for by_ifo in candidates_by_window.values()
@@ -992,6 +1139,9 @@ def build_candidate_time_slides(
         and candidate_timing_calibrated
         and uncertainty_matches_candidates
         and len(calibration_hashes) == 1
+        and len(checkpoint_hashes) == 1
+        and len(config_hashes) == 1
+        and len(code_commits) == 1
         and timing_resolution_gate
     )
     report = {
@@ -1029,6 +1179,11 @@ def build_candidate_time_slides(
         "timing_calibration_report_sha256": (
             calibration_hashes[0] if len(calibration_hashes) == 1 else None
         ),
+        "candidate_checkpoint_sha256": (
+            checkpoint_hashes[0] if len(checkpoint_hashes) == 1 else None
+        ),
+        "candidate_config_sha256": config_hashes[0] if len(config_hashes) == 1 else None,
+        "candidate_code_commit": code_commits[0] if len(code_commits) == 1 else None,
         "publication_timing_gate_passed": publication_timing_gate,
         "scientific_blocker": (
             "timing gate passed, but a publication claim still requires provenance-linked "

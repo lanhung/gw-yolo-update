@@ -15,6 +15,8 @@ from gwyolo.search import (
     far_upper_limit_zero_count,
     paired_vt_comparison,
     run_frozen_search_evaluation,
+    run_candidate_search_calibration,
+    run_frozen_candidate_search_evaluation,
     run_physical_validation_endpoint,
     run_search_calibration,
     run_validation_injection_diagnostic,
@@ -32,6 +34,101 @@ def test_threshold_is_calibrated_only_from_background():
     assert result["threshold"] == 8.0
     assert result["background_count"] == 2
     assert result["far_per_year"] == 0.2
+
+
+def test_empty_candidate_background_freezes_above_probability_support() -> None:
+    result = calibrate_threshold([], live_time_years=10.0, target_far_per_year=0.1)
+    assert result["threshold"] > 1.0
+    assert result["background_count"] == 0
+
+
+def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_path) -> None:
+    identity = {
+        "candidate_checkpoint_sha256": "a" * 64,
+        "candidate_config_sha256": "b" * 64,
+        "candidate_code_commit": "deadbee",
+        "timing_calibration_report_sha256": "c" * 64,
+        "physical_delay_limit_seconds": 0.010,
+        "empirical_timing_uncertainty_seconds": 0.001,
+    }
+
+    def artifacts(split, background_score, injection_scores, block):
+        background = tmp_path / f"{split}-background.jsonl"
+        background.write_text(
+            json.dumps({"split": split, "ranking_score": background_score}) + "\n",
+            encoding="utf-8",
+        )
+        slide = {
+            "status": "subwindow_clustered_time_slide_integration_only",
+            "split": split,
+            "manifest_path": str(background),
+            "manifest_sha256": file_sha256(background),
+            "equivalent_live_time_years": 10.0,
+            "input_gps_blocks": [block],
+            "reference_ifo": "H1",
+            "shifted_ifo": "L1",
+            "publication_timing_gate_passed": True,
+            **identity,
+        }
+        slide_path = tmp_path / f"{split}-slide.json"
+        slide_path.write_text(json.dumps(slide), encoding="utf-8")
+        injections_path = tmp_path / f"{split}-injections.jsonl"
+        injection_rows = [
+            {
+                "split": split,
+                "injection_id": f"{split}-i{index}",
+                "waveform_id": f"{split}-w{index}",
+                "gps_block": f"{block}-injection",
+                "source_family": "bbh",
+                "stratum": "bbh",
+                "vt_weight": index + 1.0,
+                "ranking_score": score,
+            }
+            for index, score in enumerate(injection_scores)
+        ]
+        injections_path.write_text(
+            "".join(json.dumps(row) + "\n" for row in injection_rows), encoding="utf-8"
+        )
+        injection_report = {
+            "status": "physical_network_injection_candidate_rankings",
+            "split": split,
+            "manifest_path": str(injections_path),
+            "manifest_sha256": file_sha256(injections_path),
+            "reference_ifo": "H1",
+            "second_ifo": "L1",
+            "timing_calibration_consistent": True,
+            "candidate_scoring_provenance_consistent": True,
+            **identity,
+        }
+        injection_report_path = tmp_path / f"{split}-injection-report.json"
+        injection_report_path.write_text(json.dumps(injection_report), encoding="utf-8")
+        return slide_path, injection_report_path
+
+    val_slide, val_injections = artifacts("val", 0.8, [0.9, 0.2], "val-block")
+    calibration_path = tmp_path / "calibration.json"
+    calibration = run_candidate_search_calibration(
+        val_slide,
+        val_injections,
+        target_far_per_year=0.1,
+        output=calibration_path,
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert calibration["calibration"]["threshold"] == 0.8
+    test_slide, test_injections = artifacts("test", 0.85, [0.9, 0.1], "test-block")
+    result = run_frozen_candidate_search_evaluation(
+        calibration_path,
+        test_slide,
+        test_injections,
+        tmp_path / "locked.json",
+        minimum_test_live_time_years=5.0,
+        minimum_test_injections=2,
+        bootstrap_replicates=20,
+        seed=2,
+    )
+    assert result["candidate_endpoint_gates_passed"] is True
+    assert result["test_evaluation"]["background"]["far_per_year"] == 0.1
+    assert result["test_evaluation"]["injections"]["recovered"] == 1
 
 
 def test_validation_count_threshold_handles_ties_without_exceeding_budget():

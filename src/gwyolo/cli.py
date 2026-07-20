@@ -19,6 +19,8 @@ from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
 from .search import (
+    run_candidate_search_calibration,
+    run_frozen_candidate_search_evaluation,
     run_frozen_search_evaluation,
     run_search_benchmark,
     run_search_calibration,
@@ -101,6 +103,28 @@ def build_parser() -> argparse.ArgumentParser:
     search_frozen.add_argument("--bootstrap-replicates", type=int, default=2000)
     search_frozen.add_argument("--seed", type=int, default=20260719)
     search_frozen.add_argument("--output", required=True)
+
+    candidate_search_calibrate = subparsers.add_parser("candidate-search-calibrate")
+    candidate_search_calibrate.add_argument("--validation-time-slide-report", required=True)
+    candidate_search_calibrate.add_argument(
+        "--validation-injection-ranking-report", required=True
+    )
+    candidate_search_calibrate.add_argument("--target-far-per-year", type=float, required=True)
+    candidate_search_calibrate.add_argument("--output", required=True)
+    candidate_search_calibrate.add_argument("--bootstrap-replicates", type=int, default=2000)
+    candidate_search_calibrate.add_argument("--seed", type=int, default=20260720)
+
+    candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
+    candidate_search_frozen.add_argument("--calibration-report", required=True)
+    candidate_search_frozen.add_argument("--test-time-slide-report", required=True)
+    candidate_search_frozen.add_argument("--test-injection-ranking-report", required=True)
+    candidate_search_frozen.add_argument(
+        "--minimum-test-live-time-years", type=float, required=True
+    )
+    candidate_search_frozen.add_argument("--minimum-test-injections", type=int, required=True)
+    candidate_search_frozen.add_argument("--bootstrap-replicates", type=int, default=10000)
+    candidate_search_frozen.add_argument("--seed", type=int, default=20260721)
+    candidate_search_frozen.add_argument("--output", required=True)
 
     search_validation = subparsers.add_parser("search-validation-injections")
     search_validation.add_argument("--calibration-report", required=True)
@@ -861,6 +885,30 @@ def main(argv: list[str] | None = None) -> int:
                 args.test_injections,
                 args.test_live_time_years,
                 args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "candidate-search-calibrate":
+        _print(
+            run_candidate_search_calibration(
+                args.validation_time_slide_report,
+                args.validation_injection_ranking_report,
+                args.target_far_per_year,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "candidate-search-evaluate-frozen":
+        _print(
+            run_frozen_candidate_search_evaluation(
+                args.calibration_report,
+                args.test_time_slide_report,
+                args.test_injection_ranking_report,
+                args.output,
+                args.minimum_test_live_time_years,
+                args.minimum_test_injections,
                 args.bootstrap_replicates,
                 args.seed,
             )

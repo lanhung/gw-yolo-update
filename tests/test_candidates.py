@@ -177,6 +177,9 @@ def test_candidate_slide_publication_timing_gate_needs_calibration_and_physics()
             "timing_empirically_calibrated": True,
             "empirical_timing_uncertainty_seconds": 0.001,
             "timing_calibration_report_sha256": "a" * 64,
+            "candidate_checkpoint_sha256": "b" * 64,
+            "candidate_config_sha256": "c" * 64,
+            "candidate_code_commit": "deadbee",
         },
         {
             "candidate_id": "l1",
@@ -191,6 +194,9 @@ def test_candidate_slide_publication_timing_gate_needs_calibration_and_physics()
             "timing_empirically_calibrated": True,
             "empirical_timing_uncertainty_seconds": 0.001,
             "timing_calibration_report_sha256": "a" * 64,
+            "candidate_checkpoint_sha256": "b" * 64,
+            "candidate_config_sha256": "c" * 64,
+            "candidate_code_commit": "deadbee",
         },
     ]
     _, report = build_candidate_time_slides(
@@ -292,6 +298,9 @@ def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator()
             "timing_empirically_calibrated": True,
             "empirical_timing_uncertainty_seconds": 0.001,
             "timing_calibration_report_sha256": "a" * 64,
+            "candidate_checkpoint_sha256": "b" * 64,
+            "candidate_config_sha256": "c" * 64,
+            "candidate_code_commit": "deadbee",
         },
         {
             "candidate_id": "l",
@@ -304,6 +313,9 @@ def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator()
             "timing_empirically_calibrated": True,
             "empirical_timing_uncertainty_seconds": 0.001,
             "timing_calibration_report_sha256": "a" * 64,
+            "candidate_checkpoint_sha256": "b" * 64,
+            "candidate_config_sha256": "c" * 64,
+            "candidate_code_commit": "deadbee",
         },
     ]
     rows, report = build_injection_candidate_rankings(

@@ -74,6 +74,40 @@ The executable timing path is now ordered and leakage-safe:
 The resulting report is still non-claimable until validation/test provenance is frozen, GPS blocks
 are disjoint, and enough nonzero shifts support the requested IFAR.
 
+The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
+score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
+validation calibration and target candidates came from that exact scoring identity. Time-slide and
+injection-ranking reports require one common calibration, checkpoint, config and commit. Finally,
+`candidate-search-calibrate` reads validation reports only, and
+`candidate-search-evaluate-frozen` has no threshold argument, rejects any validation/test GPS,
+injection or waveform overlap, refuses to overwrite an existing locked result, and reports FAR,
+IFAR and weighted `<VT>` with bootstrap uncertainty. An empty background-candidate list freezes a
+threshold above probability support; it can never turn score-zero injection misses into detections.
+
+The intended H1/L1 sequence is:
+
+```bash
+python -m gwyolo.cli injection-arrival-annotate --manifest val.jsonl --output-dir val-arrivals
+python -m gwyolo.cli injection-score --manifest val-arrivals/materialized_injections_arrivals.jsonl \
+  --checkpoint model.pt --config experiment.yaml --output-dir val-score \
+  --required-split val --save-probabilities --coherence-config configs/physics_coherent_yolo_pilot.yaml
+python -m gwyolo.cli candidate-timing-calibrate \
+  --injection-triggers val-score/injection_triggers.jsonl --output timing-calibration.json
+python -m gwyolo.cli candidate-search-calibrate \
+  --validation-time-slide-report val-slides/val_candidate_time_slide_report.json \
+  --validation-injection-ranking-report val-rank/val_injection_candidate_ranking_report.json \
+  --target-far-per-year 1 --output frozen-candidate-threshold.json
+python -m gwyolo.cli candidate-search-evaluate-frozen \
+  --calibration-report frozen-candidate-threshold.json \
+  --test-time-slide-report test-slides/test_candidate_time_slide_report.json \
+  --test-injection-ranking-report test-rank/test_injection_candidate_ranking_report.json \
+  --minimum-test-live-time-years 10 --minimum-test-injections 20000 \
+  --output locked-candidate-search.json
+```
+
+Intermediate extraction, calibration application, slide and ranking commands are deliberately kept
+separate so their JSON reports can be audited before the locked command receives access to test data.
+
 The initially downloaded H1 file subsequently failed a complete HDF5 Fletcher32 scan, while L1
 matched all 16,777,216 samples, official strain statistics and DQ/injection bit sums. Consequently,
 all H1 and aligned H1+L1 background, trigger and time-slide numbers below are retained only as

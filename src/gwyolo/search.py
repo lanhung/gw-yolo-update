@@ -35,7 +35,11 @@ def calibrate_threshold(
     scores = sorted((float(score) for score in background_scores), reverse=True)
     if any(not math.isfinite(score) for score in scores):
         raise ValueError("background scores must be finite")
-    zero_count_threshold = math.nextafter(scores[0], math.inf) if scores else 0.0
+    zero_count_threshold = (
+        math.nextafter(scores[0], math.inf)
+        if scores
+        else float(np.finfo(np.float64).max)
+    )
     candidates = [zero_count_threshold, *sorted(set(scores), reverse=True)]
     allowed: list[tuple[float, int, float]] = []
     for threshold in candidates:
@@ -331,6 +335,254 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number} must contain a JSON object")
             rows.append(value)
     return rows
+
+
+def _verified_candidate_search_artifact(
+    report_path: str | Path, expected_status: str, split: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    with Path(report_path).open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if report.get("status") != expected_status or str(report.get("split")) != split:
+        raise ValueError(f"candidate search report is not the expected {split} artifact")
+    manifest = report.get("manifest_path")
+    expected_sha = report.get("manifest_sha256")
+    if not manifest or not expected_sha or file_sha256(manifest) != str(expected_sha):
+        raise ValueError("candidate search manifest hash mismatch")
+    rows = load_jsonl(manifest)
+    if any(str(row.get("split")) != split for row in rows):
+        raise ValueError(f"candidate search manifest contains non-{split} rows")
+    return report, rows
+
+
+def _candidate_search_identity(
+    slide_report: dict[str, Any], injection_report: dict[str, Any]
+) -> dict[str, Any]:
+    fields = (
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "timing_calibration_report_sha256",
+        "physical_delay_limit_seconds",
+        "empirical_timing_uncertainty_seconds",
+    )
+    mismatches = [
+        field
+        for field in fields
+        if slide_report.get(field) is None
+        or injection_report.get(field) is None
+        or str(slide_report[field]) != str(injection_report[field])
+    ]
+    if mismatches:
+        raise ValueError(f"background/injection candidate provenance differs: {mismatches}")
+    if (
+        str(slide_report.get("reference_ifo"))
+        != str(injection_report.get("reference_ifo"))
+        or str(slide_report.get("shifted_ifo"))
+        != str(injection_report.get("second_ifo"))
+    ):
+        raise ValueError("background/injection detector pair differs")
+    if not slide_report.get("publication_timing_gate_passed"):
+        raise ValueError("candidate time-slide timing gate did not pass")
+    if not injection_report.get("timing_calibration_consistent") or not injection_report.get(
+        "candidate_scoring_provenance_consistent"
+    ):
+        raise ValueError("injection candidate timing/scoring provenance is inconsistent")
+    return {
+        field: slide_report[field]
+        for field in fields
+    } | {
+        "reference_ifo": slide_report["reference_ifo"],
+        "second_ifo": slide_report["shifted_ifo"],
+    }
+
+
+def run_candidate_search_calibration(
+    validation_time_slide_report: str | Path,
+    validation_injection_ranking_report: str | Path,
+    target_far_per_year: float,
+    output: str | Path,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Freeze a candidate-level threshold using validation artifacts only."""
+
+    slide, background = _verified_candidate_search_artifact(
+        validation_time_slide_report,
+        "subwindow_clustered_time_slide_integration_only",
+        "val",
+    )
+    injections, injection_rows = _verified_candidate_search_artifact(
+        validation_injection_ranking_report,
+        "physical_network_injection_candidate_rankings",
+        "val",
+    )
+    identity = _candidate_search_identity(slide, injections)
+    live_time_years = float(slide["equivalent_live_time_years"])
+    if live_time_years <= 0:
+        raise ValueError("validation candidate background has no equivalent live time")
+    calibration = calibrate_threshold(
+        (float(row["ranking_score"]) for row in background),
+        live_time_years,
+        target_far_per_year,
+    )
+    validation_efficiency = summarize_injection_efficiency(
+        injection_rows,
+        float(calibration["threshold"]),
+        "ranking_score",
+        bootstrap_replicates,
+        seed,
+    )
+    result = {
+        "status": "frozen_validation_candidate_search_calibration",
+        "scientific_claim_allowed": False,
+        "selection_data": "validation_candidate_time_slides_only",
+        "test_evaluation": None,
+        "identity": identity,
+        "target_far_per_year": target_far_per_year,
+        "calibration": calibration,
+        "target_far_has_at_least_one_expected_background_count": (
+            live_time_years * target_far_per_year >= 1.0
+        ),
+        "validation_injection_diagnostic": validation_efficiency,
+        "validation_background_gps_blocks": list(slide["input_gps_blocks"]),
+        "validation_injection_gps_blocks": sorted(
+            {str(row["gps_block"]) for row in injection_rows}
+        ),
+        "validation_injection_ids_hash": canonical_hash(
+            sorted(str(row["injection_id"]) for row in injection_rows), 64
+        ),
+        "validation_injection_ids": sorted(
+            str(row["injection_id"]) for row in injection_rows
+        ),
+        "validation_waveform_ids_hash": canonical_hash(
+            sorted(str(row["waveform_id"]) for row in injection_rows), 64
+        ),
+        "validation_waveform_ids": sorted(
+            str(row["waveform_id"]) for row in injection_rows
+        ),
+        "validation_time_slide_report_path": str(validation_time_slide_report),
+        "validation_time_slide_report_sha256": file_sha256(validation_time_slide_report),
+        "validation_injection_ranking_report_path": str(
+            validation_injection_ranking_report
+        ),
+        "validation_injection_ranking_report_sha256": file_sha256(
+            validation_injection_ranking_report
+        ),
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def run_frozen_candidate_search_evaluation(
+    calibration_report: str | Path,
+    test_time_slide_report: str | Path,
+    test_injection_ranking_report: str | Path,
+    output: str | Path,
+    minimum_test_live_time_years: float,
+    minimum_test_injections: int,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260721,
+) -> dict[str, Any]:
+    """Apply a frozen candidate threshold once to disjoint locked-test artifacts."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("frozen candidate search output already exists")
+    if minimum_test_live_time_years <= 0 or minimum_test_injections <= 0:
+        raise ValueError("locked candidate endpoint minima must be positive")
+    with Path(calibration_report).open("r", encoding="utf-8") as handle:
+        frozen = json.load(handle)
+    if frozen.get("status") != "frozen_validation_candidate_search_calibration":
+        raise ValueError("candidate search calibration artifact has the wrong status")
+    if frozen.get("test_evaluation") is not None:
+        raise ValueError("candidate search calibration already contains test information")
+    slide, background = _verified_candidate_search_artifact(
+        test_time_slide_report,
+        "subwindow_clustered_time_slide_integration_only",
+        "test",
+    )
+    injections, injection_rows = _verified_candidate_search_artifact(
+        test_injection_ranking_report,
+        "physical_network_injection_candidate_rankings",
+        "test",
+    )
+    identity = _candidate_search_identity(slide, injections)
+    if identity != frozen.get("identity"):
+        raise ValueError("locked test candidate identity differs from frozen validation identity")
+    background_overlap = sorted(
+        set(str(value) for value in frozen["validation_background_gps_blocks"])
+        & set(str(value) for value in slide["input_gps_blocks"])
+    )
+    injection_blocks = {str(row["gps_block"]) for row in injection_rows}
+    injection_overlap = sorted(
+        set(str(value) for value in frozen["validation_injection_gps_blocks"])
+        & injection_blocks
+    )
+    injection_id_overlap = sorted(
+        set(str(value) for value in frozen["validation_injection_ids"])
+        & {str(row["injection_id"]) for row in injection_rows}
+    )
+    waveform_id_overlap = sorted(
+        set(str(value) for value in frozen["validation_waveform_ids"])
+        & {str(row["waveform_id"]) for row in injection_rows}
+    )
+    if background_overlap or injection_overlap or injection_id_overlap or waveform_id_overlap:
+        raise ValueError(
+            "locked candidate test overlaps validation physical groups: "
+            f"background={background_overlap[:5]}, injection_blocks={injection_overlap[:5]}, "
+            f"injection_ids={injection_id_overlap[:5]}, waveform_ids={waveform_id_overlap[:5]}"
+        )
+    live_time_years = float(slide["equivalent_live_time_years"])
+    evaluation = evaluate_search(
+        float(frozen["calibration"]["threshold"]),
+        (float(row["ranking_score"]) for row in background),
+        live_time_years,
+        injection_rows,
+        bootstrap_replicates,
+        seed,
+    )
+    endpoint_gates = {
+        "minimum_test_live_time": live_time_years >= minimum_test_live_time_years,
+        "minimum_test_injections": len(injection_rows) >= minimum_test_injections,
+        "zero_cross_split_background_gps_blocks": not background_overlap,
+        "zero_cross_split_injection_gps_blocks": not injection_overlap,
+        "zero_cross_split_injection_ids": not injection_id_overlap,
+        "zero_cross_split_waveform_ids": not waveform_id_overlap,
+        "frozen_candidate_identity": True,
+        "publication_timing_gate": bool(slide["publication_timing_gate_passed"]),
+    }
+    result = {
+        "status": "locked_candidate_search_evaluation",
+        "candidate_endpoint_gates_passed": all(endpoint_gates.values()),
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "candidate endpoint gates are necessary but final claims additionally require the "
+            "predeclared five-seed model comparison and O4b/GWTC-5 one-time access-log gate"
+        ),
+        "calibration_report_path": str(calibration_report),
+        "calibration_report_sha256": file_sha256(calibration_report),
+        "test_time_slide_report_path": str(test_time_slide_report),
+        "test_time_slide_report_sha256": file_sha256(test_time_slide_report),
+        "test_injection_ranking_report_path": str(test_injection_ranking_report),
+        "test_injection_ranking_report_sha256": file_sha256(
+            test_injection_ranking_report
+        ),
+        "identity": identity,
+        "threshold_source": "frozen_validation_candidate_search_calibration",
+        "target_far_per_year": frozen["target_far_per_year"],
+        "endpoint_gates": endpoint_gates,
+        "minimum_test_live_time_years": minimum_test_live_time_years,
+        "minimum_test_injections": minimum_test_injections,
+        "test_evaluation": evaluation,
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
 
 
 def run_search_benchmark(
