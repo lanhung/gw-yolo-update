@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gwyolo.physical_training import physical_split_audit, relative_component_mask
+from gwyolo.physical_training import (
+    physical_split_audit,
+    relative_component_mask,
+    scale_component_for_transform,
+)
 
 
 def test_relative_component_mask_handles_physical_amplitudes() -> None:
@@ -12,6 +16,14 @@ def test_relative_component_mask_handles_physical_amplitudes() -> None:
     mask = relative_component_mask(power)
     assert mask.sum() == 1
     assert mask[0, 0, 1, 1] == 1
+
+
+def test_component_scaling_prevents_physical_float32_power_underflow() -> None:
+    component = np.asarray([[0.0, 1e-24, -2e-24], [0.0, 0.0, 0.0]])
+    scaled = scale_component_for_transform(component)
+    assert scaled[0].tolist() == pytest.approx([0.0, 0.5, -1.0])
+    assert scaled[1].tolist() == [0.0, 0.0, 0.0]
+    assert np.max(np.abs(scaled[0])) == 1.0
 
 
 def test_physical_split_audit_rejects_gps_or_waveform_leakage() -> None:

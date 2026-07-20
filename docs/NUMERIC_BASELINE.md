@@ -104,3 +104,10 @@ path adapts; this is a preservation constraint, not a substitute for real glitch
 Remote publication runs set `GWYOLO_CODE_COMMIT` to the exact deployed commit; the report also
 records the literal command, environment, config hash, both manifest hashes, pretrained-model hash,
 selected-model hash, and seed.
+
+The first 2,000/500 physical fine-tune run is retained as a negative numerical-control result. Its
+best validation IoU was about `0.1034`; audit then showed BNS target-mask occupancy as high as
+`0.5579`. Physical strain power near `1e-48` had been cast to float32 inside the shared transform
+before the relative mask threshold, causing underflow and quantization. Physical target construction
+now scales each signal-only IFO to unit peak before power construction. This scaling affects only the
+amplitude-invariant target morphology; the real-noise mixture input retains its physical amplitude.

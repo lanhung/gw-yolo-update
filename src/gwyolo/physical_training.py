@@ -40,6 +40,15 @@ def relative_component_mask(power: np.ndarray, fraction: float = 0.08) -> np.nda
     return ((peaks > 0) & (values >= peaks * fraction)).astype(np.float32)
 
 
+def scale_component_for_transform(component: np.ndarray) -> np.ndarray:
+    """Scale each IFO before power construction so physical strain cannot underflow float32."""
+    values = np.asarray(component, dtype=np.float64)
+    if values.ndim != 2 or not np.isfinite(values).all():
+        raise ValueError("component must be finite [IFO, time]")
+    peaks = np.max(np.abs(values), axis=-1, keepdims=True)
+    return np.divide(values, peaks, out=np.zeros_like(values), where=peaks > 0)
+
+
 def physical_split_audit(
     train_rows: list[dict[str, Any]], validation_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -142,7 +151,7 @@ class PhysicalInjectionDataset:
             float(settings["fmax"]),
         )
         signal_power = multiresolution_power(
-            signal_array,
+            scale_component_for_transform(signal_array),
             self.target_sample_rate,
             self.q_values,
             int(settings["frequency_bins"]),
@@ -153,7 +162,9 @@ class PhysicalInjectionDataset:
         features = _normalize_power(feature_power).reshape(
             -1, feature_power.shape[-2], feature_power.shape[-1]
         )
-        target = relative_component_mask(signal_power).reshape(
+        target = relative_component_mask(
+            signal_power, float(settings.get("mask_fraction", 0.08))
+        ).reshape(
             -1, signal_power.shape[-2], signal_power.shape[-1]
         )
         if not np.isfinite(features).all() or not np.isfinite(target).all():
