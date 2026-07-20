@@ -7,6 +7,7 @@ from gwyolo.scaling import (
     analyze_manifest,
     fit_power_law_curve,
     make_scaling_plan,
+    summarize_physical_fixed_epoch_reports,
     summarize_physical_scale_reports,
 )
 
@@ -134,3 +135,60 @@ def test_physical_scale_summary_enforces_controls_and_calculates_seed_spread(tmp
     assert not scale["minimum_three_seed_gate"]
     assert not result["scientific_claim_allowed"]
     assert result["controlled_code_commit"] == "commit-hash"
+
+
+def test_fixed_epoch_scale_summary_holds_epochs_not_optimizer_examples_constant(tmp_path):
+    plan = tmp_path / "scale-plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "validation_manifest_sha256": "val-hash",
+                "scales": [
+                    {"scale": 2000, "manifest_sha256": "train-2k"},
+                    {"scale": 5000, "manifest_sha256": "train-5k"},
+                ],
+            }
+        )
+    )
+    reports = []
+    for scale, train_hash, examples, metric in (
+        (2000, "train-2k", 60000, 0.2),
+        (5000, "train-5k", 150000, 0.4),
+    ):
+        for seed in (1, 2, 3):
+            path = tmp_path / f"epoch-{scale}-{seed}.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "train_manifest_sha256": train_hash,
+                        "validation_manifest_sha256": "val-hash",
+                        "test_evaluation": None,
+                        "checkpoint_selection": "best_validation",
+                        "seed": seed,
+                        "training_selection": {"selected_rows": scale},
+                        "calibrated_validation": {"chirp_iou": metric},
+                        "selected_chirp_threshold": 0.5,
+                        "completed_epochs": 30,
+                        "selected_epoch": 20,
+                        "optimizer_updates": examples // 16,
+                        "optimizer_examples": examples,
+                        "pretrained_checkpoint_sha256": "pretrained-hash",
+                        "config_hash": "epoch-config",
+                        "code_commit": "epoch-commit",
+                        "run_identity": {"validation_tensor_cache_version": "cache-v1"},
+                        "checkpoint_sha256": f"checkpoint-{scale}-{seed}",
+                    }
+                )
+            )
+            reports.append(path)
+    result = summarize_physical_fixed_epoch_reports(
+        reports, plan, tmp_path / "epoch-summary.json"
+    )
+    assert result["control_complete"] is True
+    assert result["controlled_epochs"] == 30
+    assert result["scales"][0]["validation_chirp_iou_mean"] == pytest.approx(0.2)
+    assert result["scales"][1]["validation_chirp_iou_mean"] == pytest.approx(0.4)
+    examples_2k = result["scales"][0]["runs"][0]["optimizer_examples"]
+    examples_5k = result["scales"][1]["runs"][0]["optimizer_examples"]
+    assert examples_2k != examples_5k
+    assert result["scientific_claim_allowed"] is False

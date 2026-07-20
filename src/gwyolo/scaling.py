@@ -456,3 +456,191 @@ def run_physical_fixed_update_series(
         scale_subset_report_path,
         output / "physical_fixed_update_scale_summary.json",
     )
+
+
+def summarize_physical_fixed_epoch_reports(
+    report_paths: list[str | Path],
+    scale_subset_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Audit the complementary equal-epoch scaling control without opening test data."""
+    if not report_paths:
+        raise ValueError("At least one physical fixed-epoch report is required")
+    with Path(scale_subset_report_path).open("r", encoding="utf-8") as handle:
+        scale_plan = json.load(handle)
+    scale_by_hash = {
+        str(item["manifest_sha256"]): int(item["scale"])
+        for item in scale_plan.get("scales", [])
+    }
+    expected_validation_hash = str(scale_plan["validation_manifest_sha256"])
+    records = []
+    seen = set()
+    for path_value in report_paths:
+        path = Path(path_value)
+        with path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+        train_hash = str(report.get("train_manifest_sha256"))
+        if train_hash not in scale_by_hash:
+            raise ValueError(f"Fixed-epoch report is not from the frozen scale plan: {path}")
+        if str(report.get("validation_manifest_sha256")) != expected_validation_hash:
+            raise ValueError(f"Fixed-epoch report uses a different validation manifest: {path}")
+        if report.get("test_evaluation") is not None:
+            raise ValueError(f"Fixed-epoch summary refuses a report that opened test data: {path}")
+        if report.get("checkpoint_selection") != "best_validation":
+            raise ValueError(f"Fixed-epoch report did not use validation-only selection: {path}")
+        scale = scale_by_hash[train_hash]
+        seed = int(report["seed"])
+        if (scale, seed) in seen:
+            raise ValueError(f"Duplicate fixed-epoch scale/seed report: {scale}/{seed}")
+        seen.add((scale, seed))
+        if int(report["training_selection"]["selected_rows"]) != scale:
+            raise ValueError(f"Fixed-epoch selected-row count differs from frozen scale: {path}")
+        records.append(
+            {
+                "scale": scale,
+                "seed": seed,
+                "validation_chirp_iou": float(report["calibrated_validation"]["chirp_iou"]),
+                "selected_threshold": float(report["selected_chirp_threshold"]),
+                "completed_epochs": int(report["completed_epochs"]),
+                "selected_epoch": int(report["selected_epoch"]),
+                "optimizer_updates": int(report["optimizer_updates"]),
+                "optimizer_examples": int(report["optimizer_examples"]),
+                "pretrained_checkpoint_sha256": str(report["pretrained_checkpoint_sha256"]),
+                "config_hash": str(report["config_hash"]),
+                "code_commit": str(report.get("code_commit") or ""),
+                "validation_tensor_cache_version": report.get("run_identity", {}).get(
+                    "validation_tensor_cache_version"
+                ),
+                "checkpoint_sha256": str(report["checkpoint_sha256"]),
+                "report_path": str(path),
+                "report_sha256": file_sha256(path),
+            }
+        )
+    for field in (
+        "completed_epochs",
+        "pretrained_checkpoint_sha256",
+        "config_hash",
+        "code_commit",
+        "validation_tensor_cache_version",
+    ):
+        if len({record[field] for record in records}) != 1:
+            raise ValueError(f"Fixed-epoch reports disagree on controlled field: {field}")
+    if not records[0]["code_commit"]:
+        raise ValueError("Fixed-epoch reports must identify their code commit")
+    summaries = []
+    for scale in sorted(scale_by_hash.values()):
+        scale_records = sorted(
+            (record for record in records if record["scale"] == scale),
+            key=lambda item: item["seed"],
+        )
+        metrics = np.asarray([record["validation_chirp_iou"] for record in scale_records])
+        summaries.append(
+            {
+                "scale": scale,
+                "seeds": [record["seed"] for record in scale_records],
+                "seed_count": len(scale_records),
+                "validation_chirp_iou_mean": float(np.mean(metrics)) if len(metrics) else None,
+                "validation_chirp_iou_sample_std": (
+                    float(np.std(metrics, ddof=1)) if len(metrics) >= 2 else None
+                ),
+                "minimum_three_seed_gate": len(scale_records) >= 3,
+                "runs": scale_records,
+            }
+        )
+    complete = all(item["minimum_three_seed_gate"] for item in summaries)
+    result = {
+        "status": "physical_fixed_epoch_scale_summary",
+        "control_complete": complete,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "equal-epoch mask-IoU control cannot replace the frozen continuous-background and "
+            "physical-injection endpoint"
+        ),
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "scale_subset_report_path": str(scale_subset_report_path),
+        "scale_subset_report_sha256": file_sha256(scale_subset_report_path),
+        "validation_manifest_sha256": expected_validation_hash,
+        "controlled_epochs": records[0]["completed_epochs"],
+        "controlled_pretrained_checkpoint_sha256": records[0][
+            "pretrained_checkpoint_sha256"
+        ],
+        "controlled_config_hash": records[0]["config_hash"],
+        "controlled_code_commit": records[0]["code_commit"],
+        "controlled_validation_tensor_cache_version": records[0][
+            "validation_tensor_cache_version"
+        ],
+        "scales": summaries,
+        "test_evaluation": None,
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def run_physical_fixed_epoch_series(
+    config_path: str | Path,
+    scale_subset_report_path: str | Path,
+    pretrained_checkpoint: str | Path,
+    output_dir: str | Path,
+    seeds: list[int],
+    validation_feature_cache_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run every frozen scale/seed for the complementary equal-epoch control."""
+    unique_seeds = sorted(set(int(seed) for seed in seeds))
+    if not unique_seeds or len(unique_seeds) != len(seeds):
+        raise ValueError("Physical fixed-epoch series seeds must be non-empty and unique")
+    if not os.environ.get("GWYOLO_CODE_COMMIT"):
+        raise ValueError("Physical fixed-epoch series requires GWYOLO_CODE_COMMIT provenance")
+    config = load_yaml(config_path)
+    settings = config.get("physical_training", {})
+    if settings.get("checkpoint_selection") != "best_validation" or int(
+        settings.get("epochs", 0)
+    ) <= 0:
+        raise ValueError("Physical fixed-epoch series requires best_validation and positive epochs")
+    if settings.get("max_optimizer_updates") is not None:
+        raise ValueError("Physical fixed-epoch series cannot set max_optimizer_updates")
+    with Path(scale_subset_report_path).open("r", encoding="utf-8") as handle:
+        scale_plan = json.load(handle)
+    validation_manifest = Path(scale_plan["validation_manifest_path"])
+    if file_sha256(validation_manifest) != scale_plan["validation_manifest_sha256"]:
+        raise ValueError("Frozen fixed-epoch validation manifest hash mismatch")
+    scales = sorted(scale_plan.get("scales", []), key=lambda item: int(item["scale"]))
+    if not scales:
+        raise ValueError("Physical fixed-epoch series plan contains no scales")
+    from .physical_training import run_physical_finetune
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    report_paths = []
+    for item in scales:
+        train_manifest = Path(item["manifest_path"])
+        if file_sha256(train_manifest) != item["manifest_sha256"]:
+            raise ValueError(f"Frozen fixed-epoch scale manifest hash mismatch: {train_manifest}")
+        for seed in unique_seeds:
+            run_dir = output / f"scale-{int(item['scale'])}" / f"seed-{seed}"
+            run_physical_finetune(
+                config_path,
+                train_manifest,
+                validation_manifest,
+                pretrained_checkpoint,
+                run_dir,
+                seed,
+                validation_feature_cache_dir,
+            )
+            report_path = run_dir / "physical_finetune_report.json"
+            if not report_path.is_file():
+                raise RuntimeError(
+                    f"Physical fixed-epoch run completed without a report: {run_dir}"
+                )
+            report_paths.append(report_path)
+    return summarize_physical_fixed_epoch_reports(
+        report_paths,
+        scale_subset_report_path,
+        output / "physical_fixed_epoch_scale_summary.json",
+    )

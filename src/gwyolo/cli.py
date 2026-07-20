@@ -145,6 +145,14 @@ def build_parser() -> argparse.ArgumentParser:
     physical_scale_series.add_argument("--seed", action="append", type=int, required=True)
     physical_scale_series.add_argument("--validation-feature-cache-dir")
 
+    physical_scale_epoch_series = subparsers.add_parser("physical-scale-epoch-series")
+    physical_scale_epoch_series.add_argument("--config", required=True)
+    physical_scale_epoch_series.add_argument("--scale-subset-report", required=True)
+    physical_scale_epoch_series.add_argument("--pretrained-checkpoint", required=True)
+    physical_scale_epoch_series.add_argument("--output-dir", required=True)
+    physical_scale_epoch_series.add_argument("--seed", action="append", type=int, required=True)
+    physical_scale_epoch_series.add_argument("--validation-feature-cache-dir")
+
     factory = subparsers.add_parser("data-factory")
     factory.add_argument("--config", required=True)
     factory.add_argument("--output-dir", required=True)
@@ -644,6 +652,19 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_physical_fixed_update_series(
+                args.config,
+                args.scale_subset_report,
+                args.pretrained_checkpoint,
+                args.output_dir,
+                args.seed,
+                args.validation_feature_cache_dir,
+            )
+        )
+    elif args.command == "physical-scale-epoch-series":
+        from .scaling import run_physical_fixed_epoch_series
+
+        _print(
+            run_physical_fixed_epoch_series(
                 args.config,
                 args.scale_subset_report,
                 args.pretrained_checkpoint,

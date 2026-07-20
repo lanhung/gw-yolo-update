@@ -12,6 +12,11 @@ not promoted from mask IoU alone and still requires consistent improvement under
 and fixed-epoch controls; publication sensitivity remains conditional on clustered time slides,
 adequate continuous exposure, and the untouched locked test corpus.
 
+`physical-scale-epoch-series` executes the complementary equal-epoch control over the same nested
+manifests and seeds. It requires validation-only best-checkpoint selection, forbids an optimizer-step
+cap, verifies all manifest hashes, and writes a three-seed summary. Different scales are expected to
+consume different optimizer examples in this control; the held constant is 30 complete epochs.
+
 The program distinguishes three quantities:
 
 1. **Rendered images** — may include augmentations and are not an independence count.
