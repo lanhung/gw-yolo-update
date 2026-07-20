@@ -112,6 +112,43 @@ def _assign_blocks(
     return mapping
 
 
+def _assign_blocks_hash_threshold(
+    block_ids: Iterable[str], validation_fraction: float, test_fraction: float, seed: int
+) -> dict[str, str]:
+    """Assign blocks independently so later segments cannot change prior splits."""
+
+    if validation_fraction < 0 or test_fraction < 0 or validation_fraction + test_fraction >= 1:
+        raise ValueError("validation/test fractions must be non-negative and sum below one")
+    denominator = float(16**64)
+    mapping = {}
+    for block_id in sorted(set(block_ids)):
+        value = int(canonical_hash({"block_id": block_id, "seed": seed}, 64), 16) / denominator
+        if value < validation_fraction:
+            split = "val"
+        elif value < validation_fraction + test_fraction:
+            split = "test"
+        else:
+            split = "train"
+        mapping[block_id] = split
+    return mapping
+
+
+def _block_assignment(
+    block_ids: Iterable[str],
+    validation_fraction: float,
+    test_fraction: float,
+    seed: int,
+    split_strategy: str,
+) -> dict[str, str]:
+    if split_strategy == "balanced_rank_v1":
+        return _assign_blocks(block_ids, validation_fraction, test_fraction, seed)
+    if split_strategy == "hash_threshold_v1":
+        return _assign_blocks_hash_threshold(
+            block_ids, validation_fraction, test_fraction, seed
+        )
+    raise ValueError(f"unsupported background split strategy: {split_strategy}")
+
+
 def plan_background_windows(
     files: dict[str, str | Path],
     window_duration: int = 8,
@@ -124,6 +161,7 @@ def plan_background_windows(
     validation_fraction: float = 0.2,
     test_fraction: float = 0.2,
     seed: int = 20260719,
+    split_strategy: str = "balanced_rank_v1",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not files:
         raise ValueError("At least one detector file is required")
@@ -209,8 +247,12 @@ def plan_background_windows(
                 "source_files": source_files,
             }
         )
-    block_mapping = _assign_blocks(
-        (row["gps_block"] for row in candidates), validation_fraction, test_fraction, seed
+    block_mapping = _block_assignment(
+        (row["gps_block"] for row in candidates),
+        validation_fraction,
+        test_fraction,
+        seed,
+        split_strategy,
     )
     for row in candidates:
         row["split"] = block_mapping[row["gps_block"]]
@@ -242,6 +284,8 @@ def plan_background_windows(
         "required_context_duration": context_duration,
         "required_dq_bits": required_dq_bits,
         "required_injection_bits": required_injection_bits,
+        "split_strategy": split_strategy,
+        "split_seed": seed,
         "excluded_intervals": exclusions,
         "windows": len(candidates),
         "candidate_grid_windows": grid_windows,
@@ -298,6 +342,7 @@ def run_batch_background_plan(
     validation_fraction: float = 0.2,
     test_fraction: float = 0.2,
     seed: int = 20260719,
+    split_strategy: str = "balanced_rank_v1",
 ) -> dict[str, Any]:
     report_paths = (
         [Path(batch_report_path)]
@@ -379,8 +424,12 @@ def run_batch_background_plan(
         rows.extend(pair_rows)
     if not rows:
         raise ValueError("Verified batch produced no DQ-safe background windows")
-    block_mapping = _assign_blocks(
-        (row["gps_block"] for row in rows), validation_fraction, test_fraction, seed
+    block_mapping = _block_assignment(
+        (row["gps_block"] for row in rows),
+        validation_fraction,
+        test_fraction,
+        seed,
+        split_strategy,
     )
     for row in rows:
         row["split"] = block_mapping[row["gps_block"]]
@@ -428,6 +477,8 @@ def run_batch_background_plan(
         "required_context_duration": required_context_duration,
         "required_dq_bits": required_dq_bits,
         "required_injection_bits": required_injection_bits,
+        "split_strategy": split_strategy,
+        "split_seed": seed,
         "windows": len(rows),
         "candidate_grid_windows": aggregate_grid_windows,
         "rejected_windows": sum(aggregate_rejections.values()),

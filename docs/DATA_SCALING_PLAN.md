@@ -235,6 +235,14 @@ global GPS-block split across all files. Repeat `--batch-report` for every verif
 batch; planning batches separately is forbidden because adding files could otherwise change the
 validation/test allocation. All acquisition commands reject O4b development access.
 
+Large continuous acquisitions use `--split-strategy hash_threshold_v1`. It maps each complete
+256-second GPS block independently through the frozen seed and validation/test fractions, so adding
+later files cannot move an earlier block between splits. This is the only allowed mode for streaming
+shards: download and fully verify one bounded file batch, plan it, score all selected windows, retain
+hash-linked candidates, then release the recoverable GWOSC cache before the next batch. The legacy
+`balanced_rank_v1` strategy remains the default solely to reproduce already frozen manifests; it
+must still see every batch at once and is prohibited for incremental acquisition.
+
 ## Storage and compute strategy
 
 At the current JPEG size, 100k plots would be only several GB, but RGB plots discard physical information. A float32 tensor with several Q planes and three IFOs can consume hundreds of GB per 100k scenes. Prefer:

@@ -557,6 +557,11 @@ def build_parser() -> argparse.ArgumentParser:
     background.add_argument("--validation-fraction", type=float, default=0.2)
     background.add_argument("--test-fraction", type=float, default=0.2)
     background.add_argument("--seed", type=int, default=20260719)
+    background.add_argument(
+        "--split-strategy",
+        choices=("balanced_rank_v1", "hash_threshold_v1"),
+        default="balanced_rank_v1",
+    )
 
     background_batch = subparsers.add_parser("background-batch-plan")
     background_batch.add_argument("--batch-report", action="append", required=True)
@@ -571,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
     background_batch.add_argument("--validation-fraction", type=float, default=0.2)
     background_batch.add_argument("--test-fraction", type=float, default=0.2)
     background_batch.add_argument("--seed", type=int, default=20260719)
+    background_batch.add_argument(
+        "--split-strategy",
+        choices=("balanced_rank_v1", "hash_threshold_v1"),
+        default="balanced_rank_v1",
+    )
 
     deglitch = subparsers.add_parser("oracle-deglitch")
     deglitch.add_argument("--input", required=True)
@@ -1524,6 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
                 validation_fraction=args.validation_fraction,
                 test_fraction=args.test_fraction,
                 seed=args.seed,
+                split_strategy=args.split_strategy,
             )
         )
     elif args.command == "background-batch-plan":
@@ -1543,6 +1554,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_fraction,
                 args.test_fraction,
                 args.seed,
+                args.split_strategy,
             )
         )
     elif args.command == "oracle-deglitch":

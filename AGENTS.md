@@ -26,6 +26,7 @@ Build a reproducible, publication-grade, physics-coherent GW-YOLO front end that
 18. DINGO/AMPLFI are downstream PE systems, not detection-mAP baselines. Compare paired raw/contaminated/mask-conditioned inputs using coverage, bias, width, sample efficiency, sky area and latency.
 19. Do not scale to 50k/200k by schedule alone. Promote a scale only after the frozen O4a endpoint or a predeclared hard subset improves materially under both fixed-epoch and fixed-update controls.
 20. Calibration perturbations, missing detectors, new glitch families and observing-run transfer are required robustness strata, not optional image augmentation.
+21. Incremental continuous-background shards must use the frozen `hash_threshold_v1` GPS-block split. `balanced_rank_v1` may reproduce an existing frozen corpus but may not assign independently streamed shards.
 
 ## Repository conventions
 

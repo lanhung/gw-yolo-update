@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from gwyolo.background import (
+    _assign_blocks_hash_threshold,
     plan_background_windows,
     run_batch_background_plan,
     run_background_plan,
@@ -56,6 +57,17 @@ def test_background_windows_use_common_dq_and_disjoint_blocks(tmp_path) -> None:
     assert report["passed"]
     assert all(not values for values in report["cross_split_block_overlaps"].values())
     assert sum(item["live_time_seconds"] for item in report["splits"].values()) == 56
+
+
+def test_hash_threshold_split_is_stable_under_incremental_shards() -> None:
+    first = [f"gps:{index}:256" for index in range(20)]
+    second = [f"gps:{index}:256" for index in range(20, 40)]
+    combined = _assign_blocks_hash_threshold(first + second, 0.2, 0.2, 7)
+    incremental = {
+        **_assign_blocks_hash_threshold(first, 0.2, 0.2, 7),
+        **_assign_blocks_hash_threshold(second, 0.2, 0.2, 7),
+    }
+    assert incremental == combined
 
 
 def test_background_live_time_uses_interval_union(tmp_path) -> None:
