@@ -76,6 +76,26 @@ O2/O3a/O3b and four classes (manifest SHA256
 files were evicted only after output revalidation, recovering 648,372,382 bytes while preserving
 URL/SHA256 tombstones. A bounded five-file scale run covering O1--O3b is in progress.
 
+The five-file scale run is now complete and, together with the pilot, hash-merges to 709 unique
+train glitches over 162 network GPS blocks (manifest SHA256
+`0ca4bdb68a21a6176e08b2f77aefaae2cb4bb45b0038412753e3bd709df0bd8f`). All five source files were
+evicted only after numeric-output verification. One O2 row and 111 O3b rows were explicitly rejected
+for non-finite strain context; requested rows are otherwise fully accounted. The high-yield-file
+sample is strongly imbalanced (`1400Ripples=352`, `Whistle=166`), so it is acquisition evidence,
+not a promoted training distribution.
+
+A whole-source-file deficit selector now adds 1,075 proposed train glitches across 36 files and 407
+blocks, bringing every one of 21 labels to at least 50 when combined with the 709 verified rows
+(selection manifest SHA256
+`0eb8272a498770e6b4eab7ffcebf3b68bdbd7397d59a82680c49a5cd9a429cd0`). The independently frozen
+validation split maps 7,643/8,257 anchors to 4,851 official files (plan SHA256
+`e00a56714c4b5eeaa85b8d240fcbb799acfdc387492ad2044b4b5165d1e63bf0`). Its bounded selection has
+434 glitches, 158 blocks and 52 files (SHA256
+`3d25dcffe9ea9e5d2d8a7a19a6590051fe8209f0b09afcdddb905d441389f9b1`); 20 labels reach at least
+20 examples, while only eight complete-context `Wandering_Line` examples exist. Validation
+materialization is running before any real-glitch model selection. All masks remain weak metadata
+supervision and cannot support a segmentation claim without a frozen human pixel-mask audit.
+
 ## Evidence boundary
 
 This checkpoint uses only analytic training data and O4a development/validation data. It is not a
