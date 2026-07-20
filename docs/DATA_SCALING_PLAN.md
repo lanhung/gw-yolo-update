@@ -360,6 +360,10 @@ Because different scales complete different numbers of epochs within 3,750 updat
 selects only the final-update checkpoint. Per-epoch validation is retained as a diagnostic but
 cannot grant smaller datasets more checkpoint-selection opportunities. The primary fixed-epoch
 protocol continues to select its checkpoint only by the shared validation metric.
+The two executable configurations are
+`configs/physical_finetune_scale_fixed_updates.yaml` and
+`configs/physical_finetune_scale_fixed_epochs.yaml`; their reports must never be pooled into one
+seed distribution.
 
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
