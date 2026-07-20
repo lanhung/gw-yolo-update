@@ -122,3 +122,7 @@ from each injection's own real-noise context. It is resumable and writes explici
 `8–15`, `15–30`, and `>=30` strata. Physical training may require an annotated manifest and select
 only train injections above a configured SNR floor; validation remains unfiltered so sensitivity
 loss at low SNR stays visible rather than being removed from evaluation.
+`gwyolo physical-snr-curriculum` can retain sub-floor train waveforms by deterministically rescaling
+their signal-only component into an SNR 4–8 curriculum band. It never accepts validation/test rows,
+does not alter their population weights, and explicitly reports that rescaling adds no independent
+waveforms or GPS blocks.

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from gwyolo.physical_training import (
+    build_snr_curriculum_manifest,
     physical_split_audit,
     relative_component_mask,
     scale_component_for_transform,
@@ -24,6 +28,28 @@ def test_component_scaling_prevents_physical_float32_power_underflow() -> None:
     assert scaled[0].tolist() == pytest.approx([0.0, 0.5, -1.0])
     assert scaled[1].tolist() == [0.0, 0.0, 0.0]
     assert np.max(np.abs(scaled[0])) == 1.0
+
+
+def test_snr_curriculum_rescales_only_subfloor_training_rows(tmp_path) -> None:
+    manifest = tmp_path / "train.jsonl"
+    rows = [
+        {
+            "split": "train",
+            "injection_id": f"i{index}",
+            "waveform_id": f"w{index}",
+            "gps_block": f"g{index}",
+            "network_optimal_snr": snr,
+        }
+        for index, snr in enumerate((2.0, 6.0))
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = build_snr_curriculum_manifest(manifest, tmp_path / "out", seed=3)
+    output = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]
+    assert report["rescaled_rows"] == 1
+    assert 4.0 <= output[0]["training_network_optimal_snr"] < 8.0
+    assert output[0]["training_signal_scale"] > 1.0
+    assert output[1]["training_network_optimal_snr"] == 6.0
+    assert output[1]["training_signal_scale"] == 1.0
 
 
 def test_physical_split_audit_rejects_gps_or_waveform_leakage() -> None:

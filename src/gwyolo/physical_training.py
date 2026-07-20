@@ -15,7 +15,7 @@ import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten
-from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .numeric import MultiIFOQNet, _atomic_torch_save, _dice_loss
 from .waveforms import load_materialized_context
 
@@ -120,8 +120,11 @@ class PhysicalInjectionDataset:
         )
         mixture_planes = []
         signal_planes = []
-        mixture = np.asarray(context["mixture"], dtype=np.float64)
-        signal = np.asarray(context["signal"], dtype=np.float64)
+        signal_scale = float(self.rows[index].get("training_signal_scale", 1.0))
+        if not np.isfinite(signal_scale) or signal_scale <= 0:
+            raise ValueError("training signal scale must be finite and positive")
+        signal = np.asarray(context["signal"], dtype=np.float64) * signal_scale
+        mixture = np.asarray(context["noise"], dtype=np.float64) + signal
         for ifo in self.model_ifos:
             if ifo not in ifos:
                 mixture_planes.append(np.zeros(output_samples, dtype=np.float32))
@@ -284,7 +287,12 @@ def run_physical_finetune(
         validation_rows = [json.loads(line) for line in handle if line.strip()]
     minimum_training_snr = settings.get("minimum_training_network_snr")
     if minimum_training_snr is not None:
-        missing_snr = [row["injection_id"] for row in all_train_rows if "network_optimal_snr" not in row]
+        missing_snr = [
+            row["injection_id"]
+            for row in all_train_rows
+            if "network_optimal_snr" not in row
+            and "training_network_optimal_snr" not in row
+        ]
         if missing_snr:
             raise ValueError(
                 "SNR-filtered physical training requires an annotated manifest; missing "
@@ -293,7 +301,12 @@ def run_physical_finetune(
         train_rows = [
             row
             for row in all_train_rows
-            if float(row["network_optimal_snr"]) >= float(minimum_training_snr)
+            if float(
+                row["training_network_optimal_snr"]
+                if "training_network_optimal_snr" in row
+                else row["network_optimal_snr"]
+            )
+            >= float(minimum_training_snr)
         ]
     else:
         train_rows = all_train_rows
@@ -456,4 +469,85 @@ def run_physical_finetune(
         "test_evaluation": None,
     }
     atomic_write_json(output / "physical_finetune_report.json", report)
+    return report
+
+
+def build_snr_curriculum_manifest(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    minimum_snr: float = 4.0,
+    rescale_upper_snr: float = 8.0,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    if minimum_snr <= 0 or rescale_upper_snr <= minimum_snr:
+        raise ValueError("SNR curriculum bounds are invalid")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(row.get("split") != "train" for row in rows):
+        raise ValueError("SNR curriculum accepts a non-empty train-only manifest")
+    if any("network_optimal_snr" not in row for row in rows):
+        raise ValueError("SNR curriculum requires an optimal-SNR annotated manifest")
+    curriculum = []
+    rescaled = 0
+    for row in rows:
+        original_snr = float(row["network_optimal_snr"])
+        if not np.isfinite(original_snr) or original_snr <= 0:
+            raise ValueError(f"Invalid network optimal SNR for {row['injection_id']}")
+        if original_snr < minimum_snr:
+            uniform = int(
+                canonical_hash(f"{seed}:{row['injection_id']}:snr-curriculum", 16), 16
+            ) / 16**16
+            target_snr = minimum_snr * (rescale_upper_snr / minimum_snr) ** uniform
+            signal_scale = target_snr / original_snr
+            rescaled += 1
+        else:
+            target_snr = original_snr
+            signal_scale = 1.0
+        curriculum.append(
+            {
+                **row,
+                "training_original_network_optimal_snr": original_snr,
+                "training_network_optimal_snr": target_snr,
+                "training_signal_scale": signal_scale,
+                "training_snr_curriculum": (
+                    "below-floor signals deterministically log-uniformly rescaled into floor band"
+                ),
+            }
+        )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / "physical_train_snr_curriculum.jsonl"
+    atomic_write_text(
+        target, "".join(json.dumps(row, sort_keys=True) + "\n" for row in curriculum)
+    )
+    report = {
+        "status": "train_only_snr_curriculum",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "rescaling improves training coverage but does not add independent waveforms or "
+            "background; validation/test populations and VT weights must remain untouched"
+        ),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(target),
+        "manifest_sha256": file_sha256(target),
+        "seed": seed,
+        "minimum_snr": minimum_snr,
+        "rescale_upper_snr": rescale_upper_snr,
+        "rows": len(curriculum),
+        "rescaled_rows": rescaled,
+        "unchanged_rows": len(curriculum) - rescaled,
+        "unique_injection_ids": len({row["injection_id"] for row in curriculum}),
+        "unique_waveform_ids": len({row["waveform_id"] for row in curriculum}),
+        "unique_gps_blocks": len({row["gps_block"] for row in curriculum}),
+        "target_snr_quantiles": {
+            str(q): float(
+                np.quantile([row["training_network_optimal_snr"] for row in curriculum], q)
+            )
+            for q in (0.0, 0.1, 0.5, 0.9, 1.0)
+        },
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+    }
+    atomic_write_json(output / "snr_curriculum_report.json", report)
     return report

@@ -59,6 +59,7 @@ gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric bas
 gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
 gwyolo physical-finetune adapt the selected model to split-safe physical injections and real noise
+gwyolo physical-snr-curriculum rescale train-only subfloor signals without touching validation
 gwyolo waveform-validate compare stratified PyCBC waveforms to the direct LALSimulation API
 gwyolo injection-snr-annotate add empirical-noise optimal SNR for curriculum and strata
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves

@@ -194,6 +194,13 @@ def build_parser() -> argparse.ArgumentParser:
     physical_finetune.add_argument("--output-dir", required=True)
     physical_finetune.add_argument("--seed", type=int)
 
+    snr_curriculum = subparsers.add_parser("physical-snr-curriculum")
+    snr_curriculum.add_argument("--manifest", required=True)
+    snr_curriculum.add_argument("--output-dir", required=True)
+    snr_curriculum.add_argument("--minimum-snr", type=float, default=4.0)
+    snr_curriculum.add_argument("--rescale-upper-snr", type=float, default=8.0)
+    snr_curriculum.add_argument("--seed", type=int, default=20260720)
+
     subset = subparsers.add_parser("recipe-subset")
     subset.add_argument("--manifest", required=True)
     subset.add_argument("--output", required=True)
@@ -572,6 +579,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_manifest,
                 args.pretrained_checkpoint,
                 args.output_dir,
+                args.seed,
+            )
+        )
+    elif args.command == "physical-snr-curriculum":
+        from .physical_training import build_snr_curriculum_manifest
+
+        _print(
+            build_snr_curriculum_manifest(
+                args.manifest,
+                args.output_dir,
+                args.minimum_snr,
+                args.rescale_upper_snr,
                 args.seed,
             )
         )
