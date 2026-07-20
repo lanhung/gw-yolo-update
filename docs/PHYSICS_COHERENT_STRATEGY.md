@@ -169,6 +169,15 @@ that missing-detector masking works, but cannot establish H1/V1, L1/V1 or H1/L1/
 Detector-set training therefore remains blocked on a group-safe O1--O4a corpus with real detector-set
 coverage. No fixed-channel result is relabeled as variable-detector evidence.
 
+A provenance-complete GWOSC inventory resolves that data blocker without opening O4b. O4a contains
+no aligned H1/L1/V1 4-kHz file triples. O3b contains 2,029 such triples; a seed-20260720 stratified
+200-triple development plan spans GPS 1256697856--1269338112 and has SHA256
+`f7df61fb720369fbe8eaec4306fc3baea04a922f9d991220151b4c27100cce2a`. Its 9.48 raw detector-days
+are an acquisition upper bound, not analyzed live time. Because the raw HDF set exceeds local disk,
+the promoted data path is a verified numeric background bank with immediate source eviction, not a
+bulk download. O3b supplies variable-detector training; frozen O4a H1/L1 remains the run-transfer
+development endpoint.
+
 ## Paper success hierarchy
 
 1. **PRD target:** paired fixed-FAR `<VT>` or overlap-efficiency improvement with clean-signal

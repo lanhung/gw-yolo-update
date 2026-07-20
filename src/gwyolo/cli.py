@@ -474,6 +474,19 @@ def build_parser() -> argparse.ArgumentParser:
     injection_scale.add_argument("--scale", action="append", type=int)
     injection_scale.add_argument("--supplement-seed", type=int, default=20260722)
 
+    background_bank = subparsers.add_parser("background-bank-materialize")
+    background_bank.add_argument("--background-manifest", required=True)
+    background_bank.add_argument("--output-dir", required=True)
+    background_bank.add_argument("--target-sample-rate", type=int, default=1024)
+    background_bank.add_argument("--context-duration", type=float, default=64.0)
+    background_bank.add_argument("--split", choices=("train", "val", "test"))
+    background_bank.add_argument("--limit", type=int)
+
+    background_bank_evict = subparsers.add_parser("background-bank-evict-sources")
+    background_bank_evict.add_argument("--background-bank-report", required=True)
+    background_bank_evict.add_argument("--cache-root", required=True)
+    background_bank_evict.add_argument("--output", required=True)
+
     materialize = subparsers.add_parser("injection-materialize")
     materialize.add_argument("--recipes", required=True)
     materialize.add_argument("--background-manifest", required=True)
@@ -1152,6 +1165,27 @@ def main(argv: list[str] | None = None) -> int:
                 backend_validation_report=args.backend_validation_report,
                 context_duration=args.context_duration,
                 storage_mode=args.storage_mode,
+            )
+        )
+    elif args.command == "background-bank-materialize":
+        from .waveforms import materialize_background_bank
+
+        _print(
+            materialize_background_bank(
+                args.background_manifest,
+                args.output_dir,
+                args.target_sample_rate,
+                args.context_duration,
+                args.split,
+                args.limit,
+            )
+        )
+    elif args.command == "background-bank-evict-sources":
+        from .waveforms import evict_verified_background_bank_sources
+
+        _print(
+            evict_verified_background_bank_sources(
+                args.background_bank_report, args.cache_root, args.output
             )
         )
     elif args.command == "waveform-validate":

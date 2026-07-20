@@ -8,8 +8,10 @@ import pytest
 
 from gwyolo.io import file_sha256
 from gwyolo.waveforms import (
-    materialize_recipe,
+    evict_verified_background_bank_sources,
     load_materialized_context,
+    materialize_background_bank,
+    materialize_recipe,
     optimal_snr_stratum,
     pack_scaled_float16_signal,
     place_waveform_samples,
@@ -17,6 +19,101 @@ from gwyolo.waveforms import (
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_numeric_background_bank_survives_source_eviction(tmp_path) -> None:
+    source = tmp_path / "strain.hdf5"
+    with h5py.File(source, "w") as handle:
+        meta = handle.create_group("meta")
+        meta.create_dataset("GPSstart", data=100)
+        strain = handle.create_group("strain").create_dataset(
+            "Strain", data=np.arange(32, dtype=np.float64)
+        )
+        strain.attrs["Xspacing"] = 0.25
+    background = {
+        "window_id": "bank-window",
+        "gps_block": "bank-block",
+        "split": "train",
+        "gps_start": 103.0,
+        "duration": 2.0,
+        "ifos": ["H1"],
+        "source_files": {"H1": {"path": str(source), "sha256": file_sha256(source)}},
+    }
+    manifest = tmp_path / "background.jsonl"
+    manifest.write_text(json.dumps(background) + "\n", encoding="utf-8")
+    bank_report = materialize_background_bank(
+        manifest, tmp_path / "bank", target_sample_rate=4, context_duration=4.0
+    )
+    with open(bank_report["manifest_path"], encoding="utf-8") as handle:
+        bank_background = json.loads(next(handle))
+    assert bank_report["selected_windows"] == 1
+    assert bank_report["unique_source_files"] == 1
+    source.unlink()
+
+    class FakeBackend:
+        def generate(self, recipe, ifos, sample_rate):
+            return {"H1": (103.0, np.asarray([1.0, 2.0]))}, {"H1": {"fake": True}}
+
+    recipe = {
+        "injection_id": "bank-injection",
+        "background_window_id": "bank-window",
+        "gps_block": "bank-block",
+        "split": "train",
+    }
+    materialized = materialize_recipe(
+        recipe,
+        bank_background,
+        FakeBackend(),
+        4,
+        tmp_path / "bank-injection.npz",
+        context_duration=4.0,
+        storage_mode="signal_scaled_float16",
+    )
+    loaded = load_materialized_context(materialized)
+    assert loaded["noise"].shape == (1, 16)
+    assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
+
+
+def test_background_bank_source_eviction_requires_complete_hash_verification(tmp_path) -> None:
+    cache = tmp_path / "bounded-cache"
+    cache.mkdir()
+    source = cache / "strain.hdf5"
+    with h5py.File(source, "w") as handle:
+        meta = handle.create_group("meta")
+        meta.create_dataset("GPSstart", data=100)
+        strain = handle.create_group("strain").create_dataset(
+            "Strain", data=np.arange(32, dtype=np.float64)
+        )
+        strain.attrs["Xspacing"] = 0.25
+    background = {
+        "window_id": "evict-window",
+        "gps_block": "evict-block",
+        "split": "train",
+        "gps_start": 103.0,
+        "duration": 2.0,
+        "ifos": ["H1"],
+        "source_files": {"H1": {"path": str(source), "sha256": file_sha256(source)}},
+    }
+    manifest = tmp_path / "evict-background.jsonl"
+    manifest.write_text(json.dumps(background) + "\n", encoding="utf-8")
+    bank_dir = tmp_path / "evict-bank"
+    materialize_background_bank(manifest, bank_dir, 4, 4.0)
+    eviction = evict_verified_background_bank_sources(
+        bank_dir / "background_bank_report.json",
+        cache,
+        tmp_path / "eviction.json",
+    )
+    assert eviction["removed_files"] == 1
+    assert eviction["recoverable"] is True
+    assert not source.exists()
+
+    source.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        evict_verified_background_bank_sources(
+            bank_dir / "background_bank_report.json",
+            cache,
+            tmp_path / "must-not-write.json",
+        )
 
 
 def test_scaled_float16_signal_storage_preserves_physical_amplitude() -> None:

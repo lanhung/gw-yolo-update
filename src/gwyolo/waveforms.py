@@ -532,9 +532,63 @@ class PyCBCWaveformBackend:
         return projected, signal_summary
 
 
+def _load_background_bank(
+    reference: dict[str, Any],
+    verified_hashes: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    path = Path(reference["path"])
+    expected_hash = str(reference["sha256"])
+    verified = verified_hashes if verified_hashes is not None else {}
+    actual_hash = verified.get(str(path))
+    if actual_hash is None:
+        actual_hash = file_sha256(path)
+        verified[str(path)] = actual_hash
+    if actual_hash != expected_hash:
+        raise ValueError("background bank hash mismatch")
+    with np.load(path, allow_pickle=False) as arrays:
+        required = {
+            "noise",
+            "ifos",
+            "sample_rate",
+            "context_gps_start",
+            "analysis_gps_start",
+            "analysis_start_index",
+            "analysis_stop_index",
+            "window_id",
+        }
+        missing = sorted(required - set(arrays.files))
+        if missing:
+            raise ValueError(f"background bank artifact lacks fields: {missing}")
+        result = {
+            "noise": np.asarray(arrays["noise"], dtype=np.float64),
+            "ifos": [str(value) for value in arrays["ifos"].tolist()],
+            "sample_rate": int(arrays["sample_rate"]),
+            "context_gps_start": float(arrays["context_gps_start"]),
+            "analysis_gps_start": float(arrays["analysis_gps_start"]),
+            "analysis_start_index": int(arrays["analysis_start_index"]),
+            "analysis_stop_index": int(arrays["analysis_stop_index"]),
+            "window_id": str(arrays["window_id"].item()),
+        }
+    if result["noise"].ndim != 2 or not np.isfinite(result["noise"]).all():
+        raise ValueError("background bank noise must be finite [IFO, time]")
+    if result["noise"].shape[0] != len(result["ifos"]):
+        raise ValueError("background bank IFO axis mismatch")
+    return result
+
+
 def _read_background(
     row: dict[str, Any], target_sample_rate: int, context_duration: float
 ) -> tuple[list[str], np.ndarray, float]:
+    if row.get("background_bank"):
+        bank = _load_background_bank(row["background_bank"])
+        if bank["window_id"] != str(row["window_id"]):
+            raise ValueError("Background bank/window identity mismatch")
+        if bank["sample_rate"] != target_sample_rate:
+            raise ValueError("Background bank sample rate differs from requested materialization")
+        observed_duration = bank["noise"].shape[1] / target_sample_rate
+        if not np.isclose(observed_duration, context_duration, rtol=0.0, atol=1e-9):
+            raise ValueError("Background bank context duration differs from requested materialization")
+        return bank["ifos"], bank["noise"], bank["context_gps_start"]
     analysis_start = float(row["gps_start"])
     analysis_duration = float(row["duration"])
     if context_duration < analysis_duration:
@@ -635,7 +689,16 @@ def load_materialized_context(
         stored_mixture = (
             np.asarray(arrays["strain"], dtype=np.float64) if "strain" in arrays else None
         )
-    if stored_noise is None:
+    if stored_noise is None and row.get("background_bank"):
+        bank = _load_background_bank(row["background_bank"], verified_background_hashes)
+        if bank["window_id"] != str(row["background_window_id"]):
+            raise ValueError("materialized signal/background bank window identity mismatch")
+        if bank["sample_rate"] != source_rate or bank["ifos"] != ifos:
+            raise ValueError("materialized signal/background bank detector contract mismatch")
+        if not np.isclose(bank["context_gps_start"], context_start, rtol=0.0, atol=1e-9):
+            raise ValueError("materialized signal/background bank context mismatch")
+        noise = bank["noise"]
+    elif stored_noise is None:
         verified = verified_background_hashes if verified_background_hashes is not None else {}
         context_duration = signal.shape[1] / source_rate
         context_center = context_start + context_duration / 2.0
@@ -678,6 +741,241 @@ def load_materialized_context(
         "signal": signal,
         "mixture": mixture,
     }
+
+
+def materialize_background_bank(
+    background_manifest: str | Path,
+    output_dir: str | Path,
+    target_sample_rate: int = 1024,
+    context_duration: float = 64.0,
+    split: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Extract unique numeric noise contexts so verified source HDF files can be evicted."""
+    if target_sample_rate <= 0 or context_duration <= 0:
+        raise ValueError("background bank sample rate and context duration must be positive")
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    selected = [row for row in rows if split is None or row.get("split") == split]
+    if limit is not None:
+        if limit <= 0:
+            raise ValueError("background bank limit must be positive")
+        selected = selected[:limit]
+    if not selected:
+        raise ValueError("No background rows selected for numeric bank materialization")
+    window_ids = [str(row["window_id"]) for row in selected]
+    if len(set(window_ids)) != len(window_ids):
+        raise ValueError("Background bank selection contains duplicate window IDs")
+    source_hashes = {}
+    for row in selected:
+        for ifo in row["ifos"]:
+            source = row["source_files"][ifo]
+            path = str(source["path"])
+            expected = str(source["sha256"])
+            actual = source_hashes.get(path)
+            if actual is None:
+                actual = file_sha256(path)
+                source_hashes[path] = actual
+            if actual != expected:
+                raise ValueError(f"Background source hash mismatch before bank extraction: {ifo}")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "selected_window_ids_hash": canonical_hash(window_ids, 64),
+        "target_sample_rate": target_sample_rate,
+        "context_duration": context_duration,
+        "split": split,
+        "limit": limit,
+        "source_hashes": dict(sorted(source_hashes.items())),
+    }
+    state_path = output / "background_bank_state.json"
+    partial_path = output / "background_bank.partial.jsonl"
+    completed = []
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing background bank state belongs to a different run")
+    if partial_path.is_file():
+        with partial_path.open("r", encoding="utf-8") as handle:
+            completed = [json.loads(line) for line in handle if line.strip()]
+    completed_by_id = {}
+    for row in completed:
+        window_id = str(row["window_id"])
+        if window_id not in set(window_ids) or window_id in completed_by_id:
+            raise ValueError("Partial background bank contains unexpected or duplicate windows")
+        reference = row["background_bank"]
+        if file_sha256(reference["path"]) != reference["sha256"]:
+            raise ValueError(f"Partial background bank hash mismatch: {window_id}")
+        completed_by_id[window_id] = row
+    enriched = []
+    started = time.time()
+    for index, row in enumerate(selected, start=1):
+        window_id = str(row["window_id"])
+        if window_id in completed_by_id:
+            enriched.append(completed_by_id[window_id])
+            continue
+        ifos, noise, context_start = _read_background(
+            row, target_sample_rate, context_duration
+        )
+        analysis_start_index = int(
+            round((float(row["gps_start"]) - context_start) * target_sample_rate)
+        )
+        analysis_stop_index = analysis_start_index + int(
+            round(float(row["duration"]) * target_sample_rate)
+        )
+        artifact = output / "arrays" / f"{window_id}.npz"
+        _atomic_save_npz(
+            artifact,
+            noise=noise.astype(np.float32),
+            ifos=np.asarray(ifos),
+            sample_rate=np.asarray(target_sample_rate, dtype=np.int64),
+            context_gps_start=np.asarray(context_start, dtype=np.float64),
+            analysis_gps_start=np.asarray(row["gps_start"], dtype=np.float64),
+            analysis_start_index=np.asarray(analysis_start_index, dtype=np.int64),
+            analysis_stop_index=np.asarray(analysis_stop_index, dtype=np.int64),
+            window_id=np.asarray(window_id),
+        )
+        enriched.append(
+            {
+                **row,
+                "background_bank": {
+                    "path": str(artifact),
+                    "sha256": file_sha256(artifact),
+                    "dtype": "float32",
+                    "sample_rate": target_sample_rate,
+                    "context_duration": context_duration,
+                },
+            }
+        )
+        if index % 10 == 0 or index == len(selected):
+            atomic_write_text(
+                partial_path,
+                "".join(json.dumps(item, sort_keys=True) + "\n" for item in enriched),
+            )
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress",
+                    "run_identity": run_identity,
+                    "completed": len(enriched),
+                    "requested": len(selected),
+                },
+            )
+    manifest_path = output / "background_bank_manifest.jsonl"
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in enriched),
+    )
+    report = {
+        "status": "verified_numeric_background_bank",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "numeric context extraction enables streaming storage but does not establish search "
+            "background exposure or injection sensitivity"
+        ),
+        "background_manifest_path": str(background_manifest),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "selected_split": split,
+        "selected_windows": len(enriched),
+        "unique_window_ids": len(set(window_ids)),
+        "unique_source_files": len(source_hashes),
+        "target_sample_rate": target_sample_rate,
+        "context_duration": context_duration,
+        "stored_bytes": sum(Path(row["background_bank"]["path"]).stat().st_size for row in enriched),
+        "source_hashes": dict(sorted(source_hashes.items())),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "run_identity": run_identity,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "elapsed_seconds": time.time() - started,
+    }
+    atomic_write_json(output / "background_bank_report.json", report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed": len(enriched),
+            "requested": len(selected),
+            "manifest_sha256": report["manifest_sha256"],
+        },
+    )
+    return report
+
+
+def evict_verified_background_bank_sources(
+    background_bank_report: str | Path,
+    cache_root: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Remove exact source HDF files only after the numeric bank is fully re-verified."""
+    with Path(background_bank_report).open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    if report.get("status") != "verified_numeric_background_bank":
+        raise ValueError("Background source eviction requires a verified numeric bank report")
+    manifest = Path(report["manifest_path"])
+    if file_sha256(manifest) != report["manifest_sha256"]:
+        raise ValueError("Background bank manifest hash mismatch before source eviction")
+    with manifest.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if len(rows) != int(report["selected_windows"]):
+        raise ValueError("Background bank row count mismatch before source eviction")
+    verified_bank_hashes = {}
+    for row in rows:
+        _load_background_bank(row["background_bank"], verified_bank_hashes)
+    root = Path(cache_root).resolve()
+    if root in {Path("/").resolve(), Path("/root").resolve()} or len(root.parts) < 3:
+        raise ValueError("Background source eviction cache root is too broad")
+    source_hashes = {str(path): str(value) for path, value in report["source_hashes"].items()}
+    if not source_hashes:
+        raise ValueError("Background bank report contains no source files to evict")
+    validated = []
+    for path_value, expected_hash in sorted(source_hashes.items()):
+        path = Path(path_value).resolve()
+        if root != path.parent and root not in path.parents:
+            raise ValueError(f"Background source lies outside explicit cache root: {path}")
+        if not path.is_file():
+            raise ValueError(f"Background source is missing before verified eviction: {path}")
+        actual_hash = file_sha256(path)
+        if actual_hash != expected_hash:
+            raise ValueError(f"Background source hash mismatch before eviction: {path}")
+        validated.append((path, path.stat().st_size, actual_hash))
+    removed = []
+    for path, size, sha256 in validated:
+        path.unlink()
+        removed.append({"path": str(path), "bytes": size, "sha256": sha256})
+    result = {
+        "status": "verified_background_source_eviction",
+        "recoverable": True,
+        "recovery": "re-download exact public GWOSC source URLs recorded in the parent manifest",
+        "background_bank_report_path": str(background_bank_report),
+        "background_bank_report_sha256": file_sha256(background_bank_report),
+        "background_bank_manifest_sha256": report["manifest_sha256"],
+        "verified_bank_artifacts": len(verified_bank_hashes),
+        "cache_root": str(root),
+        "removed_files": len(removed),
+        "removed_bytes": sum(item["bytes"] for item in removed),
+        "removed": removed,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+    }
+    atomic_write_json(output, result)
+    return result
 
 
 def materialize_recipe(
@@ -767,6 +1065,7 @@ def materialize_recipe(
             }
             for ifo in ifos
         },
+        "background_bank": background.get("background_bank"),
     }
 
 

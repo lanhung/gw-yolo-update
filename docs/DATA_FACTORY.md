@@ -158,4 +158,20 @@ The next backend must preserve the same recipes and split identities while repla
 5. produce paired mixture/clean targets for mask gating and posterior-bias experiments;
 6. freeze real O4b background and injection manifests before evaluating the selected system.
 
+## Streaming numeric background bank
+
+Multi-detector run-scale acquisition cannot retain every 4,096-second HDF source on the experiment
+disk. `background-bank-materialize` therefore hash-verifies every exact source file referenced by a
+bounded background manifest, extracts each unique full-context numeric noise window once, stores it
+as float32 with detector/GPS/index metadata, and writes a resumable enriched manifest. Subsequent
+signal-only or scaled-float16 injection artifacts reference that bank; loading verifies both hashes
+and refuses detector, window, sample-rate or context mismatches.
+
+`background-bank-evict-sources` is the only authorized source-removal boundary for this workflow. It
+re-hashes the bank report and manifest, opens and validates every bank artifact, re-hashes every
+source, and requires every exact source path to lie below an explicit bounded cache root before
+unlinking it. Its report records each removed path/size/hash and the public-GWOSC recovery route.
+This enables download → verify → extract → verify → evict streaming without weakening provenance or
+duplicating the same 64-second noise context for every injection.
+
 No result from the analytic backend may be reported as O4 sensitivity, FAR, IFAR, or `<VT>`.
