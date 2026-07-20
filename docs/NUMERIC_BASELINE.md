@@ -47,8 +47,14 @@ gives `alpha=0.513`, asymptote 0.920, and R² 0.994, with exploratory forecasts 
 at 50k. The completed 10k run selected epoch 20 with pre-calibration
 validation mean IoU 0.883 and validation-selected 0.7/0.7 thresholds; calibrated validation mean IoU
 is 0.887 (chirp 0.918, glitch 0.856), 1.05 points above 5k. This confirms continued improvement but
-also a marked reduction from the 2k→5k gain. One seed cannot distinguish saturation from seed noise,
-so the 10k point is now being repeated to reach five seeds and is not a stopping rule.
+also a marked reduction from the 2k→5k gain.
+
+The required five-seed repeat is complete. Pre-calibration best validation mean IoU is 0.88087,
+with sample standard deviation 0.00678 and Student-t 95% interval `[0.87245, 0.88928]`; individual
+best values span 0.86975–0.88810. Seed 20260721 is the validation-selected checkpoint (epoch 17,
+SHA256 `61730b9734a90fd01e4678470026cacc8c3e78cdf008e68cbcaf88ebd3ae8e72`). The aggregate report
+SHA256 is `39f3407bfe8abdbdf8a753532ab23b12a101b017dfb2f967710daa027b09245f`.
+No test split was evaluated during this sweep.
 
 After selecting the 250-scene point, the frozen 0.7/0.7 thresholds were applied once to the shared
 64-scene test:
@@ -79,11 +85,9 @@ was disabled and remains null.
 
 ## Immediate implications
 
-1. Repeat the completed 10k point with at least five total training seeds. `gwyolo numeric-multiseed`
-   resumes finished seed
-   directories, reuses a validated existing report without copying its checkpoint, and atomically
-   updates a Student-t validation summary after every seed. It rejects duplicate seeds, manifest
-   mismatches and non-seed configuration mismatches. Test data remain unevaluated in this sweep.
+1. Treat the completed five-seed 10k experiment as the analytic-domain reference, not a paper result.
+   `gwyolo numeric-multiseed` resumes finished seed directories, validates manifest/config identity,
+   and retains every seed including the lower 0.86975 run. Test data remained unevaluated.
 2. The optional in-memory cache produces exactly identical metrics and reduced the 72-scene run from
    157.5 to 27.6 seconds (5.7×). Use it for fixed scaling scenes, but not as a substitute for online
    recipe diversity in publication training.

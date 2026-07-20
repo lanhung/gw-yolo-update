@@ -153,6 +153,41 @@ The data factory must ultimately produce trigger-level outputs. At a frozen thre
 - a 0.01/year FAR claim (IFAR 100 years) requires about 230 years;
 - stronger claims require proportionally more time slides or background.
 
+## 2026-07-20 physical-domain checkpoint
+
+The five-seed 10k analytic curve is now statistically stable enough to reject a simple “only add
+more of the same synthetic images” strategy. Mean validation IoU is `0.88087 ± 0.00678`, while a
+validation-only real-O4a experiment using 300 cosmological PyCBC/LAL injections recovered only
+22.3% unweighted and 16.8% volume-weighted at the permissive 7,953/year measured FAR point. At the
+threshold nominally requested for 1/year it recovered 9.0% unweighted and 6.1% weighted, but the
+available 3.3 hours of time-slide exposure supports only a 90% zero-count upper limit of 6,104/year.
+The “1/year” number is therefore a threshold stress test, not a measured FAR claim.
+
+This combination indicates a domain-and-exposure bottleneck, not merely insufficient row count:
+
+- 10k analytic scenes are nearing their in-domain scaling asymptote;
+- the physical pilot has only 300 injections and six GPS blocks;
+- the continuous background is one 4,096-second O4a file and 31 short nonzero shifts;
+- the waveform backend still lacks an external equivalence certificate;
+- the network time grid is 83 ms, too coarse for publication coincidence.
+
+The next scaling matrix must therefore increase independent information along separate axes:
+
+| Axis | Nested development points | Promotion target |
+|---|---|---|
+| Physical training waveforms | 10k, 25k, 50k, 100k, 200k | 200k unique waveform IDs |
+| Real background | 100, 300, 1k, 3k, 10k GPS blocks | at least 30 coincident detector-days across runs |
+| Validation injections | 1k, 3k, 10k | at least 10k, family/SNR/overlap stratified |
+| Locked test injections | never sampled during development | 50k–200k after pre-registration |
+| Glitch anchors | 1k, 5k, 20k, 50k unique IDs | coverage-driven, not remix-count driven |
+| Time-slide exposure | 2.3, 23, 100, 230 equivalent years | chosen from the preregistered FAR/IFAR endpoint |
+
+At each doubling, hold the validation injections, GPS blocks, waveform population, seed set and FAR
+definition fixed. Continue adding data if the primary O4a weighted efficiency or low-SNR/overlap
+endpoint improves by at least one percentage point. If analytic IoU rises but O4a efficiency does
+not, add run/IFO/glitch diversity; if both plateau, change representation (higher temporal output,
+long/multi-rate context and coherent fusion) before generating more correlated mixtures.
+
 ## Storage and compute strategy
 
 At the current JPEG size, 100k plots would be only several GB, but RGB plots discard physical information. A float32 tensor with several Q planes and three IFOs can consume hundreds of GB per 100k scenes. Prefer:
