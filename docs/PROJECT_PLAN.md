@@ -185,4 +185,11 @@ Revised priority order:
 5. stream O4a continuous background, freeze morphology/coherence/mask-conditioned ranking thresholds, and measure FAR/IFAR/`<VT>`;
 6. promote only the best validation arm to five seeds, then run paired raw/contaminated/mask-conditioned DINGO and AMPLFI inference;
 7. freeze code, data, thresholds, OOD policy and access log before the one-time O4b/GWTC-5 evaluation.
+
+The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
+validation-only calibration of the exact per-cluster strain timing method; calibration-hash
+application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag
+network rankings that retain misses in the `<VT>` denominator; then a separate frozen-test command.
+The 96-bin mask is a region proposal, not the arrival-time measurement. The old window-maximum slide
+path remains an integration baseline and cannot support a FAR/IFAR claim.
 6. reproducibility lead: CI, containers, artifact registry, paper tables.

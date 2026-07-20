@@ -8,6 +8,7 @@ import pytest
 
 from gwyolo.io import file_sha256
 from gwyolo.waveforms import (
+    annotate_detector_arrival_rows,
     evict_verified_background_bank_sources,
     load_materialized_context,
     materialize_background_bank,
@@ -19,6 +20,30 @@ from gwyolo.waveforms import (
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_detector_arrivals_use_geometric_delay_not_waveform_array_end() -> None:
+    rows = [
+        {
+            "injection_id": "i1",
+            "split": "val",
+            "gps_time": 100.0,
+            "right_ascension": 1.0,
+            "declination": -0.5,
+            "ifos": ["H1", "L1"],
+            "signal_summary": {
+                "H1": {"waveform_start_gps": 90.0, "waveform_samples": 30}
+            },
+        }
+    ]
+    delays = {"H1": 0.006, "L1": -0.004}
+    annotated = annotate_detector_arrival_rows(
+        rows, lambda ifo, _ra, _dec, _gps: delays[ifo]
+    )[0]
+    assert annotated["detector_arrival_gps"] == pytest.approx(
+        {"H1": 100.006, "L1": 99.996}
+    )
+    assert annotated["geocenter_to_detector_delay_seconds"] == delays
 
 
 def test_numeric_background_bank_survives_source_eviction(tmp_path) -> None:

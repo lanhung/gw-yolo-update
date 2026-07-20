@@ -599,6 +599,41 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--chirp-threshold", type=float, default=0.3)
     candidates.add_argument("--minimum-bins", type=int, default=1)
 
+    timing_calibration = subparsers.add_parser("candidate-timing-calibrate")
+    timing_calibration.add_argument("--injection-triggers", required=True)
+    timing_calibration.add_argument("--output", required=True)
+    timing_calibration.add_argument("--chirp-threshold", type=float, default=0.3)
+    timing_calibration.add_argument("--minimum-bins", type=int, default=1)
+    timing_calibration.add_argument("--association-window-seconds", type=float, default=0.25)
+    timing_calibration.add_argument("--uncertainty-quantile", type=float, default=0.99)
+    timing_calibration.add_argument("--minimum-matches-per-method", type=int, default=30)
+
+    timing_apply = subparsers.add_parser("candidate-timing-apply")
+    timing_apply.add_argument("--candidates", required=True)
+    timing_apply.add_argument("--calibration-report", required=True)
+    timing_apply.add_argument("--output", required=True)
+
+    injection_candidates = subparsers.add_parser("injection-candidate-extract")
+    injection_candidates.add_argument("--injection-triggers", required=True)
+    injection_candidates.add_argument("--output-dir", required=True)
+    injection_candidates.add_argument("--chirp-threshold", type=float, default=0.3)
+    injection_candidates.add_argument("--minimum-bins", type=int, default=1)
+
+    injection_candidate_rank = subparsers.add_parser("injection-candidate-rank")
+    injection_candidate_rank.add_argument("--injection-triggers", required=True)
+    injection_candidate_rank.add_argument("--candidates", required=True)
+    injection_candidate_rank.add_argument("--output-dir", required=True)
+    injection_candidate_rank.add_argument("--split", choices=("val", "test"), required=True)
+    injection_candidate_rank.add_argument("--reference-ifo", default="H1")
+    injection_candidate_rank.add_argument("--second-ifo", default="L1")
+    injection_candidate_rank.add_argument("--physical-delay-limit-seconds", type=float, required=True)
+    injection_candidate_rank.add_argument(
+        "--empirical-timing-uncertainty-seconds", type=float, required=True
+    )
+    injection_candidate_rank.add_argument(
+        "--truth-association-window-seconds", type=float, default=0.25
+    )
+
     candidate_slides = subparsers.add_parser("candidate-time-slides")
     candidate_slides.add_argument("--candidates", required=True)
     candidate_slides.add_argument("--background-manifest", required=True)
@@ -610,6 +645,8 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_slides.add_argument("--step-seconds", type=float, required=True)
     candidate_slides.add_argument("--coincidence-window-seconds", type=float, required=True)
     candidate_slides.add_argument("--cluster-window-seconds", type=float, default=0.1)
+    candidate_slides.add_argument("--physical-delay-limit-seconds", type=float)
+    candidate_slides.add_argument("--empirical-timing-uncertainty-seconds", type=float)
 
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
@@ -681,6 +718,10 @@ def build_parser() -> argparse.ArgumentParser:
     snr_annotate.add_argument("--high-frequency", type=float, default=500.0)
     snr_annotate.add_argument("--psd-segment-seconds", type=float, default=8.0)
     snr_annotate.add_argument("--psd-stride-seconds", type=float, default=4.0)
+
+    arrival_annotate = subparsers.add_parser("injection-arrival-annotate")
+    arrival_annotate.add_argument("--manifest", required=True)
+    arrival_annotate.add_argument("--output-dir", required=True)
 
     injection_score = subparsers.add_parser("injection-score")
     injection_score.add_argument("--manifest", required=True)
@@ -1483,6 +1524,55 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_bins,
             )
         )
+    elif args.command == "candidate-timing-calibrate":
+        from .candidates import run_candidate_timing_calibration
+
+        _print(
+            run_candidate_timing_calibration(
+                args.injection_triggers,
+                args.output,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.association_window_seconds,
+                args.uncertainty_quantile,
+                args.minimum_matches_per_method,
+            )
+        )
+    elif args.command == "candidate-timing-apply":
+        from .candidates import run_apply_candidate_timing_calibration
+
+        _print(
+            run_apply_candidate_timing_calibration(
+                args.candidates, args.calibration_report, args.output
+            )
+        )
+    elif args.command == "injection-candidate-extract":
+        from .candidates import run_injection_candidate_extraction
+
+        _print(
+            run_injection_candidate_extraction(
+                args.injection_triggers,
+                args.output_dir,
+                args.chirp_threshold,
+                args.minimum_bins,
+            )
+        )
+    elif args.command == "injection-candidate-rank":
+        from .candidates import run_injection_candidate_rankings
+
+        _print(
+            run_injection_candidate_rankings(
+                args.injection_triggers,
+                args.candidates,
+                args.output_dir,
+                args.split,
+                args.reference_ifo,
+                args.second_ifo,
+                args.physical_delay_limit_seconds,
+                args.empirical_timing_uncertainty_seconds,
+                args.truth_association_window_seconds,
+            )
+        )
     elif args.command == "candidate-time-slides":
         from .candidates import run_candidate_time_slides
 
@@ -1498,6 +1588,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.step_seconds,
                 args.coincidence_window_seconds,
                 args.cluster_window_seconds,
+                args.physical_delay_limit_seconds,
+                args.empirical_timing_uncertainty_seconds,
             )
         )
     elif args.command == "time-slide-background":
@@ -1605,6 +1697,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.psd_stride_seconds,
             )
         )
+    elif args.command == "injection-arrival-annotate":
+        from .waveforms import run_detector_arrival_annotation
+
+        _print(run_detector_arrival_annotation(args.manifest, args.output_dir))
     elif args.command == "injection-score":
         from .injection_score import score_materialized_injections
 

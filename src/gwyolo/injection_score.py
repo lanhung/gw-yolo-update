@@ -199,6 +199,11 @@ def score_materialized_injections(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "save_probabilities": save_probabilities,
+        "probability_schema": (
+            "mask_probabilities_plus_whitened_strain_v2"
+            if save_probabilities
+            else None
+        ),
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
         "coherence_config_sha256": (
@@ -317,6 +322,8 @@ def score_materialized_injections(
                     probability_path,
                     chirp_probability=probabilities[0].astype(np.float16),
                     glitch_probability=probabilities[1].astype(np.float16),
+                    whitened_strain=strain.astype(np.float32),
+                    strain_sample_rate=np.asarray(target_sample_rate, dtype=np.int64),
                     ifos=np.asarray(model_ifos),
                     q_values=np.asarray(q_values, dtype=np.float32),
                 )
@@ -324,6 +331,18 @@ def score_materialized_injections(
                     "probability_path": str(probability_path),
                     "probability_sha256": file_sha256(probability_path),
                 }
+            detector_arrival_gps = {}
+            detector_arrival_gps.update(
+                {
+                    str(ifo): float(value)
+                    for ifo, value in row.get("detector_arrival_gps", {}).items()
+                }
+            )
+            for ifo, values in row.get("signal_summary", {}).items():
+                if "detector_arrival_gps" in values:
+                    detector_arrival_gps[str(ifo)] = float(
+                        values["detector_arrival_gps"]
+                    )
             output_row = {
                     "injection_id": row["injection_id"],
                     "waveform_id": row["waveform_id"],
@@ -332,6 +351,13 @@ def score_materialized_injections(
                     "stratum": row["source_family"],
                     "gps_block": row["gps_block"],
                     "gps_time": row["gps_time"],
+                    "analysis_gps_start": analysis_start,
+                    "analysis_gps_end": analysis_start + source_duration,
+                    "duration": source_duration,
+                    "detector_arrival_gps": detector_arrival_gps,
+                    "detector_arrival_target_definition": (
+                        "geocentric coalescence GPS plus PyCBC detector time delay from Earth center"
+                    ),
                     "redshift": row["redshift"],
                     "luminosity_distance_mpc": row["luminosity_distance_mpc"],
                     "vt_weight": row["vt_weight"],

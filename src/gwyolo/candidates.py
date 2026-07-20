@@ -9,7 +9,26 @@ import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .metrics import wilson_interval
+from .runtime import execution_provenance
 from .trigger import network_ranking
+
+
+def _available_ifos(row: dict[str, Any]) -> set[str]:
+    """Return the explicit detector set for a background window.
+
+    Background plans use ``ifos`` while scored trigger rows use ``valid_ifos``.  A
+    time-slide exposure is meaningful only when the detector contributing that
+    side of the coincidence was actually observing.
+    """
+
+    values = row.get("valid_ifos", row.get("ifos"))
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"Window {row.get('window_id')} lacks an explicit detector set")
+    ifos = {str(value) for value in values}
+    if len(ifos) != len(values):
+        raise ValueError(f"Window {row.get('window_id')} repeats a detector")
+    return ifos
 
 
 def _active_runs(active: np.ndarray) -> list[tuple[int, int]]:
@@ -88,6 +107,148 @@ def extract_temporal_clusters(
     return output
 
 
+def _apply_strain_timing_refinement(
+    clusters: list[dict[str, Any]], scored_row: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Attach the exact timing method used by the continuous candidate path."""
+
+    output = []
+    for source in clusters:
+        cluster = dict(source)
+        timing = {
+            "timing_method": "mask_profile_parabolic",
+            "timing_resolution_seconds": float(cluster["bin_width_seconds"]),
+            "timing_empirically_calibrated": False,
+        }
+        ifo = str(cluster["ifo"])
+        refined = scored_row.get("strain_envelope_peak_times", {}).get(ifo)
+        coarse = scored_row.get("peak_times", {}).get("chirp", {}).get(ifo)
+        if refined is not None and coarse is not None:
+            coarse_bin = int(coarse["time_bin"])
+            if cluster["start_bin"] <= coarse_bin < cluster["stop_bin_exclusive"]:
+                cluster["mask_profile_gps_peak"] = cluster["gps_peak"]
+                cluster["gps_peak"] = float(refined["gps"])
+                timing = {
+                    "timing_method": "local_strain_envelope_in_global_chirp_roi",
+                    "timing_resolution_seconds": float(
+                        refined["sample_resolution_seconds"]
+                    ),
+                    "timing_smoothing_seconds": float(refined["smoothing_seconds"]),
+                    "timing_empirically_calibrated": False,
+                }
+        output.append({**cluster, **timing})
+    return output
+
+
+def _local_envelope_timing_refinement(
+    clusters: list[dict[str, Any]],
+    whitened_strain: np.ndarray,
+    ifos: list[str],
+    analysis_gps_start: float,
+    sample_rate: int,
+    padding_seconds: float = 0.05,
+    smoothing_seconds: float = 0.008,
+) -> list[dict[str, Any]]:
+    """Refine every mask cluster from its own local whitened-strain envelope."""
+
+    strain = np.asarray(whitened_strain, dtype=np.float64)
+    if (
+        strain.ndim != 2
+        or strain.shape[0] != len(ifos)
+        or not np.isfinite(strain).all()
+        or sample_rate <= 0
+        or padding_seconds < 0
+        or smoothing_seconds <= 0
+    ):
+        raise ValueError("local candidate timing strain contract is invalid")
+    smoothing_samples = max(1, int(round(smoothing_seconds * sample_rate)))
+    kernel = np.ones(smoothing_samples, dtype=np.float64) / smoothing_samples
+    envelopes = []
+    for values in strain:
+        spectrum = np.fft.fft(values)
+        multiplier = np.zeros(values.size, dtype=np.float64)
+        multiplier[0] = 1.0
+        if values.size % 2 == 0:
+            multiplier[1 : values.size // 2] = 2.0
+            multiplier[values.size // 2] = 1.0
+        else:
+            multiplier[1 : (values.size + 1) // 2] = 2.0
+        envelope = np.abs(np.fft.ifft(spectrum * multiplier))
+        envelopes.append(np.convolve(envelope, kernel, mode="same"))
+    output = []
+    padding_samples = int(round(padding_seconds * sample_rate))
+    for source in clusters:
+        row = dict(source)
+        ifo_index = ifos.index(str(row["ifo"]))
+        nominal_start = int(
+            np.floor((float(row["gps_start"]) - analysis_gps_start) * sample_rate)
+        )
+        nominal_stop = int(
+            np.ceil((float(row["gps_end"]) - analysis_gps_start) * sample_rate)
+        )
+        start = max(0, nominal_start - padding_samples)
+        stop = min(strain.shape[1], nominal_stop + padding_samples)
+        if stop <= start:
+            raise ValueError("mask cluster lies outside saved whitened strain")
+        peak_index = start + int(np.argmax(envelopes[ifo_index][start:stop]))
+        row.update(
+            {
+                "mask_profile_gps_peak": row["gps_peak"],
+                "gps_peak": analysis_gps_start + peak_index / sample_rate,
+                "timing_method": "local_whitened_strain_envelope_per_mask_cluster_v1",
+                "timing_resolution_seconds": 1.0 / sample_rate,
+                "timing_smoothing_seconds": smoothing_samples / sample_rate,
+                "timing_search_padding_seconds": padding_samples / sample_rate,
+                "timing_search_start_gps": analysis_gps_start + start / sample_rate,
+                "timing_search_end_gps": analysis_gps_start + stop / sample_rate,
+                "timing_empirically_calibrated": False,
+            }
+        )
+        output.append(row)
+    return output
+
+
+def _clusters_from_scored_row(
+    row: dict[str, Any], chirp_threshold: float, minimum_bins: int
+) -> list[dict[str, Any]]:
+    path = row.get("probability_path")
+    expected_sha = row.get("probability_sha256")
+    if not path or not expected_sha or file_sha256(path) != expected_sha:
+        raise ValueError(
+            f"Missing or invalid probability artifact for "
+            f"{row.get('window_id', row.get('injection_id'))}"
+        )
+    gps_start = row.get("analysis_gps_start", row.get("gps_start"))
+    gps_end = row.get("analysis_gps_end", row.get("gps_end"))
+    if gps_start is None or gps_end is None:
+        chirp_peaks = row.get("peak_times", {}).get("chirp", {})
+        if not chirp_peaks:
+            raise ValueError("Scored row lacks an explicit analysis GPS interval")
+        first = next(iter(chirp_peaks.values()))
+        gps_start = float(first["gps"]) - float(first["offset_seconds"])
+        gps_end = float(gps_start) + float(row["duration"])
+    with np.load(path, allow_pickle=False) as payload:
+        ifos = [str(item) for item in payload["ifos"].tolist()]
+        clusters = extract_temporal_clusters(
+            payload["chirp_probability"],
+            payload["glitch_probability"],
+            ifos,
+            float(gps_start),
+            float(gps_end) - float(gps_start),
+            chirp_threshold,
+            minimum_bins,
+        )
+        if "whitened_strain" in payload and "strain_sample_rate" in payload:
+            return _local_envelope_timing_refinement(
+                clusters,
+                payload["whitened_strain"],
+                ifos,
+                float(gps_start),
+                int(payload["strain_sample_rate"]),
+            )
+    return _apply_strain_timing_refinement(clusters, row)
+
+
 def run_candidate_extraction(
     trigger_manifest: str | Path,
     output_dir: str | Path,
@@ -101,21 +262,7 @@ def run_candidate_extraction(
     output_rows = []
     bin_widths = set()
     for row in trigger_rows:
-        path = row.get("probability_path")
-        expected_sha = row.get("probability_sha256")
-        if not path or not expected_sha or file_sha256(path) != expected_sha:
-            raise ValueError(f"Missing or invalid probability artifact for {row.get('window_id')}")
-        with np.load(path, allow_pickle=False) as payload:
-            ifos = [str(item) for item in payload["ifos"].tolist()]
-            clusters = extract_temporal_clusters(
-                payload["chirp_probability"],
-                payload["glitch_probability"],
-                ifos,
-                float(row["gps_start"]),
-                float(row["gps_end"]) - float(row["gps_start"]),
-                chirp_threshold,
-                minimum_bins,
-            )
+        clusters = _clusters_from_scored_row(row, chirp_threshold, minimum_bins)
         valid_ifos = set(row["valid_ifos"])
         for cluster_index, cluster in enumerate(clusters):
             if cluster["ifo"] not in valid_ifos:
@@ -155,14 +302,465 @@ def run_candidate_extraction(
             sorted(Counter(row["ifo"] for row in output_rows).items())
         ),
         "maximum_bin_width_seconds": maximum_bin_width,
-        "publication_timing_gate_passed": (
-            maximum_bin_width is not None and maximum_bin_width <= 0.01
+        "timing_method_counts": dict(
+            sorted(Counter(row["timing_method"] for row in output_rows).items())
+        ),
+        "publication_timing_gate_passed": False,
+        "publication_timing_blocker": (
+            "sample resolution alone is not an uncertainty calibration; calibrate the exact "
+            "candidate timing method on validation injections before a coherence claim"
         ),
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
     }
     atomic_write_json(output / "candidate_extraction_report.json", report)
     return report
+
+
+def calibrate_candidate_timing_rows(
+    candidates: Iterable[dict[str, Any]],
+    detector_arrivals: dict[str, dict[str, float]],
+    association_window_seconds: float,
+    uncertainty_quantile: float = 0.99,
+    minimum_matches_per_method: int = 30,
+) -> dict[str, Any]:
+    """Calibrate the exact candidate timing method using validation injections only."""
+
+    rows = list(candidates)
+    if association_window_seconds <= 0 or not 0.5 <= uncertainty_quantile < 1.0:
+        raise ValueError("timing association window or uncertainty quantile is invalid")
+    if minimum_matches_per_method <= 0:
+        raise ValueError("minimum timing calibration matches must be positive")
+    grouped_best: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        injection_id = str(row["injection_id"])
+        ifo = str(row["ifo"])
+        target = detector_arrivals.get(injection_id, {}).get(ifo)
+        if target is None:
+            continue
+        error = abs(float(row["gps_peak"]) - float(target))
+        if error <= association_window_seconds:
+            method = str(row["timing_method"])
+            key = (method, injection_id, ifo)
+            candidate = {**row, "absolute_error_seconds": error}
+            previous = grouped_best.get(key)
+            if previous is None or error < float(previous["absolute_error_seconds"]):
+                grouped_best[key] = candidate
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for (method, _, _), row in grouped_best.items():
+        grouped.setdefault(method, []).append(row)
+    methods = {}
+    target_count = sum(len(values) for values in detector_arrivals.values())
+    for method, matches in sorted(grouped.items()):
+        errors = np.asarray(
+            [float(row["absolute_error_seconds"]) for row in matches], dtype=np.float64
+        )
+        resolutions = np.asarray(
+            [float(row["timing_resolution_seconds"]) for row in matches], dtype=np.float64
+        )
+        if not np.isfinite(errors).all() or not np.isfinite(resolutions).all():
+            raise ValueError("timing calibration values must be finite")
+        interval = wilson_interval(len(matches), target_count)
+        methods[method] = {
+            "matches": len(matches),
+            "eligible_detector_arrivals": target_count,
+            "conditional_match_fraction": len(matches) / target_count,
+            "conditional_match_wilson_95": list(interval),
+            "association_window_seconds": association_window_seconds,
+            "maximum_resolution_seconds": float(resolutions.max()),
+            "absolute_error_seconds_quantiles": {
+                str(q): float(np.quantile(errors, q))
+                for q in (0.0, 0.5, 0.9, uncertainty_quantile, 1.0)
+            },
+            "empirical_timing_uncertainty_seconds": float(
+                np.quantile(errors, uncertainty_quantile)
+            ),
+            "uncertainty_quantile": uncertainty_quantile,
+            "minimum_matches_gate": len(matches) >= minimum_matches_per_method,
+            "resolution_gate_10ms": float(resolutions.max()) <= 0.01,
+            "calibration_gate_passed": (
+                len(matches) >= minimum_matches_per_method
+                and float(resolutions.max()) <= 0.01
+            ),
+        }
+    return {
+        "eligible_detector_arrivals": target_count,
+        "input_candidates": len(rows),
+        "methods": methods,
+        "association_window_seconds": association_window_seconds,
+        "uncertainty_quantile": uncertainty_quantile,
+        "minimum_matches_per_method": minimum_matches_per_method,
+    }
+
+
+def run_candidate_timing_calibration(
+    injection_trigger_manifest: str | Path,
+    output: str | Path,
+    chirp_threshold: float = 0.3,
+    minimum_bins: int = 1,
+    association_window_seconds: float = 0.25,
+    uncertainty_quantile: float = 0.99,
+    minimum_matches_per_method: int = 30,
+) -> dict[str, Any]:
+    with Path(injection_trigger_manifest).open("r", encoding="utf-8") as handle:
+        scored_rows = [json.loads(line) for line in handle if line.strip()]
+    if not scored_rows or {str(row.get("split")) for row in scored_rows} != {"val"}:
+        raise ValueError("candidate timing calibration requires validation injections only")
+    candidates = []
+    arrivals = {}
+    for row in scored_rows:
+        injection_id = str(row["injection_id"])
+        valid_ifos = set(row["valid_ifos"])
+        detector_targets = {
+            str(ifo): float(value)
+            for ifo, value in row.get("detector_arrival_gps", {}).items()
+            if str(ifo) in valid_ifos
+        }
+        if not detector_targets:
+            raise ValueError(f"Validation injection {injection_id} lacks detector arrival targets")
+        arrivals[injection_id] = detector_targets
+        for index, cluster in enumerate(
+            _clusters_from_scored_row(row, chirp_threshold, minimum_bins)
+        ):
+            if cluster["ifo"] not in valid_ifos:
+                continue
+            candidates.append(
+                {
+                    "candidate_id": f"timing-{canonical_hash({'injection': injection_id, 'ifo': cluster['ifo'], 'index': index}, 24)}",
+                    "injection_id": injection_id,
+                    "split": "val",
+                    **cluster,
+                }
+            )
+    calibration = calibrate_candidate_timing_rows(
+        candidates,
+        arrivals,
+        association_window_seconds,
+        uncertainty_quantile,
+        minimum_matches_per_method,
+    )
+    result = {
+        "status": "validation_only_candidate_timing_calibration",
+        "scientific_claim_allowed": False,
+        "selection_data": "validation_injections_only",
+        "test_evaluation": None,
+        "injection_trigger_manifest_path": str(injection_trigger_manifest),
+        "injection_trigger_manifest_sha256": file_sha256(injection_trigger_manifest),
+        "chirp_threshold": chirp_threshold,
+        "minimum_bins": minimum_bins,
+        **calibration,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def run_apply_candidate_timing_calibration(
+    candidate_manifest: str | Path,
+    calibration_report: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    with Path(calibration_report).open("r", encoding="utf-8") as handle:
+        calibration = json.load(handle)
+    if calibration.get("status") != "validation_only_candidate_timing_calibration":
+        raise ValueError("candidate timing calibration report has the wrong status")
+    with Path(candidate_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    report_sha = file_sha256(calibration_report)
+    calibrated = 0
+    output_rows = []
+    for source in rows:
+        row = dict(source)
+        method = calibration.get("methods", {}).get(str(row.get("timing_method")))
+        if method is not None and bool(method.get("calibration_gate_passed")):
+            if float(row["timing_resolution_seconds"]) > float(
+                method["maximum_resolution_seconds"]
+            ):
+                raise ValueError("candidate timing resolution is outside calibration support")
+            row.update(
+                {
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": method[
+                        "empirical_timing_uncertainty_seconds"
+                    ],
+                    "timing_uncertainty_quantile": method["uncertainty_quantile"],
+                    "timing_calibration_report_sha256": report_sha,
+                }
+            )
+            calibrated += 1
+        output_rows.append(row)
+    output_path = Path(output)
+    atomic_write_text(
+        output_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in output_rows),
+    )
+    result = {
+        "status": "candidate_timing_calibration_applied",
+        "input_candidates": len(rows),
+        "calibrated_candidates": calibrated,
+        "uncalibrated_candidates": len(rows) - calibrated,
+        "candidate_manifest_sha256": file_sha256(candidate_manifest),
+        "calibration_report_sha256": report_sha,
+        "output_path": str(output_path),
+        "output_sha256": file_sha256(output_path),
+    }
+    report_path = output_path.with_suffix(output_path.suffix + ".report.json")
+    atomic_write_json(report_path, result)
+    result["report_path"] = str(report_path)
+    return result
+
+
+def run_injection_candidate_extraction(
+    injection_trigger_manifest: str | Path,
+    output_dir: str | Path,
+    chirp_threshold: float = 0.3,
+    minimum_bins: int = 1,
+) -> dict[str, Any]:
+    """Preserve every single-IFO candidate from scored physical injections."""
+
+    with Path(injection_trigger_manifest).open("r", encoding="utf-8") as handle:
+        scored_rows = [json.loads(line) for line in handle if line.strip()]
+    if not scored_rows:
+        raise ValueError("injection trigger manifest cannot be empty")
+    output_rows = []
+    for row in scored_rows:
+        valid_ifos = set(row["valid_ifos"])
+        for index, cluster in enumerate(
+            _clusters_from_scored_row(row, chirp_threshold, minimum_bins)
+        ):
+            if cluster["ifo"] not in valid_ifos:
+                continue
+            output_rows.append(
+                {
+                    "candidate_id": f"injection-candidate-{canonical_hash({'injection': row['injection_id'], 'ifo': cluster['ifo'], 'index': index}, 24)}",
+                    "injection_id": row["injection_id"],
+                    "waveform_id": row["waveform_id"],
+                    "split": row["split"],
+                    "source_family": row["source_family"],
+                    "gps_block": row["gps_block"],
+                    "injection_gps_time": row["gps_time"],
+                    "detector_arrival_gps": row.get("detector_arrival_gps", {}),
+                    "vt_weight": row["vt_weight"],
+                    "vt_weight_unit": row["vt_weight_unit"],
+                    **cluster,
+                }
+            )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "single_ifo_injection_candidates.jsonl"
+    atomic_write_text(
+        manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in output_rows),
+    )
+    report = {
+        "status": "single_ifo_physical_injection_candidates",
+        "scientific_claim_allowed": False,
+        "trigger_manifest_path": str(injection_trigger_manifest),
+        "trigger_manifest_sha256": file_sha256(injection_trigger_manifest),
+        "input_injections": len(scored_rows),
+        "chirp_threshold": chirp_threshold,
+        "minimum_bins": minimum_bins,
+        "candidates": len(output_rows),
+        "candidate_counts_by_ifo": dict(
+            sorted(Counter(row["ifo"] for row in output_rows).items())
+        ),
+        "timing_method_counts": dict(
+            sorted(Counter(row["timing_method"] for row in output_rows).items())
+        ),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+    }
+    atomic_write_json(output / "injection_candidate_extraction_report.json", report)
+    return report
+
+
+def build_injection_candidate_rankings(
+    injection_rows: Iterable[dict[str, Any]],
+    candidates: Iterable[dict[str, Any]],
+    split: str,
+    reference_ifo: str,
+    second_ifo: str,
+    physical_delay_limit_seconds: float,
+    empirical_timing_uncertainty_seconds: float,
+    truth_association_window_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Reduce all calibrated candidates to one physical network ranking per injection."""
+
+    if reference_ifo == second_ifo:
+        raise ValueError("injection candidate ranking requires two distinct detectors")
+    if min(
+        physical_delay_limit_seconds,
+        truth_association_window_seconds,
+    ) <= 0 or empirical_timing_uncertainty_seconds < 0:
+        raise ValueError("injection candidate timing settings are invalid")
+    parents = [row for row in injection_rows if str(row["split"]) == split]
+    if not parents:
+        raise ValueError(f"no scored injections for split {split}")
+    by_id = {str(row["injection_id"]): row for row in parents}
+    if len(by_id) != len(parents):
+        raise ValueError("scored injection rows repeat injection IDs")
+    candidate_map: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in candidates:
+        if str(row["split"]) != split:
+            continue
+        injection_id = str(row["injection_id"])
+        if injection_id not in by_id:
+            raise ValueError(f"candidate references unknown {split} injection {injection_id}")
+        candidate_map.setdefault(injection_id, {}).setdefault(str(row["ifo"]), []).append(row)
+    allowed_separation = physical_delay_limit_seconds + 2.0 * empirical_timing_uncertainty_seconds
+    outputs = []
+    eligible = 0
+    recovered_candidate_pairs = 0
+    calibration_hashes = set()
+    for injection_id, parent in sorted(by_id.items()):
+        valid_ifos = set(parent["valid_ifos"])
+        arrivals = {
+            str(ifo): float(value)
+            for ifo, value in parent.get("detector_arrival_gps", {}).items()
+        }
+        required = {reference_ifo, second_ifo}
+        if not required.issubset(valid_ifos) or not required.issubset(arrivals):
+            continue
+        eligible += 1
+        by_ifo = candidate_map.get(injection_id, {})
+        pairs = []
+        for first in by_ifo.get(reference_ifo, []):
+            for second in by_ifo.get(second_ifo, []):
+                pair = (first, second)
+                if not all(bool(row.get("timing_empirically_calibrated")) for row in pair):
+                    continue
+                if not all(
+                    np.isclose(
+                        float(row.get("empirical_timing_uncertainty_seconds", -1)),
+                        empirical_timing_uncertainty_seconds,
+                        rtol=0.0,
+                        atol=1e-12,
+                    )
+                    for row in pair
+                ):
+                    continue
+                if any(
+                    abs(float(row["gps_peak"]) - arrivals[str(row["ifo"])])
+                    > truth_association_window_seconds
+                    for row in pair
+                ):
+                    continue
+                separation = abs(float(first["gps_peak"]) - float(second["gps_peak"]))
+                if separation > allowed_separation:
+                    continue
+                if any(not row.get("timing_calibration_report_sha256") for row in pair):
+                    continue
+                hashes = {
+                    str(row["timing_calibration_report_sha256"]) for row in pair
+                }
+                if len(hashes) != 1:
+                    continue
+                calibration_hashes.update(hashes)
+                chirp_scores = {
+                    reference_ifo: float(first["chirp_score"]),
+                    second_ifo: float(second["chirp_score"]),
+                }
+                glitch_scores = {
+                    reference_ifo: float(first["glitch_score_at_peak"]),
+                    second_ifo: float(second["glitch_score_at_peak"]),
+                }
+                pairs.append(
+                    {
+                        "source_candidate_ids": {
+                            reference_ifo: first["candidate_id"],
+                            second_ifo: second["candidate_id"],
+                        },
+                        "peak_separation_seconds": separation,
+                        "chirp_scores": chirp_scores,
+                        "glitch_scores": glitch_scores,
+                        **network_ranking(
+                            chirp_scores,
+                            glitch_scores,
+                            [reference_ifo, second_ifo],
+                        ),
+                    }
+                )
+        selected = max(pairs, key=lambda row: float(row["ranking_score"])) if pairs else None
+        if selected is not None:
+            recovered_candidate_pairs += 1
+        outputs.append(
+            {
+                "injection_id": injection_id,
+                "waveform_id": parent["waveform_id"],
+                "split": split,
+                "source_family": parent["source_family"],
+                "stratum": parent.get("stratum", parent["source_family"]),
+                "gps_block": parent["gps_block"],
+                "gps_time": parent["gps_time"],
+                "vt_weight": parent["vt_weight"],
+                "vt_weight_unit": parent["vt_weight_unit"],
+                "candidate_pair_found": selected is not None,
+                "ranking_score": float(selected["ranking_score"]) if selected else 0.0,
+                "network_candidate": selected,
+            }
+        )
+    report = {
+        "status": "physical_network_injection_candidate_rankings",
+        "split": split,
+        "input_injections": len(parents),
+        "eligible_detector_set_injections": eligible,
+        "ranked_injections": len(outputs),
+        "candidate_pair_found": recovered_candidate_pairs,
+        "excluded_missing_detector_or_arrival": len(parents) - eligible,
+        "reference_ifo": reference_ifo,
+        "second_ifo": second_ifo,
+        "physical_delay_limit_seconds": physical_delay_limit_seconds,
+        "empirical_timing_uncertainty_seconds": empirical_timing_uncertainty_seconds,
+        "allowed_peak_separation_seconds": allowed_separation,
+        "truth_association_window_seconds": truth_association_window_seconds,
+        "timing_calibration_report_sha256": (
+            next(iter(calibration_hashes)) if len(calibration_hashes) == 1 else None
+        ),
+        "timing_calibration_consistent": len(calibration_hashes) == 1,
+    }
+    return outputs, report
+
+
+def run_injection_candidate_rankings(
+    injection_trigger_manifest: str | Path,
+    candidate_manifest: str | Path,
+    output_dir: str | Path,
+    split: str,
+    reference_ifo: str,
+    second_ifo: str,
+    physical_delay_limit_seconds: float,
+    empirical_timing_uncertainty_seconds: float,
+    truth_association_window_seconds: float,
+) -> dict[str, Any]:
+    with Path(injection_trigger_manifest).open("r", encoding="utf-8") as handle:
+        injections = [json.loads(line) for line in handle if line.strip()]
+    with Path(candidate_manifest).open("r", encoding="utf-8") as handle:
+        candidates = [json.loads(line) for line in handle if line.strip()]
+    rows, report = build_injection_candidate_rankings(
+        injections,
+        candidates,
+        split,
+        reference_ifo,
+        second_ifo,
+        physical_delay_limit_seconds,
+        empirical_timing_uncertainty_seconds,
+        truth_association_window_seconds,
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / f"{split}_network_injection_candidate_rankings.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    result = {
+        **report,
+        "injection_trigger_manifest_sha256": file_sha256(injection_trigger_manifest),
+        "candidate_manifest_sha256": file_sha256(candidate_manifest),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+    }
+    atomic_write_json(output / f"{split}_injection_candidate_ranking_report.json", result)
+    return result
 
 
 def _cluster_network_rows(
@@ -190,6 +788,8 @@ def build_candidate_time_slides(
     step_seconds: float,
     coincidence_window_seconds: float,
     cluster_window_seconds: float,
+    physical_delay_limit_seconds: float | None = None,
+    empirical_timing_uncertainty_seconds: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if reference_ifo == shifted_ifo:
         raise ValueError("reference and shifted IFOs must differ")
@@ -210,6 +810,7 @@ def build_candidate_time_slides(
     candidates_by_window: dict[str, dict[str, list[dict[str, Any]]]] = {}
     maximum_bin_width = 0.0
     window_ids = {str(row["window_id"]) for row in windows}
+    availability = {str(row["window_id"]): _available_ifos(row) for row in windows}
     for row in candidates:
         if str(row["split"]) != split:
             continue
@@ -217,6 +818,10 @@ def build_candidate_time_slides(
         if window_id not in window_ids:
             raise ValueError(f"Candidate references an unknown {split} window: {window_id}")
         ifo = str(row["ifo"])
+        if ifo not in availability[window_id]:
+            raise ValueError(
+                f"Candidate {row.get('candidate_id')} uses unavailable detector {ifo}"
+            )
         candidates_by_window.setdefault(window_id, {}).setdefault(ifo, []).append(row)
         maximum_bin_width = max(maximum_bin_width, float(row["bin_width_seconds"]))
     output = []
@@ -227,10 +832,17 @@ def build_candidate_time_slides(
         intervals = []
         raw = []
         paired_windows = 0
+        skipped_unavailable_pairs = 0
         for reference in sorted(windows, key=lambda row: float(row["gps_start"])):
             reference_key = int(round(float(reference["gps_start"]) * 1e9))
             shifted = by_start.get(reference_key + offset_key)
             if shifted is None:
+                continue
+            if (
+                reference_ifo not in availability[str(reference["window_id"])]
+                or shifted_ifo not in availability[str(shifted["window_id"])]
+            ):
+                skipped_unavailable_pairs += 1
                 continue
             paired_windows += 1
             intervals.append((float(reference["gps_start"]), float(reference["gps_end"])))
@@ -292,12 +904,96 @@ def build_candidate_time_slides(
                 "slide_index": slide_index,
                 "offset_seconds": offset,
                 "paired_windows": paired_windows,
+                "skipped_unavailable_pairs": skipped_unavailable_pairs,
                 "raw_coincidences": len(raw),
                 "clustered_candidates": len(clustered),
                 "live_time_seconds": exposure,
             }
         )
     exposure_seconds = sum(row["live_time_seconds"] for row in slide_exposure)
+    physics_gate_configured = (
+        physical_delay_limit_seconds is not None
+        and empirical_timing_uncertainty_seconds is not None
+    )
+    if physical_delay_limit_seconds is not None and physical_delay_limit_seconds <= 0:
+        raise ValueError("physical delay limit must be positive")
+    if (
+        empirical_timing_uncertainty_seconds is not None
+        and empirical_timing_uncertainty_seconds < 0
+    ):
+        raise ValueError("empirical timing uncertainty must be non-negative")
+    expected_coincidence_window = (
+        float(physical_delay_limit_seconds)
+        + 2.0 * float(empirical_timing_uncertainty_seconds)
+        if physics_gate_configured
+        else None
+    )
+    coincidence_matches_physics = bool(
+        expected_coincidence_window is not None
+        and np.isclose(
+            coincidence_window_seconds,
+            expected_coincidence_window,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    )
+    candidate_timing_calibrated = bool(candidates_by_window) and all(
+        bool(row.get("timing_empirically_calibrated", False))
+        for by_ifo in candidates_by_window.values()
+        for rows in by_ifo.values()
+        for row in rows
+        if row["ifo"] in {reference_ifo, shifted_ifo}
+    )
+    relevant_candidates = [
+        row
+        for by_ifo in candidates_by_window.values()
+        for rows in by_ifo.values()
+        for row in rows
+        if row["ifo"] in {reference_ifo, shifted_ifo}
+    ]
+    calibrated_uncertainties = [
+        float(row["empirical_timing_uncertainty_seconds"])
+        for row in relevant_candidates
+        if row.get("timing_empirically_calibrated", False)
+        and row.get("empirical_timing_uncertainty_seconds") is not None
+    ]
+    uncertainty_matches_candidates = (
+        bool(relevant_candidates)
+        and len(calibrated_uncertainties) == len(relevant_candidates)
+        and empirical_timing_uncertainty_seconds is not None
+        and all(
+            np.isclose(
+                value,
+                empirical_timing_uncertainty_seconds,
+                rtol=0.0,
+                atol=1e-12,
+            )
+            for value in calibrated_uncertainties
+        )
+    )
+    calibration_hashes = sorted(
+        {
+            str(row["timing_calibration_report_sha256"])
+            for row in relevant_candidates
+            if row.get("timing_calibration_report_sha256")
+        }
+    )
+    timing_resolutions = [
+        float(row.get("timing_resolution_seconds", row["bin_width_seconds"]))
+        for by_ifo in candidates_by_window.values()
+        for rows in by_ifo.values()
+        for row in rows
+        if row["ifo"] in {reference_ifo, shifted_ifo}
+    ]
+    timing_resolution_gate = bool(timing_resolutions) and max(timing_resolutions) <= 0.01
+    publication_timing_gate = (
+        physics_gate_configured
+        and coincidence_matches_physics
+        and candidate_timing_calibrated
+        and uncertainty_matches_candidates
+        and len(calibration_hashes) == 1
+        and timing_resolution_gate
+    )
     report = {
         "status": "subwindow_clustered_time_slide_integration_only",
         "scientific_claim_allowed": False,
@@ -308,7 +1004,15 @@ def build_candidate_time_slides(
         "step_seconds": step_seconds,
         "coincidence_window_seconds": coincidence_window_seconds,
         "cluster_window_seconds": cluster_window_seconds,
+        "physical_delay_limit_seconds": physical_delay_limit_seconds,
+        "empirical_timing_uncertainty_seconds": empirical_timing_uncertainty_seconds,
+        "expected_coincidence_window_seconds": expected_coincidence_window,
+        "coincidence_window_matches_physics": coincidence_matches_physics,
         "input_windows": len(windows),
+        "input_gps_blocks": sorted({str(row["gps_block"]) for row in windows}),
+        "input_zero_lag_live_time_seconds": _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in windows
+        ),
         "input_candidates": sum(
             len(rows) for by_ifo in candidates_by_window.values() for rows in by_ifo.values()
         ),
@@ -317,10 +1021,23 @@ def build_candidate_time_slides(
         "equivalent_live_time_seconds": exposure_seconds,
         "equivalent_live_time_years": exposure_seconds / SECONDS_PER_YEAR,
         "maximum_bin_width_seconds": maximum_bin_width or None,
-        "publication_timing_gate_passed": (
-            maximum_bin_width > 0
-            and maximum_bin_width <= 0.01
-            and coincidence_window_seconds <= 0.01
+        "maximum_timing_resolution_seconds": max(timing_resolutions)
+        if timing_resolutions
+        else None,
+        "candidate_timing_empirically_calibrated": candidate_timing_calibrated,
+        "timing_uncertainty_matches_candidates": uncertainty_matches_candidates,
+        "timing_calibration_report_sha256": (
+            calibration_hashes[0] if len(calibration_hashes) == 1 else None
+        ),
+        "publication_timing_gate_passed": publication_timing_gate,
+        "scientific_blocker": (
+            "timing gate passed, but a publication claim still requires provenance-linked "
+            "validation freeze, independent locked-test background/injections and adequate "
+            "equivalent live time"
+            if publication_timing_gate and exposure_seconds > 0
+            else "requires detector-duty-cycle-correct exposure, a predeclared physical delay "
+            "plus validation-calibrated timing allowance, <=10 ms candidate resolution, and "
+            "adequate independent background live time"
         ),
     }
     return output, report
@@ -337,6 +1054,8 @@ def run_candidate_time_slides(
     step_seconds: float,
     coincidence_window_seconds: float,
     cluster_window_seconds: float,
+    physical_delay_limit_seconds: float | None = None,
+    empirical_timing_uncertainty_seconds: float | None = None,
 ) -> dict[str, Any]:
     with Path(candidates_path).open("r", encoding="utf-8") as handle:
         candidates = [json.loads(line) for line in handle if line.strip()]
@@ -352,6 +1071,8 @@ def run_candidate_time_slides(
         step_seconds,
         coincidence_window_seconds,
         cluster_window_seconds,
+        physical_delay_limit_seconds,
+        empirical_timing_uncertainty_seconds,
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)

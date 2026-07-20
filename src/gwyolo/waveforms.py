@@ -19,6 +19,96 @@ from .gwosc import _fft_downsample, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
 
+def annotate_detector_arrival_rows(
+    rows: list[dict[str, Any]], delay_function: Any
+) -> list[dict[str, Any]]:
+    """Attach detector-frame coalescence targets without changing strain artifacts."""
+
+    if not rows:
+        raise ValueError("detector-arrival annotation manifest cannot be empty")
+    output = []
+    seen = set()
+    for source in rows:
+        injection_id = str(source["injection_id"])
+        if injection_id in seen:
+            raise ValueError(f"duplicate injection ID during arrival annotation: {injection_id}")
+        seen.add(injection_id)
+        gps = float(source["gps_time"])
+        ra = float(source["right_ascension"])
+        dec = float(source["declination"])
+        ifos = [str(ifo) for ifo in source["ifos"]]
+        arrivals = {}
+        delays = {}
+        for ifo in ifos:
+            delay = float(delay_function(ifo, ra, dec, gps))
+            if not np.isfinite(delay) or abs(delay) > 0.05:
+                raise ValueError(f"invalid geocenter-to-{ifo} delay: {delay}")
+            delays[ifo] = delay
+            arrivals[ifo] = gps + delay
+        output.append(
+            {
+                **source,
+                "detector_arrival_gps": arrivals,
+                "geocenter_to_detector_delay_seconds": delays,
+                "detector_arrival_target_definition": (
+                    "geocentric coalescence GPS plus PyCBC detector time delay from Earth center"
+                ),
+            }
+        )
+    return output
+
+
+def run_detector_arrival_annotation(
+    manifest_path: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
+    """Annotate an existing physical-injection manifest with geometric arrival targets."""
+
+    try:
+        from pycbc.detector import Detector
+    except ImportError as exc:
+        raise RuntimeError("detector-arrival annotation requires PyCBC") from exc
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    for row in rows:
+        if file_sha256(row["materialized_path"]) != str(row["materialized_sha256"]):
+            raise ValueError(f"materialized hash mismatch for {row.get('injection_id')}")
+    detectors: dict[str, Any] = {}
+
+    def delay(ifo: str, ra: float, dec: float, gps: float) -> float:
+        detector = detectors.setdefault(ifo, Detector(ifo))
+        return float(detector.time_delay_from_earth_center(ra, dec, gps))
+
+    annotated = annotate_detector_arrival_rows(rows, delay)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "materialized_injections_arrivals.jsonl"
+    atomic_write_text(
+        manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in annotated),
+    )
+    report = {
+        "status": "verified_geometric_detector_arrival_annotation",
+        "input_manifest_path": str(manifest_path),
+        "input_manifest_sha256": file_sha256(manifest_path),
+        "rows": len(annotated),
+        "unique_injection_ids": len({str(row["injection_id"]) for row in annotated}),
+        "splits": dict(sorted(Counter(str(row["split"]) for row in annotated).items())),
+        "detector_sets": dict(
+            sorted(Counter("+".join(sorted(row["ifos"])) for row in annotated).items())
+        ),
+        "target_definition": (
+            "geocentric coalescence GPS plus PyCBC detector time delay from Earth center"
+        ),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "pycbc_version": version("pycbc"),
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+    }
+    atomic_write_json(output / "detector_arrival_annotation_report.json", report)
+    return report
+
+
 def optimal_snr_stratum(network_snr: float) -> str:
     if not np.isfinite(network_snr) or network_snr < 0:
         raise ValueError("network optimal SNR must be finite and non-negative")
@@ -514,7 +604,8 @@ class PyCBCWaveformBackend:
         projected = {}
         signal_summary = {}
         for ifo in ifos:
-            strain = self._detector(ifo).project_wave(
+            detector = self._detector(ifo)
+            strain = detector.project_wave(
                 hp,
                 hc,
                 float(recipe["right_ascension"]),
@@ -524,11 +615,24 @@ class PyCBCWaveformBackend:
                 reference_time=coalescence_gps,
             )
             values = np.asarray(strain, dtype=np.float64)
+            detector_delay = float(
+                detector.time_delay_from_earth_center(
+                    float(recipe["right_ascension"]),
+                    float(recipe["declination"]),
+                    coalescence_gps,
+                )
+            )
             projected[ifo] = (float(strain.start_time), values)
             signal_summary[ifo] = {
                 "waveform_start_gps": float(strain.start_time),
+                "waveform_end_gps": float(strain.end_time),
                 "waveform_samples": int(values.size),
                 "waveform_peak_absolute_strain": float(np.max(np.abs(values))),
+                "detector_arrival_gps": coalescence_gps + detector_delay,
+                "geocenter_to_detector_delay_seconds": detector_delay,
+                "arrival_target_definition": (
+                    "geocentric coalescence GPS plus PyCBC detector time delay from Earth center"
+                ),
             }
         return projected, signal_summary
 

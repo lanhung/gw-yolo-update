@@ -420,6 +420,11 @@ def score_background_manifest(
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "save_probabilities": save_probabilities,
+        "probability_schema": (
+            "mask_probabilities_plus_whitened_strain_v2"
+            if save_probabilities
+            else None
+        ),
         "architecture": architecture,
         "enabled_ifos": list(enabled_ifos),
         "coherence_config_sha256": (
@@ -499,6 +504,8 @@ def score_background_manifest(
                     probability_path,
                     chirp_probability=probabilities[0].astype(np.float16),
                     glitch_probability=probabilities[1].astype(np.float16),
+                    whitened_strain=strain.astype(np.float32),
+                    strain_sample_rate=np.asarray(target_sample_rate, dtype=np.int64),
                     ifos=np.asarray(model_ifos),
                     q_values=np.asarray(q_values, dtype=np.float32),
                 )

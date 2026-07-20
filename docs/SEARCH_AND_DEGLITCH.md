@@ -45,24 +45,34 @@ hand-calculated test covers both ranking and exposure.
 Background scoring checkpoints atomically every five windows under a manifest/checkpoint/config and
 preprocessing identity. Restarts reuse only matching window IDs. Any unreadable accepted window is
 reported and forces a nonzero exit, rather than quietly shrinking the declared live time.
-With `--save-probabilities`, the run identity also covers probability storage and every float16
-per-window mask is hash-checked on resume; these maps feed multi-candidate temporal clustering.
-`candidate-extract` keeps every contiguous per-IFO chirp cluster instead of only one window maximum,
-adds three-bin parabolic peak refinement and states the underlying half-bin timing floor. The present
-96-bin/8-second model therefore still fails the <=10 ms publication timing gate; interpolation is not
-misrepresented as new information.
+With `--save-probabilities`, the run identity covers a versioned artifact containing hash-checked
+float16 masks plus float32 whitened analysis strain and its sample rate. `candidate-extract` keeps
+every contiguous per-IFO chirp cluster. The mask supplies a broad region proposal; the saved strain
+then refines every cluster from its own local envelope at sample resolution. A 96-bin mask is thus no
+longer misrepresented as an 83 ms timing measurement. Sample resolution alone is still not an error
+bar, so every candidate remains uncalibrated until the exact local-envelope method is measured on
+validation injections.
 `candidate-time-slides` pairs every retained H1/L1 cluster after a non-cyclic shift, applies an exact
 peak-time coincidence, clusters nearby network events by loudest ranking statistic, and computes
 exposure from all paired DQ-safe windows—including windows with no candidate. This fixes the earlier
-one-maximum-per-window counting contract, while retaining an explicit timing-gate failure until the
-network output grid itself reaches <=10 ms.
+one-maximum-per-window counting contract. Exposure additionally requires the contributing detector
+to be available on each side of a pair, so missing-IFO windows cannot inflate live time. The timing
+gate requires a predeclared light-travel limit, a validation-calibrated timing allowance, <=10 ms
+candidate resolution and one consistent calibration hash.
 
-The present scorer has only 96 time bins over an 8-second window, so its time resolution is about
-83 ms. Every time-slide report therefore says `window_level_time_slide_integration_only` and forbids
-a scientific claim. Publication FAR needs sub-window candidate extraction and clustering at a
-predeclared millisecond coincidence window, veto/category policy, many independent continuous O4a
-segments, and enough nonzero shifts to support the requested IFAR. The current implementation proves
-the split/exposure plumbing and will be replaced at that boundary rather than silently overstated.
+The executable timing path is now ordered and leakage-safe:
+
+1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,
+   hash-verified physical-injection manifest;
+2. validation injections and validation background are scored with `--save-probabilities`;
+3. `candidate-timing-calibrate` freezes the predeclared error quantile on validation injections only,
+   selecting at most the nearest candidate per `(injection, IFO, method)`;
+4. `candidate-timing-apply` hash-links the calibration to background and injection candidates;
+5. time slides use exactly `physical delay + 2 × per-detector uncertainty`, while
+   `injection-candidate-rank` retains misses with score zero in the `<VT>` denominator.
+
+The resulting report is still non-claimable until validation/test provenance is frozen, GPS blocks
+are disjoint, and enough nonzero shifts support the requested IFAR.
 
 The initially downloaded H1 file subsequently failed a complete HDF5 Fletcher32 scan, while L1
 matched all 16,777,216 samples, official strain statistics and DQ/injection bit sums. Consequently,
@@ -159,7 +169,11 @@ Scoring is resumable: every five completed injections it atomically checkpoints 
 run identity covering manifest/checkpoint/config hashes, IFO/Q layout and probability-storage mode.
 A restart verifies every saved probability hash before reuse. Any failed input produces a report and
 a nonzero exit instead of silently accepting a partial corpus. When invoked with
-`--save-probabilities`, the scorer stores float16 chirp/glitch masks with hashes.
+`--save-probabilities`, the scorer stores hash-locked float16 masks plus float32 whitened analysis
+strain so injection and background candidates use the same local timing algorithm. Existing strain
+arrays need not be regenerated: `injection-arrival-annotate` verifies them and writes a new manifest
+with geometric detector-arrival targets. Waveform-array end time is explicitly not used because the
+post-coalescence ringdown makes it a biased timing proxy.
 `gwyolo learned-deglitch` applies those frozen soft masks to the raw central strain and reports
 per-IFO/network injected-signal projection retention, waveform change and post-clean signal error.
 This closes the learned-mask execution path without inventing a clean real-noise counterfactual: its
