@@ -201,6 +201,13 @@ def build_parser() -> argparse.ArgumentParser:
     snr_curriculum.add_argument("--rescale-upper-snr", type=float, default=8.0)
     snr_curriculum.add_argument("--seed", type=int, default=20260720)
 
+    physical_audit = subparsers.add_parser("physical-checkpoint-audit")
+    physical_audit.add_argument("--config", required=True)
+    physical_audit.add_argument("--validation-manifest", required=True)
+    physical_audit.add_argument("--checkpoint", required=True)
+    physical_audit.add_argument("--chirp-threshold", type=float, required=True)
+    physical_audit.add_argument("--output", required=True)
+
     subset = subparsers.add_parser("recipe-subset")
     subset.add_argument("--manifest", required=True)
     subset.add_argument("--output", required=True)
@@ -592,6 +599,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_snr,
                 args.rescale_upper_snr,
                 args.seed,
+            )
+        )
+    elif args.command == "physical-checkpoint-audit":
+        from .physical_training import audit_physical_checkpoint
+
+        _print(
+            audit_physical_checkpoint(
+                args.config,
+                args.validation_manifest,
+                args.checkpoint,
+                args.chirp_threshold,
+                args.output,
             )
         )
     elif args.command == "recipe-subset":

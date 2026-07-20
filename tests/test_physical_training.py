@@ -12,7 +12,15 @@ from gwyolo.physical_training import (
     physical_split_audit,
     relative_component_mask,
     scale_component_for_transform,
+    summarize_binary_mask_counts,
 )
+
+
+def test_binary_mask_counts_are_hand_calculated() -> None:
+    metrics = summarize_binary_mask_counts(3, 2, 1)
+    assert metrics["iou"] == pytest.approx(0.5)
+    assert metrics["precision"] == pytest.approx(0.6)
+    assert metrics["recall"] == pytest.approx(0.75)
 
 
 def test_relative_component_mask_handles_physical_amplitudes() -> None:

@@ -587,3 +587,121 @@ def build_snr_curriculum_manifest(
     }
     atomic_write_json(output / "snr_curriculum_report.json", report)
     return report
+
+
+def summarize_binary_mask_counts(tp: int, fp: int, fn: int) -> dict[str, float]:
+    if min(tp, fp, fn) < 0:
+        raise ValueError("mask counts cannot be negative")
+    return {
+        "true_positive_pixels": tp,
+        "false_positive_pixels": fp,
+        "false_negative_pixels": fn,
+        "iou": tp / max(tp + fp + fn, 1),
+        "precision": tp / max(tp + fp, 1),
+        "recall": tp / max(tp + fn, 1),
+    }
+
+
+def audit_physical_checkpoint(
+    config_path: str | Path,
+    validation_manifest: str | Path,
+    checkpoint_path: str | Path,
+    chirp_threshold: float,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    if torch is None:
+        raise RuntimeError("Physical checkpoint audit requires torch")
+    if not 0 < chirp_threshold < 1:
+        raise ValueError("chirp audit threshold must be between zero and one")
+    config = load_yaml(config_path)
+    settings = config["physical_training"]
+    with Path(validation_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(row.get("split") != "val" for row in rows):
+        raise ValueError("Physical checkpoint audit accepts a non-empty validation-only manifest")
+    model_ifos = tuple(str(item) for item in settings["model_ifos"])
+    q_values = tuple(float(item) for item in settings["q_values"])
+    dataset = PhysicalInjectionDataset(
+        rows,
+        settings["tensor"],
+        model_ifos,
+        q_values,
+        int(settings["target_sample_rate"]),
+        False,
+    )
+    loader = DataLoader(dataset, batch_size=int(settings["batch_size"]), shuffle=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    channels = len(model_ifos) * len(q_values)
+    if int(checkpoint["input_channels"]) != channels:
+        raise ValueError("Checkpoint channel count differs from physical audit configuration")
+    model = MultiIFOQNet(channels, int(checkpoint["base_channels"])).to(device)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+    groups: dict[str, dict[str, Any]] = {}
+
+    def accumulator(key: str) -> dict[str, Any]:
+        return groups.setdefault(
+            key,
+            {"injections": 0, "pixels": 0, "target_pixels": 0, "tp": 0, "fp": 0, "fn": 0, "max_probabilities": []},
+        )
+
+    offset = 0
+    started = time.time()
+    with torch.no_grad():
+        for features, target in loader:
+            probabilities = torch.sigmoid(model(features.to(device))[:, 0]).cpu().numpy()
+            expected = target.numpy() >= 0.5
+            for index in range(features.shape[0]):
+                row = rows[offset + index]
+                predicted = probabilities[index] >= chirp_threshold
+                tp = int(np.count_nonzero(predicted & expected[index]))
+                fp = int(np.count_nonzero(predicted & ~expected[index]))
+                fn = int(np.count_nonzero(~predicted & expected[index]))
+                keys = (
+                    "all",
+                    f"family:{row['source_family']}",
+                    f"snr:{row.get('optimal_snr_stratum', 'unassigned')}",
+                )
+                for key in keys:
+                    item = accumulator(key)
+                    item["injections"] += 1
+                    item["pixels"] += int(expected[index].size)
+                    item["target_pixels"] += int(np.count_nonzero(expected[index]))
+                    item["tp"] += tp
+                    item["fp"] += fp
+                    item["fn"] += fn
+                    item["max_probabilities"].append(float(np.max(probabilities[index])))
+            offset += features.shape[0]
+    summaries = {}
+    for key, item in sorted(groups.items()):
+        maximums = item.pop("max_probabilities")
+        counts = summarize_binary_mask_counts(item.pop("tp"), item.pop("fp"), item.pop("fn"))
+        summaries[key] = {
+            **item,
+            "target_pixel_fraction": item["target_pixels"] / max(item["pixels"], 1),
+            **counts,
+            "maximum_probability_quantiles": {
+                str(q): float(np.quantile(maximums, q)) for q in (0.0, 0.1, 0.5, 0.9, 1.0)
+            },
+        }
+    report = {
+        "status": "physical_validation_checkpoint_audit",
+        "scientific_claim_allowed": False,
+        "test_evaluation": None,
+        "protocol": "frozen threshold applied to validation-only physical injections",
+        "chirp_threshold": chirp_threshold,
+        "validation_manifest_path": str(validation_manifest),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "device": str(device),
+        "groups": summaries,
+        "elapsed_seconds": time.time() - started,
+    }
+    atomic_write_json(output_path, report)
+    return report
