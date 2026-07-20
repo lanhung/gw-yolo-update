@@ -664,15 +664,21 @@ def _fft_downsample(signal: np.ndarray, source_rate: int, target_rate: int) -> n
 
 
 def _whiten(signal: np.ndarray, smoothing_bins: int = 129) -> np.ndarray:
-    centered = signal - np.median(signal)
+    values = np.asarray(signal, dtype=np.float64)
+    if not np.isfinite(values).all():
+        raise ValueError("Whitening input contains non-finite samples")
+    centered = values - np.median(values)
     spectrum = np.fft.rfft(centered)
     raw_psd = np.abs(spectrum) ** 2
     width = min(smoothing_bins, max(3, raw_psd.size // 16 * 2 + 1))
     kernel = np.ones(width, dtype=np.float64) / width
     psd = np.convolve(raw_psd, kernel, mode="same")
     floor = max(float(np.median(psd)) * 1e-6, np.finfo(np.float64).tiny)
-    whitened = np.fft.irfft(spectrum / np.sqrt(np.maximum(psd, floor)), n=signal.size)
-    return (whitened / max(float(np.std(whitened)), 1e-12)).astype(np.float32)
+    whitened = np.fft.irfft(spectrum / np.sqrt(np.maximum(psd, floor)), n=values.size)
+    scale = float(np.std(whitened))
+    if not np.isfinite(whitened).all() or not math.isfinite(scale) or scale <= 1e-12:
+        raise ValueError("Whitening produced non-finite or zero-variance output")
+    return (whitened / scale).astype(np.float32)
 
 
 def run_gwosc_pilot(

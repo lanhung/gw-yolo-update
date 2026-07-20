@@ -160,11 +160,14 @@ def plan_background_windows(
         injection_values = []
         valid = True
         for item in quality.values():
-            start_index = gps_start - item["gps_start"]
-            stop_index = gps_end - item["gps_start"]
+            context_start = int(math.floor(center - context_duration / 2))
+            context_stop = int(math.ceil(center + context_duration / 2))
+            start_index = context_start - item["gps_start"]
+            stop_index = context_stop - item["gps_start"]
             dq = item["dqmask"][start_index:stop_index]
             injection = item["injmask"][start_index:stop_index]
-            if dq.size != window_duration or injection.size != window_duration:
+            expected_context_seconds = context_stop - context_start
+            if dq.size != expected_context_seconds or injection.size != expected_context_seconds:
                 valid = False
                 break
             if required_dq_bits and np.any((dq & required_dq_bits) != required_dq_bits):
@@ -274,7 +277,7 @@ def run_batch_background_plan(
     block_duration: int = 256,
     required_context_duration: int = 64,
     required_dq_bits: int = 1,
-    required_injection_bits: int = 0,
+    required_injection_bits: int = 23,
     validation_fraction: float = 0.2,
     test_fraction: float = 0.2,
     seed: int = 20260719,

@@ -9,6 +9,10 @@ train/validation/test. Live time is the union of intervals, not the sum of possi
 windows. It also removes edge windows that cannot supply the declared full whitening context
 (64 seconds by default), so an accepted row cannot later fail solely because preprocessing extends
 beyond the source file. The resulting manifest is the input contract for trigger generation and time slides.
+DQ and hardware-injection safety are checked over that entire whitening context, not merely the
+central 8-second analysis crop. This prevents a nominally valid crop from importing NaNs or an
+invalid detector state through its PSD context. Non-finite whitening inputs, features or model
+probabilities are hard failures, and JSON provenance refuses NaN serialization.
 
 The first real O4a H1 pilot used the 4096-second file surrounding GW231123_135430, 8-second
 non-overlapping windows, 256-second split blocks, and excluded event GPS ±16 seconds. It produced:

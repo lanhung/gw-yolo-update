@@ -12,6 +12,7 @@ import pytest
 
 from gwyolo.gwosc import (
     _fft_downsample,
+    _whiten,
     download_resumable,
     event_strain_files,
     plan_run_strain_pairs,
@@ -176,6 +177,13 @@ def test_read_hdf5_segment_and_downsample(tmp_path: Path) -> None:
     assert segment["quality"]["Injmask"].tolist() == [103, 104, 105, 106]
     downsampled = _fft_downsample(segment["strain"], 4, 2)
     assert downsampled.shape == (8,)
+
+
+def test_whitening_rejects_nonfinite_and_zero_variance() -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        _whiten(np.array([0.0, np.nan, 1.0]))
+    with pytest.raises(ValueError, match="zero-variance"):
+        _whiten(np.zeros(64))
 
 
 def test_o4b_is_locked_before_any_download(tmp_path: Path) -> None:

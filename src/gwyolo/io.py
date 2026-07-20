@@ -37,7 +37,14 @@ def atomic_write_json(path: str | Path, value: Any) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(
+                value,
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
             handle.write("\n")
         os.replace(temporary, target)
     except BaseException:

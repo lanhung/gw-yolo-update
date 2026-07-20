@@ -116,6 +116,8 @@ def probability_summaries(
         raise ValueError("probabilities must have shape [2, IFO, Q, frequency, time]")
     if probabilities.shape[1] != len(model_ifos):
         raise ValueError("probability IFO axis does not match model_ifos")
+    if not np.isfinite(probabilities).all():
+        raise ValueError("probabilities contain non-finite values")
     chirp_scores = {
         ifo: float(np.max(probabilities[0, index])) for index, ifo in enumerate(model_ifos)
     }

@@ -89,6 +89,25 @@ def test_background_excludes_windows_without_full_preprocessing_context(tmp_path
     assert report["required_context_duration"] == 32
 
 
+def test_background_dq_gate_covers_full_whitening_context(tmp_path) -> None:
+    h1 = tmp_path / "h1.hdf5"
+    _write_quality_file(h1, 1000, 64, bad_second=30)
+    rows, _ = plan_background_windows(
+        {"H1": h1},
+        window_duration=8,
+        stride=8,
+        block_duration=64,
+        required_context_duration=16,
+        validation_fraction=0,
+        test_fraction=0,
+    )
+    starts = {row["gps_start"] for row in rows}
+    assert 1024 not in starts
+    assert 1032 not in starts
+    assert 1016 in starts
+    assert 1040 in starts
+
+
 def test_background_run_requires_hash_matched_verified_sources(tmp_path: Path) -> None:
     h1 = tmp_path / "h1.hdf5"
     _write_quality_file(h1, 3000, 16)
@@ -180,6 +199,7 @@ def test_batch_background_uses_global_disjoint_block_split(tmp_path: Path) -> No
         stride=8,
         block_duration=16,
         required_context_duration=8,
+        required_injection_bits=3,
         validation_fraction=0.25,
         test_fraction=0.25,
         seed=3,
