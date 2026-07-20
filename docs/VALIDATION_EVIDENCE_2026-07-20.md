@@ -184,6 +184,24 @@ subsets will be generated from the new split-safe 10k SNR-quota manifest, and ea
 same analytic checkpoint SHA256
 `61730b9734a90fd01e4678470026cacc8c3e78cdf008e68cbcaf88ebd3ae8e72`.
 
+The 10k empirical-SNR annotation is complete: median network optimal SNR is 3.847 and 5,190/10,000
+(51.9%) native injections are below SNR 4. Its output-manifest SHA256 is
+`29b4a918323e3909f0e51486d60e61504829fda0b8c53778bdd9b6425ecabca4`; report SHA256 is
+`93a5c253344afa0fba68eae168e157a577edb122c2393e1cfe83e01e73d21125`. The deterministic
+train-only proposal contains exactly 4,000/3,500/2,000/500 rows in SNR 4--8/8--15/15--30/30--50,
+while retaining 10,000 unique waveform and injection IDs and 76 GPS blocks. Quota-manifest SHA256
+is `bf6575b14a5817f7d0b916b18f5f89e3f125479a85c73343c4b627357c0c0590`; report SHA256 is
+`e1d8088a653d8a58d5b66711951395942a92e95fda3e46b99c9a01347a1f5aab`.
+
+Fresh nested scale subsets now pass the frozen validation audit. Their 2k/5k/10k manifests have
+SHA256 `e9027c25bfa252e323727725a7af9801b30717af48c7cf9d6bdc570f60f1d62c`,
+`445398681546bcdf3511b3ad9c76cbdba174318a32885400ffb899e39a39277e` and
+`bf6575b14a5817f7d0b916b18f5f89e3f125479a85c73343c4b627357c0c0590`. Each has the exact
+requested number of unique injections/waveforms, all already cover the 76 train GPS blocks, and all
+have zero injection, waveform and GPS overlap with the shared 3k validation corpus. The nesting and
+joint family/SNR-stratum report SHA256 is
+`13f943ec9ee87dc6f78cd88012c4d48d13cfa68fb314d3907117d914198d73ec`.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721

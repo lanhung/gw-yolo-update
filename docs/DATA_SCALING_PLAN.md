@@ -371,6 +371,16 @@ every scale. All scale points start from the identical analytic checkpoint
 checkpoint as the 10k initializer is prohibited because it confounds initialization with prior
 physical exposure.
 
+The first executable curve is now frozen. Native 10k empirical SNR has median 3.847 with 51.9%
+below 4; the train-only quota manifest assigns exactly 4,000/3,500/2,000/500 rows to
+4--8/8--15/15--30/30--50 and has SHA256
+`bf6575b14a5817f7d0b916b18f5f89e3f125479a85c73343c4b627357c0c0590`. Nested 2k/5k/10k
+manifest hashes are `e9027c25bfa252e323727725a7af9801b30717af48c7cf9d6bdc570f60f1d62c`,
+`445398681546bcdf3511b3ad9c76cbdba174318a32885400ffb899e39a39277e` and the full-quota hash.
+All three pass zero-overlap injection/waveform/GPS audits against the frozen 3k validation corpus.
+All three already saturate the current 76 train GPS blocks, so this curve isolates waveform scale;
+it cannot answer the separate run/GPS-domain scale question.
+
 An official O4a acquisition plan was also frozen with seed 20260720. The API exposed 3,309 aligned
 H1/L1 4-kHz files; 800 disjoint 4,096-second pairs were selected over GPS
 1368268800--1389408256. This is 3,276,800 seconds (37.93 raw coincident detector-days) before DQ,
