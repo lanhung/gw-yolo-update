@@ -69,6 +69,7 @@ def test_glitch_strain_shards_never_split_a_source_file(tmp_path) -> None:
             row["strain_shard"]
         )
     assert all(len(shards) == 1 for shards in assignments.values())
+    assert [row["rows"] for row in report["shard_summaries"]] == [4, 4, 2]
 
 
 def test_gravityspy_split_keeps_network_gps_blocks_together(tmp_path) -> None:

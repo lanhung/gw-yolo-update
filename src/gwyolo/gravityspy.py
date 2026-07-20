@@ -269,9 +269,11 @@ def shard_gravityspy_strain_plan(
     atomic_write_text(
         target, "".join(json.dumps(row, sort_keys=True) + "\n" for row in sharded)
     )
+    rows_by_shard: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in sharded:
+        rows_by_shard[int(row["strain_shard"])].append(row)
     shard_summaries = []
-    for shard in sorted(set(file_shards.values())):
-        selected = [row for row in sharded if row["strain_shard"] == shard]
+    for shard, selected in sorted(rows_by_shard.items()):
         shard_summaries.append(
             {
                 "shard": shard,
