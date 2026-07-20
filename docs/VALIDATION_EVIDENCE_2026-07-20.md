@@ -230,6 +230,14 @@ waveform and GPS overlap and `test_evaluation` is null. Report SHA256 is
 single seed at commit `eb463a4`; the strict summary gate will not pool it with the final-code
 three-seed series.
 
+The matching exploratory n=5,000 control also reached exactly 3,750 updates/60,000 examples and
+selected final-update epoch 13. Its validation-calibrated IoU is 0.03377 at threshold 0.5, only
+0.00145 absolute above the exploratory n=2,000 value and far below the predeclared 0.01 promotion
+margin. Report SHA256 is `ebff219beafce6029e6e80352ecd6da7a6d9b32be71901e52bcdadae5a9b1e9d`;
+checkpoint SHA256 is `ed19e175e3d3ccb032bc510e0548ed1e03348a0802fb1821a9a60a410fe31ef5`.
+This single-seed difference is not a scaling conclusion; formal same-commit seeds and the
+fixed-epoch protocol remain required.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721
