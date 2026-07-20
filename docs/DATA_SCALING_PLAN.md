@@ -228,3 +228,53 @@ Architecture work is promoted from exploratory to primary only after:
 5. label audits cover mask consistency and hard-negative contamination.
 
 A paper claim requires DS3-scale coverage or an evidence-based learning-curve argument for a smaller corpus, plus continuous-background search exposure. Dataset size alone never substitutes for FAR/`<VT>`.
+
+## 2026-07-20 physical training and real-glitch update
+
+The first context-safe O4a physical training batch contains 2,000 train and 500 validation
+injections over 38 and 13 disjoint GPS blocks. Injection ID, waveform ID and GPS-block overlap are
+all zero. A 30-case family-stratified comparison covering `IMRPhenomXAS`,
+`IMRPhenomXAS_NRTidalv3` and `IMRPhenomNSBH` passed the direct-LALSimulation waveform gate; the
+passing report SHA256 is `0498c7ee60c8adbc567582e06d44f8c3ab5c24893e4ab359531c36b2012dfe2b`.
+Population and detector-projection validation remain separate gates.
+
+Two negative controls materially change the scale plan. Before fixing physical-power float32
+underflow, validation mask occupancy reached 55.8% and the best IoU was 0.1034; this run is invalid
+as a target-construction benchmark but is retained. After scaling only the signal-only target before
+the transform, occupancy became 0.15–0.67% for BBH, 0.74–2.12% for BNS and 0.42–1.83% for NSBH.
+The corrected all-row run reached only 0.0473 validation IoU. Filtering train to SNR>=4 retained just
+1,065 rows and reached 0.0431, so deletion did not solve the domain problem.
+
+The empirical-noise optimal-SNR audit explains why nominal row count overstates useful training
+scale:
+
+| Split | Rows | SNR <4 | SNR 4–8 | SNR 8–15 | SNR 15–30 | SNR >=30 | Median SNR |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| train | 2,000 | 935 | 669 | 288 | 88 | 20 | 4.25 |
+| validation | 500 | 236 | 159 | 73 | 26 | 6 | 4.27 |
+
+Thus almost 47% of the volume-drawn pilot is below the training floor. Future training generation
+must deliberately cover SNR 4–50 (especially 4–15), rather than drawing distance only from the
+astrophysical evaluation proposal. Validation/test must retain the population proposal and weights.
+A train-only curriculum may rescale the existing 935 sub-floor signals into SNR 4–8, but it still
+counts as exactly 2,000 unique waveforms and 38 GPS blocks—not 2,935 samples and not new evidence.
+
+The official Gravity Spy expansion now contains 80,496 unique high-confidence O1–O3b H1/L1 glitch
+IDs. IFO-independent network-GPS splitting gives zero train/validation/test overlap. Of 64,284 train
+anchors, 59,933 (93.23%) map to a single official GWOSC HDF5 file containing a full 64-second
+context, spanning 16,297 unique source files. Downloading all source files would require hundreds of
+GB, far beyond the current roughly 8 GB free disk. Real-glitch training therefore requires a bounded
+download/extract/verify/evict cache or external artifact storage; repeatedly downloading a small
+subset is not an acceptable substitute for unique glitch and GPS coverage.
+
+The promotion sequence is now:
+
+1. finish the 2k SNR-curriculum and per-IFO visibility ablation, retaining all negative results;
+2. run the same checkpoint at 1,024 time bins (7.8125 ms) and pass the <=10 ms timing gate;
+3. generate nested 10k/25k/50k physical train sets with explicit SNR quotas and increasing GPS/run
+   diversity, using at least three seeds per scale and five at the promoted endpoint;
+4. implement the bounded real-glitch strain cache and numeric mask pipeline before claiming a
+   deglitch advantage;
+5. expand validation to >=10k injections and background to >=30 coincident detector-days, then
+   accumulate pre-registered time-slide exposure in years;
+6. freeze architecture, calibration and thresholds before any O4b/locked-test evaluation.

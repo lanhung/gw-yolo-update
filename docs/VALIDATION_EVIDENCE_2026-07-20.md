@@ -1,5 +1,18 @@
 # Verified O4a validation checkpoint — 2026-07-20
 
+## Added physical-domain controls
+
+- Physical manifests: 2,000 train / 500 validation, 38 / 13 disjoint GPS blocks.
+- Direct LALSimulation waveform-equivalence gate: 30/30 passed across BBH/BNS/NSBH; report SHA256
+  `0498c7ee60c8adbc567582e06d44f8c3ab5c24893e4ab359531c36b2012dfe2b`.
+- Corrected-mask all-row validation IoU: 0.0473; SNR>=4 filtered validation IoU: 0.0431. Both are
+  negative validation-only results, not search sensitivity.
+- Empirical optimal-SNR manifests: train SHA256
+  `4399ce654d0781f08d06de9e2fdc2396dfce6b113767a6e0844c8d82c5b3f940`, validation SHA256
+  `573c901db4b2b9ce3e7dde44d9e3037a5d893252d22586997b256b70a50e0c9b`.
+- Gravity Spy: 80,496 unique anchors; network-block-safe split has zero overlap. The train strain
+  plan maps 59,933 anchors to 16,297 official GWOSC files at 93.23% coverage.
+
 ## Evidence boundary
 
 This checkpoint uses only analytic training data and O4a development/validation data. It is not a
