@@ -296,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     injection.add_argument("--background-manifest", required=True)
     injection.add_argument("--background-report", required=True)
     injection.add_argument("--output-dir", required=True)
+    injection.add_argument("--train-count", type=int, default=0)
     injection.add_argument("--validation-count", type=int, default=5000)
     injection.add_argument("--test-count", type=int, default=20000)
     injection.add_argument("--seed", type=int, default=20260719)
@@ -680,12 +681,13 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_injection_plan(
-                args.background_manifest,
-                args.background_report,
-                args.output_dir,
-                args.validation_count,
-                args.test_count,
-                args.seed,
+                background_manifest=args.background_manifest,
+                background_report=args.background_report,
+                output_dir=args.output_dir,
+                validation_count=args.validation_count,
+                test_count=args.test_count,
+                seed=args.seed,
+                training_count=args.train_count,
             )
         )
     elif args.command == "injection-materialize":

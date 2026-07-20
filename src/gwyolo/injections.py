@@ -119,6 +119,8 @@ def plan_injection_recipes(
         family_survey = {}
         fraction_sum = sum(float(item["fraction"]) for item in population.values())
         for family, count in family_counts.items():
+            if count == 0:
+                continue
             maximum_distance = float(population[family]["maximum_distance_mpc"])
             maximum_redshift = float(cosmology.redshift_at_luminosity_distance(maximum_distance))
             maximum_comoving = float(cosmology.distances_at_redshift(maximum_redshift)[0])
@@ -234,19 +236,23 @@ def run_injection_plan(
     validation_count: int,
     test_count: int,
     seed: int = 20260719,
+    training_count: int = 0,
 ) -> dict[str, Any]:
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
     with Path(background_report).open("r", encoding="utf-8") as handle:
         exposure = json.load(handle)
+    requested = {"train": training_count, "val": validation_count, "test": test_count}
+    if any(count < 0 for count in requested.values()) or not any(requested.values()):
+        raise ValueError("Split injection counts must be non-negative with at least one positive")
+    counts = {split: count for split, count in requested.items() if count > 0}
     live_times = {
-        split: float(exposure["splits"][split]["live_time_years"])
-        for split in ("val", "test")
+        split: float(exposure["splits"][split]["live_time_years"]) for split in counts
     }
     recipes, report = plan_injection_recipes(
         rows,
         live_times,
-        {"val": validation_count, "test": test_count},
+        counts,
         seed=seed,
     )
     output = Path(output_dir)
@@ -260,6 +266,7 @@ def run_injection_plan(
         **report,
         "background_manifest_sha256": file_sha256(background_manifest),
         "background_report_sha256": file_sha256(background_report),
+        "requested_counts_by_split": requested,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "plan_hash": canonical_hash(report),

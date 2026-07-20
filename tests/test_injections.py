@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from gwyolo.cosmology import FlatLambdaCDMGrid
-from gwyolo.injections import plan_injection_recipes
+from gwyolo.injections import plan_injection_recipes, run_injection_plan
+from gwyolo.io import file_sha256
 
 
 def test_injection_vt_weights_integrate_sampled_volume_time() -> None:
@@ -103,3 +104,46 @@ def test_nsbh_detector_frame_neutron_star_mass_stays_in_approximant_domain() -> 
     )
     assert max(row["mass_2_detector_msun"] for row in recipes) <= 3.0
     assert report["approximant_domain_audit"]["passed"]
+
+
+def test_run_injection_plan_can_create_train_val_without_test(tmp_path) -> None:
+    import json
+
+    rows = [
+        {
+            "window_id": f"{split}-window",
+            "split": split,
+            "gps_block": f"{split}-block",
+            "gps_start": gps,
+            "gps_end": gps + 8,
+            "ifos": ["H1", "L1"],
+        }
+        for split, gps in (("train", 1000), ("val", 2000))
+    ]
+    manifest = tmp_path / "background.jsonl"
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    background_report = tmp_path / "background_report.json"
+    background_report.write_text(
+        json.dumps(
+            {
+                "splits": {
+                    "train": {"live_time_years": 1.0},
+                    "val": {"live_time_years": 1.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = run_injection_plan(
+        manifest,
+        background_report,
+        tmp_path / "planned",
+        validation_count=2,
+        test_count=0,
+        training_count=3,
+    )
+    assert report["counts_by_split"] == {"train": 3, "val": 2}
+    assert report["requested_counts_by_split"]["test"] == 0
+    assert report["background_manifest_sha256"] == file_sha256(manifest)
