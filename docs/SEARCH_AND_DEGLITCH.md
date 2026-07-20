@@ -198,6 +198,9 @@ checkpoints, but it is not an astrophysical FAR/IFAR and cannot unlock O4b.
 It also requires the originating physical-finetune report, re-hashes its checkpoint and config,
 requires the scorer's injection manifest to equal the training validation manifest, and rejects any
 training report whose `test_evaluation` is non-null.
+When a background planner emits a combined train/validation/test JSONL, `manifest-select-split`
+first writes a hash-addressed explicit split manifest and report. The scorer never silently filters a
+mixed manifest, so its recorded input hash always denotes exactly the rows it evaluated.
 
 For the frozen batch-8 O4a scale study the predeclared value is eight surviving validation windows
 (approximately one percent of the 824-window validation background, subject to score ties). This

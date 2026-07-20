@@ -120,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     physical_validation.add_argument("--seed", type=int, default=20260719)
     physical_validation.add_argument("--output", required=True)
 
+    split_manifest = subparsers.add_parser("manifest-select-split")
+    split_manifest.add_argument("--manifest", required=True)
+    split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
+    split_manifest.add_argument("--output-dir", required=True)
+
     scaling = subparsers.add_parser("scale-plan")
     scaling.add_argument("--manifest", required=True)
     scaling.add_argument("--output", required=True)
@@ -612,6 +617,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "manifest-select-split":
+        from .manifests import select_jsonl_split
+
+        _print(select_jsonl_split(args.manifest, args.split, args.output_dir))
     elif args.command == "scale-plan":
         _print(
             run_scale_plan(
