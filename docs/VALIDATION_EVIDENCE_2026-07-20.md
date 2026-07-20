@@ -255,6 +255,19 @@ rows rather than silently filtered in the scorer. The split manifest SHA256 is
 development work point permits at most eight surviving background windows before applying the
 frozen threshold to all 3,000 validation injections. Its nominal window FAR is diagnostic-only.
 
+The formal fixed-update series is now complete at commit `b428896`: all nine 2k/5k/10k × three-seed
+runs reached exactly 3,750 optimizer updates and 60,000 seen examples, passed zero-overlap audits,
+hash-verified their checkpoints and retained `test_evaluation: null`. The frozen 824-window O4a
+validation background and all 3,000 validation injections were scored for every checkpoint. Mean
+weighted efficiencies are 0.08340, 0.08543 and 0.08698 for 2k, 5k and 10k, with seed sample standard
+deviations 0.00407, 0.00164 and 0.00041. The mean gains are only +0.00202 and +0.00155. Only the
+5k→10k direction is positive in all three seeds, and every injection-paired 95% bootstrap interval
+for that step crosses zero. The 2k→5k comparison is positive with a nonzero interval in only one of
+three seeds. This is evidence of a waveform-count plateau under fixed examples, not evidence that
+the total physical/OOD corpus is large enough. It rejects blind 25k/50k waveform duplication while
+strengthening the case for new GPS/run, V1 and glitch-family coverage. The equal-epoch control is
+still running and scale promotion remains false.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721

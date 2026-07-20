@@ -398,6 +398,15 @@ from the declared pretrained checkpoint, resumes only identity-matching outputs,
 the strict summary gate. Summary pooling requires identical code commit, config, pretrained hash,
 optimizer updates/examples and validation-cache version; three seeds per scale remain the minimum.
 
+The completed fixed-update endpoint does not meet the predeclared promotion margin. Across three
+seeds, frozen O4a weighted efficiency changes from 0.08340 at 2k to 0.08543 at 5k and 0.08698 at
+10k. The successive absolute gains (+0.00202 and +0.00155) are below one percentage point, and all
+three paired 5k→10k bootstrap intervals include zero. Therefore 25k/50k waveform-count expansion is
+not promoted from this control. The fixed-epoch result remains required, but the next independent
+information axis is already identified: O3b H1/L1/V1 detector-set coverage, additional globally
+split GPS blocks, real overlapping glitches and later-run OOD families. Training-data growth remains
+necessary; repeating the same 76 GPS blocks with more waveforms is not the needed growth.
+
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
 frozen 3k validation split. `physical-scale-subsets` therefore constructs fresh, strictly nested

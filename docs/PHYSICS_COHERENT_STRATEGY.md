@@ -169,6 +169,15 @@ that missing-detector masking works, but cannot establish H1/V1, L1/V1 or H1/L1/
 Detector-set training therefore remains blocked on a group-safe O1--O4a corpus with real detector-set
 coverage. No fixed-channel result is relabeled as variable-detector evidence.
 
+Commit `6bc15e9` makes that evidence gate executable. Both continuous-background and injection
+scorers accept an explicit enabled-IFO subset while retaining the checkpoint's immutable H1/L1/V1
+slot order. Detector-set checkpoints receive the corresponding validity tensor; disabled strain is
+not mistaken for an observed zero. `detector-subset-summarize` requires the same checkpoint,
+background manifest, injection IDs, waveform IDs and weights across H1/L1, H1/V1, L1/V1 and
+H1/L1/V1. Each subset receives its own validation-background-only threshold, followed by paired
+`<VT>` bootstrap comparisons against the full network and a predeclared one-sided non-inferiority
+margin. The report cannot pass its completeness gate when any network subset is absent.
+
 A provenance-complete GWOSC inventory resolves that data blocker without opening O4b. O4a contains
 no aligned H1/L1/V1 4-kHz file triples. O3b contains 2,029 such triples; a seed-20260720 stratified
 200-triple development plan spans GPS 1256697856--1269338112 and has SHA256
