@@ -412,6 +412,316 @@ def plan_gravityspy_network_strain(
     return report
 
 
+def materialize_gravityspy_network_strain(
+    manifest_path: str | Path,
+    config_path: str | Path,
+    cache_dir: str | Path,
+    output_dir: str | Path,
+    output_duration: float = 8.0,
+    download_workers: int = 8,
+    chunk_samples: int = 1_048_576,
+) -> dict[str, Any]:
+    """Verify and transform aligned real H1/L1/V1 contexts around catalog glitches."""
+
+    if output_duration <= 0 or download_workers <= 0 or chunk_samples <= 0:
+        raise ValueError("Invalid Gravity Spy network materialization settings")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Gravity Spy network materialization requires a non-empty plan")
+    glitch_ids = [str(row["glitch_id"]) for row in rows]
+    if len(glitch_ids) != len(set(glitch_ids)):
+        raise ValueError("Gravity Spy network plan contains duplicate glitch IDs")
+    config = load_yaml(config_path)
+    section_name = next(
+        (name for name in ("physical_training", "numeric_training") if name in config),
+        None,
+    )
+    if section_name is None:
+        raise ValueError("Gravity Spy network materialization needs a training configuration")
+    settings = config[section_name]
+    tensor = settings["tensor"]
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    target_rate = int(settings["target_sample_rate"])
+    for row in rows:
+        if output_duration >= float(row["context_duration"]):
+            raise ValueError("Output duration must be shorter than every whitening context")
+        sources = row.get("network_strain_sources")
+        if not isinstance(sources, dict) or len(sources) < 2:
+            raise ValueError("Network materialization requires at least two source detectors")
+        if any(ifo not in model_ifos for ifo in sources):
+            raise ValueError("Network source detector is absent from configured model slots")
+        expected = [int(ifo in sources) for ifo in model_ifos]
+        if list(row.get("detector_availability", [])) != expected:
+            raise ValueError("Planned detector availability does not match network sources")
+        if str(row["ifo"]) not in sources:
+            raise ValueError("Event IFO is absent from network sources")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    cache = Path(cache_dir)
+    run_identity = {
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "config_hash": canonical_hash(config),
+        "output_duration": output_duration,
+        "download_workers": download_workers,
+        "chunk_samples": chunk_samples,
+    }
+    state_path = output / "materialization_state.json"
+    partial_path = output / "materialization_partial.json"
+    completed: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    verified_sources: dict[str, dict[str, Any]] = {}
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing network materialization belongs to another run")
+        if partial_path.is_file():
+            partial = json.loads(partial_path.read_text(encoding="utf-8"))
+            completed = list(partial.get("records", []))
+            rejected = list(partial.get("rejected", []))
+            verified_sources = dict(partial.get("verified_sources", {}))
+    completed_ids = set()
+    for record in completed:
+        glitch_id = str(record["glitch_id"])
+        if glitch_id in completed_ids or file_sha256(record["path"]) != record["sha256"]:
+            raise ValueError(f"Invalid resumable network sample: {glitch_id}")
+        completed_ids.add(glitch_id)
+    rejected_ids = {str(row["glitch_id"]) for row in rejected}
+    if len(rejected_ids) != len(rejected) or completed_ids & rejected_ids:
+        raise ValueError("Invalid resumable network rejection inventory")
+
+    source_inventory: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        for source in row["network_strain_sources"].values():
+            url = str(source["hdf5_url"])
+            if url in source_inventory and source_inventory[url] != source:
+                raise ValueError("A network source URL has inconsistent metadata")
+            source_inventory[url] = source
+    for url, source in sorted(source_inventory.items()):
+        filename = Path(url.split("?", 1)[0]).name
+        download = download_resumable(
+            url,
+            cache / str(source["observing_run"]) / str(source["detector"]) / filename,
+            workers=download_workers,
+        )
+        verification = verified_sources.get(url)
+        if verification is None:
+            verification = verify_hdf5_against_detail(
+                download["path"], _api_json(str(source["detail_url"])), chunk_samples
+            )
+            if not verification["passed"]:
+                raise RuntimeError(f"Full-file network verification failed for {url}")
+            verified_sources[url] = {**verification, "detail_url": source["detail_url"]}
+            atomic_write_json(
+                partial_path,
+                {
+                    "run_identity": run_identity,
+                    "verified_sources": verified_sources,
+                    "records": completed,
+                    "rejected": rejected,
+                },
+            )
+        elif verification["sha256"] != file_sha256(download["path"]):
+            raise ValueError(f"Cached network source changed after verification: {url}")
+
+    output_samples = int(round(output_duration * target_rate))
+    for row in rows:
+        glitch_id = str(row["glitch_id"])
+        if glitch_id in completed_ids or glitch_id in rejected_ids:
+            continue
+        raw = np.zeros((len(model_ifos), output_samples), dtype=np.float64)
+        whitened = np.zeros_like(raw)
+        data_quality: dict[str, Any] = {}
+        rejection_reason = None
+        for ifo, source in row["network_strain_sources"].items():
+            verification = verified_sources[str(source["hdf5_url"])]
+            segment = read_hdf5_segment(
+                verification["path"],
+                float(row["event_time"]),
+                float(row["context_duration"]),
+            )
+            context = np.asarray(segment["strain"], dtype=np.float64)
+            dqmask = np.asarray(segment["quality"].get("DQmask", []), dtype=np.int64)
+            if not np.isfinite(context).all():
+                rejection_reason = f"nonfinite_strain_context_{ifo}"
+                break
+            if dqmask.size == 0 or not np.all(dqmask & 1):
+                rejection_reason = f"data_quality_bit_missing_{ifo}"
+                break
+            context = _fft_downsample(context, int(segment["sample_rate"]), target_rate)
+            whitened_context = _whiten(context)
+            center = context.size // 2
+            start = center - output_samples // 2
+            stop = start + output_samples
+            if start < 0 or stop > context.size:
+                rejection_reason = f"short_context_{ifo}"
+                break
+            index = model_ifos.index(str(ifo))
+            raw[index] = context[start:stop]
+            whitened[index] = whitened_context[start:stop]
+            data_quality[str(ifo)] = {
+                "seconds": int(dqmask.size),
+                "dqmask_min": int(dqmask.min()),
+                "dqmask_max": int(dqmask.max()),
+                "injmask_values": sorted(
+                    int(value)
+                    for value in np.unique(segment["quality"].get("Injmask", []))
+                ),
+            }
+        if rejection_reason is not None:
+            rejected.append({"glitch_id": glitch_id, "reason": rejection_reason})
+            rejected_ids.add(glitch_id)
+            atomic_write_json(
+                partial_path,
+                {
+                    "run_identity": run_identity,
+                    "verified_sources": verified_sources,
+                    "records": completed,
+                    "rejected": rejected,
+                },
+            )
+            continue
+        power = multiresolution_power(
+            whitened,
+            target_rate,
+            q_values,
+            int(tensor["frequency_bins"]),
+            int(tensor["time_bins"]),
+            float(tensor["fmin"]),
+            float(tensor["fmax"]),
+        )
+        features = _normalize_power(power)
+        availability = np.asarray(row["detector_availability"], dtype=np.uint8)
+        features[availability == 0] = 0
+        glitch_mask = gravityspy_weak_mask(
+            str(row["ifo"]),
+            model_ifos,
+            q_values,
+            int(tensor["frequency_bins"]),
+            int(tensor["time_bins"]),
+            float(tensor["fmin"]),
+            float(tensor["fmax"]),
+            float(row["duration"]),
+            float(row["peak_frequency"]),
+            float(row["q_value"]),
+            output_duration,
+        )
+        sample_path = output / "samples" / f"network-{canonical_hash(glitch_id, 24)}.npz"
+        _atomic_savez(
+            sample_path,
+            {
+                "features": features.astype(np.float16),
+                "chirp_mask": np.zeros_like(glitch_mask, dtype=np.uint8),
+                "glitch_mask": glitch_mask.astype(np.uint8),
+                "raw_strain": raw.astype(np.float32),
+                "whitened_strain": whitened.astype(np.float32),
+                "detector_availability": availability,
+                "ifos": np.asarray(model_ifos),
+                "q_values": np.asarray(q_values, dtype=np.float32),
+                "sample_rate": np.asarray(target_rate, dtype=np.int32),
+                "event_gps": np.asarray(row["event_time"], dtype=np.float64),
+            },
+        )
+        record = {
+            **row,
+            "single_ifo_numeric_path": row.get("path"),
+            "single_ifo_numeric_sha256": row.get("sha256"),
+            "path": str(sample_path),
+            "sha256": file_sha256(sample_path),
+            "mask_provenance": "weak_gravityspy_duration_peak_frequency_q_geometry_v1",
+            "human_pixel_mask": False,
+            "data_quality": data_quality,
+            "aligned_network_context": True,
+        }
+        completed.append(record)
+        completed_ids.add(glitch_id)
+        atomic_write_json(
+            partial_path,
+            {
+                "run_identity": run_identity,
+                "verified_sources": verified_sources,
+                "records": completed,
+                "rejected": rejected,
+            },
+        )
+        atomic_write_json(
+            state_path,
+            {
+                "status": "in_progress",
+                "run_identity": run_identity,
+                "completed_rows": len(completed),
+                "rejected_rows": len(rejected),
+                "requested_rows": len(rows),
+                "verified_files": len(verified_sources),
+            },
+        )
+    if len(completed_ids) + len(rejected_ids) != len(rows):
+        raise RuntimeError("Network Gravity Spy rows were not fully accounted")
+    completed.sort(key=lambda row: str(row["glitch_id"]))
+    manifest = output / "gravityspy_network_numeric_manifest.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in completed)
+    )
+    report = {
+        "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "scientific_blocker": (
+            "aligned strain is verified but metadata-derived glitch masks require human audit; "
+            "coherence gains still require frozen continuous-background evaluation"
+        ),
+        "run_identity": run_identity,
+        **_execution_provenance(),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "rows": len(completed),
+        "requested_rows": len(rows),
+        "rejected_rows": len(rejected),
+        "rejection_reason_counts": dict(
+            sorted(Counter(row["reason"] for row in rejected).items())
+        ),
+        "unique_glitches": len(completed_ids),
+        "unique_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in completed}
+        ),
+        "verified_files": len(verified_sources),
+        "detector_subset_counts": dict(
+            sorted(
+                Counter("".join(row["available_ifos"]) for row in completed).items()
+            )
+        ),
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "tensor_shape": [
+            len(model_ifos),
+            len(q_values),
+            int(tensor["frequency_bins"]),
+            int(tensor["time_bins"]),
+        ],
+        "mask_provenance": "weak_gravityspy_duration_peak_frequency_q_geometry_v1",
+        "human_pixel_masks": 0,
+        "source_cache_evicted": False,
+    }
+    report_path = output / "gravityspy_network_numeric_report.json"
+    atomic_write_json(report_path, report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed_rows": len(completed),
+            "rejected_rows": len(rejected),
+            "requested_rows": len(rows),
+            "verified_files": len(verified_sources),
+            "report_sha256": file_sha256(report_path),
+        },
+    )
+    return report
+
+
 def select_gravityspy_source_files(
     manifest_path: str | Path,
     output_dir: str | Path,
@@ -1022,7 +1332,11 @@ def evict_gravityspy_verified_sources(
     """Evict only fully verified, reproducible source files after sample validation."""
     report_path = Path(materialization_report_path)
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("status") != "verified_gravityspy_numeric_weak_masks":
+    accepted_statuses = {
+        "verified_gravityspy_numeric_weak_masks",
+        "verified_gravityspy_aligned_network_numeric_weak_masks",
+    }
+    if report.get("status") not in accepted_statuses:
         raise ValueError("Gravity Spy materialization is not complete")
     manifest = Path(report["manifest_path"])
     if file_sha256(manifest) != report["manifest_sha256"]:

@@ -387,6 +387,17 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network.add_argument("--context-duration", type=float, default=64.0)
     gravityspy_network.add_argument("--minimum-detectors", type=int, default=2)
 
+    gravityspy_network_materialize = subparsers.add_parser(
+        "gravityspy-network-strain-materialize"
+    )
+    gravityspy_network_materialize.add_argument("--manifest", required=True)
+    gravityspy_network_materialize.add_argument("--config", required=True)
+    gravityspy_network_materialize.add_argument("--cache-dir", required=True)
+    gravityspy_network_materialize.add_argument("--output-dir", required=True)
+    gravityspy_network_materialize.add_argument("--output-duration", type=float, default=8.0)
+    gravityspy_network_materialize.add_argument("--download-workers", type=int, default=8)
+    gravityspy_network_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
+
     gravityspy_select = subparsers.add_parser("gravityspy-strain-select")
     gravityspy_select.add_argument("--manifest", required=True)
     gravityspy_select.add_argument("--output-dir", required=True)
@@ -1135,6 +1146,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate_khz,
                 args.context_duration,
                 args.minimum_detectors,
+            )
+        )
+    elif args.command == "gravityspy-network-strain-materialize":
+        from .gravityspy import materialize_gravityspy_network_strain
+
+        _print(
+            materialize_gravityspy_network_strain(
+                args.manifest,
+                args.config,
+                args.cache_dir,
+                args.output_dir,
+                args.output_duration,
+                args.download_workers,
+                args.chunk_samples,
             )
         )
     elif args.command == "gravityspy-strain-shard":

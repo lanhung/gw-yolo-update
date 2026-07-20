@@ -12,6 +12,7 @@ from gwyolo.gravityspy import (
     gravityspy_weak_mask,
     index_gravityspy_csv,
     match_glitch_to_strain_file,
+    materialize_gravityspy_network_strain,
     merge_gravityspy_numeric_manifests,
     plan_gravityspy_network_strain,
     select_gravityspy_source_files,
@@ -118,6 +119,103 @@ def test_gravityspy_network_plan_rejects_duplicate_glitch_identity(tmp_path) -> 
     source.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n")
     with pytest.raises(ValueError, match="duplicate glitch"):
         plan_gravityspy_network_strain(source, tmp_path / "network")
+
+
+def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """physical_training:
+  model_ifos: [H1, L1, V1]
+  q_values: [4]
+  target_sample_rate: 64
+  tensor:
+    frequency_bins: 8
+    time_bins: 8
+    fmin: 4
+    fmax: 30
+"""
+    )
+    sources = {
+        ifo: {
+            "detector": ifo,
+            "observing_run": "O2",
+            "gps_start": 1000,
+            "duration": 4096,
+            "sample_rate": 64,
+            "hdf5_url": f"https://example/{ifo}-1000-4096.hdf5",
+            "detail_url": f"https://example/{ifo}/detail",
+        }
+        for ifo in ("H1", "L1")
+    }
+    plan = tmp_path / "plan.jsonl"
+    plan.write_text(
+        json.dumps(
+            {
+                "glitch_id": "g-network",
+                "split": "val",
+                "network_gps_block": "O2:block",
+                "observing_run": "O2",
+                "ifo": "H1",
+                "event_time": 1100.0,
+                "duration": 0.2,
+                "peak_frequency": 20.0,
+                "q_value": 4.0,
+                "context_duration": 4.0,
+                "available_ifos": ["H1", "L1"],
+                "detector_availability": [1, 1, 0],
+                "network_strain_sources": sources,
+            }
+        )
+        + "\n"
+    )
+    downloaded = {}
+
+    def fake_download(url, path, workers):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(url.encode())
+        downloaded[url] = path
+        return {"path": str(path)}
+
+    def fake_verify(path, detail, chunk_samples):
+        return {
+            "passed": True,
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "bytes": Path(path).stat().st_size,
+        }
+
+    def fake_segment(path, event_time, context_duration):
+        phase = 0.0 if "/H1/" in str(path) else 0.5
+        return {
+            "strain": np.sin(np.linspace(phase, phase + 20, 256)) * 1e-21,
+            "sample_rate": 64,
+            "quality": {
+                "DQmask": np.ones(4, dtype=np.int64),
+                "Injmask": np.zeros(4, dtype=np.int64),
+            },
+        }
+
+    monkeypatch.setattr("gwyolo.gravityspy.download_resumable", fake_download)
+    monkeypatch.setattr("gwyolo.gravityspy.verify_hdf5_against_detail", fake_verify)
+    monkeypatch.setattr("gwyolo.gravityspy._api_json", lambda _: {})
+    monkeypatch.setattr("gwyolo.gravityspy.read_hdf5_segment", fake_segment)
+    report = materialize_gravityspy_network_strain(
+        plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
+    )
+    assert report["rows"] == 1
+    assert report["verified_files"] == 2
+    assert report["detector_subset_counts"] == {"H1L1": 1}
+    row = json.loads(Path(report["manifest_path"]).read_text().strip())
+    with np.load(row["path"], allow_pickle=False) as arrays:
+        assert arrays["features"].shape == (3, 1, 8, 8)
+        assert arrays["raw_strain"].shape == (3, 128)
+        assert arrays["detector_availability"].tolist() == [1, 1, 0]
+        assert np.count_nonzero(arrays["features"][:2]) > 0
+        assert np.count_nonzero(arrays["features"][2]) == 0
+        assert np.count_nonzero(arrays["glitch_mask"][0]) > 0
+        assert np.count_nonzero(arrays["glitch_mask"][1:]) == 0
 
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
