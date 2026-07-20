@@ -8,8 +8,10 @@ from typing import Any
 
 import numpy as np
 
+from .background import SECONDS_PER_YEAR, _union_duration
 from .io import atomic_write_json, file_sha256
 from .metrics import wilson_interval
+from .runtime import execution_provenance
 
 
 def far_upper_limit_zero_count(live_time_years: float, confidence: float = 0.90) -> float:
@@ -51,6 +53,34 @@ def calibrate_threshold(
             far_upper_limit_zero_count(live_time_years) if count == 0 else None
         ),
         "target_far_per_year": target_far_per_year,
+    }
+
+
+def calibrate_validation_count(
+    background_scores: Iterable[float], maximum_false_alarms: int
+) -> dict[str, Any]:
+    """Freeze a measurable validation-only threshold without inventing long FAR exposure."""
+    if maximum_false_alarms < 0:
+        raise ValueError("maximum_false_alarms must be non-negative")
+    scores = sorted((float(score) for score in background_scores), reverse=True)
+    if not scores:
+        raise ValueError("background scores cannot be empty")
+    if any(not math.isfinite(score) for score in scores):
+        raise ValueError("background scores must be finite")
+    candidates = [math.nextafter(scores[0], math.inf), *sorted(set(scores), reverse=True)]
+    allowed = [
+        (threshold, sum(score >= threshold for score in scores))
+        for threshold in candidates
+        if sum(score >= threshold for score in scores) <= maximum_false_alarms
+    ]
+    threshold, count = min(allowed, key=lambda item: item[0])
+    return {
+        "threshold": threshold,
+        "background_count": count,
+        "background_windows": len(scores),
+        "maximum_validation_false_alarms": maximum_false_alarms,
+        "empirical_survival_fraction": count / len(scores),
+        "selection_data": "validation_background_only",
     }
 
 
@@ -464,6 +494,150 @@ def run_validation_injection_diagnostic(
         "bootstrap_seed": seed,
         "overall": overall,
         "strata": strata,
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def _verified_score_artifact(
+    report_path: str | Path,
+    report_kind: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    path = Path(report_path)
+    with path.open("r", encoding="utf-8") as handle:
+        report = json.load(handle)
+    count_field = "failed_windows" if report_kind == "background" else "failed_injections"
+    rows_field = "scored_windows" if report_kind == "background" else "scored_injections"
+    if int(report.get(count_field, -1)) != 0:
+        raise ValueError(f"{report_kind} score report contains failures")
+    required = (
+        "checkpoint_sha256",
+        "config_sha256",
+        "code_commit",
+        "exact_command",
+        "environment",
+        "triggers_path",
+        "triggers_sha256",
+    )
+    missing = [field for field in required if not report.get(field)]
+    if missing:
+        raise ValueError(f"{report_kind} score report lacks provenance: {missing}")
+    triggers_path = Path(report["triggers_path"])
+    if file_sha256(triggers_path) != report["triggers_sha256"]:
+        raise ValueError(f"{report_kind} trigger artifact hash mismatch")
+    rows = load_jsonl(triggers_path)
+    if len(rows) != int(report.get(rows_field, -1)):
+        raise ValueError(f"{report_kind} trigger row count differs from score report")
+    return report, rows
+
+
+def run_physical_validation_endpoint(
+    background_score_report: str | Path,
+    injection_score_report: str | Path,
+    maximum_validation_false_alarms: int,
+    output: str | Path,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    """Evaluate one checkpoint at a frozen, exposure-limited O4a validation endpoint."""
+    background_report, background_rows = _verified_score_artifact(
+        background_score_report, "background"
+    )
+    injection_report, injection_rows = _verified_score_artifact(
+        injection_score_report, "injection"
+    )
+    identities = {}
+    for field in ("checkpoint_sha256", "config_sha256", "code_commit"):
+        values = {str(background_report[field]), str(injection_report[field])}
+        if len(values) != 1:
+            raise ValueError(f"Background/injection score reports disagree on {field}")
+        identities[field] = next(iter(values))
+    if not background_rows or not injection_rows:
+        raise ValueError("Physical validation endpoint requires background and injection rows")
+    for label, rows in (("background", background_rows), ("injection", injection_rows)):
+        invalid = sorted({str(row.get("split")) for row in rows if row.get("split") != "val"})
+        if invalid:
+            raise ValueError(f"Physical validation {label} contains non-val splits: {invalid}")
+        if any("ranking_score" not in row for row in rows):
+            raise ValueError(f"Physical validation {label} lacks ranking_score")
+    window_ids = [str(row["window_id"]) for row in background_rows]
+    injection_ids = [str(row["injection_id"]) for row in injection_rows]
+    waveform_ids = [str(row["waveform_id"]) for row in injection_rows]
+    if len(set(window_ids)) != len(window_ids):
+        raise ValueError("Physical validation background contains duplicate window IDs")
+    if len(set(injection_ids)) != len(injection_ids):
+        raise ValueError("Physical validation injections contain duplicate injection IDs")
+    if len(set(waveform_ids)) != len(waveform_ids):
+        raise ValueError("Physical validation injections contain duplicate waveform IDs")
+    intervals = [(float(row["gps_start"]), float(row["gps_end"])) for row in background_rows]
+    if any(end <= start for start, end in intervals):
+        raise ValueError("Physical validation background contains invalid GPS intervals")
+    live_time_seconds = _union_duration(intervals)
+    live_time_years = live_time_seconds / SECONDS_PER_YEAR
+    calibration = calibrate_validation_count(
+        (row["ranking_score"] for row in background_rows), maximum_validation_false_alarms
+    )
+    false_alarms = int(calibration["background_count"])
+    nominal_far = false_alarms / live_time_years if false_alarms else 0.0
+    threshold = float(calibration["threshold"])
+    overall = summarize_injection_efficiency(
+        injection_rows, threshold, "ranking_score", bootstrap_replicates, seed
+    )
+    stratum_field = (
+        "source_family" if all("source_family" in row for row in injection_rows) else "stratum"
+    )
+    strata = {}
+    for index, stratum in enumerate(
+        sorted({str(row.get(stratum_field, "all")) for row in injection_rows})
+    ):
+        selected = [
+            row for row in injection_rows if str(row.get(stratum_field, "all")) == stratum
+        ]
+        strata[stratum] = summarize_injection_efficiency(
+            selected,
+            threshold,
+            "ranking_score",
+            bootstrap_replicates,
+            seed + index + 1,
+        )
+    result = {
+        "status": "validation_only_exposure_limited_physical_endpoint",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "window-level O4a validation exposure is insufficient for an astrophysical FAR/IFAR; "
+            "candidate clustering, time slides and the independently locked test corpus remain required"
+        ),
+        "protocol": (
+            "threshold frozen from validation background count only, then applied once to the same "
+            "checkpoint's validation injections"
+        ),
+        **identities,
+        "background_score_report_path": str(background_score_report),
+        "background_score_report_sha256": file_sha256(background_score_report),
+        "injection_score_report_path": str(injection_score_report),
+        "injection_score_report_sha256": file_sha256(injection_score_report),
+        "background": {
+            "windows": len(background_rows),
+            "gps_blocks": len({str(row["gps_block"]) for row in background_rows}),
+            "live_time_seconds": live_time_seconds,
+            "live_time_days": live_time_seconds / 86400.0,
+            "live_time_years": live_time_years,
+            "adequate_for_astrophysical_far": False,
+            "nominal_window_far_per_year_diagnostic_only": nominal_far,
+            "nominal_window_ifar_years_diagnostic_only": (
+                1.0 / nominal_far if nominal_far > 0 else None
+            ),
+        },
+        "calibration": calibration,
+        "injections": {
+            "unique_injection_ids": len(set(injection_ids)),
+            "unique_waveform_ids": len(set(waveform_ids)),
+            "gps_blocks": len({str(row["gps_block"]) for row in injection_rows}),
+            "overall": overall,
+            "strata": strata,
+        },
+        "bootstrap_seed": seed,
+        **execution_provenance(),
     }
     atomic_write_json(output, result)
     return result

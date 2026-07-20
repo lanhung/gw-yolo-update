@@ -109,6 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
     search_validation.add_argument("--seed", type=int, default=20260719)
     search_validation.add_argument("--output", required=True)
 
+    physical_validation = subparsers.add_parser("physical-validation-endpoint")
+    physical_validation.add_argument("--background-score-report", required=True)
+    physical_validation.add_argument("--injection-score-report", required=True)
+    physical_validation.add_argument(
+        "--maximum-validation-false-alarms", required=True, type=int
+    )
+    physical_validation.add_argument("--bootstrap-replicates", type=int, default=2000)
+    physical_validation.add_argument("--seed", type=int, default=20260719)
+    physical_validation.add_argument("--output", required=True)
+
     scaling = subparsers.add_parser("scale-plan")
     scaling.add_argument("--manifest", required=True)
     scaling.add_argument("--output", required=True)
@@ -392,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--target-sample-rate", type=int, default=1024)
     trigger.add_argument("--context-duration", type=float, default=64.0)
     trigger.add_argument("--save-probabilities", action="store_true")
+    trigger.add_argument("--required-split", choices=["train", "val", "test"])
 
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
@@ -477,6 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--q-values", nargs="+", type=float, default=[4, 8, 16])
     injection_score.add_argument("--target-sample-rate", type=int, default=1024)
     injection_score.add_argument("--save-probabilities", action="store_true")
+    injection_score.add_argument("--required-split", choices=["train", "val", "test"])
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -580,6 +592,19 @@ def main(argv: list[str] | None = None) -> int:
             run_validation_injection_diagnostic(
                 args.calibration_report,
                 args.validation_injections,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "physical-validation-endpoint":
+        from .search import run_physical_validation_endpoint
+
+        _print(
+            run_physical_validation_endpoint(
+                args.background_score_report,
+                args.injection_score_report,
+                args.maximum_validation_false_alarms,
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
@@ -985,6 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_sample_rate=args.target_sample_rate,
                 context_duration=args.context_duration,
                 save_probabilities=args.save_probabilities,
+                required_split=args.required_split,
             )
         )
     elif args.command == "candidate-extract":
@@ -1111,6 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
                 q_values=tuple(args.q_values),
                 target_sample_rate=args.target_sample_rate,
                 save_probabilities=args.save_probabilities,
+                required_split=args.required_split,
             )
         )
     elif args.command == "pe-evaluate":

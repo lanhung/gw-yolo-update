@@ -185,6 +185,31 @@ result. This makes the no-test-tuning boundary executable rather than merely doc
 and rejects every non-validation row, so development diagnostics cannot accidentally consume the
 locked test injection corpus.
 
+`physical-validation-endpoint` is the scale-selection bridge for the present short O4a development
+background. Both scorers must be invoked with `--required-split val`; their reports now bind code
+commit, exact command, environment, manifest/checkpoint/config hashes, and the split contract into
+the resumable run identity. The endpoint hash-verifies both trigger artifacts, requires the same
+checkpoint/config/commit, rejects duplicate physical injection or waveform IDs, derives exposure
+from the union of scored GPS intervals, and freezes a threshold using only a predeclared maximum
+number of surviving validation-background windows. It then reports overall and source-family
+weighted injection efficiency with Wilson and bootstrap intervals. The nominal window FAR is marked
+diagnostic-only: this bounded operating point is suitable for comparing 2k/5k/10k development
+checkpoints, but it is not an astrophysical FAR/IFAR and cannot unlock O4b.
+
+For the frozen batch-8 O4a scale study the predeclared value is eight surviving validation windows
+(approximately one percent of the 824-window validation background, subject to score ties). This
+choice was fixed before examining any validation-injection endpoint. A typical final aggregation is:
+
+```bash
+python -m gwyolo.cli physical-validation-endpoint \
+  --background-score-report artifacts/endpoint/background/trigger_score_report.json \
+  --injection-score-report artifacts/endpoint/injections/injection_score_report.json \
+  --maximum-validation-false-alarms 8 \
+  --bootstrap-replicates 10000 \
+  --seed 20260720 \
+  --output artifacts/endpoint/physical_validation_endpoint.json
+```
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing

@@ -4,6 +4,14 @@
 
 Data scale and physical coverage remain important, but the 2026-07-20 strategy review removes blind scale-up as the default path. The first decision is whether a compact physics-coherent detector-set model is limited by waveform count, GPS/run diversity, glitch/OOD coverage or representation. Architecture and data increments are promoted only by frozen O4a endpoints under fixed-epoch and fixed-update controls.
 
+The short-exposure development endpoint is now executable as `physical-validation-endpoint`. For the
+current 824-window O4a validation background, each checkpoint is calibrated on background only with
+at most eight surviving windows and is then evaluated on the same frozen 3,000 physical validation
+injections. This is an exposure-limited model-selection metric, not a FAR claim. A scale increment is
+not promoted from mask IoU alone and still requires consistent improvement under both fixed-update
+and fixed-epoch controls; publication sensitivity remains conditional on clustered time slides,
+adequate continuous exposure, and the untouched locked test corpus.
+
 The program distinguishes three quantities:
 
 1. **Rendered images** — may include augmentations and are not an independence count.

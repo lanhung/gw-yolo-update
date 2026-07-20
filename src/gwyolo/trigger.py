@@ -18,6 +18,7 @@ from .io import (
     load_yaml,
     training_tensor_config,
 )
+from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz
 
 
@@ -191,6 +192,7 @@ def score_background_manifest(
     target_sample_rate: int = 1024,
     context_duration: float = 64.0,
     save_probabilities: bool = False,
+    required_split: str | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -214,6 +216,11 @@ def score_background_manifest(
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
     if not manifest_rows:
         raise ValueError("Background manifest cannot be empty")
+    observed_splits = sorted({str(row.get("split")) for row in manifest_rows})
+    if required_split is not None and observed_splits != [required_split]:
+        raise ValueError(
+            f"Background scorer required split {required_split!r}, observed {observed_splits}"
+        )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -228,6 +235,8 @@ def score_background_manifest(
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "save_probabilities": save_probabilities,
+        "required_split": required_split,
+        "code_commit": execution_provenance()["code_commit"],
     }
     resumed_rows = _load_resumable_trigger_rows(output, run_identity, manifest_rows)
     resumed_by_id = {str(row["window_id"]): row for row in resumed_rows}
@@ -314,11 +323,14 @@ def score_background_manifest(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "config_path": str(config_path),
+        "config_sha256": file_sha256(config_path),
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "probabilities_saved": save_probabilities,
+        "required_split": required_split,
+        "observed_splits": observed_splits,
         "run_identity_hash": canonical_hash(run_identity, 64),
         "input_windows": len(manifest_rows),
         "resumed_windows": len(resumed_rows),
@@ -333,6 +345,7 @@ def score_background_manifest(
         "triggers_path": str(triggers_path),
         "triggers_sha256": file_sha256(triggers_path),
         "elapsed_seconds": time.time() - started,
+        **execution_provenance(torch),
     }
     atomic_write_json(output / "trigger_score_report.json", report)
     _save_trigger_progress(

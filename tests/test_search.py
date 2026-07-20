@@ -4,16 +4,19 @@ import json
 import pytest
 
 from gwyolo.search import (
+    calibrate_validation_count,
     calibrate_threshold,
     compare_search_methods,
     evaluate_search,
     far_upper_limit_zero_count,
     paired_vt_comparison,
     run_frozen_search_evaluation,
+    run_physical_validation_endpoint,
     run_search_calibration,
     run_validation_injection_diagnostic,
     summarize_injection_efficiency,
 )
+from gwyolo.io import file_sha256
 
 
 def test_zero_count_far_limit_is_poisson_2p3_over_time():
@@ -25,6 +28,13 @@ def test_threshold_is_calibrated_only_from_background():
     assert result["threshold"] == 8.0
     assert result["background_count"] == 2
     assert result["far_per_year"] == 0.2
+
+
+def test_validation_count_threshold_handles_ties_without_exceeding_budget():
+    result = calibrate_validation_count([0.9, 0.8, 0.8, 0.1], 2)
+    assert result["threshold"] == 0.9
+    assert result["background_count"] == 1
+    assert result["selection_data"] == "validation_background_only"
 
 
 def test_search_evaluation_reports_weighted_vt():
@@ -198,3 +208,108 @@ def test_validation_injection_efficiency_is_weighted_and_split_locked(tmp_path):
         run_validation_injection_diagnostic(
             calibration, injections, tmp_path / "must-not-write.json", bootstrap_replicates=20
         )
+
+
+def test_physical_validation_endpoint_verifies_identity_exposure_and_weighted_efficiency(
+    tmp_path,
+):
+    background_rows = [
+        {
+            "window_id": "w0",
+            "split": "val",
+            "gps_start": 0,
+            "gps_end": 8,
+            "gps_block": "b0",
+            "ranking_score": 0.9,
+        },
+        {
+            "window_id": "w1",
+            "split": "val",
+            "gps_start": 8,
+            "gps_end": 16,
+            "gps_block": "b0",
+            "ranking_score": 0.8,
+        },
+        {
+            "window_id": "w2",
+            "split": "val",
+            "gps_start": 24,
+            "gps_end": 32,
+            "gps_block": "b1",
+            "ranking_score": 0.1,
+        },
+    ]
+    injection_rows = [
+        {
+            "injection_id": "i0",
+            "waveform_id": "s0",
+            "split": "val",
+            "gps_block": "b0",
+            "source_family": "BBH",
+            "ranking_score": 0.95,
+            "vt_weight": 2,
+        },
+        {
+            "injection_id": "i1",
+            "waveform_id": "s1",
+            "split": "val",
+            "gps_block": "b1",
+            "source_family": "BNS",
+            "ranking_score": 0.85,
+            "vt_weight": 1,
+        },
+    ]
+    background_path = tmp_path / "background.jsonl"
+    injection_path = tmp_path / "injections.jsonl"
+    background_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in background_rows), encoding="utf-8"
+    )
+    injection_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in injection_rows), encoding="utf-8"
+    )
+    common = {
+        "checkpoint_sha256": "checkpoint",
+        "config_sha256": "config",
+        "code_commit": "commit",
+        "exact_command": "python -m gwyolo.cli score",
+        "environment": {"python": "test"},
+    }
+    background_report = tmp_path / "background_report.json"
+    injection_report = tmp_path / "injection_report.json"
+    background_report.write_text(
+        json.dumps(
+            {
+                **common,
+                "failed_windows": 0,
+                "scored_windows": 3,
+                "triggers_path": str(background_path),
+                "triggers_sha256": file_sha256(background_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    injection_report.write_text(
+        json.dumps(
+            {
+                **common,
+                "failed_injections": 0,
+                "scored_injections": 2,
+                "triggers_path": str(injection_path),
+                "triggers_sha256": file_sha256(injection_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_physical_validation_endpoint(
+        background_report,
+        injection_report,
+        maximum_validation_false_alarms=1,
+        output=tmp_path / "endpoint.json",
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert result["background"]["live_time_seconds"] == 24
+    assert result["calibration"]["threshold"] == 0.9
+    assert result["injections"]["overall"]["recovered_vt"] == 2
+    assert result["injections"]["overall"]["weighted_efficiency"] == 2 / 3
+    assert result["scientific_claim_allowed"] is False

@@ -19,6 +19,7 @@ from .io import (
     training_tensor_config,
 )
 from .trigger import probability_summaries
+from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
 
 
@@ -97,6 +98,7 @@ def score_materialized_injections(
     q_values: tuple[float, ...] = (4.0, 8.0, 16.0),
     target_sample_rate: int = 1024,
     save_probabilities: bool = False,
+    required_split: str | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -120,6 +122,11 @@ def score_materialized_injections(
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
     if not manifest_rows:
         raise ValueError("Materialized injection manifest cannot be empty")
+    observed_splits = sorted({str(row.get("split")) for row in manifest_rows})
+    if required_split is not None and observed_splits != [required_split]:
+        raise ValueError(
+            f"Injection scorer required split {required_split!r}, observed {observed_splits}"
+        )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -134,6 +141,8 @@ def score_materialized_injections(
         "target_sample_rate": target_sample_rate,
         "save_probabilities": save_probabilities,
         "whitening": str(tensor_config.get("whitening", "self")),
+        "required_split": required_split,
+        "code_commit": execution_provenance()["code_commit"],
     }
     resumed_rows = _load_resumable_rows(output, run_identity, manifest_rows)
     resumed_by_id = {str(row["injection_id"]): row for row in resumed_rows}
@@ -260,10 +269,13 @@ def score_materialized_injections(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "config_path": str(config_path),
+        "config_sha256": file_sha256(config_path),
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "probabilities_saved": save_probabilities,
+        "required_split": required_split,
+        "observed_splits": observed_splits,
         "run_identity_hash": canonical_hash(run_identity, 64),
         "input_injections": len(manifest_rows),
         "resumed_injections": len(resumed_rows),
@@ -278,6 +290,7 @@ def score_materialized_injections(
         "triggers_sha256": file_sha256(triggers_path),
         "elapsed_seconds": time.time() - started,
         "preprocessing": "full-context PSD whitening then central analysis-window crop",
+        **execution_provenance(torch),
     }
     atomic_write_json(output / "injection_score_report.json", report)
     _save_progress(
