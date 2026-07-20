@@ -110,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_validation.add_argument("--output", required=True)
 
     physical_validation = subparsers.add_parser("physical-validation-endpoint")
+    physical_validation.add_argument("--training-report", required=True)
     physical_validation.add_argument("--background-score-report", required=True)
     physical_validation.add_argument("--injection-score-report", required=True)
     physical_validation.add_argument(
@@ -602,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_physical_validation_endpoint(
+                args.training_report,
                 args.background_score_report,
                 args.injection_score_report,
                 args.maximum_validation_false_alarms,

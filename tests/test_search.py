@@ -276,6 +276,10 @@ def test_physical_validation_endpoint_verifies_identity_exposure_and_weighted_ef
     }
     background_report = tmp_path / "background_report.json"
     injection_report = tmp_path / "injection_report.json"
+    checkpoint = tmp_path / "checkpoint.pt"
+    config = tmp_path / "config.yaml"
+    checkpoint.write_bytes(b"checkpoint")
+    config.write_text("training: {}\n", encoding="utf-8")
     background_report.write_text(
         json.dumps(
             {
@@ -292,6 +296,7 @@ def test_physical_validation_endpoint_verifies_identity_exposure_and_weighted_ef
         json.dumps(
             {
                 **common,
+                "manifest_sha256": "validation-manifest",
                 "failed_injections": 0,
                 "scored_injections": 2,
                 "triggers_path": str(injection_path),
@@ -300,7 +305,31 @@ def test_physical_validation_endpoint_verifies_identity_exposure_and_weighted_ef
         ),
         encoding="utf-8",
     )
+    training_report = tmp_path / "training_report.json"
+    training_report.write_text(
+        json.dumps(
+            {
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "checkpoint_path": str(checkpoint),
+                "code_commit": "training-commit",
+                "config_path": str(config),
+                "seed": 1,
+                "train_manifest_sha256": "train-manifest",
+                "validation_manifest_sha256": "validation-manifest",
+                "test_evaluation": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    common_checkpoint = file_sha256(checkpoint)
+    common_config = file_sha256(config)
+    for report_path in (background_report, injection_report):
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["checkpoint_sha256"] = common_checkpoint
+        report["config_sha256"] = common_config
+        report_path.write_text(json.dumps(report), encoding="utf-8")
     result = run_physical_validation_endpoint(
+        training_report,
         background_report,
         injection_report,
         maximum_validation_false_alarms=1,

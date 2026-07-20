@@ -532,6 +532,7 @@ def _verified_score_artifact(
 
 
 def run_physical_validation_endpoint(
+    training_report: str | Path,
     background_score_report: str | Path,
     injection_score_report: str | Path,
     maximum_validation_false_alarms: int,
@@ -540,6 +541,24 @@ def run_physical_validation_endpoint(
     seed: int = 20260719,
 ) -> dict[str, Any]:
     """Evaluate one checkpoint at a frozen, exposure-limited O4a validation endpoint."""
+    with Path(training_report).open("r", encoding="utf-8") as handle:
+        training = json.load(handle)
+    required_training = (
+        "checkpoint_sha256",
+        "checkpoint_path",
+        "code_commit",
+        "config_path",
+        "seed",
+        "train_manifest_sha256",
+        "validation_manifest_sha256",
+    )
+    missing_training = [field for field in required_training if training.get(field) is None]
+    if missing_training:
+        raise ValueError(f"Training report lacks provenance: {missing_training}")
+    if training.get("test_evaluation") is not None:
+        raise ValueError("Physical validation endpoint refuses a training report with test evaluation")
+    if file_sha256(training["checkpoint_path"]) != training["checkpoint_sha256"]:
+        raise ValueError("Training checkpoint hash differs from training report")
     background_report, background_rows = _verified_score_artifact(
         background_score_report, "background"
     )
@@ -552,6 +571,14 @@ def run_physical_validation_endpoint(
         if len(values) != 1:
             raise ValueError(f"Background/injection score reports disagree on {field}")
         identities[field] = next(iter(values))
+    if identities["checkpoint_sha256"] != str(training["checkpoint_sha256"]):
+        raise ValueError("Scored checkpoint differs from training report checkpoint")
+    if identities["config_sha256"] != file_sha256(training["config_path"]):
+        raise ValueError("Scoring config differs from training report config")
+    if str(injection_report.get("manifest_sha256")) != str(
+        training["validation_manifest_sha256"]
+    ):
+        raise ValueError("Scored injections differ from training validation manifest")
     if not background_rows or not injection_rows:
         raise ValueError("Physical validation endpoint requires background and injection rows")
     for label, rows in (("background", background_rows), ("injection", injection_rows)):
@@ -612,6 +639,16 @@ def run_physical_validation_endpoint(
             "checkpoint's validation injections"
         ),
         **identities,
+        "training": {
+            "report_path": str(training_report),
+            "report_sha256": file_sha256(training_report),
+            "code_commit": training["code_commit"],
+            "seed": training["seed"],
+            "train_manifest_sha256": training["train_manifest_sha256"],
+            "validation_manifest_sha256": training["validation_manifest_sha256"],
+            "checkpoint_selection": training.get("checkpoint_selection"),
+            "selected_epoch": training.get("selected_epoch"),
+        },
         "background_score_report_path": str(background_score_report),
         "background_score_report_sha256": file_sha256(background_score_report),
         "injection_score_report_path": str(injection_score_report),

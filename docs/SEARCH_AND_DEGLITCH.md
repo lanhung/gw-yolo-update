@@ -195,6 +195,9 @@ number of surviving validation-background windows. It then reports overall and s
 weighted injection efficiency with Wilson and bootstrap intervals. The nominal window FAR is marked
 diagnostic-only: this bounded operating point is suitable for comparing 2k/5k/10k development
 checkpoints, but it is not an astrophysical FAR/IFAR and cannot unlock O4b.
+It also requires the originating physical-finetune report, re-hashes its checkpoint and config,
+requires the scorer's injection manifest to equal the training validation manifest, and rejects any
+training report whose `test_evaluation` is non-null.
 
 For the frozen batch-8 O4a scale study the predeclared value is eight surviving validation windows
 (approximately one percent of the 824-window validation background, subject to score ties). This
@@ -202,6 +205,7 @@ choice was fixed before examining any validation-injection endpoint. A typical f
 
 ```bash
 python -m gwyolo.cli physical-validation-endpoint \
+  --training-report artifacts/scale/physical_finetune_report.json \
   --background-score-report artifacts/endpoint/background/trigger_score_report.json \
   --injection-score-report artifacts/endpoint/injections/injection_score_report.json \
   --maximum-validation-false-alarms 8 \
