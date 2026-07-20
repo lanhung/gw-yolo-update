@@ -250,6 +250,7 @@ def _chirp_epoch(
     positive_weight: float,
     distillation_weight: float,
     focal_gamma: float = 0.0,
+    temporal_localization_weight: float = 0.0,
     threshold: float = 0.5,
 ) -> dict[str, Any]:
     training = optimizer is not None
@@ -259,6 +260,8 @@ def _chirp_epoch(
     true_positive = false_positive = false_negative = 0
     batches = 0
     positive = torch.as_tensor([positive_weight], device=device).reshape(1, 1, 1, 1)
+    if temporal_localization_weight < 0:
+        raise ValueError("temporal localization weight cannot be negative")
     for features, target in loader:
         features = features.to(device)
         target = target.to(device)
@@ -271,12 +274,25 @@ def _chirp_epoch(
                 chirp_logits, target[:, None], positive, focal_gamma
             )
             dice = _dice_loss(chirp_logits, target[:, None])
+            temporal_logits = torch.amax(chirp_logits, dim=(2, 3))
+            temporal_target = torch.amax(target, dim=(1, 2))[:, None]
+            temporal_bce = torch_functional.binary_cross_entropy_with_logits(
+                temporal_logits,
+                temporal_target,
+                pos_weight=torch.as_tensor(positive_weight, device=device),
+            )
+            temporal_dice = _dice_loss(temporal_logits, temporal_target)
             with torch.no_grad():
                 teacher_glitch = torch.sigmoid(teacher(features)[:, 1])
             distillation = torch_functional.binary_cross_entropy_with_logits(
                 logits[:, 1], teacher_glitch
             )
-            loss = bce + dice + distillation_weight * distillation
+            loss = (
+                bce
+                + dice
+                + distillation_weight * distillation
+                + temporal_localization_weight * (temporal_bce + temporal_dice)
+            )
             if training:
                 loss.backward()
                 optimizer.step()
@@ -483,6 +499,7 @@ def run_physical_finetune(
             float(settings["chirp_positive_weight"]),
             float(settings["glitch_distillation_weight"]),
             float(settings.get("focal_gamma", 0.0)),
+            float(settings.get("temporal_localization_weight", 0.0)),
         )
         validation_metrics = _chirp_epoch(
             model,
@@ -493,6 +510,7 @@ def run_physical_finetune(
             float(settings["chirp_positive_weight"]),
             float(settings["glitch_distillation_weight"]),
             float(settings.get("focal_gamma", 0.0)),
+            float(settings.get("temporal_localization_weight", 0.0)),
         )
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
@@ -543,6 +561,7 @@ def run_physical_finetune(
         float(settings["chirp_positive_weight"]),
         float(settings["glitch_distillation_weight"]),
         float(settings.get("focal_gamma", 0.0)),
+        float(settings.get("temporal_localization_weight", 0.0)),
         threshold,
     )
     report = {

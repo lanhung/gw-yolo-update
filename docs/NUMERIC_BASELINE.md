@@ -120,6 +120,10 @@ Checkpoint audits keep two timing gates separate: the representation gate checks
 width, while the accuracy gate uses the last active chirp-mask bin as a declared coalescence-time
 proxy and requires its 90th-percentile absolute error to be <=10 ms with no prediction misses. A
 high-resolution tensor can therefore pass the former and fail the latter.
+The next timing ablation adds a train-only temporal-profile loss: chirp logits are maximized over
+IFO/Q/frequency and supervised against whether each time bin contains any target-mask pixel. This
+directly penalizes window-spanning false activation while retaining the full pixel mask objective.
+It is promoted to 1,024 bins only if the 96-bin endpoint audit improves materially.
 
 `gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
 from each injection's own full real-noise context, but integrates signal power only over the recorded
