@@ -264,6 +264,13 @@ p90. The bottleneck is learned set ranking, not candidate-set recall. Train the 
 compatible pairs grouped by parent; negative subsampling is allowed only inside training, while
 validation and deployment must score every pair and preserve abstention.
 
+The first learned geometry-only MLP confirms that nonlinear scalar features are insufficient:
+31.21% overall padded top-1 and 4.60 s p90 after 900 fixed updates. Performance is already 100% for
+the small SNR>=15 strata, 69.86% at SNR 8--15 and 20.98% below SNR 8. The next controlled model adds
+only truth-free strain evidence measured inside every compatible interval—absolute/signed
+correlation over the predeclared 10 ms lag, local RMS and peak amplitudes—under the identical pair
+set, parent split and update budget.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag

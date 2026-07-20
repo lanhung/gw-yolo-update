@@ -494,6 +494,16 @@ Thus proposal-set support is adequate but linear hand ranking is not. The next b
 group-safe learned pair/set score that evaluates every compatible pair; the oracle is a ceiling
 diagnostic and may not be reported as operational recall.
 
+The group-safe learned geometry baseline at `266d2dc` then trained on 35,320 compatible train pairs
+and scored all 12,205 selection pairs. It completed the fixed 900-update budget with zero train/
+selection waveform, injection or GPS-block overlap. Overall top-1 padded truth is only 31.21% and
+peak p90 is 4.60 s, so both gates fail; report SHA256 is
+`40c804ed712ea095081c6184f244bbbc2cd7e9c0333acd40ee21ab4f232c7a2b`.
+The failure is strongly SNR-stratified: 27 SNR 15--30 and five SNR>=30 parents both reach 100%
+padded top-1 with 35.5/29.3 ms p90, SNR 8--15 reaches 69.86%, and SNR<8 reaches 20.98%.
+This motivates strain-content/coherence features at the intermediate-SNR boundary, not a larger MLP
+over the same proposal geometry.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
