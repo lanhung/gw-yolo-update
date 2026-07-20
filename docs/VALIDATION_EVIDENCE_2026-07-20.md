@@ -79,6 +79,14 @@ mask-maximum timing tuning therefore stops here. `physical-timing-train` now def
 mask endpoint; it selects checkpoints by validation p90 absolute timing error and leaves the mask
 checkpoint as a separate product.
 
+That exact-GPS refiner is also a retained negative result. On the same 2,000/500 train/validation
+manifests it selected epoch 9, but validation error was 1.519 s median and 4.209 s p90; only 23/500
+(4.6%, Wilson 95% interval 3.08%--6.81%) landed within 10 ms. This is worse at p90 than the
+low-resolution weight-1 peak model despite the 7.8125-ms output grid, so it is rejected rather than
+multiseeded. The report SHA256 is
+`b958906308ac66ada621a0f1922254d2e49f5f29b2badf59fc1d2f491b744f44`; checkpoint SHA256 is
+`a554c4d28c01632b50c42159e826fad0f8b012bc9d54864a0a33a5982f538762`.
+
 Five fully verified Gravity Spy pilot shards now merge to five unique train glitches/blocks across
 O2/O3a/O3b and four classes (manifest SHA256
 `9f992a0dd7b726e2ff5025d9414736a024af0f23384e8be13505aa1d127549c8`). Their five official source
@@ -160,8 +168,14 @@ pre-registered `<=1e-3` gate. The manifest SHA256 is
 `6a9a491f513c83579374c51431a09064340a4bf652c7bbd01ff28d97053f0b79`; its waveform certificate,
 recipe and background hashes remain `c768b6a65b...`, `90d258fdeeec...` and `8f2285bd2dfa...` as
 recorded in the machine report. Eight-second empirical-SNR annotation is running on train, while the
-unchanged 3k validation proposal is being materialized separately. Neither process consumes test
-recipes.
+unchanged 3k validation corpus has completed separately. Neither process consumed test recipes.
+
+The frozen 3k validation corpus and its eight-second empirical-SNR annotation are now complete. It
+contains 1,350 BBH, 900 BNS and 750 NSBH; median network optimal SNR is 3.864 and 1,559/3,000
+(52.0%) lie below SNR 4. The unmodified validation manifest SHA256 is
+`76e5e248ec70c24eb4cc74b39d152fd86524577573de1257eba847245f3d128d`; annotation report SHA256
+is `1e2983abd128ca11b3f65792bd4d9c58a5ce18f717d4fa75bedc74014d5dbbb1`. This distribution is
+frozen for selection and calibration; it is not a locked test and is never SNR-rescaled.
 
 ## Model selection and physical injections
 

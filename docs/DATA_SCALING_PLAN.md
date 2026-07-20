@@ -316,6 +316,12 @@ percentile. The next representation change therefore needs an explicit coalescen
 objective and suppression of window-spanning false activations; further time-bin increases alone are
 not promoted.
 
+The subsequent independent 1,024-bin exact-GPS refiner likewise failed promotion: its selected
+epoch reached 1.519 s median and 4.209 s p90 error, with only 4.6% of 500 validation injections
+within 10 ms. The grid was sufficiently fine but the global eight-second classification target was
+not learnable at the required precision from 2k examples. Timing work therefore moves to a
+coarse-to-fine local crop conditioned on a clustered chirp trigger; global-bin tuning is stopped.
+
 The Gravity Spy acquisition plan is now partitioned into 510 deterministic shards of at most 32
 whole source files. All 59,933 planned anchors and all 16,297 files are preserved exactly once; the
 sharded manifest SHA256 is `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
