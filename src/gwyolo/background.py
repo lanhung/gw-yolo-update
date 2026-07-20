@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .runtime import execution_provenance
 
 
 SECONDS_PER_YEAR = 365.25 * 24 * 3600
@@ -278,6 +279,7 @@ def run_background_plan(
         "source_verification": verification,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
     }
     atomic_write_json(output / "background_plan_report.json", result)
     return result
@@ -435,6 +437,7 @@ def run_batch_background_plan(
         "splits": split_summary,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
     }
     atomic_write_json(output / "background_plan_report.json", result)
     if not result["passed"]:

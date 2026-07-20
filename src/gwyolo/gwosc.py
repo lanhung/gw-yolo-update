@@ -247,6 +247,7 @@ def run_gwosc_event_exclusions(
         **api_summary,
         "events": len(rows),
         "intervals": rows,
+        **execution_provenance(),
     }
     atomic_write_json(output, result)
     return {**result, "output_path": str(output), "output_sha256": file_sha256(output)}
