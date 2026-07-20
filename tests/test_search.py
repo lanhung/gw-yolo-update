@@ -1,4 +1,7 @@
 import math
+import json
+
+import pytest
 
 from gwyolo.search import (
     calibrate_threshold,
@@ -6,6 +9,8 @@ from gwyolo.search import (
     evaluate_search,
     far_upper_limit_zero_count,
     paired_vt_comparison,
+    run_frozen_search_evaluation,
+    run_search_calibration,
 )
 
 
@@ -86,3 +91,50 @@ def test_search_comparison_calibrates_each_method_on_validation_only():
     assert result["calibrations"]["clean"]["threshold"] == 5
     assert result["test_evaluations"]["raw"]["background"]["far_per_year"] == 0.05
     assert result["test_evaluations"]["clean"]["background"]["far_per_year"] == 0.05
+
+
+def test_frozen_search_command_never_recalibrates_on_test(tmp_path):
+    validation = tmp_path / "validation.jsonl"
+    validation.write_text(
+        "".join(json.dumps({"score": value}) + "\n" for value in [9, 8, 7, 1]),
+        encoding="utf-8",
+    )
+    calibration_path = tmp_path / "calibration.json"
+    calibration = run_search_calibration(validation, 10.0, 0.2, "score", calibration_path)
+    assert calibration["calibration"]["threshold"] == 8
+
+    test_background = tmp_path / "test_background.jsonl"
+    test_background.write_text(
+        json.dumps({"score": 100}) + "\n" + json.dumps({"score": 7}) + "\n",
+        encoding="utf-8",
+    )
+    injections = tmp_path / "injections.jsonl"
+    injections.write_text(
+        json.dumps({"score": 9, "vt_weight": 2})
+        + "\n"
+        + json.dumps({"score": 7, "vt_weight": 1})
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "locked.json"
+    result = run_frozen_search_evaluation(
+        calibration_path,
+        test_background,
+        injections,
+        20.0,
+        output,
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert result["evaluation"]["threshold"] == 8
+    assert result["evaluation"]["background"]["false_alarms"] == 1
+    assert result["evaluation"]["injections"]["recovered_vt"] == 2
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        run_frozen_search_evaluation(
+            calibration_path,
+            test_background,
+            injections,
+            20.0,
+            output,
+            bootstrap_replicates=20,
+        )

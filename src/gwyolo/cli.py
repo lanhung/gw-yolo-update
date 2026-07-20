@@ -12,7 +12,12 @@ from .gwosc import run_gwosc_pilot, run_gwosc_verification
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
-from .search import run_search_benchmark, run_search_comparison
+from .search import (
+    run_frozen_search_evaluation,
+    run_search_benchmark,
+    run_search_calibration,
+    run_search_comparison,
+)
 from .scaling import run_curve_fit, run_scale_plan
 from .training import evaluate_checkpoint, train_candidate
 
@@ -73,6 +78,22 @@ def build_parser() -> argparse.ArgumentParser:
     search_compare.add_argument("--bootstrap-replicates", type=int, default=2000)
     search_compare.add_argument("--seed", type=int, default=20260719)
     search_compare.add_argument("--output", required=True)
+
+    search_calibrate = subparsers.add_parser("search-calibrate")
+    search_calibrate.add_argument("--validation-background", required=True)
+    search_calibrate.add_argument("--validation-live-time-years", required=True, type=float)
+    search_calibrate.add_argument("--target-far-per-year", required=True, type=float)
+    search_calibrate.add_argument("--score-field", default="ranking_score")
+    search_calibrate.add_argument("--output", required=True)
+
+    search_frozen = subparsers.add_parser("search-evaluate-frozen")
+    search_frozen.add_argument("--calibration-report", required=True)
+    search_frozen.add_argument("--test-background", required=True)
+    search_frozen.add_argument("--test-injections", required=True)
+    search_frozen.add_argument("--test-live-time-years", required=True, type=float)
+    search_frozen.add_argument("--bootstrap-replicates", type=int, default=2000)
+    search_frozen.add_argument("--seed", type=int, default=20260719)
+    search_frozen.add_argument("--output", required=True)
 
     scaling = subparsers.add_parser("scale-plan")
     scaling.add_argument("--manifest", required=True)
@@ -298,6 +319,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.score_field_a,
                 args.score_field_b,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "search-calibrate":
+        _print(
+            run_search_calibration(
+                args.validation_background,
+                args.validation_live_time_years,
+                args.target_far_per_year,
+                args.score_field,
+                args.output,
+            )
+        )
+    elif args.command == "search-evaluate-frozen":
+        _print(
+            run_frozen_search_evaluation(
+                args.calibration_report,
+                args.test_background,
+                args.test_injections,
+                args.test_live_time_years,
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,

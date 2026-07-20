@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json
+from .io import atomic_write_json, file_sha256
 from .metrics import wilson_interval
 
 
@@ -282,6 +282,87 @@ def run_search_benchmark(
         "test": evaluation,
     }
     atomic_write_json(output, result)
+    return result
+
+
+def run_search_calibration(
+    validation_background: str | Path,
+    validation_live_time_years: float,
+    target_far_per_year: float,
+    score_field: str,
+    output: str | Path,
+) -> dict[str, Any]:
+    rows = load_jsonl(validation_background)
+    if not rows:
+        raise ValueError("Validation background cannot be empty")
+    missing = [index for index, row in enumerate(rows) if score_field not in row]
+    if missing:
+        raise ValueError(f"Validation background lacks {score_field!r} at rows {missing[:10]}")
+    calibration = calibrate_threshold(
+        (row[score_field] for row in rows),
+        validation_live_time_years,
+        target_far_per_year,
+    )
+    result = {
+        "status": "validation_only_threshold_frozen",
+        "protocol": "threshold selected exclusively from validation background",
+        "score_field": score_field,
+        "validation_background_path": str(validation_background),
+        "validation_background_sha256": file_sha256(validation_background),
+        "validation_rows": len(rows),
+        "calibration": calibration,
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def run_frozen_search_evaluation(
+    calibration_report: str | Path,
+    test_background: str | Path,
+    test_injections: str | Path,
+    test_live_time_years: float,
+    output: str | Path,
+    bootstrap_replicates: int = 2000,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError(f"Refusing to overwrite locked test evaluation: {output_path}")
+    with Path(calibration_report).open("r", encoding="utf-8") as handle:
+        frozen = json.load(handle)
+    if frozen.get("status") != "validation_only_threshold_frozen":
+        raise ValueError("Calibration report is not a frozen validation-only threshold")
+    score_field = str(frozen["score_field"])
+    background_rows = load_jsonl(test_background)
+    injection_rows = load_jsonl(test_injections)
+    if not background_rows:
+        raise ValueError("Test background cannot be empty")
+    for label, rows in (("background", background_rows), ("injection", injection_rows)):
+        missing = [index for index, row in enumerate(rows) if score_field not in row]
+        if missing:
+            raise ValueError(f"Test {label} lacks {score_field!r} at rows {missing[:10]}")
+    evaluation = evaluate_search(
+        float(frozen["calibration"]["threshold"]),
+        (row[score_field] for row in background_rows),
+        test_live_time_years,
+        [{**row, "ranking_score": row[score_field]} for row in injection_rows],
+        bootstrap_replicates,
+        seed,
+    )
+    result = {
+        "status": "locked_test_evaluated_with_frozen_validation_threshold",
+        "protocol": "test evaluated without validation input or threshold adjustment",
+        "score_field": score_field,
+        "calibration_report_path": str(calibration_report),
+        "calibration_report_sha256": file_sha256(calibration_report),
+        "test_background_sha256": file_sha256(test_background),
+        "test_injections_sha256": file_sha256(test_injections),
+        "test_background_rows": len(background_rows),
+        "test_injection_rows": len(injection_rows),
+        "bootstrap_seed": seed,
+        "evaluation": evaluation,
+    }
+    atomic_write_json(output_path, result)
     return result
 
 

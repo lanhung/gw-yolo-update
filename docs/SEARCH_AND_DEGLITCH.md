@@ -148,6 +148,11 @@ This interface is designed for the later AMPLFI/DINGO experiment: raw strain and
 must share events, injection weights, live time, waveform population, and FAR definition. A mAP
 comparison is explicitly not part of the protocol.
 
+For the primary locked result, `search-calibrate` reads only validation background and writes the
+threshold plus its source hash. `search-evaluate-frozen` accepts that artifact, test background and
+test injections, has no validation-data or threshold argument, and refuses to overwrite an existing
+result. This makes the no-test-tuning boundary executable rather than merely documentary.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
