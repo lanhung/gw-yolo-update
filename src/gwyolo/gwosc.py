@@ -15,6 +15,7 @@ import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
 from .io import atomic_write_json, canonical_hash, file_sha256
+from .runtime import execution_provenance
 
 
 API_ROOT = "https://gwosc.org/api/v2"
@@ -190,7 +191,10 @@ def run_gwosc_run_plan(
     maximum_pairs: int | None = None,
     seed: int = 20260719,
 ) -> dict[str, Any]:
-    result = plan_run_strain_pairs(run, detectors, sample_rate_khz, maximum_pairs, seed)
+    result = {
+        **plan_run_strain_pairs(run, detectors, sample_rate_khz, maximum_pairs, seed),
+        **execution_provenance(),
+    }
     atomic_write_json(output, result)
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
 
