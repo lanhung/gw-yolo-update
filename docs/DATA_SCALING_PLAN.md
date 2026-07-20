@@ -232,8 +232,9 @@ deterministically. `gwosc-batch-download` then resumes each HDF5 transfer and re
 Fletcher32/statistics/DQ scan before recording it. `gwosc-event-exclusions` snapshots every catalog
 event in the run with a declared padding, and `background-batch-plan` applies those vetoes before one
 global GPS-block split across all files. Repeat `--batch-report` for every verified acquisition
-batch; planning batches separately is forbidden because adding files could otherwise change the
-validation/test allocation. All acquisition commands reject O4b development access.
+batch when using the legacy balanced split; planning those batches separately is forbidden because
+adding files could otherwise change the validation/test allocation. All acquisition commands reject
+O4b development access.
 
 Large continuous acquisitions use `--split-strategy hash_threshold_v1`. It maps each complete
 256-second GPS block independently through the frozen seed and validation/test fractions, so adding
@@ -242,6 +243,16 @@ shards: download and fully verify one bounded file batch, plan it, score all sel
 hash-linked candidates, then release the recoverable GWOSC cache before the next batch. The legacy
 `balanced_rank_v1` strategy remains the default solely to reproduce already frozen manifests; it
 must still see every batch at once and is prohibited for incremental acquisition.
+
+Streaming eviction is executable and deliberately narrow. `candidate-probability-evict` requires a
+candidate report that hash-binds a complete probability-saving score report, validates every saved
+probability/strain artifact inside an explicit cache root, writes an immutable intent record, and
+only then removes those exact files. `background-source-evict` additionally requires a passing
+single-batch GWOSC report, a `hash_threshold_v1` background plan, and complete candidate extraction
+for every non-empty validation/test split before releasing the hash-verified public HDF sources.
+Training rows in a search-only shard are counted as intentionally unscored, never mistaken for
+evaluation exposure. Both reports retain public recovery instructions and byte-level hashes; model
+reports, manifests and candidates are never evicted.
 
 ## Storage and compute strategy
 

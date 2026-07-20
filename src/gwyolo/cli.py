@@ -723,6 +723,20 @@ def build_parser() -> argparse.ArgumentParser:
     exposure_plan.add_argument("--target-far-per-year", type=float, required=True)
     exposure_plan.add_argument("--zero-count-confidence", type=float, default=0.90)
 
+    probability_evict = subparsers.add_parser("candidate-probability-evict")
+    probability_evict.add_argument("--candidate-report", required=True)
+    probability_evict.add_argument("--score-report", required=True)
+    probability_evict.add_argument("--probability-root", required=True)
+    probability_evict.add_argument("--output", required=True)
+
+    source_evict = subparsers.add_parser("background-source-evict")
+    source_evict.add_argument("--batch-report", required=True)
+    source_evict.add_argument("--background-report", required=True)
+    source_evict.add_argument("--score-report", action="append", default=[])
+    source_evict.add_argument("--candidate-report", action="append", default=[])
+    source_evict.add_argument("--cache-root", required=True)
+    source_evict.add_argument("--output", required=True)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -1738,6 +1752,30 @@ def main(argv: list[str] | None = None) -> int:
                 args.step_seconds,
                 args.target_far_per_year,
                 args.zero_count_confidence,
+            )
+        )
+    elif args.command == "candidate-probability-evict":
+        from .streaming import evict_candidate_probability_artifacts
+
+        _print(
+            evict_candidate_probability_artifacts(
+                args.candidate_report,
+                args.score_report,
+                args.probability_root,
+                args.output,
+            )
+        )
+    elif args.command == "background-source-evict":
+        from .streaming import evict_scored_background_batch_sources
+
+        _print(
+            evict_scored_background_batch_sources(
+                args.batch_report,
+                args.background_report,
+                args.score_report,
+                args.candidate_report,
+                args.cache_root,
+                args.output,
             )
         )
     elif args.command == "time-slide-background":

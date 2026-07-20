@@ -74,6 +74,14 @@ The executable timing path is now ordered and leakage-safe:
 The resulting report is still non-claimable until validation/test provenance is frozen, GPS blocks
 are disjoint, and enough nonzero shifts support the requested IFAR.
 
+For the multi-day acquisition, temporary arrays and public HDF files have separate certified
+lifetime gates. After `candidate-extract`, run `candidate-probability-evict` with its exact score and
+candidate reports. After all non-empty validation/test splits from one stable-hash shard have
+candidate reports, run `background-source-evict` with the shard's batch and background reports.
+Each command first writes a hash-bound intent file and refuses an existing output path. This permits
+bounded streaming without weakening the retained candidate, detector-duty, GPS-block or source
+provenance needed by time slides and locked evaluation.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and

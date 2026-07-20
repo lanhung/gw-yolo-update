@@ -198,4 +198,10 @@ at most 0.086 equivalent years even if every positive-lag pair is used. IFAR 10 
 13,479 valid 8-second dual-IFO windows per independent partition in the all-pairs best case; IFAR
 100 years needs at least 42,623. Acquisition should therefore expand continuous H1/L1(/V1) GPS/run
 coverage before promoting 25k/50k versions of the same waveform/GPS distribution.
+
+The corresponding storage gate is implemented: stable-hash background shards may evict only exact,
+hash-verified probability arrays after complete candidate extraction, and may evict public GWOSC
+HDF sources only after every non-empty validation/test split is scored and converted to candidates.
+Immutable intent and recovery records survive each eviction, keeping multi-day acquisition bounded
+without silently reducing declared live time.
 6. reproducibility lead: CI, containers, artifact registry, paper tables.
