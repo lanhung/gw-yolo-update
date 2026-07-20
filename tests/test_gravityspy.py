@@ -5,11 +5,34 @@ import json
 from pathlib import Path
 
 from gwyolo.gravityspy import (
+    gravityspy_weak_mask,
     index_gravityspy_csv,
     match_glitch_to_strain_file,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
+
+
+def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
+    mask = gravityspy_weak_mask(
+        "L1",
+        ("H1", "L1", "V1"),
+        (4.0, 8.0),
+        frequency_bins=5,
+        time_bins=8,
+        fmin=0.0,
+        fmax=40.0,
+        duration=2.0,
+        peak_frequency=20.0,
+        quality_factor=2.0,
+        output_duration=8.0,
+    )
+    # Frequencies 10, 20, 30 and times -1, 0, 1 are included for both Q planes.
+    assert mask.shape == (3, 2, 5, 8)
+    assert int(mask.sum()) == 3 * 3 * 2
+    assert int(mask[0].sum()) == 0
+    assert int(mask[1].sum()) == 18
+    assert int(mask[2].sum()) == 0
 
 
 def test_glitch_strain_match_requires_full_context_in_one_file() -> None:

@@ -3,19 +3,105 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import random
 import re
+import tempfile
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from .gwosc import API_ROOT, USER_AGENT, _api_json, _api_results, download_resumable
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+import numpy as np
+
+from .factory import _normalize_power, multiresolution_power
+from .gwosc import (
+    API_ROOT,
+    USER_AGENT,
+    _api_json,
+    _api_results,
+    _fft_downsample,
+    _whiten,
+    download_resumable,
+    read_hdf5_segment,
+    verify_hdf5_against_detail,
+)
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+    load_yaml,
+)
 
 
 ZENODO_API = "https://zenodo.org/api/records"
 DEFAULT_EXCLUDED_LABELS = ("Chirp", "No_Glitch", "None_of_the_Above")
+
+
+def gravityspy_weak_mask(
+    ifo: str,
+    model_ifos: tuple[str, ...],
+    q_values: tuple[float, ...],
+    frequency_bins: int,
+    time_bins: int,
+    fmin: float,
+    fmax: float,
+    duration: float,
+    peak_frequency: float,
+    quality_factor: float,
+    output_duration: float,
+) -> np.ndarray:
+    """Construct a conservative metadata-derived mask for weak supervision.
+
+    Gravity Spy provides a trigger duration, peak frequency and Q value, but not a
+    pixel-level annotation.  This mask must therefore never be treated as human
+    ground truth.  Its deterministic geometry makes the approximation auditable.
+    """
+    if ifo not in model_ifos:
+        raise ValueError(f"Gravity Spy IFO {ifo} is absent from model IFOs")
+    if min(frequency_bins, time_bins) <= 0 or output_duration <= 0:
+        raise ValueError("weak-mask dimensions and output duration must be positive")
+    if not 0 <= fmin < fmax or duration <= 0 or peak_frequency <= 0 or quality_factor <= 0:
+        raise ValueError("invalid Gravity Spy weak-mask metadata")
+    times = np.linspace(
+        -output_duration / 2,
+        output_duration / 2,
+        time_bins,
+        endpoint=False,
+        dtype=np.float64,
+    )
+    frequencies = np.linspace(fmin, fmax, frequency_bins, dtype=np.float64)
+    half_time = min(max(duration / 2, output_duration / time_bins), output_duration / 2)
+    half_frequency = max(
+        (fmax - fmin) / max(frequency_bins - 1, 1),
+        peak_frequency / quality_factor,
+    )
+    time_support = np.abs(times) <= half_time
+    frequency_support = np.abs(frequencies - peak_frequency) <= half_frequency
+    support = frequency_support[:, None] & time_support[None, :]
+    mask = np.zeros(
+        (len(model_ifos), len(q_values), frequency_bins, time_bins), dtype=np.uint8
+    )
+    mask[model_ifos.index(ifo), :, support] = 1
+    return mask
+
+
+def _atomic_savez(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".npz", dir=path.parent
+    )
+    os.close(descriptor)
+    try:
+        np.savez_compressed(temporary, **arrays)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def match_glitch_to_strain_file(
@@ -223,6 +309,242 @@ def shard_gravityspy_strain_plan(
         "shard_summaries": shard_summaries,
     }
     atomic_write_json(output / "gravityspy_strain_shard_report.json", report)
+    return report
+
+
+def materialize_gravityspy_strain_shard(
+    manifest_path: str | Path,
+    shard: int,
+    config_path: str | Path,
+    cache_dir: str | Path,
+    output_dir: str | Path,
+    output_duration: float = 8.0,
+    download_workers: int = 8,
+    chunk_samples: int = 1_048_576,
+) -> dict[str, Any]:
+    """Download, verify and materialize one bounded Gravity Spy strain shard."""
+    if shard < 0 or output_duration <= 0 or download_workers <= 0 or chunk_samples <= 0:
+        raise ValueError("invalid Gravity Spy shard materialization settings")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        all_rows = [json.loads(line) for line in handle if line.strip()]
+    rows = [row for row in all_rows if int(row["strain_shard"]) == shard]
+    if not rows:
+        raise ValueError(f"Gravity Spy strain shard {shard} is empty or absent")
+    config = load_yaml(config_path)
+    section_name = next(
+        (
+            name
+            for name in ("physical_training", "numeric_training")
+            if name in config
+        ),
+        None,
+    )
+    if section_name is None:
+        raise ValueError("Gravity Spy materialization needs a training configuration")
+    settings = config[section_name]
+    tensor = settings["tensor"]
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    target_sample_rate = int(settings["target_sample_rate"])
+    if output_duration >= float(rows[0]["context_duration"]):
+        raise ValueError("output duration must be shorter than the whitening context")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    cache = Path(cache_dir)
+    run_identity = {
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "config_hash": canonical_hash(config),
+        "shard": shard,
+        "output_duration": output_duration,
+        "download_workers": download_workers,
+        "chunk_samples": chunk_samples,
+    }
+    state_path = output / "materialization_state.json"
+    partial_path = output / "materialization_partial.json"
+    completed: list[dict[str, Any]] = []
+    verified_sources: dict[str, dict[str, Any]] = {}
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing Gravity Spy shard state belongs to a different run")
+        if partial_path.is_file():
+            partial = json.loads(partial_path.read_text(encoding="utf-8"))
+            completed = list(partial.get("records", []))
+            verified_sources = dict(partial.get("verified_sources", {}))
+    completed_ids: set[str] = set()
+    for record in completed:
+        glitch_id = str(record["glitch_id"])
+        if glitch_id in completed_ids or file_sha256(record["path"]) != record["sha256"]:
+            raise ValueError(f"Invalid resumable Gravity Spy sample {glitch_id}")
+        completed_ids.add(glitch_id)
+    by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_source[str(row["strain_source"]["hdf5_url"])].append(row)
+    for url, source_rows in sorted(by_source.items()):
+        source = source_rows[0]["strain_source"]
+        filename = Path(url.split("?", 1)[0]).name
+        download = download_resumable(
+            url,
+            cache / str(source_rows[0]["observing_run"]) / filename,
+            workers=download_workers,
+        )
+        source_verification = verified_sources.get(url)
+        if source_verification is None:
+            source_verification = verify_hdf5_against_detail(
+                download["path"], _api_json(str(source["detail_url"])), chunk_samples
+            )
+            if not source_verification["passed"]:
+                raise RuntimeError(f"Full-file verification failed for {url}")
+            verified_sources[url] = {
+                **source_verification,
+                "detail_url": source["detail_url"],
+            }
+        elif source_verification["sha256"] != file_sha256(download["path"]):
+            raise ValueError(f"Cached source changed after verification: {url}")
+        for row in source_rows:
+            glitch_id = str(row["glitch_id"])
+            if glitch_id in completed_ids:
+                continue
+            segment = read_hdf5_segment(
+                download["path"], float(row["event_time"]), float(row["context_duration"])
+            )
+            if not np.isfinite(segment["strain"]).all():
+                raise ValueError(f"Non-finite strain in Gravity Spy sample {glitch_id}")
+            data_quality = np.asarray(segment["quality"].get("DQmask", []), dtype=np.int64)
+            if data_quality.size == 0 or not np.all(data_quality & 1):
+                raise ValueError(f"DATA quality bit is not valid throughout {glitch_id}")
+            context = _fft_downsample(
+                segment["strain"], int(segment["sample_rate"]), target_sample_rate
+            )
+            whitened_context = _whiten(context)
+            output_samples = int(round(output_duration * target_sample_rate))
+            center = whitened_context.size // 2
+            start = center - output_samples // 2
+            whitened = whitened_context[start : start + output_samples]
+            raw = context[start : start + output_samples]
+            single_power = multiresolution_power(
+                whitened[None, :],
+                target_sample_rate,
+                q_values,
+                int(tensor["frequency_bins"]),
+                int(tensor["time_bins"]),
+                float(tensor["fmin"]),
+                float(tensor["fmax"]),
+            )
+            features = np.zeros(
+                (len(model_ifos), *single_power.shape[1:]), dtype=np.float32
+            )
+            ifo_index = model_ifos.index(str(row["ifo"]))
+            features[ifo_index] = _normalize_power(single_power)[0]
+            glitch_mask = gravityspy_weak_mask(
+                str(row["ifo"]),
+                model_ifos,
+                q_values,
+                int(tensor["frequency_bins"]),
+                int(tensor["time_bins"]),
+                float(tensor["fmin"]),
+                float(tensor["fmax"]),
+                float(row["duration"]),
+                float(row["peak_frequency"]),
+                float(row["q_value"]),
+                output_duration,
+            )
+            sample_path = output / "samples" / f"{canonical_hash(glitch_id, 24)}.npz"
+            _atomic_savez(
+                sample_path,
+                {
+                    "features": features.astype(np.float16),
+                    "chirp_mask": np.zeros_like(glitch_mask),
+                    "glitch_mask": glitch_mask,
+                    "raw_strain": raw.astype(np.float32),
+                    "whitened_strain": whitened.astype(np.float32),
+                    "ifos": np.asarray(model_ifos),
+                    "q_values": np.asarray(q_values, dtype=np.float32),
+                    "sample_rate": np.asarray(target_sample_rate, dtype=np.int32),
+                    "event_gps": np.asarray(row["event_time"], dtype=np.float64),
+                },
+            )
+            record = {
+                **row,
+                "path": str(sample_path),
+                "sha256": file_sha256(sample_path),
+                "mask_provenance": "weak_gravityspy_duration_peak_frequency_q_geometry_v1",
+                "human_pixel_mask": False,
+                "data_quality": {
+                    "seconds": int(data_quality.size),
+                    "dqmask_min": int(data_quality.min()),
+                    "dqmask_max": int(data_quality.max()),
+                    "injmask_values": sorted(
+                        int(value)
+                        for value in np.unique(segment["quality"].get("Injmask", []))
+                    ),
+                },
+            }
+            completed.append(record)
+            completed_ids.add(glitch_id)
+            atomic_write_json(
+                partial_path,
+                {
+                    "run_identity": run_identity,
+                    "verified_sources": verified_sources,
+                    "records": completed,
+                },
+            )
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress",
+                    "run_identity": run_identity,
+                    "completed_rows": len(completed),
+                    "requested_rows": len(rows),
+                    "verified_files": len(verified_sources),
+                    "requested_files": len(by_source),
+                },
+            )
+    completed.sort(key=lambda row: str(row["glitch_id"]))
+    manifest = output / "gravityspy_numeric_manifest.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in completed)
+    )
+    report = {
+        "status": "verified_gravityspy_numeric_weak_masks",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "metadata-derived masks are weak supervision and require pixel-mask audit; source "
+            "files remain cached until verified retention or controlled eviction is implemented"
+        ),
+        "run_identity": run_identity,
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "rows": len(completed),
+        "unique_glitches": len(completed_ids),
+        "verified_files": len(verified_sources),
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "tensor_shape": [
+            len(model_ifos),
+            len(q_values),
+            int(tensor["frequency_bins"]),
+            int(tensor["time_bins"]),
+        ],
+        "mask_provenance": "weak_gravityspy_duration_peak_frequency_q_geometry_v1",
+        "human_pixel_masks": 0,
+        "source_cache_evicted": False,
+    }
+    report_path = output / "gravityspy_numeric_report.json"
+    atomic_write_json(report_path, report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed_rows": len(completed),
+            "requested_rows": len(rows),
+            "verified_files": len(verified_sources),
+            "requested_files": len(by_source),
+            "report_sha256": file_sha256(report_path),
+        },
+    )
     return report
 
 

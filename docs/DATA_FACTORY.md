@@ -96,6 +96,12 @@ source is downloaded, hash/DQ verified and converted to numeric arrays and masks
 `gwyolo gravityspy-strain-shard` assigns every source file and all of its anchors to exactly one
 bounded shard. This enables resumable download/verify/extract/evict execution without splitting one
 file's glitches across cache jobs or pretending that the bounded cache reduces the full corpus.
+`gwyolo gravityspy-strain-materialize` executes one such shard resumably: every official source is
+fully checked against its GWOSC statistics and DQ bit sums before a 64-second whitening context is
+converted to an 8-second numeric multi-Q tensor. The accompanying masks are conservative weak labels
+derived from Gravity Spy duration, peak frequency and Q metadata. They are explicitly marked as
+non-human masks and cannot support a segmentation-accuracy claim until a pixel-mask audit is frozen.
+The command does not evict verified source files automatically.
 
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9

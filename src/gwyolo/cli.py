@@ -244,6 +244,16 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_shard.add_argument("--files-per-shard", type=int, default=32)
     gravityspy_shard.add_argument("--seed", type=int, default=20260720)
 
+    gravityspy_materialize = subparsers.add_parser("gravityspy-strain-materialize")
+    gravityspy_materialize.add_argument("--manifest", required=True)
+    gravityspy_materialize.add_argument("--shard", required=True, type=int)
+    gravityspy_materialize.add_argument("--config", required=True)
+    gravityspy_materialize.add_argument("--cache-dir", required=True)
+    gravityspy_materialize.add_argument("--output-dir", required=True)
+    gravityspy_materialize.add_argument("--output-duration", type=float, default=8.0)
+    gravityspy_materialize.add_argument("--download-workers", type=int, default=8)
+    gravityspy_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -676,6 +686,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.files_per_shard,
                 args.seed,
+            )
+        )
+    elif args.command == "gravityspy-strain-materialize":
+        from .gravityspy import materialize_gravityspy_strain_shard
+
+        _print(
+            materialize_gravityspy_strain_shard(
+                args.manifest,
+                args.shard,
+                args.config,
+                args.cache_dir,
+                args.output_dir,
+                args.output_duration,
+                args.download_workers,
+                args.chunk_samples,
             )
         )
     elif args.command == "fit-curve":
