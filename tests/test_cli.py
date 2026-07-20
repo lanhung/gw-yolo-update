@@ -224,3 +224,39 @@ def test_candidate_refiner_train_cli_routes_endpoint_warm_start() -> None:
         7,
         "endpoint.pt",
     )
+
+
+def test_candidate_pair_ranker_cli_routes_grouped_manifests() -> None:
+    target = "gwyolo.candidate_set_training.run_candidate_pair_ranker_training"
+    with patch(target, return_value={}) as train:
+        assert (
+            main(
+                [
+                    "candidate-pair-ranker-train",
+                    "--config",
+                    "pair.yaml",
+                    "--train-injection-manifest",
+                    "train-injections.jsonl",
+                    "--train-candidate-manifest",
+                    "train-candidates.jsonl",
+                    "--validation-injection-manifest",
+                    "val-injections.jsonl",
+                    "--validation-selection-candidate-manifest",
+                    "selection.jsonl",
+                    "--output-dir",
+                    "output",
+                    "--seed",
+                    "9",
+                ]
+            )
+            == 0
+        )
+    train.assert_called_once_with(
+        "pair.yaml",
+        "train-injections.jsonl",
+        "train-candidates.jsonl",
+        "val-injections.jsonl",
+        "selection.jsonl",
+        "output",
+        9,
+    )

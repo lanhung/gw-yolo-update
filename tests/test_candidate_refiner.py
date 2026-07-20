@@ -1,6 +1,10 @@
 import numpy as np
 import pytest
 
+from gwyolo.candidate_set_training import (
+    candidate_pair_feature_vector,
+    candidate_parent_top1_metrics,
+)
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
     candidate_arrival_threshold_metrics,
@@ -169,6 +173,25 @@ def test_candidate_interval_pair_features_by_hand() -> None:
     assert support["exact"] is True
     assert support["padded"] is True
     assert np.isclose(support["maximum_peak_error_seconds"], 0.1)
+    vector = candidate_pair_feature_vector(first, second, 0.01, 0.25)
+    assert vector.shape == (16,)
+    assert np.isfinite(vector).all()
+
+
+def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:
+    metrics = candidate_parent_top1_metrics(
+        ["a", "b"],
+        ["a", "a"],
+        np.asarray([0.1, 0.9]),
+        np.asarray([False, True]),
+        np.asarray([False, False]),
+        np.asarray([1.0, 0.2]),
+    )
+    assert metrics["parents_with_compatible_pair"] == 1
+    assert metrics["compatible_pair_fraction"] == 0.5
+    assert metrics["top1_padded_truth_pair_fraction"] == 0.5
+    assert metrics["top1_exact_interval_truth_pair_fraction"] == 0.0
+    assert metrics["top1_peak_error_seconds_quantiles"]["0.9"] == 0.2
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

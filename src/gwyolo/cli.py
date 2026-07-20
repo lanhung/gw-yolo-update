@@ -483,6 +483,19 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_network_set.add_argument("--candidate-manifest", required=True)
     candidate_network_set.add_argument("--output-dir", required=True)
 
+    candidate_pair_ranker = subparsers.add_parser("candidate-pair-ranker-train")
+    candidate_pair_ranker.add_argument("--config", required=True)
+    candidate_pair_ranker.add_argument("--train-injection-manifest", required=True)
+    candidate_pair_ranker.add_argument("--train-candidate-manifest", required=True)
+    candidate_pair_ranker.add_argument(
+        "--validation-injection-manifest", required=True
+    )
+    candidate_pair_ranker.add_argument(
+        "--validation-selection-candidate-manifest", required=True
+    )
+    candidate_pair_ranker.add_argument("--output-dir", required=True)
+    candidate_pair_ranker.add_argument("--seed", type=int)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1593,6 +1606,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.injection_manifest,
                 args.candidate_manifest,
                 args.output_dir,
+            )
+        )
+    elif args.command == "candidate-pair-ranker-train":
+        from .candidate_set_training import run_candidate_pair_ranker_training
+
+        _print(
+            run_candidate_pair_ranker_training(
+                args.config,
+                args.train_injection_manifest,
+                args.train_candidate_manifest,
+                args.validation_injection_manifest,
+                args.validation_selection_candidate_manifest,
+                args.output_dir,
+                args.seed,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":
