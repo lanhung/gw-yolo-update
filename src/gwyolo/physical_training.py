@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten
+from .gwosc import _fft_downsample, _whiten_with_reference
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .numeric import MultiIFOQNet, _atomic_torch_save, _dice_loss
 from .waveforms import load_materialized_context
@@ -149,6 +149,7 @@ class PhysicalInjectionDataset:
             raise ValueError("training signal scale must be finite and positive")
         signal = np.asarray(context["signal"], dtype=np.float64) * signal_scale
         mixture = np.asarray(context["noise"], dtype=np.float64) + signal
+        noise = np.asarray(context["noise"], dtype=np.float64)
         target_signal = signal
         minimum_ifo_mask_snr = self.tensor_config.get("minimum_ifo_mask_snr")
         if minimum_ifo_mask_snr is not None:
@@ -167,6 +168,9 @@ class PhysicalInjectionDataset:
                 signal_planes.append(np.zeros(output_samples, dtype=np.float32))
                 continue
             ifo_index = ifos.index(ifo)
+            noise_context = _fft_downsample(
+                noise[ifo_index], source_rate, self.target_sample_rate
+            )
             mixture_context = _fft_downsample(
                 mixture[ifo_index], source_rate, self.target_sample_rate
             )
@@ -174,9 +178,15 @@ class PhysicalInjectionDataset:
                 target_signal[ifo_index], source_rate, self.target_sample_rate
             )
             mixture_planes.append(
-                _whiten(mixture_context)[target_start : target_start + output_samples]
+                _whiten_with_reference(noise_context, mixture_context)[
+                    target_start : target_start + output_samples
+                ]
             )
-            signal_planes.append(signal_context[target_start : target_start + output_samples])
+            signal_planes.append(
+                _whiten_with_reference(noise_context, signal_context, component=True)[
+                    target_start : target_start + output_samples
+                ]
+            )
         mixture_array = np.stack(mixture_planes)
         signal_array = np.stack(signal_planes)
         settings = self.tensor_config

@@ -664,20 +664,43 @@ def _fft_downsample(signal: np.ndarray, source_rate: int, target_rate: int) -> n
 
 
 def _whiten(signal: np.ndarray, smoothing_bins: int = 129) -> np.ndarray:
-    values = np.asarray(signal, dtype=np.float64)
-    if not np.isfinite(values).all():
+    return _whiten_with_reference(signal, signal, smoothing_bins)
+
+
+def _whiten_with_reference(
+    reference_noise: np.ndarray,
+    values: np.ndarray,
+    smoothing_bins: int = 129,
+    component: bool = False,
+) -> np.ndarray:
+    reference = np.asarray(reference_noise, dtype=np.float64)
+    target = np.asarray(values, dtype=np.float64)
+    if reference.shape != target.shape or reference.ndim != 1:
+        raise ValueError("Whitening reference and values must have the same 1D shape")
+    if not np.isfinite(reference).all() or not np.isfinite(target).all():
         raise ValueError("Whitening input contains non-finite samples")
-    centered = values - np.median(values)
-    spectrum = np.fft.rfft(centered)
-    raw_psd = np.abs(spectrum) ** 2
+    reference_spectrum = np.fft.rfft(reference - np.median(reference))
+    raw_psd = np.abs(reference_spectrum) ** 2
     width = min(smoothing_bins, max(3, raw_psd.size // 16 * 2 + 1))
     kernel = np.ones(width, dtype=np.float64) / width
     psd = np.convolve(raw_psd, kernel, mode="same")
     floor = max(float(np.median(psd)) * 1e-6, np.finfo(np.float64).tiny)
-    whitened = np.fft.irfft(spectrum / np.sqrt(np.maximum(psd, floor)), n=values.size)
-    scale = float(np.std(whitened))
-    if not np.isfinite(whitened).all() or not math.isfinite(scale) or scale <= 1e-12:
+    denominator = np.sqrt(np.maximum(psd, floor))
+    whitened_reference = np.fft.irfft(
+        reference_spectrum / denominator, n=reference.size
+    )
+    scale = float(np.std(whitened_reference))
+    if (
+        not np.isfinite(whitened_reference).all()
+        or not math.isfinite(scale)
+        or scale <= 1e-12
+    ):
         raise ValueError("Whitening produced non-finite or zero-variance output")
+    target_centered = target if component else target - np.median(reference)
+    target_spectrum = np.fft.rfft(target_centered)
+    whitened = np.fft.irfft(target_spectrum / denominator, n=target.size)
+    if not np.isfinite(whitened).all():
+        raise ValueError("Whitening target produced non-finite output")
     return (whitened / scale).astype(np.float32)
 
 

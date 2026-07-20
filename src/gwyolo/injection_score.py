@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .gwosc import _fft_downsample, _whiten
+from .gwosc import _fft_downsample, _whiten_with_reference
 from .io import (
     atomic_write_json,
     atomic_write_text,
@@ -133,6 +133,7 @@ def score_materialized_injections(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "save_probabilities": save_probabilities,
+        "whitening": "empirical_noise_reference",
     }
     resumed_rows = _load_resumable_rows(output, run_identity, manifest_rows)
     resumed_by_id = {str(row["injection_id"]): row for row in resumed_rows}
@@ -156,6 +157,7 @@ def score_materialized_injections(
             source_stop = int(context["analysis_stop_index"])
             source_duration = (source_stop - source_start) / source_rate
             mixture = np.asarray(context["mixture"], dtype=np.float64)
+            noise = np.asarray(context["noise"], dtype=np.float64)
             if source_rate < target_sample_rate or source_rate % target_sample_rate:
                 raise ValueError("materialized sample rate must be an integer multiple of target")
             transformed = []
@@ -165,9 +167,13 @@ def score_materialized_injections(
                 if ifo not in ifos:
                     transformed.append(np.zeros(output_samples, dtype=np.float32))
                     continue
-                values = mixture[ifos.index(ifo)]
+                ifo_index = ifos.index(ifo)
+                values = mixture[ifo_index]
                 values = _fft_downsample(values, source_rate, target_sample_rate)
-                whitened = _whiten(values)
+                reference = _fft_downsample(
+                    noise[ifo_index], source_rate, target_sample_rate
+                )
+                whitened = _whiten_with_reference(reference, values)
                 transformed.append(whitened[target_start : target_start + output_samples])
             strain = np.stack(transformed)
             if strain.shape[1] != output_samples:

@@ -13,6 +13,7 @@ import pytest
 from gwyolo.gwosc import (
     _fft_downsample,
     _whiten,
+    _whiten_with_reference,
     download_resumable,
     event_strain_files,
     plan_run_strain_pairs,
@@ -21,6 +22,17 @@ from gwyolo.gwosc import (
     run_gwosc_pilot,
     verify_hdf5_against_detail,
 )
+
+
+def test_reference_whitening_is_linear_for_signal_component() -> None:
+    rng = np.random.default_rng(5)
+    noise = rng.normal(size=2048)
+    signal = 0.02 * np.sin(np.linspace(0, 30, 2048))
+    whitened_noise = _whiten_with_reference(noise, noise)
+    whitened_signal = _whiten_with_reference(noise, signal, component=True)
+    whitened_sum = _whiten_with_reference(noise, noise + signal)
+    assert whitened_noise == pytest.approx(_whiten(noise))
+    assert whitened_sum == pytest.approx(whitened_noise + whitened_signal, abs=1e-6)
 
 
 def test_event_strain_file_filtering() -> None:

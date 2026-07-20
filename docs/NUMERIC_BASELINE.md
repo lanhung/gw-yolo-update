@@ -141,3 +141,7 @@ unit equivalence test, so any improvement can be attributed to a declared loss/c
 An earlier diagnostic annotation integrated the full 64-second signal and therefore overstated the
 available input SNR for long BNS/NSBH waveforms. Its manifests and curriculum runs are retained as
 negative controls but must not be used for final SNR-stratified evidence.
+Physical fine-tuning now estimates the whitening PSD from the known real-noise context and applies
+the same linear filter to mixture and signal-only target. Injection scoring uses the same stored
+noise reference; continuous background is the special case where reference and input are identical.
+This removes the earlier unwhitened-target versus whitened-input frequency mismatch.
