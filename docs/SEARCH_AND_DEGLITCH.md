@@ -47,6 +47,11 @@ per-window mask is hash-checked on resume; these maps feed multi-candidate tempo
 adds three-bin parabolic peak refinement and states the underlying half-bin timing floor. The present
 96-bin/8-second model therefore still fails the <=10 ms publication timing gate; interpolation is not
 misrepresented as new information.
+`candidate-time-slides` pairs every retained H1/L1 cluster after a non-cyclic shift, applies an exact
+peak-time coincidence, clusters nearby network events by loudest ranking statistic, and computes
+exposure from all paired DQ-safe windows—including windows with no candidate. This fixes the earlier
+one-maximum-per-window counting contract, while retaining an explicit timing-gate failure until the
+network output grid itself reaches <=10 ms.
 
 The present scorer has only 96 time bins over an 8-second window, so its time resolution is about
 83 ms. Every time-slide report therefore says `window_level_time_slide_integration_only` and forbids

@@ -270,6 +270,18 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--chirp-threshold", type=float, default=0.3)
     candidates.add_argument("--minimum-bins", type=int, default=1)
 
+    candidate_slides = subparsers.add_parser("candidate-time-slides")
+    candidate_slides.add_argument("--candidates", required=True)
+    candidate_slides.add_argument("--background-manifest", required=True)
+    candidate_slides.add_argument("--output-dir", required=True)
+    candidate_slides.add_argument("--split", choices=("val", "test"), required=True)
+    candidate_slides.add_argument("--reference-ifo", default="H1")
+    candidate_slides.add_argument("--shifted-ifo", default="L1")
+    candidate_slides.add_argument("--slide-count", type=int, required=True)
+    candidate_slides.add_argument("--step-seconds", type=float, required=True)
+    candidate_slides.add_argument("--coincidence-window-seconds", type=float, required=True)
+    candidate_slides.add_argument("--cluster-window-seconds", type=float, default=0.1)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -629,6 +641,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.chirp_threshold,
                 args.minimum_bins,
+            )
+        )
+    elif args.command == "candidate-time-slides":
+        from .candidates import run_candidate_time_slides
+
+        _print(
+            run_candidate_time_slides(
+                args.candidates,
+                args.background_manifest,
+                args.output_dir,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.slide_count,
+                args.step_seconds,
+                args.coincidence_window_seconds,
+                args.cluster_window_seconds,
             )
         )
     elif args.command == "time-slide-background":
