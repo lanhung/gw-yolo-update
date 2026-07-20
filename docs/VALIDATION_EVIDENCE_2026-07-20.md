@@ -362,6 +362,46 @@ checks fail. Comparison-report SHA256 is
 SHA256 values are `f2ef74cfaea88143d4a8a4508fb3c61a855f90640263422eeb3664bb30af14c2` and
 `9020a07a96dacc5781b481d0e74494d82af5e827fb3d05a28b42c781835e7605`.
 
+The final same-budget v3 representation control replaces raw-strain timing features with a numeric
+256-sample Hann STFT at an eight-sample hop. It still uses the identical 2k/3k split and exactly
+1,500 optimizer updates. Its selected epoch-12 checkpoint has SHA256
+`b9397f1db0ba6f38604db7bd50b1941114d4308cd2b1ca7f72a9203582211fc0`. Among per-IFO arrivals with
+SNR >=8, p90 improves from 2.093 s to 51.59 ms, and for the 275 injections with both IFOs at SNR >=8
+worst-IFO p90 improves from 0.875 s to 27.31 ms. This useful representation gain nevertheless fails
+the frozen promotion gate: all-arrival p90 improves by only 3.57%, both-IFO-SNR >=8 joint 10 ms
+coverage rises by only 0.73 percentage points with interval [-5.46, 7.27], and at both-IFO SNR >=10
+worst-IFO/pairwise-delay p90 remain 21.70/10.48 ms. Only 2/7 checks pass, so
+`promotion_allowed=false` and standalone full-window timing scaling is retired. The paired report
+SHA256 is `62e9649374e512cc9a65946a7b21db5deb44bccfd082b7f18863e6b3e705c7f1`; the v3 prediction and
+stratification SHA256 values are `1c66e90dd9ef2ad348171c1062f2ccb3f5d9ec9aa54601d2d17443b67d0dbe16`
+and `ac9d6e28d7f1a48cc9c71c9d20acdf4e429677ace8086498a4f0b0dbbe5bf1d2`.
+
+The first frozen-threshold candidate-support audit then shows why conditional timing training cannot
+start at threshold 0.3. Although raw/padded arrival coverage is 99.75%/99.93%, the median/p90 union
+fractions are 0.927/0.938 of the eight-second analysis window and the median truth-containing
+proposal is 7.42 s wide. This is nearly full-window support rather than localized proposal recall.
+The width-aware audit SHA256 is
+`916a30bb2bb62fc987681f80eef6792a8ce5a7f594563d396b583d2b3e651de4`. A precommitted 0.3--0.9
+threshold sweep therefore decides whether any validation-only coverage--compactness operating point
+exists; if none passes, the next experiment must repair the proposal objective rather than train a
+timing refiner on these broad intervals.
+
+That seven-point sweep is now complete and its machine decision is
+`promotion_allowed=false`. Thresholds 0.3/0.4/0.5 retain 99.93%/99.70%/98.48% padded coverage, but
+their median union fractions are 0.927/0.906/0.781 and their median truth-containing widths are
+7.42/7.08/3.17 s. At 0.6, median width finally falls to 1.08 s and p90 union fraction to 0.781, but
+overall coverage has already fallen to 92.32%, BNS fails the 90% group gate, and median union
+fraction is still 0.531. Thresholds 0.7--0.9 are compact but cover only 74.63%, 44.48% and 18.55%.
+Because coverage is non-increasing and support width non-increasing with threshold, no untested
+intermediate threshold can satisfy both the already-failed 0.6 coverage gate and the not-yet-passed
+0.6 median-union gate. Selection-report SHA256 is
+`763100f057afaf0d356df689c1dd70cc014e3a5403cff2853372835c58cd4cea`.
+
+After every candidate and audit report was hash-bound, the reusable probability cache was released:
+3,000 files/848,497,304 bytes. The trigger JSONL, seven candidate manifests, seven audits, checkpoint
+and selection decision remain; exact recovery is the frozen scorer followed by extraction. The
+eviction-report SHA256 is `a6fb3597f7ca6441b3affe4d29eaac1efb6acb312f7f2cb6a2600cd4c12824de`.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before

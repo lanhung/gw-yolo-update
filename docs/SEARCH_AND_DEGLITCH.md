@@ -115,6 +115,24 @@ coverage overall, >=90% in every BBH/BNS/NSBH and SNR>=4 stratum, median/p90 pro
 all audits share one injection manifest, scoring checkpoint, preprocessing config and trigger
 manifest. If no threshold passes every check, no proposal threshold is selected.
 
+The frozen 0.3--0.9 sweep selects none. The decisive crossing is between 0.5 (98.48% coverage but
+0.781 median union fraction and 3.17 s median containing width) and 0.6 (1.08 s median containing
+width but 92.32% overall coverage, 0.531 median union fraction and failed BNS coverage). Since both
+coverage and active support are monotone in a common threshold, a finer scalar threshold cannot
+repair this conflict. Candidate timing remains blocked while an independent dense endpoint proposal
+objective is trained; the chirp/glitch instance masks remain required outputs and are not replaced by
+that proposal map.
+
+`detector-endpoint-proposal-train` implements the first bounded repair arm. It warm-starts the
+validated v3 numeric-spectrogram encoder, replaces the single categorical interpretation with one
+sigmoid endpoint heatmap per IFO, and retains every disconnected component above a calibrated
+threshold. Its dense target builder accepts multiple endpoints per IFO even though the initial
+group-safe 2k corpus contains one injection per window. The source segmentation checkpoint is never
+loaded or modified, so chirp/glitch masks remain an independent mandatory product. Checkpoint
+selection uses validation dense focal-BCE loss; only afterward does the fixed 0.05--0.9 threshold
+grid face the unchanged proposal coverage--compactness gate. The command consumes no test rows and
+cannot make a search claim even if that validation gate passes.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

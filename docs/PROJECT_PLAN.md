@@ -208,6 +208,10 @@ Run one final same-budget representation control, the high-time-resolution numer
 arm. Do not scale it unless the already frozen paired v1 comparison passes every promotion check;
 otherwise move timing supervision into the all-instance candidate model rather than testing another
 standalone single-arrival classifier.
+The v3 arm formally fails that gate (2/7 checks). It sharply reduces the detectable-event timing tail,
+but misses the required all-population gain, coverage improvement and high-SNR 20/10 ms tail limits.
+No standalone detector-arrival architecture is promoted to 5k/10k; its role is now limited to a
+representation result and a possible encoder initialization after proposal localization is repaired.
 Before training that fallback, run `candidate-proposal-audit` on the frozen 10k validation candidate
 manifest. If true arrivals are not covered by retained proposal intervals (with the declared 0.5 s
 context padding), repair proposal recall first; conditional localization cannot recover absent
@@ -216,6 +220,12 @@ The 0.3 threshold covers nearly every arrival only because its median proposal u
 the analysis window and its median truth-containing interval is 7.42 s. Run the frozen 0.3--0.9
 threshold sweep and accept a proposal operating point only through the precommitted coverage-width
 gate; otherwise the mask proposal objective, not timing-head data scale, is the next bottleneck.
+The completed sweep selects no threshold. At 0.5, coverage passes while median union and containing
+width fail; at 0.6, compactness nearly passes while total and BNS coverage fail. This monotone
+crossing formally promotes proposal-objective repair. The next bounded arm adds an independent dense
+per-IFO endpoint/proposal output while retaining the existing chirp and glitch masks unchanged; it
+must pass the same frozen coverage--compactness gate on the shared 3k validation set before any
+candidate timing or continuous-background scale run.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

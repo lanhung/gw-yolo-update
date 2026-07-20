@@ -156,6 +156,17 @@ frequency-local chirp features with depthwise-separable convolutions, and predic
 geometric targets. It is not a rendered image and uses the identical 2k/3k manifests, seed, batch
 size and 1,500-update budget. v3 is compared against v1 with the same paired promotion gate; failure
 retires the standalone timing-head branch in favor of a candidate-conditioned multi-instance head.
+The completed comparison passes only 2/7 checks. v3 improves the both-IFO-SNR >=8 worst-IFO p90 to
+27.31 ms, but its 0.73-point joint-coverage change is statistically unresolved and the predeclared
+high-SNR worst-IFO/pairwise tails remain 21.70/10.48 ms. The standalone branch is therefore retired;
+its improved spectrogram representation may be reused only after a compact, high-coverage proposal
+gate passes.
+
+The promoted repair keeps that representation but changes the scientific object: a dense sigmoid
+endpoint map can retain multiple disconnected proposals for each detector, while the original
+chirp/glitch mask model remains untouched. It is selected by validation loss and then judged by the
+same predeclared coverage--support gate as the failed scalar mask sweep. A narrow conditional timing
+result is not inspected unless this proposal gate first passes.
 
 ### Stage B — shortlisted evidence
 

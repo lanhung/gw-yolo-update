@@ -1,0 +1,35 @@
+detector_endpoint_proposal:
+  seed: 20260720
+  epochs: 12
+  max_optimizer_updates: 1500
+  batch_size: 16
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  positive_weight: 10.0
+  focal_gamma: 2.0
+  base_channels: 16
+  cache_in_memory: true
+  minimum_training_network_snr: 4.0
+  analysis_duration: 8.0
+  target_sample_rate: 1024
+  output_bins: 1024
+  target_half_width_seconds: 0.125
+  minimum_bins: 1
+  threshold_grid: [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  model_ifos: [H1, L1, V1]
+
+candidate_proposal_threshold_selection:
+  padding_seconds: 0.5
+  minimum_all_padded_coverage: 0.95
+  minimum_required_group_padded_coverage: 0.90
+  maximum_median_union_fraction: 0.50
+  maximum_p90_union_fraction: 0.80
+  maximum_median_containing_width_seconds: 2.0
+  required_groups:
+    - family:BBH
+    - family:BNS
+    - family:NSBH
+    - snr:snr_4_8
+    - snr:snr_8_15
+    - snr:snr_15_30
+    - snr:snr_ge_30
