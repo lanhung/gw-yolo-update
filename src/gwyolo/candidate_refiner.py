@@ -755,7 +755,7 @@ def run_candidate_local_refiner_training(
             pretrained_endpoint_checkpoint, map_location="cpu", weights_only=False
         )
         if (
-            warm.get("architecture") != "detector_arrival_spectrogram_net_v3"
+            warm.get("architecture") != "detector_endpoint_spectrogram_dense_v1"
             or list(warm.get("model_ifos", [])) != list(model_ifos)
             or int(warm.get("base_channels", -1)) != int(settings["base_channels"])
             or int(warm.get("output_bins", -1)) != 1024
