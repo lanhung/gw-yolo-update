@@ -268,6 +268,41 @@ the total physical/OOD corpus is large enough. It rejects blind 25k/50k waveform
 strengthening the case for new GPS/run, V1 and glitch-family coverage. The equal-epoch control is
 still running and scale promotion remains false.
 
+## Real-glitch physical overlap and aligned network contexts
+
+Commit `bcb7c8e` introduced a time-domain real-glitch overlap factory. A remote two-row validation
+smoke used verified Gravity Spy O2/O3 strain artifacts and O4a physical injections. Both outputs are
+finite `3 IFO × 3 Q × 96 × 96` numeric tensors, unavailable detector planes are exactly zero, and
+mixture strain reconstructs as real glitch plus physical injection. One low-per-IFO-SNR signal has
+an intentionally empty visible chirp mask while its physical strain remains present in the mixture;
+the target gate therefore does not delete subthreshold signals. The manifest SHA256 is
+`5b218a86cf20f9d651ab5d787e527b0d4e82c9ee8904f4982a9e3136acf78d70`; report SHA256 is
+`2c48526c3405714e9af833082323e357b5da7099545ba68a6a6634aba647ec2a`.
+
+This smoke is engineering evidence only because its Gravity Spy artifact contains physical strain
+for the event IFO alone. The scale runner is queued behind the verified Gravity Spy train/validation
+bank and will create 300/100 group-unique overlap rows, then run the joint waveform/injection/glitch/
+GPS split audit. The follow-on detector-set fine-tune waits for that audit, active package installs
+and GPU jobs to finish, and a final disk preflight. It retains a clean-injection validation gate and
+does not consume test data.
+
+Commit `c391a10` added an explicit companion-IFO acquisition plan. The first official O2 shard
+contains five unique glitches over four network GPS blocks. All five have full H1/L1 64-second
+contexts and none has V1 at those GPS times, so the only legal detector subset is H1L1. The two
+official 4-kHz source files total 256,022,424 bytes. Plan manifest SHA256 is
+`8484ffc320ad9136db38bd02600ed91a0d88421c19165c978ceed7f9e12f3974`; report SHA256 is
+`45e863c519a5864ced18232e0a2537eb7ff01fbf6b86887588c4037e86f88ed1`. Commit `1f21eeb`
+adds resumable full-file verification, per-IFO DQ checks, aligned raw-strain storage, detector
+availability and verified source eviction. Its bounded five-row materialization is running in an
+independent cache; no network-coherence or search claim is enabled by the plan alone.
+
+Commit `dbfe4de` makes overlap construction network-aware. A network Gravity Spy row may be paired
+only with an injection supporting every available IFO; the coherent physical signal is added to all
+available detector strains before fresh transforms. The event-local weak glitch mask remains local,
+all chirp and glitch instances remain stored, and the report distinguishes aligned-network from
+single-IFO rows. Physical-lag coherence, human weak-mask audit and continuous-background FAR remain
+hard gates.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721

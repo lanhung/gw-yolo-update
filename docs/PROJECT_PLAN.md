@@ -178,9 +178,11 @@ Each epoch also writes `best_target.pt` when the configured primary metric impro
 
 Revised priority order:
 
-1. data/provenance lead: large evaluation set, scaling curve, strain generation, grouping, manifests;
-2. data-quality lead: O3/O4 glitch anchors, quiet/hard negatives, label audits;
-3. search-statistics lead: injections, time slides, FAR/`<VT>`;
-4. model lead: multi-Q/multi-IFO architecture after the scaling gate;
-5. inference lead: calibration and AMPLFI/DINGO interface;
+1. finish the fixed-epoch 2k/5k/10k endpoint and keep 25k/50k blocked unless it agrees materially with the fixed-update control;
+2. complete bounded Gravity Spy train/validation materialization, human weak-mask tasks and cross-split mixture audit;
+3. materialize aligned H1/L1/V1 Gravity Spy contexts and train the clean-retaining dual-mask detector-set arm;
+4. finish O3b detector-set acquisition, held-family OOD abstention and native-rate physical timing validation;
+5. stream O4a continuous background, freeze morphology/coherence/mask-conditioned ranking thresholds, and measure FAR/IFAR/`<VT>`;
+6. promote only the best validation arm to five seeds, then run paired raw/contaminated/mask-conditioned DINGO and AMPLFI inference;
+7. freeze code, data, thresholds, OOD policy and access log before the one-time O4b/GWTC-5 evaluation.
 6. reproducibility lead: CI, containers, artifact registry, paper tables.

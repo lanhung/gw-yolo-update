@@ -407,6 +407,49 @@ information axis is already identified: O3b H1/L1/V1 detector-set coverage, addi
 split GPS blocks, real overlapping glitches and later-run OOD families. Training-data growth remains
 necessary; repeating the same 76 GPS blocks with more waveforms is not the needed growth.
 
+### Updated data decision: scale independent domains, not rendered rows
+
+The fixed-update result changes the acquisition plan materially. The next training-data increment
+is a matrix of independent physical axes rather than a single row-count target:
+
+| Axis | Current evidence | Next promotion unit | Gate |
+|---|---|---|---|
+| waveform/injection identity | 10k core plateaus under 60k seen examples | no 25k promotion yet | fixed-epoch and fixed-update endpoint agreement |
+| background GPS/run | only 76 train blocks in the scale curve | new globally split O1--O4a blocks | frozen O4a efficiency or hard-subset interval improves |
+| detector set | primary corpus is H1/L1 | O3 H1/L1/V1 and missing-IFO subsets | each subset independently calibrated; clean non-inferiority |
+| real glitch overlap | analytic overlap is not adequate | unique Gravity Spy glitch and GPS groups mixed in strain | weak-mask audit plus paired contaminated gain |
+| open-set morphology | O1--O3 labels are closed set | held-family and later-run unknowns | known false abstention and unknown false acceptance intervals |
+| background exposure | validation windows cannot support astrophysical FAR | >=30 coincident days plus time slides | FAR/IFAR and `<VT>` at a common frozen threshold |
+
+`physical-overlap-materialize` now pairs unique waveform/injection identities with unique real
+Gravity Spy glitches without reuse, adds them in the time domain, performs a fresh whitening and
+multi-Q transform, retains both chirp and weak glitch masks, and writes an explicit detector
+availability vector. `physical-overlap-audit` jointly rejects waveform, injection, glitch, injection
+GPS and glitch-GPS leakage across generated split manifests. Rendered image count is reported as
+zero; mixtures, waveforms, injections, glitches and GPS blocks are counted separately.
+
+`physical-overlap-finetune` is the bounded training arm. It uses detector-set fusion, supervises
+both masks only on available planes, interleaves clean physical injections, distills the pretrained
+clean glitch response, and selects a checkpoint only when clean-chirp IoU retention clears the
+predeclared validation gate. It is resumable and calibrates chirp/glitch thresholds on validation
+only. Even a successful validation run remains ineligible for a search claim until the paired
+clean/contaminated fixed-FAR protocol passes.
+
+Single-IFO Gravity Spy strain is useful for learning local glitch morphology but is not network
+evidence. `gravityspy-network-strain-plan` therefore matches each event GPS independently to official
+H1/L1/V1 GWOSC files and records the actually available subset. The first O2 validation shard has
+five events, all with full H1/L1 64-second contexts, no V1 coverage, and only two unique source
+files. `gravityspy-network-strain-materialize` verifies those whole files and DQ vectors, stores
+aligned raw strain and numeric planes for every available IFO, and preserves the glitch mask only on
+the catalog event IFO. Network-aware overlap generation then injects the physically coherent signal
+into every available detector; it refuses an injection that lacks any required IFO.
+
+The practical conclusion is that the corpus is still far too small in independent domain coverage,
+but increasing 10k to 50k with the same 76 GPS blocks is unlikely to create a qualitative change.
+A qualitative gain is plausible only after real overlap, new GPS/run, detector-subset and OOD axes
+grow together and pass frozen hard-subset endpoints. Scale promotion remains an empirical decision,
+not a calendar milestone.
+
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
 frozen 3k validation split. `physical-scale-subsets` therefore constructs fresh, strictly nested
