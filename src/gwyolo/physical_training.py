@@ -7,6 +7,7 @@ import platform
 import random
 import shlex
 import sys
+import tempfile
 import time
 from collections import Counter
 from copy import deepcopy
@@ -31,6 +32,74 @@ except ImportError:  # pragma: no cover
     DataLoader = None
 
 
+PHYSICAL_TENSOR_CACHE_VERSION = "physical-tensor-cache-v1-float32"
+
+
+def physical_tensor_cache_key(
+    row: dict[str, Any],
+    tensor_config: dict[str, Any],
+    model_ifos: tuple[str, ...],
+    q_values: tuple[float, ...],
+    target_sample_rate: int,
+) -> str:
+    if not row.get("materialized_sha256") or not row.get("injection_id"):
+        raise ValueError("Physical tensor caching requires materialized and injection identities")
+    return canonical_hash(
+        {
+            "version": PHYSICAL_TENSOR_CACHE_VERSION,
+            "injection_id": str(row["injection_id"]),
+            "materialized_sha256": row.get("materialized_sha256"),
+            "training_signal_scale": float(row.get("training_signal_scale", 1.0)),
+            "optimal_snr_by_ifo": row.get("optimal_snr_by_ifo"),
+            "tensor_config": tensor_config,
+            "model_ifos": model_ifos,
+            "q_values": q_values,
+            "target_sample_rate": target_sample_rate,
+        },
+        length=64,
+    )
+
+
+def _atomic_write_physical_tensor_cache(
+    path: Path, key: str, features: np.ndarray, target: np.ndarray
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    try:
+        with open(temporary, "wb") as handle:
+            np.savez(
+                handle,
+                cache_key=np.asarray(key),
+                features=np.asarray(features, dtype=np.float32),
+                target=np.asarray(target, dtype=np.uint8),
+            )
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _load_physical_tensor_cache(
+    path: Path, key: str, expected_shape: tuple[int, int, int]
+) -> tuple[np.ndarray, np.ndarray]:
+    with np.load(path, allow_pickle=False) as arrays:
+        if str(arrays["cache_key"].item()) != key:
+            raise ValueError(f"Physical tensor cache key mismatch: {path}")
+        features = np.asarray(arrays["features"], dtype=np.float32)
+        target_raw = np.asarray(arrays["target"])
+    if features.shape != expected_shape or target_raw.shape != expected_shape:
+        raise ValueError(f"Physical tensor cache shape mismatch: {path}")
+    if not np.isfinite(features).all() or np.any((target_raw != 0) & (target_raw != 1)):
+        raise ValueError(f"Physical tensor cache content is invalid: {path}")
+    return features, target_raw.astype(np.float32)
+
+
 def relative_component_mask(power: np.ndarray, fraction: float = 0.08) -> np.ndarray:
     values = np.asarray(power)
     if values.ndim != 4 or not np.isfinite(values).all():
@@ -43,7 +112,7 @@ def relative_component_mask(power: np.ndarray, fraction: float = 0.08) -> np.nda
 
 
 def union_component_masks(component_masks: np.ndarray) -> np.ndarray:
-    """Collapse IFO/Q planes to the single chirp-class mask predicted by the network."""
+    """Derive a network-level union while leaving stored plane masks unchanged."""
     values = np.asarray(component_masks)
     if values.ndim != 4 or not np.isfinite(values).all():
         raise ValueError("component masks must be finite [IFO, Q, frequency, time]")
@@ -139,6 +208,7 @@ class PhysicalInjectionDataset:
         target_sample_rate: int,
         cache_in_memory: bool,
         coalescence_time_bins: int | None = None,
+        tensor_cache_dir: str | Path | None = None,
     ):
         self.rows = rows
         self.tensor_config = tensor_config
@@ -146,6 +216,12 @@ class PhysicalInjectionDataset:
         self.q_values = q_values
         self.target_sample_rate = target_sample_rate
         self.coalescence_time_bins = coalescence_time_bins
+        if tensor_cache_dir is not None and coalescence_time_bins is not None:
+            raise ValueError("Physical tensor cache does not yet support timing targets")
+        self.tensor_cache_dir = Path(tensor_cache_dir) if tensor_cache_dir is not None else None
+        if self.tensor_cache_dir is not None:
+            self.tensor_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.tensor_cache_stats = {"hits": 0, "misses": 0, "writes": 0}
         self.verified_background_hashes: dict[str, str] = {}
         self.cache: list[tuple[Any, ...] | None] | None = (
             [None] * len(rows) if cache_in_memory else None
@@ -157,6 +233,33 @@ class PhysicalInjectionDataset:
     def __getitem__(self, index: int) -> tuple[Any, ...]:
         if self.cache is not None and self.cache[index] is not None:
             return self.cache[index]  # type: ignore[return-value]
+        tensor_cache_path = None
+        tensor_cache_key = None
+        if self.tensor_cache_dir is not None:
+            tensor_cache_key = physical_tensor_cache_key(
+                self.rows[index],
+                self.tensor_config,
+                self.model_ifos,
+                self.q_values,
+                self.target_sample_rate,
+            )
+            tensor_cache_path = (
+                self.tensor_cache_dir / tensor_cache_key[:2] / f"{tensor_cache_key}.npz"
+            )
+            if tensor_cache_path.is_file():
+                expected_shape = (
+                    len(self.model_ifos) * len(self.q_values),
+                    int(self.tensor_config["frequency_bins"]),
+                    int(self.tensor_config["time_bins"]),
+                )
+                item = _load_physical_tensor_cache(
+                    tensor_cache_path, tensor_cache_key, expected_shape
+                )
+                self.tensor_cache_stats["hits"] += 1
+                if self.cache is not None:
+                    self.cache[index] = item
+                return item
+            self.tensor_cache_stats["misses"] += 1
         context = load_materialized_context(self.rows[index], self.verified_background_hashes)
         source_rate = int(context["sample_rate"])
         if source_rate < self.target_sample_rate or source_rate % self.target_sample_rate:
@@ -265,6 +368,11 @@ class PhysicalInjectionDataset:
         if not np.isfinite(features).all() or not np.isfinite(target).all():
             raise ValueError("Physical tensor construction produced non-finite values")
         item: tuple[Any, ...] = (features.astype(np.float32), target.astype(np.float32))
+        if tensor_cache_path is not None and tensor_cache_key is not None:
+            _atomic_write_physical_tensor_cache(
+                tensor_cache_path, tensor_cache_key, item[0], item[1]
+            )
+            self.tensor_cache_stats["writes"] += 1
         if self.coalescence_time_bins is not None:
             timing_index, timing_offset = coalescence_bin_target(
                 float(self.rows[index]["gps_time"]),
@@ -433,6 +541,7 @@ def run_physical_finetune(
     pretrained_checkpoint: str | Path,
     output_dir: str | Path,
     seed_override: int | None = None,
+    validation_feature_cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     if torch is None:
         raise RuntimeError("Physical fine-tuning requires torch")
@@ -448,6 +557,11 @@ def run_physical_finetune(
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
         "seed": seed,
+        "validation_tensor_cache_version": (
+            PHYSICAL_TENSOR_CACHE_VERSION
+            if validation_feature_cache_dir is not None
+            else None
+        ),
     }
     completed_report_path = output / "physical_finetune_report.json"
     if completed_report_path.is_file():
@@ -511,6 +625,7 @@ def run_physical_finetune(
             q_values,
             target_sample_rate,
             bool(settings.get("cache_in_memory", True)),
+            tensor_cache_dir=validation_feature_cache_dir,
         ),
     }
     generator = torch.Generator().manual_seed(seed)
@@ -728,6 +843,20 @@ def run_physical_finetune(
             "selected_rows": len(train_rows),
             "excluded_rows": len(all_train_rows) - len(train_rows),
             "minimum_network_optimal_snr": minimum_training_snr,
+        },
+        "validation_tensor_cache": {
+            "enabled": validation_feature_cache_dir is not None,
+            "version": (
+                PHYSICAL_TENSOR_CACHE_VERSION
+                if validation_feature_cache_dir is not None
+                else None
+            ),
+            "path": (
+                str(validation_feature_cache_dir)
+                if validation_feature_cache_dir is not None
+                else None
+            ),
+            **datasets["val"].tensor_cache_stats,
         },
         "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
         "train_manifest_sha256": file_sha256(train_manifest),

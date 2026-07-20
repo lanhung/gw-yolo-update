@@ -198,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     physical_finetune.add_argument("--pretrained-checkpoint", required=True)
     physical_finetune.add_argument("--output-dir", required=True)
     physical_finetune.add_argument("--seed", type=int)
+    physical_finetune.add_argument("--validation-feature-cache-dir")
 
     snr_curriculum = subparsers.add_parser("physical-snr-curriculum")
     snr_curriculum.add_argument("--manifest", required=True)
@@ -695,6 +696,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.pretrained_checkpoint,
                 args.output_dir,
                 args.seed,
+                args.validation_feature_cache_dir,
             )
         )
     elif args.command == "physical-snr-curriculum":

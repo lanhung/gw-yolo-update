@@ -8,6 +8,8 @@ import pytest
 
 from gwyolo.physical_training import (
     _chirp_epoch,
+    _atomic_write_physical_tensor_cache,
+    _load_physical_tensor_cache,
     build_snr_curriculum_manifest,
     build_snr_quota_manifest,
     build_physical_scale_subsets,
@@ -60,6 +62,21 @@ def test_chirp_epoch_honors_exact_batch_budget() -> None:
             0.0,
             max_batches=0,
         )
+
+
+def test_physical_tensor_cache_roundtrip_is_exact_and_key_checked(tmp_path) -> None:
+    features = np.arange(24, dtype=np.float32).reshape(2, 3, 4) / 7
+    target = np.zeros((2, 3, 4), dtype=np.float32)
+    target[1, 2, 3] = 1
+    path = tmp_path / "cache.npz"
+    _atomic_write_physical_tensor_cache(path, "key", features, target)
+    restored_features, restored_target = _load_physical_tensor_cache(
+        path, "key", (2, 3, 4)
+    )
+    assert np.array_equal(restored_features, features)
+    assert np.array_equal(restored_target, target)
+    with pytest.raises(ValueError, match="key mismatch"):
+        _load_physical_tensor_cache(path, "wrong", (2, 3, 4))
 
 
 def test_binary_mask_counts_are_hand_calculated() -> None:

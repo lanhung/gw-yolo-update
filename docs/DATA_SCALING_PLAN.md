@@ -365,6 +365,13 @@ The two executable configurations are
 `configs/physical_finetune_scale_fixed_epochs.yaml`; their reports must never be pooled into one
 seed distribution.
 
+Repeated validation transforms may use `--validation-feature-cache-dir`. Cache keys bind the
+materialized-signal hash, injection ID, per-IFO SNR visibility metadata, tensor configuration,
+IFO/Q order and sample rate. Features remain float32 and binary plane targets are restored exactly;
+atomic writes and key/shape/content checks make a bad cache a hard failure. Training tensors are not
+disk-cached, avoiding a multi-gigabyte duplicate of every scale and preserving fresh online
+construction as the primary path.
+
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
 frozen 3k validation split. `physical-scale-subsets` therefore constructs fresh, strictly nested
