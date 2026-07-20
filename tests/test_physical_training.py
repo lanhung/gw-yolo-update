@@ -10,6 +10,7 @@ from gwyolo.physical_training import (
     build_snr_curriculum_manifest,
     build_snr_quota_manifest,
     gate_component_by_ifo_snr,
+    mask_endpoint_timing_error_seconds,
     focal_binary_cross_entropy,
     physical_split_audit,
     relative_component_mask,
@@ -23,6 +24,23 @@ def test_binary_mask_counts_are_hand_calculated() -> None:
     assert metrics["iou"] == pytest.approx(0.5)
     assert metrics["precision"] == pytest.approx(0.6)
     assert metrics["recall"] == pytest.approx(0.75)
+
+
+def test_mask_endpoint_timing_error_is_hand_calculated() -> None:
+    probability = np.asarray([[0.1, 0.8, 0.9, 0.2, 0.7, 0.1, 0.1, 0.1]])
+    expected = np.asarray([[False, True, True, True, False, False, False, False]])
+    result = mask_endpoint_timing_error_seconds(probability, expected, 0.5, 8.0)
+    # Predicted endpoint bin 4 minus target endpoint bin 3 at one second per bin.
+    assert result == {
+        "target_present": True,
+        "prediction_present": True,
+        "absolute_error_seconds": 1.0,
+    }
+    missed = mask_endpoint_timing_error_seconds(
+        np.zeros((1, 8)), expected, 0.5, 8.0
+    )
+    assert missed["target_present"] and not missed["prediction_present"]
+    assert missed["absolute_error_seconds"] is None
 
 
 def test_focal_gamma_zero_matches_binary_cross_entropy() -> None:

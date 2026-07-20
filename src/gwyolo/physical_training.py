@@ -808,6 +808,46 @@ def summarize_binary_mask_counts(tp: int, fp: int, fn: int) -> dict[str, float]:
     }
 
 
+def mask_endpoint_timing_error_seconds(
+    probability: np.ndarray,
+    expected: np.ndarray,
+    threshold: float,
+    duration: float,
+) -> dict[str, Any]:
+    """Measure the last-active mask-bin error without hiding missed predictions."""
+    scores = np.asarray(probability, dtype=np.float64)
+    target = np.asarray(expected, dtype=bool)
+    if scores.shape != target.shape or scores.ndim < 1 or scores.shape[-1] < 2:
+        raise ValueError("timing arrays must share shape and contain at least two time bins")
+    if not np.isfinite(scores).all() or not 0 < threshold < 1 or duration <= 0:
+        raise ValueError("invalid endpoint timing input")
+    collapse_axes = tuple(range(scores.ndim - 1))
+    predicted_profile = np.any(scores >= threshold, axis=collapse_axes)
+    target_profile = np.any(target, axis=collapse_axes)
+    target_active = np.flatnonzero(target_profile)
+    predicted_active = np.flatnonzero(predicted_profile)
+    if target_active.size == 0:
+        return {
+            "target_present": False,
+            "prediction_present": bool(predicted_active.size),
+            "absolute_error_seconds": None,
+        }
+    if predicted_active.size == 0:
+        return {
+            "target_present": True,
+            "prediction_present": False,
+            "absolute_error_seconds": None,
+        }
+    bin_width = duration / scores.shape[-1]
+    return {
+        "target_present": True,
+        "prediction_present": True,
+        "absolute_error_seconds": float(
+            abs(int(predicted_active[-1]) - int(target_active[-1])) * bin_width
+        ),
+    }
+
+
 def audit_physical_checkpoint(
     config_path: str | Path,
     validation_manifest: str | Path,
@@ -845,11 +885,25 @@ def audit_physical_checkpoint(
     model.load_state_dict(checkpoint["model"])
     model.eval()
     groups: dict[str, dict[str, Any]] = {}
+    analysis_duration = float(settings.get("analysis_duration", 8.0))
+    if analysis_duration <= 0:
+        raise ValueError("physical audit analysis duration must be positive")
 
     def accumulator(key: str) -> dict[str, Any]:
         return groups.setdefault(
             key,
-            {"injections": 0, "pixels": 0, "target_pixels": 0, "tp": 0, "fp": 0, "fn": 0, "max_probabilities": []},
+            {
+                "injections": 0,
+                "pixels": 0,
+                "target_pixels": 0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0,
+                "max_probabilities": [],
+                "timing_evaluable": 0,
+                "timing_prediction_misses": 0,
+                "timing_errors_seconds": [],
+            },
         )
 
     offset = 0
@@ -864,6 +918,9 @@ def audit_physical_checkpoint(
                 tp = int(np.count_nonzero(predicted & expected[index]))
                 fp = int(np.count_nonzero(predicted & ~expected[index]))
                 fn = int(np.count_nonzero(~predicted & expected[index]))
+                timing = mask_endpoint_timing_error_seconds(
+                    probabilities[index], expected[index], chirp_threshold, analysis_duration
+                )
                 keys = (
                     "all",
                     f"family:{row['source_family']}",
@@ -878,10 +935,19 @@ def audit_physical_checkpoint(
                     item["fp"] += fp
                     item["fn"] += fn
                     item["max_probabilities"].append(float(np.max(probabilities[index])))
+                    if timing["target_present"]:
+                        item["timing_evaluable"] += 1
+                        if timing["prediction_present"]:
+                            item["timing_errors_seconds"].append(
+                                float(timing["absolute_error_seconds"])
+                            )
+                        else:
+                            item["timing_prediction_misses"] += 1
             offset += features.shape[0]
     summaries = {}
     for key, item in sorted(groups.items()):
         maximums = item.pop("max_probabilities")
+        timing_errors = item.pop("timing_errors_seconds")
         counts = summarize_binary_mask_counts(item.pop("tp"), item.pop("fp"), item.pop("fn"))
         summaries[key] = {
             **item,
@@ -890,7 +956,21 @@ def audit_physical_checkpoint(
             "maximum_probability_quantiles": {
                 str(q): float(np.quantile(maximums, q)) for q in (0.0, 0.1, 0.5, 0.9, 1.0)
             },
+            "timing_prediction_miss_fraction": item["timing_prediction_misses"]
+            / max(item["timing_evaluable"], 1),
+            "endpoint_absolute_error_seconds_quantiles": (
+                {
+                    str(q): float(np.quantile(timing_errors, q))
+                    for q in (0.0, 0.5, 0.9, 1.0)
+                }
+                if timing_errors
+                else None
+            ),
         }
+    time_bins = int(settings["tensor"]["time_bins"])
+    bin_width_seconds = analysis_duration / time_bins
+    overall_timing = summaries["all"]
+    overall_error = overall_timing["endpoint_absolute_error_seconds_quantiles"]
     report = {
         "status": "physical_validation_checkpoint_audit",
         "scientific_claim_allowed": False,
@@ -906,6 +986,19 @@ def audit_physical_checkpoint(
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "device": str(device),
+        "timing": {
+            "definition": "last active chirp-mask bin as coalescence-time proxy",
+            "analysis_duration_seconds": analysis_duration,
+            "time_bins": time_bins,
+            "bin_width_seconds": bin_width_seconds,
+            "representation_gate_seconds": 0.01,
+            "representation_gate_passed": bin_width_seconds <= 0.01,
+            "accuracy_gate_passed": (
+                overall_error is not None
+                and float(overall_error["0.9"]) <= 0.01
+                and overall_timing["timing_prediction_misses"] == 0
+            ),
+        },
         "groups": summaries,
         "elapsed_seconds": time.time() - started,
     }

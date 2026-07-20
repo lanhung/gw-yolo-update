@@ -116,6 +116,10 @@ The `physical_finetune_highres.yaml` promotion configuration uses 1,024 time bin
 (7.8125 ms nominal bins). Its STFT path uses batched FFTs and vectorized frequency/time interpolation,
 with a hand-checked equivalence test against `numpy.interp`; this makes the <=10 ms timing experiment
 computationally executable without changing physical split identities.
+Checkpoint audits keep two timing gates separate: the representation gate checks only nominal bin
+width, while the accuracy gate uses the last active chirp-mask bin as a declared coalescence-time
+proxy and requires its 90th-percentile absolute error to be <=10 ms with no prediction misses. A
+high-resolution tensor can therefore pass the former and fail the latter.
 
 `gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
 from each injection's own full real-noise context, but integrates signal power only over the recorded
