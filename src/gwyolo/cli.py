@@ -379,7 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--output-dir", required=True)
     materialize.add_argument("--sample-rate", type=int, default=2048)
     materialize.add_argument("--context-duration", type=float, default=64.0)
-    materialize.add_argument("--storage-mode", choices=("signal_only", "full"), default="signal_only")
+    materialize.add_argument(
+        "--storage-mode",
+        choices=("signal_only", "signal_scaled_float16", "full"),
+        default="signal_only",
+    )
     materialize.add_argument("--split", choices=("train", "val", "test"))
     materialize.add_argument("--limit", type=int)
     materialize.add_argument("--backend-validation-report")

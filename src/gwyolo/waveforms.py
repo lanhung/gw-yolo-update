@@ -570,6 +570,44 @@ def _atomic_save_npz(path: Path, **arrays: np.ndarray) -> None:
         raise
 
 
+def pack_scaled_float16_signal(
+    signal: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    """Pack physical strain without float16 underflow and certify reconstruction."""
+    values = np.asarray(signal, dtype=np.float64)
+    if values.ndim != 2 or not np.isfinite(values).all():
+        raise ValueError("scaled signal storage expects finite [IFO, time] strain")
+    peaks = np.max(np.abs(values), axis=1)
+    normalized = np.divide(
+        values,
+        peaks[:, None],
+        out=np.zeros_like(values),
+        where=peaks[:, None] > 0,
+    )
+    packed = normalized.astype(np.float16)
+    reconstructed = packed.astype(np.float64) * peaks[:, None]
+    denominator = float(np.linalg.norm(values))
+    relative_l2 = float(
+        np.linalg.norm(reconstructed - values) / max(denominator, 1e-300)
+    )
+    overlap_denominator = float(np.linalg.norm(reconstructed)) * denominator
+    overlap = (
+        float(np.vdot(reconstructed, values).real / overlap_denominator)
+        if overlap_denominator > 0
+        else 1.0
+    )
+    metrics = {
+        "relative_l2_error": relative_l2,
+        "normalized_overlap": overlap,
+        "maximum_absolute_normalized_error": float(
+            np.max(np.abs(packed.astype(np.float64) - normalized))
+        ),
+    }
+    if relative_l2 > 1e-3 or overlap < 0.999999:
+        raise ValueError(f"scaled float16 signal reconstruction gate failed: {metrics}")
+    return packed, peaks.astype(np.float64), metrics
+
+
 def load_materialized_context(
     row: dict[str, Any], verified_background_hashes: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -583,7 +621,14 @@ def load_materialized_context(
         analysis_start = float(arrays["analysis_gps_start"])
         analysis_start_index = int(arrays["analysis_start_index"])
         analysis_stop_index = int(arrays["analysis_stop_index"])
-        signal = np.asarray(arrays["signal"], dtype=np.float64)
+        if "signal" in arrays:
+            signal = np.asarray(arrays["signal"], dtype=np.float64)
+        elif "signal_scaled" in arrays and "signal_peak_scale" in arrays:
+            signal = np.asarray(arrays["signal_scaled"], dtype=np.float64) * np.asarray(
+                arrays["signal_peak_scale"], dtype=np.float64
+            )[:, None]
+        else:
+            raise ValueError("materialized artifact lacks a supported signal representation")
         stored_noise = (
             np.asarray(arrays["noise"], dtype=np.float64) if "noise" in arrays else None
         )
@@ -644,8 +689,8 @@ def materialize_recipe(
     context_duration: float = 64.0,
     storage_mode: str = "signal_only",
 ) -> dict[str, Any]:
-    if storage_mode not in {"signal_only", "full"}:
-        raise ValueError("storage_mode must be signal_only or full")
+    if storage_mode not in {"signal_only", "signal_scaled_float16", "full"}:
+        raise ValueError("unsupported materialized storage mode")
     if str(recipe["background_window_id"]) != str(background["window_id"]):
         raise ValueError("Recipe/background window identity mismatch")
     if str(recipe["gps_block"]) != str(background["gps_block"]):
@@ -681,7 +726,6 @@ def materialize_recipe(
         raise ValueError("Analysis window falls outside materialized context")
     target = Path(output_path)
     stored_arrays = {
-        "signal": signal,
         "ifos": np.asarray(ifos),
         "sample_rate": np.asarray(sample_rate, dtype=np.int64),
         "context_gps_start": np.asarray(context_start, dtype=np.float64),
@@ -689,8 +733,18 @@ def materialize_recipe(
         "analysis_start_index": np.asarray(analysis_start_index, dtype=np.int64),
         "analysis_stop_index": np.asarray(analysis_stop_index, dtype=np.int64),
     }
+    reconstruction = None
+    if storage_mode == "signal_scaled_float16":
+        packed, peaks, reconstruction = pack_scaled_float16_signal(signal)
+        stored_arrays.update({"signal_scaled": packed, "signal_peak_scale": peaks})
+        signal_dtype = "scaled_float16_with_float64_ifo_peak"
+    else:
+        stored_arrays["signal"] = signal.astype(np.float32)
+        signal_dtype = "float32"
     if storage_mode == "full":
-        stored_arrays.update({"noise": noise, "strain": mixture})
+        stored_arrays.update(
+            {"noise": noise.astype(np.float32), "strain": mixture.astype(np.float32)}
+        )
     _atomic_save_npz(target, **stored_arrays)
     return {
         **recipe,
@@ -702,7 +756,8 @@ def materialize_recipe(
         "analysis_start_index": analysis_start_index,
         "analysis_stop_index": analysis_stop_index,
         "storage_mode": storage_mode,
-        "signal_dtype": "float32",
+        "signal_dtype": signal_dtype,
+        "signal_reconstruction": reconstruction,
         "signal_summary": signal_summary,
         "time_alignment": "integer_copy_or_lanczos_sinc_half_width_16",
         "background_source_files": {
@@ -766,7 +821,11 @@ def run_injection_materialization(
         "sample_rate": sample_rate,
         "context_duration": context_duration,
         "storage_mode": storage_mode,
-        "signal_dtype": "float32",
+        "signal_dtype": (
+            "scaled_float16_with_float64_ifo_peak"
+            if storage_mode == "signal_scaled_float16"
+            else "float32"
+        ),
         "backend": backend.metadata,
         "backend_validation_report_sha256": (
             file_sha256(backend_validation_report) if backend_validation_report else None
@@ -845,7 +904,18 @@ def run_injection_materialization(
         "sample_rate": sample_rate,
         "context_duration": context_duration,
         "storage_mode": storage_mode,
-        "signal_dtype": "float32",
+        "signal_dtype": run_identity["signal_dtype"],
+        "materialized_bytes": sum(
+            Path(row["materialized_path"]).stat().st_size for row in materialized
+        ),
+        "maximum_signal_reconstruction_relative_l2": max(
+            (
+                float(row["signal_reconstruction"]["relative_l2_error"])
+                for row in materialized
+                if row.get("signal_reconstruction") is not None
+            ),
+            default=None,
+        ),
         "identity_audit": identity_audit,
         "backend": backend.metadata,
         "recipe_manifest_sha256": file_sha256(recipe_manifest),

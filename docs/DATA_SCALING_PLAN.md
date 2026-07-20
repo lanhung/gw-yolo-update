@@ -207,6 +207,11 @@ At the current JPEG size, 100k plots would be only several GB, but RGB plots dis
 - deterministic recipe manifests instead of duplicated tensors;
 - streaming dataloaders and resumable shards.
 
+For full 64-second waveform contexts, `signal_scaled_float16` stores each IFO divided by its
+float64 peak and restores the physical scale on load. This avoids direct float16 underflow while
+halving the payload relative to actual float32 storage. Every sample must pass relative L2 <=1e-3
+and normalized overlap >=0.999999; the materialization report records the worst reconstruction.
+
 For injection sensitivity, count and storage targets must be expressed separately. The current 25k
 H1 recipe artifact is only a provenance pilot and is too correlated (192 windows, six GPS blocks).
 The publication corpus should target at least 10k independently seeded validation injections and

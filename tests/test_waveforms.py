@@ -11,11 +11,23 @@ from gwyolo.waveforms import (
     materialize_recipe,
     load_materialized_context,
     optimal_snr_stratum,
+    pack_scaled_float16_signal,
     place_waveform_samples,
     run_injection_materialization,
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_scaled_float16_signal_storage_preserves_physical_amplitude() -> None:
+    signal = np.asarray([[0.0, 1e-24, -2e-24, 3e-24], [0.0, 0.0, 0.0, 0.0]])
+    packed, peaks, metrics = pack_scaled_float16_signal(signal)
+    reconstructed = packed.astype(np.float64) * peaks[:, None]
+    assert packed.dtype == np.float16
+    assert peaks.tolist() == pytest.approx([3e-24, 0.0])
+    assert reconstructed == pytest.approx(signal, rel=1e-3, abs=1e-30)
+    assert metrics["relative_l2_error"] < 1e-3
+    assert metrics["normalized_overlap"] >= 0.999999
 
 
 def test_optimal_snr_strata_boundaries() -> None:
@@ -136,3 +148,21 @@ def test_signal_only_materialization_references_hashed_background(tmp_path) -> N
     loaded = load_materialized_context(report)
     assert loaded["noise"].shape == (1, 16)
     assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
+
+    scaled_output = tmp_path / "injection-scaled.npz"
+    scaled_report = materialize_recipe(
+        recipe,
+        background,
+        FakeBackend(),
+        4,
+        scaled_output,
+        context_duration=4.0,
+        storage_mode="signal_scaled_float16",
+    )
+    with np.load(scaled_output, allow_pickle=False) as arrays:
+        assert "signal" not in arrays
+        assert arrays["signal_scaled"].dtype == np.float16
+        assert arrays["signal_peak_scale"].dtype == np.float64
+    scaled_loaded = load_materialized_context(scaled_report)
+    assert scaled_loaded["signal"] == pytest.approx(loaded["signal"], rel=1e-3)
+    assert scaled_report["signal_reconstruction"]["relative_l2_error"] <= 1e-3
