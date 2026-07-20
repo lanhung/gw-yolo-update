@@ -70,6 +70,15 @@ cannot establish <=10-ms accuracy, and their measured errors are far larger. A f
 Pareto ablation is the final low-resolution check before replacing the shared mask maximum with a
 separate high-resolution timing head.
 
+The weight-0.1 Pareto run reached 0.03340 IoU (checkpoint SHA256
+`71eb1aab375d4f79e48114f43a358ee343b4a81cdfb4696fc8b71fa9409feaf6`) and 1.42 s median/3.75 s
+p90 peak error. It retains more mask quality than weight 1.0 but is not competitive with the
+no-peak-loss mask checkpoint, while providing nearly the same timing behavior as weight 1.0. Shared
+mask-maximum timing tuning therefore stops here. `physical-timing-train` now defines an independent
+1,024-bin candidate refiner trained against exact geocentric injection GPS rather than a quantized
+mask endpoint; it selects checkpoints by validation p90 absolute timing error and leaves the mask
+checkpoint as a separate product.
+
 Five fully verified Gravity Spy pilot shards now merge to five unique train glitches/blocks across
 O2/O3a/O3b and four classes (manifest SHA256
 `9f992a0dd7b726e2ff5025d9414736a024af0f23384e8be13505aa1d127549c8`). Their five official source

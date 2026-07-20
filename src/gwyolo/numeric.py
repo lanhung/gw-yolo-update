@@ -90,17 +90,45 @@ if nn is not None:
             self.decoder = _ConvBlock(base_channels * 3, base_channels)
             self.head = nn.Conv2d(base_channels, 2 * input_channels, 1)
 
-        def forward(self, value: Any) -> Any:
+        def decoded_features(self, value: Any) -> Any:
             encoded = self.encoder(value)
             low = self.bottleneck(torch_functional.max_pool2d(encoded, 2))
             up = torch_functional.interpolate(low, size=encoded.shape[-2:], mode="bilinear", align_corners=False)
-            decoded = self.decoder(torch.cat([encoded, up], dim=1))
+            return self.decoder(torch.cat([encoded, up], dim=1))
+
+        def forward(self, value: Any) -> Any:
+            decoded = self.decoded_features(value)
             logits = self.head(decoded)
             return logits.reshape(value.shape[0], 2, self.input_channels, *value.shape[-2:])
+
+
+    class CoalescenceTimingNet(nn.Module):
+        """Candidate timing refiner with a mask-compatible convolutional backbone."""
+
+        def __init__(self, input_channels: int, base_channels: int = 24):
+            super().__init__()
+            self.backbone = MultiIFOQNet(input_channels, base_channels)
+            self.backbone.head.requires_grad_(False)
+            groups = min(8, base_channels)
+            self.timing_head = nn.Sequential(
+                nn.Conv1d(base_channels, base_channels, 5, padding=2, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, 1, 1),
+            )
+
+        def forward(self, value: Any) -> Any:
+            decoded = self.backbone.decoded_features(value)
+            temporal = torch.amax(decoded, dim=2)
+            return self.timing_head(temporal)[:, 0]
 
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class CoalescenceTimingNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 

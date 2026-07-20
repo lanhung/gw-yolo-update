@@ -1,0 +1,21 @@
+physical_timing:
+  seed: 20260720
+  epochs: 10
+  batch_size: 4
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  label_smoothing: 0.02
+  cache_in_memory: true
+  analysis_duration: 8.0
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]
+  target_sample_rate: 1024
+  tensor:
+    whitening: self
+    target_whitening: morphology
+    mask_fraction: 0.08
+    minimum_ifo_mask_snr: 2.0
+    frequency_bins: 96
+    time_bins: 1024
+    fmin: 16.0
+    fmax: 500.0

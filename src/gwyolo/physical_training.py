@@ -102,6 +102,22 @@ def physical_split_audit(
     }
 
 
+def coalescence_bin_target(
+    coalescence_gps: float,
+    analysis_start_gps: float,
+    analysis_duration: float,
+    time_bins: int,
+) -> tuple[int, float]:
+    """Map an exact geocentric injection time to a categorical bin and exact offset."""
+    if analysis_duration <= 0 or time_bins < 2:
+        raise ValueError("coalescence target duration and bins are invalid")
+    offset = float(coalescence_gps) - float(analysis_start_gps)
+    if not np.isfinite(offset) or not 0 <= offset < analysis_duration:
+        raise ValueError("coalescence time lies outside the analysis window")
+    index = min(int(np.floor(offset * time_bins / analysis_duration)), time_bins - 1)
+    return index, offset
+
+
 class PhysicalInjectionDataset:
     def __init__(
         self,
@@ -111,21 +127,23 @@ class PhysicalInjectionDataset:
         q_values: tuple[float, ...],
         target_sample_rate: int,
         cache_in_memory: bool,
+        coalescence_time_bins: int | None = None,
     ):
         self.rows = rows
         self.tensor_config = tensor_config
         self.model_ifos = model_ifos
         self.q_values = q_values
         self.target_sample_rate = target_sample_rate
+        self.coalescence_time_bins = coalescence_time_bins
         self.verified_background_hashes: dict[str, str] = {}
-        self.cache: list[tuple[np.ndarray, np.ndarray] | None] | None = (
+        self.cache: list[tuple[Any, ...] | None] | None = (
             [None] * len(rows) if cache_in_memory else None
         )
 
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
+    def __getitem__(self, index: int) -> tuple[Any, ...]:
         if self.cache is not None and self.cache[index] is not None:
             return self.cache[index]  # type: ignore[return-value]
         context = load_materialized_context(self.rows[index], self.verified_background_hashes)
@@ -235,7 +253,15 @@ class PhysicalInjectionDataset:
         )
         if not np.isfinite(features).all() or not np.isfinite(target).all():
             raise ValueError("Physical tensor construction produced non-finite values")
-        item = features.astype(np.float32), target.astype(np.float32)
+        item: tuple[Any, ...] = (features.astype(np.float32), target.astype(np.float32))
+        if self.coalescence_time_bins is not None:
+            timing_index, timing_offset = coalescence_bin_target(
+                float(self.rows[index]["gps_time"]),
+                float(context["analysis_gps_start"]),
+                duration,
+                self.coalescence_time_bins,
+            )
+            item = (*item, np.int64(timing_index), np.float64(timing_offset))
         if self.cache is not None:
             self.cache[index] = item
         return item

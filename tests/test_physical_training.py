@@ -9,6 +9,7 @@ import pytest
 from gwyolo.physical_training import (
     build_snr_curriculum_manifest,
     build_snr_quota_manifest,
+    coalescence_bin_target,
     gate_component_by_ifo_snr,
     mask_endpoint_timing_error_seconds,
     peak_to_endpoint_timing_error_seconds,
@@ -26,6 +27,14 @@ def test_binary_mask_counts_are_hand_calculated() -> None:
     assert metrics["iou"] == pytest.approx(0.5)
     assert metrics["precision"] == pytest.approx(0.6)
     assert metrics["recall"] == pytest.approx(0.75)
+
+
+def test_coalescence_bin_target_preserves_exact_offset() -> None:
+    index, offset = coalescence_bin_target(104.25, 100.0, 8.0, 16)
+    assert index == 8
+    assert offset == 4.25
+    with pytest.raises(ValueError, match="outside"):
+        coalescence_bin_target(108.0, 100.0, 8.0, 16)
 
 
 def test_mask_endpoint_timing_error_is_hand_calculated() -> None:

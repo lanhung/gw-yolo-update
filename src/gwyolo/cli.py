@@ -219,6 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
     physical_audit.add_argument("--chirp-threshold", type=float, required=True)
     physical_audit.add_argument("--output", required=True)
 
+    physical_timing = subparsers.add_parser("physical-timing-train")
+    physical_timing.add_argument("--config", required=True)
+    physical_timing.add_argument("--train-manifest", required=True)
+    physical_timing.add_argument("--validation-manifest", required=True)
+    physical_timing.add_argument("--pretrained-checkpoint", required=True)
+    physical_timing.add_argument("--output-dir", required=True)
+    physical_timing.add_argument("--seed", type=int)
+
     subset = subparsers.add_parser("recipe-subset")
     subset.add_argument("--manifest", required=True)
     subset.add_argument("--output", required=True)
@@ -674,6 +682,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.checkpoint,
                 args.chirp_threshold,
                 args.output,
+            )
+        )
+    elif args.command == "physical-timing-train":
+        from .timing import run_physical_timing_training
+
+        _print(
+            run_physical_timing_training(
+                args.config,
+                args.train_manifest,
+                args.validation_manifest,
+                args.pretrained_checkpoint,
+                args.output_dir,
+                args.seed,
             )
         )
     elif args.command == "recipe-subset":
