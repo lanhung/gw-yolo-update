@@ -297,6 +297,55 @@ def _evaluate_pair_model(
     return metrics, values
 
 
+def _stratified_parent_metrics(
+    examples: dict[str, Any],
+    scores: np.ndarray,
+    parents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    parent_map = {str(row["injection_id"]): row for row in parents}
+    groups: dict[str, list[str]] = defaultdict(list)
+    for parent_id in examples["parent_ids"]:
+        row = parent_map[parent_id]
+        family = str(row["source_family"])
+        snr_value = row.get(
+            "training_network_optimal_snr", row.get("network_optimal_snr")
+        )
+        if snr_value is None:
+            raise ValueError("candidate pair ranker parent lacks network SNR")
+        snr = float(snr_value)
+        snr_name = (
+            "snr_lt_8"
+            if snr < 8
+            else "snr_8_15"
+            if snr < 15
+            else "snr_15_30"
+            if snr < 30
+            else "snr_ge_30"
+        )
+        groups[f"family:{family}"].append(parent_id)
+        groups[f"snr:{snr_name}"].append(parent_id)
+    output = {}
+    for name, parent_ids in sorted(groups.items()):
+        selected_ids = set(parent_ids)
+        mask = np.asarray(
+            [value in selected_ids for value in examples["example_parent_ids"]],
+            dtype=bool,
+        )
+        output[name] = candidate_parent_top1_metrics(
+            parent_ids,
+            [
+                value
+                for value, keep in zip(examples["example_parent_ids"], mask)
+                if keep
+            ],
+            scores[mask],
+            examples["padded_labels"][mask],
+            examples["exact_labels"][mask],
+            examples["peak_errors_seconds"][mask],
+        )
+    return output
+
+
 def run_candidate_pair_ranker_training(
     config_path: str | Path,
     train_injection_manifest: str | Path,
@@ -484,6 +533,9 @@ def run_candidate_pair_ranker_training(
         device,
         int(settings["evaluation_batch_size"]),
     )
+    selected_strata = _stratified_parent_metrics(
+        validation_examples, scores, validation_parents
+    )
     scores_path = output / "validation_selection_pair_scores.npz"
     with scores_path.open("wb") as handle:
         np.savez_compressed(handle, scores=scores.astype(np.float32))
@@ -525,6 +577,7 @@ def run_candidate_pair_ranker_training(
         "best_epoch": best_epoch,
         "selection_metric": "maximum parent top1 padded pair fraction, then minimum peak p90",
         "selected_validation_metrics": selected_metrics,
+        "selected_validation_strata": selected_strata,
         "selection_gate_checks": gates,
         "selection_gate_passed": all(gates.values()),
         "optimizer_updates": updates,
