@@ -43,6 +43,7 @@ def test_mask_audit_plan_requires_three_blinded_annotators(tmp_path) -> None:
     task = json.loads(Path(report["task_manifest_path"]).read_text())
     assert task["required_independent_annotators"] == 3
     assert "three independent" in report["scientific_blocker"]
+    assert "exact_command" in report and "environment" in report
     assert binary_mask_iou(np.zeros(3), np.zeros(3)) == 1.0
 
 

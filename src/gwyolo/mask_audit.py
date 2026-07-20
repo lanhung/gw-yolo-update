@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
+import platform
+import shlex
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -100,6 +104,16 @@ def plan_gravityspy_mask_audit(
             "tasks require three independent blinded human masks before weak-mask quality is known"
         ),
         "seed": seed,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "config_hash": None,
+        "model_hash": None,
         "per_label_target": per_label,
         "target_met": not underfilled,
         "underfilled_label_deficits": dict(sorted(underfilled.items())),

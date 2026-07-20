@@ -4,6 +4,9 @@ import csv
 import hashlib
 import json
 import os
+import platform
+import shlex
+import sys
 import random
 import re
 import tempfile
@@ -800,6 +803,17 @@ def merge_gravityspy_numeric_manifests(
             "weak masks require a frozen pixel-mask audit before segmentation claims"
         ),
         "split": expected_split,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "config_hash": None,
+        "model_hash": None,
+        "seed": None,
         "source_reports": source_reports,
         "source_reports_hash": canonical_hash(source_reports, 64),
         "manifest_path": str(manifest_path),
