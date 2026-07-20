@@ -6,6 +6,7 @@ from gwyolo.candidate_refiner import (
     candidate_arrival_threshold_metrics,
     candidate_crop_contains_arrival,
     candidate_interval_pair_features,
+    candidate_pair_truth_support,
     candidate_positive_timing_error_quantiles,
     label_candidate_refiner_rows,
 )
@@ -159,6 +160,15 @@ def test_candidate_interval_pair_features_by_hand() -> None:
     assert np.isclose(features["center_excess_normalized"], 0.995)
     assert features["width_sum_normalized"] == 8.0
     assert features["proposal_logit_sum"] == 0.0
+
+    first.update({"gps_peak": 0.6})
+    second.update({"gps_peak": 1.1})
+    support = candidate_pair_truth_support(
+        first, second, {"H1": 0.5, "L1": 1.006}, 0.01
+    )
+    assert support["exact"] is True
+    assert support["padded"] is True
+    assert np.isclose(support["maximum_peak_error_seconds"], 0.1)
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

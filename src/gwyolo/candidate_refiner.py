@@ -447,6 +447,30 @@ def _interval_distance(row: dict[str, Any], arrival: float) -> float:
     return max(float(row["gps_start"]) - arrival, 0.0, arrival - float(row["gps_end"]))
 
 
+def candidate_pair_truth_support(
+    first: dict[str, Any],
+    second: dict[str, Any],
+    arrivals: dict[str, float],
+    padding_seconds: float,
+) -> dict[str, float | bool]:
+    if padding_seconds < 0 or str(first["ifo"]) not in arrivals or str(second["ifo"]) not in arrivals:
+        raise ValueError("candidate pair truth-support inputs are invalid")
+    distances = [
+        _interval_distance(first, float(arrivals[str(first["ifo"])])),
+        _interval_distance(second, float(arrivals[str(second["ifo"])])),
+    ]
+    peak_errors = [
+        abs(float(first["gps_peak"]) - float(arrivals[str(first["ifo"])])),
+        abs(float(second["gps_peak"]) - float(arrivals[str(second["ifo"])])),
+    ]
+    return {
+        "exact": bool(max(distances) <= 0),
+        "padded": bool(max(distances) <= padding_seconds),
+        "maximum_interval_distance_seconds": max(distances),
+        "maximum_peak_error_seconds": max(peak_errors),
+    }
+
+
 def run_candidate_network_set_audit(
     config_path: str | Path,
     injection_manifest: str | Path,
@@ -526,6 +550,19 @@ def run_candidate_network_set_audit(
         raise ValueError("candidate network set audit has no eligible detector pairs")
     if not any(prepared.values()):
         raise ValueError("candidate network set audit has no physically compatible pairs")
+    oracle_exact = 0
+    oracle_padded = 0
+    for injection_id in eligible_parents:
+        arrivals = {
+            str(ifo): float(value)
+            for ifo, value in parents[injection_id]["detector_arrival_gps"].items()
+        }
+        supports = [
+            candidate_pair_truth_support(first, second, arrivals, padding)
+            for first, second, _ in prepared[injection_id]
+        ]
+        oracle_exact += any(bool(row["exact"]) for row in supports)
+        oracle_padded += any(bool(row["padded"]) for row in supports)
     rule_records = []
     selections_by_rule = {}
     for center_weight in center_weights:
@@ -554,24 +591,21 @@ def run_candidate_network_set_audit(
                 )
                 first, second, features = selected
                 arrivals = parents[injection_id]["detector_arrival_gps"]
-                distances = [
-                    _interval_distance(first, float(arrivals[first_ifo])),
-                    _interval_distance(second, float(arrivals[second_ifo])),
-                ]
-                errors = [
-                    abs(float(first["gps_peak"]) - float(arrivals[first_ifo])),
-                    abs(float(second["gps_peak"]) - float(arrivals[second_ifo])),
-                ]
-                exact += max(distances) <= 0
-                padded += max(distances) <= padding
-                peak_errors.append(max(errors))
+                support = candidate_pair_truth_support(
+                    first,
+                    second,
+                    {str(ifo): float(value) for ifo, value in arrivals.items()},
+                    padding,
+                )
+                exact += bool(support["exact"])
+                padded += bool(support["padded"])
+                peak_errors.append(float(support["maximum_peak_error_seconds"]))
                 selections.append(
                     {
                         "injection_id": injection_id,
                         "first_candidate_id": str(first["candidate_id"]),
                         "second_candidate_id": str(second["candidate_id"]),
-                        "maximum_interval_distance_seconds": max(distances),
-                        "maximum_peak_error_seconds": max(errors),
+                        **support,
                         **features,
                     }
                 )
@@ -645,6 +679,15 @@ def run_candidate_network_set_audit(
         "top_k_pruning": None,
         "candidate_rows": len(candidates),
         "eligible_parents": len(eligible_parents),
+        "compatible_set_oracle": {
+            "exact_interval_truth_pair_fraction": oracle_exact
+            / len(eligible_parents),
+            "padded_truth_pair_fraction": oracle_padded / len(eligible_parents),
+            "padded_truth_pair_wilson_95": list(
+                wilson_interval(oracle_padded, len(eligible_parents))
+            ),
+            "purpose": "representation ceiling diagnostic, not an operational score",
+        },
         "rule_selection_metric": (
             "maximum padded pair coverage, then exact interval coverage, then minimum peak p90"
         ),
