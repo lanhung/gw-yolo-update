@@ -4,6 +4,7 @@ import pytest
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
     candidate_arrival_threshold_metrics,
+    candidate_crop_contains_arrival,
     label_candidate_refiner_rows,
 )
 
@@ -103,6 +104,18 @@ def test_candidate_arrival_threshold_metrics_counts_abstention_by_hand() -> None
     assert metrics[1]["top_score_refined_timing"]["0.01"][
         "conditional_on_acceptance_fraction"
     ] == 1.0
+
+
+def test_candidate_crop_supervision_uses_physical_arrival_not_interval_label() -> None:
+    row = {
+        "gps_peak": 100.0,
+        "target_detector_arrival_gps": 101.0,
+        # A connected-component interval can miss the arrival while its local crop
+        # still contains enough strain to provide valid timing supervision.
+        "refiner_positive": False,
+    }
+    assert candidate_crop_contains_arrival(row, 2.5) is True
+    assert candidate_crop_contains_arrival(row, 1.0) is False
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

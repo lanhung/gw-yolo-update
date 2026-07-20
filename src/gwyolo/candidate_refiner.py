@@ -269,6 +269,19 @@ def candidate_average_precision(labels: np.ndarray, scores: np.ndarray) -> float
     return float(np.sum(precision[ranked]) / np.count_nonzero(ranked))
 
 
+def candidate_crop_contains_arrival(
+    candidate_row: dict[str, Any], local_duration_seconds: float
+) -> bool:
+    """Return whether the physical arrival is inside a peak-centred local crop."""
+
+    peak = float(candidate_row["gps_peak"])
+    arrival = float(candidate_row["target_detector_arrival_gps"])
+    if not np.isfinite([peak, arrival]).all() or local_duration_seconds <= 0:
+        raise ValueError("candidate local crop geometry is invalid")
+    crop_start = peak - local_duration_seconds / 2
+    return crop_start <= arrival < crop_start + local_duration_seconds
+
+
 def candidate_arrival_threshold_metrics(
     prediction_rows: list[dict[str, Any]],
     thresholds: list[float],
@@ -426,8 +439,8 @@ class CandidateLocalDataset:
             crop[:, destination_start : destination_start + copy_stop - copy_start] = strain[
                 :, copy_start:copy_stop
             ]
-        positive = bool(row["refiner_positive"])
         local_offset = arrival - crop_start_gps
+        positive = candidate_crop_contains_arrival(row, self.local_duration_seconds)
         timing_target = -1
         if positive:
             if not 0 <= local_offset < self.local_duration_seconds:
@@ -461,6 +474,9 @@ def _candidate_refiner_epoch(
     focal_gamma: float,
     timing_loss_weight: float,
     label_smoothing: float,
+    timing_loss_mode: str,
+    gaussian_sigma_bins: float,
+    coordinate_loss_weight: float,
     local_duration_seconds: float,
     local_output_bins: int,
     max_batches: int | None = None,
@@ -491,11 +507,42 @@ def _candidate_refiner_epoch(
             correct = probability * presence + (1.0 - probability) * (1.0 - presence)
             presence_loss = torch.mean(raw * ((1.0 - correct) ** focal_gamma))
             positive = timing_target >= 0
-            if torch.any(positive):
+            if torch.any(positive) and timing_loss_mode == "categorical":
                 timing_loss = torch_functional.cross_entropy(
                     timing_logits[positive],
                     timing_target[positive],
                     label_smoothing=label_smoothing,
+                )
+            elif torch.any(positive) and timing_loss_mode == "gaussian_coordinate":
+                selected_logits = timing_logits[positive]
+                selected_targets = timing_target[positive]
+                bins = torch.arange(
+                    local_output_bins,
+                    dtype=selected_logits.dtype,
+                    device=selected_logits.device,
+                )[None]
+                soft_targets = torch.exp(
+                    -0.5
+                    * ((bins - selected_targets[:, None]) / gaussian_sigma_bins) ** 2
+                )
+                soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True)
+                distribution_loss = torch.mean(
+                    torch.sum(
+                        -soft_targets
+                        * torch_functional.log_softmax(selected_logits, dim=1),
+                        dim=1,
+                    )
+                )
+                probabilities = torch.softmax(selected_logits, dim=1)
+                expected_bin = torch.sum(probabilities * bins, dim=1)
+                denominator = max(local_output_bins - 1, 1)
+                coordinate_loss = torch_functional.smooth_l1_loss(
+                    expected_bin / denominator,
+                    selected_targets.to(expected_bin.dtype) / denominator,
+                    beta=0.01,
+                )
+                timing_loss = (
+                    distribution_loss + coordinate_loss_weight * coordinate_loss
                 )
             else:
                 timing_loss = timing_logits.sum() * 0.0
@@ -646,11 +693,21 @@ def run_candidate_local_refiner_training(
         )
         for split, dataset in datasets.items()
     }
-    positives = sum(bool(row["refiner_positive"]) for row in train_candidates)
+    positives = sum(
+        candidate_crop_contains_arrival(row, local_duration)
+        for row in train_candidates
+    )
     negatives = len(train_candidates) - positives
     if positives <= 0 or negatives <= 0:
         raise ValueError("candidate refiner training needs positive and negative candidates")
     positive_weight = negatives / positives
+    timing_loss_mode = str(settings.get("timing_loss_mode", "categorical"))
+    gaussian_sigma_bins = float(settings.get("gaussian_sigma_bins", 2.0))
+    coordinate_loss_weight = float(settings.get("coordinate_loss_weight", 0.0))
+    if timing_loss_mode not in {"categorical", "gaussian_coordinate"}:
+        raise ValueError("candidate refiner timing loss mode is unknown")
+    if gaussian_sigma_bins <= 0 or coordinate_loss_weight < 0:
+        raise ValueError("candidate refiner soft timing loss settings are invalid")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = CandidateLocalSpectrogramRefiner(
         len(model_ifos), local_output_bins, int(settings["base_channels"])
@@ -691,6 +748,9 @@ def run_candidate_local_refiner_training(
         float(settings["focal_gamma"]),
         float(settings["timing_loss_weight"]),
         float(settings["label_smoothing"]),
+        timing_loss_mode,
+        gaussian_sigma_bins,
+        coordinate_loss_weight,
         local_duration,
         local_output_bins,
     )
@@ -786,6 +846,12 @@ def run_candidate_local_refiner_training(
         "selection_candidates": len(selection_candidates),
         "calibration_candidates": len(calibration_candidates),
         "positive_weight": positive_weight,
+        "presence_supervision": "physical_arrival_inside_peak_centered_local_crop",
+        "local_crop_positive_candidates": positives,
+        "proposal_interval_positive_candidates": sum(
+            bool(row["refiner_positive"]) for row in train_candidates
+        ),
+        "timing_loss_mode": timing_loss_mode,
         "best_epoch": best_epoch,
         "selection_metric": (
             "maximum validation-selection candidate average precision, then minimum positive "
@@ -918,7 +984,12 @@ def run_candidate_local_refiner_validation(
                         "injection_id": str(source["injection_id"]),
                         "ifo": str(source["ifo"]),
                         "presence_score": float(score),
-                        "refiner_positive": bool(source["refiner_positive"]),
+                        "proposal_interval_positive": bool(
+                            source["refiner_positive"]
+                        ),
+                        "local_crop_contains_arrival": candidate_crop_contains_arrival(
+                            source, local_duration
+                        ),
                         "predicted_local_timing_bin": int(timing_bin),
                         "refined_arrival_gps": refined_gps,
                         "target_detector_arrival_gps": target_gps,
@@ -938,7 +1009,7 @@ def run_candidate_local_refiner_validation(
         ),
     )
     labels = np.asarray(
-        [row["refiner_positive"] for row in prediction_rows], dtype=bool
+        [row["local_crop_contains_arrival"] for row in prediction_rows], dtype=bool
     )
     scores = np.asarray(
         [row["presence_score"] for row in prediction_rows], dtype=np.float64
