@@ -63,6 +63,9 @@ def test_candidate_proposal_coverage_preserves_misses_by_hand() -> None:
             "optimal_snr_stratum": "snr_8_15",
             "optimal_snr_by_ifo": {"H1": 10.0, "L1": 9.0},
             "detector_arrival_gps": {"H1": 10.0, "L1": 10.005},
+            "analysis_start_index": 0,
+            "analysis_stop_index": 8,
+            "sample_rate": 1,
         },
         {
             "injection_id": "i2",
@@ -71,6 +74,9 @@ def test_candidate_proposal_coverage_preserves_misses_by_hand() -> None:
             "optimal_snr_stratum": "snr_4_8",
             "optimal_snr_by_ifo": {"H1": 5.0, "L1": 6.0},
             "detector_arrival_gps": {"H1": 20.0, "L1": 20.005},
+            "analysis_start_index": 0,
+            "analysis_stop_index": 8,
+            "sample_rate": 1,
         },
     ]
     candidates = [
@@ -107,6 +113,12 @@ def test_candidate_proposal_coverage_preserves_misses_by_hand() -> None:
     assert all_rows["interval_coverage_fraction"] == 0.25
     assert all_rows["padded_coverage_fraction"] == 0.75
     assert all_rows["proposal_count_quantiles"]["0.0"] == 0.0
+    assert all_rows["proposal_union_fraction_of_analysis_quantiles"]["1.0"] == pytest.approx(
+        0.5 / 8
+    )
+    assert all_rows["minimum_containing_proposal_width_seconds_quantiles"][
+        "0.5"
+    ] == pytest.approx(0.2)
 
     with pytest.raises(ValueError, match="duplicate proposal candidate"):
         candidate_proposal_coverage(injections, candidates + candidates[:1], 0.6)

@@ -103,8 +103,10 @@ cannot be silently counted as a recovered injection.
 `candidate-proposal-audit` is the executable gate for step 1. It joins the locked physical-injection
 manifest to every retained per-IFO candidate, keeps zero-proposal arrivals in the denominator, and
 reports raw interval coverage plus a separately declared padding coverage by family, SNR stratum and
-IFO. It deliberately labels the result proposal support rather than search recall; it consumes no
-background threshold and makes no FAR/`<VT>` claim.
+IFO. To prevent a full-window proposal from manufacturing perfect coverage, it also reports proposal
+interval-union fraction and the narrowest truth-containing interval width. It deliberately labels the
+result proposal support rather than search recall; it consumes no background threshold and makes no
+FAR/`<VT>` claim.
 
 The executable timing path is now ordered and leakage-safe:
 

@@ -316,15 +316,29 @@ def candidate_proposal_coverage(
             rows = candidates.get((injection_id, ifo), [])
             interval_distances = []
             peak_errors = []
+            containing_widths = []
+            intervals = []
             for row in rows:
                 start = float(row["gps_start"])
                 stop = float(row["gps_end"])
+                intervals.append((start, stop))
                 interval_distances.append(
                     max(start - arrival, 0.0, arrival - stop)
                 )
                 peak_errors.append(abs(float(row["gps_peak"]) - arrival))
+                if start <= arrival <= stop:
+                    containing_widths.append(stop - start)
             nearest_interval = min(interval_distances) if interval_distances else None
             nearest_peak = min(peak_errors) if peak_errors else None
+            analysis_duration = (
+                int(injection["analysis_stop_index"])
+                - int(injection["analysis_start_index"])
+            ) / float(injection["sample_rate"])
+            union_duration = _union_duration(intervals)
+            if analysis_duration <= 0 or union_duration > analysis_duration + 1e-6:
+                raise ValueError(
+                    f"proposal intervals exceed analysis duration: {injection_id}/{ifo}"
+                )
             audit_rows.append(
                 {
                     "injection_id": injection_id,
@@ -344,6 +358,12 @@ def candidate_proposal_coverage(
                     ),
                     "nearest_interval_distance_seconds": nearest_interval,
                     "nearest_peak_error_seconds": nearest_peak,
+                    "minimum_containing_proposal_width_seconds": (
+                        min(containing_widths) if containing_widths else None
+                    ),
+                    "proposal_union_duration_seconds": union_duration,
+                    "proposal_union_fraction_of_analysis": union_duration
+                    / analysis_duration,
                 }
             )
 
@@ -367,6 +387,18 @@ def candidate_proposal_coverage(
             ],
             dtype=np.float64,
         )
+        union_fractions = np.asarray(
+            [float(row["proposal_union_fraction_of_analysis"]) for row in rows],
+            dtype=np.float64,
+        )
+        containing_widths = np.asarray(
+            [
+                float(row["minimum_containing_proposal_width_seconds"])
+                for row in rows
+                if row["minimum_containing_proposal_width_seconds"] is not None
+            ],
+            dtype=np.float64,
+        )
         result = {
             "expected_detector_arrivals": total,
             "arrivals_with_any_proposal": any_count,
@@ -384,10 +416,19 @@ def candidate_proposal_coverage(
                 str(q): float(np.quantile(proposal_counts, q))
                 for q in (0.0, 0.5, 0.9, 0.99, 1.0)
             },
+            "proposal_union_fraction_of_analysis_quantiles": {
+                str(q): float(np.quantile(union_fractions, q))
+                for q in (0.0, 0.5, 0.9, 0.99, 1.0)
+            },
         }
         if peak_errors.size:
             result["nearest_peak_error_seconds_quantiles_conditional_on_proposal"] = {
                 str(q): float(np.quantile(peak_errors, q))
+                for q in (0.0, 0.5, 0.9, 0.99, 1.0)
+            }
+        if containing_widths.size:
+            result["minimum_containing_proposal_width_seconds_quantiles"] = {
+                str(q): float(np.quantile(containing_widths, q))
                 for q in (0.0, 0.5, 0.9, 0.99, 1.0)
             }
         return result
