@@ -649,6 +649,7 @@ def run_physical_finetune(
     run_identity = {
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "config_hash": canonical_hash(config),
+        "config_file_sha256": file_sha256(config_path),
         "train_manifest_sha256": file_sha256(train_manifest),
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
@@ -963,6 +964,7 @@ def run_physical_finetune(
         },
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
+        "config_file_sha256": file_sha256(config_path),
         "split_audit": audit,
         "training_selection": {
             "input_rows": len(all_train_rows),

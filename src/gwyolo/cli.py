@@ -147,6 +147,22 @@ def build_parser() -> argparse.ArgumentParser:
     detector_subset_summary.add_argument("--seed", type=int, default=20260720)
     detector_subset_summary.add_argument("--output", required=True)
 
+    physical_endpoint_series = subparsers.add_parser(
+        "physical-validation-score-series"
+    )
+    physical_endpoint_series.add_argument("--training-series-dir", required=True)
+    physical_endpoint_series.add_argument("--background-manifest", required=True)
+    physical_endpoint_series.add_argument("--injection-manifest", required=True)
+    physical_endpoint_series.add_argument("--config", required=True)
+    physical_endpoint_series.add_argument("--scale-subset-report", required=True)
+    physical_endpoint_series.add_argument("--output-dir", required=True)
+    physical_endpoint_series.add_argument(
+        "--maximum-validation-false-alarms", required=True, type=int
+    )
+    physical_endpoint_series.add_argument("--context-duration", type=float, default=64.0)
+    physical_endpoint_series.add_argument("--bootstrap-replicates", type=int, default=10000)
+    physical_endpoint_series.add_argument("--seed", type=int, default=20260720)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -689,6 +705,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 tuple(args.reference_ifos),
                 args.relative_noninferiority_margin,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "physical-validation-score-series":
+        from .search import score_physical_training_series
+
+        _print(
+            score_physical_training_series(
+                args.training_series_dir,
+                args.background_manifest,
+                args.injection_manifest,
+                args.config,
+                args.scale_subset_report,
+                args.output_dir,
+                args.maximum_validation_false_alarms,
+                args.context_duration,
                 args.bootstrap_replicates,
                 args.seed,
             )

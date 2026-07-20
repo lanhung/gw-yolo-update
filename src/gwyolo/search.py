@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -591,7 +591,10 @@ def run_physical_validation_endpoint(
         raise ValueError("Scoring architecture differs from the training report")
     if identities["checkpoint_sha256"] != str(training["checkpoint_sha256"]):
         raise ValueError("Scored checkpoint differs from training report checkpoint")
-    if identities["config_sha256"] != file_sha256(training["config_path"]):
+    training_config_sha256 = str(
+        training.get("config_file_sha256") or file_sha256(training["config_path"])
+    )
+    if identities["config_sha256"] != training_config_sha256:
         raise ValueError("Scoring config differs from training report config")
     if str(injection_report.get("manifest_sha256")) != str(
         training["validation_manifest_sha256"]
@@ -966,6 +969,7 @@ def summarize_physical_validation_endpoints(
         "validation_manifest_sha256": set(),
         "maximum_validation_false_alarms": set(),
         "live_time_seconds": set(),
+        "checkpoint_selection": set(),
     }
     for endpoint_path_value in endpoint_reports:
         endpoint_path = Path(endpoint_path_value)
@@ -1026,6 +1030,7 @@ def summarize_physical_validation_endpoints(
             str(endpoint["calibration"]["maximum_validation_false_alarms"])
         )
         controlled["live_time_seconds"].add(str(endpoint["background"]["live_time_seconds"]))
+        controlled["checkpoint_selection"].add(str(training.get("checkpoint_selection")))
     disagreements = {field: sorted(values) for field, values in controlled.items() if len(values) != 1}
     if disagreements:
         raise ValueError(f"Physical validation endpoints disagree on controls: {disagreements}")
@@ -1080,12 +1085,18 @@ def summarize_physical_validation_endpoints(
                     **comparison,
                 }
             )
+    checkpoint_selection = next(iter(controlled["checkpoint_selection"]))
+    control_protocol = {
+        "final_update": "fixed_update",
+        "best_validation": "fixed_epoch",
+    }.get(checkpoint_selection, "unknown")
     result = {
-        "status": "physical_fixed_update_validation_endpoint_summary",
+        "status": "physical_validation_endpoint_scale_summary",
+        "control_protocol": control_protocol,
         "scientific_claim_allowed": False,
         "promotion_allowed": False,
         "promotion_blockers": [
-            "equal-epoch checkpoints still require the same frozen background/injection endpoint",
+            "fixed-update and fixed-epoch controls require joint adjudication",
             "O4a window exposure is insufficient for astrophysical FAR/IFAR",
             "locked test remains unopened",
         ],
@@ -1100,6 +1111,146 @@ def summarize_physical_validation_endpoints(
         **execution_provenance(),
     }
     atomic_write_json(output, result)
+    return result
+
+
+def score_physical_training_series(
+    training_series_dir: str | Path,
+    background_manifest: str | Path,
+    injection_manifest: str | Path,
+    config_path: str | Path,
+    scale_subset_report: str | Path,
+    output_dir: str | Path,
+    maximum_validation_false_alarms: int,
+    context_duration: float = 64.0,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Resumably score every completed scale/seed checkpoint on one frozen endpoint."""
+    from .injection_score import score_materialized_injections
+    from .trigger import score_background_manifest
+
+    if maximum_validation_false_alarms < 0:
+        raise ValueError("maximum_validation_false_alarms must be non-negative")
+    config = load_yaml(config_path)
+    settings = config["physical_training"]
+    model_ifos = tuple(str(item) for item in settings["model_ifos"])
+    q_values = tuple(float(item) for item in settings["q_values"])
+    target_sample_rate = int(settings["target_sample_rate"])
+    root = Path(training_series_dir)
+    report_paths = sorted(root.glob("scale-*/seed-*/physical_finetune_report.json"))
+    if not report_paths:
+        raise ValueError("training series contains no completed physical reports")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    endpoint_paths = []
+    run_records = []
+    seen_keys = set()
+    for report_path in report_paths:
+        with report_path.open("r", encoding="utf-8") as handle:
+            training = json.load(handle)
+        scale_name = report_path.parent.parent.name
+        seed_name = report_path.parent.name
+        if not scale_name.startswith("scale-") or not seed_name.startswith("seed-"):
+            raise ValueError(f"unexpected physical series path: {report_path}")
+        scale = int(scale_name.removeprefix("scale-"))
+        run_seed = int(seed_name.removeprefix("seed-"))
+        key = (scale, run_seed)
+        if key in seen_keys:
+            raise ValueError(f"duplicate physical series run: {key}")
+        seen_keys.add(key)
+        if training.get("test_evaluation") is not None:
+            raise ValueError(f"training series report accessed test data: {report_path}")
+        if canonical_hash(config) != str(training["config_hash"]):
+            raise ValueError(f"training series config differs from scorer config: {report_path}")
+        checkpoint_path = Path(training["checkpoint_path"])
+        if file_sha256(checkpoint_path) != str(training["checkpoint_sha256"]):
+            raise ValueError(f"training series checkpoint hash mismatch: {report_path}")
+        run_output = output / scale_name / seed_name
+        background_output = run_output / "background"
+        injection_output = run_output / "injections"
+        background_report = score_background_manifest(
+            background_manifest,
+            checkpoint_path,
+            config_path,
+            background_output,
+            model_ifos,
+            q_values,
+            target_sample_rate,
+            context_duration,
+            False,
+            "val",
+        )
+        injection_report = score_materialized_injections(
+            injection_manifest,
+            checkpoint_path,
+            config_path,
+            injection_output,
+            model_ifos,
+            q_values,
+            target_sample_rate,
+            False,
+            "val",
+        )
+        endpoint_path = run_output / "physical_validation_endpoint.json"
+        endpoint = run_physical_validation_endpoint(
+            report_path,
+            background_output / "trigger_score_report.json",
+            injection_output / "injection_score_report.json",
+            maximum_validation_false_alarms,
+            endpoint_path,
+            bootstrap_replicates,
+            seed + len(endpoint_paths),
+        )
+        endpoint_paths.append(endpoint_path)
+        run_records.append(
+            {
+                "scale": scale,
+                "seed": run_seed,
+                "training_report_path": str(report_path),
+                "training_report_sha256": file_sha256(report_path),
+                "checkpoint_sha256": training["checkpoint_sha256"],
+                "background_score_report_sha256": file_sha256(
+                    background_output / "trigger_score_report.json"
+                ),
+                "injection_score_report_sha256": file_sha256(
+                    injection_output / "injection_score_report.json"
+                ),
+                "endpoint_sha256": file_sha256(endpoint_path),
+                "weighted_efficiency": endpoint["injections"]["overall"][
+                    "weighted_efficiency"
+                ],
+                "scored_background_windows": background_report["scored_windows"],
+                "scored_injections": injection_report["scored_injections"],
+            }
+        )
+    summary_path = output / "physical_validation_scale_summary.json"
+    summary = summarize_physical_validation_endpoints(
+        endpoint_paths,
+        scale_subset_report,
+        summary_path,
+        bootstrap_replicates,
+        seed,
+    )
+    result = {
+        "status": "complete_physical_validation_endpoint_series",
+        "scientific_claim_allowed": False,
+        "training_series_dir": str(root),
+        "training_report_count": len(report_paths),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "injection_manifest_sha256": file_sha256(injection_manifest),
+        "config_hash": canonical_hash(config),
+        "config_file_sha256": file_sha256(config_path),
+        "scale_subset_report_sha256": file_sha256(scale_subset_report),
+        "maximum_validation_false_alarms": maximum_validation_false_alarms,
+        "runs": run_records,
+        "summary_path": str(summary_path),
+        "summary_sha256": file_sha256(summary_path),
+        "control_protocol": summary["control_protocol"],
+        "test_evaluation": None,
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "physical_endpoint_series_report.json", result)
     return result
 
 
