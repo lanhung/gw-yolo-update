@@ -218,6 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_split.add_argument("--test-fraction", type=float, default=0.1)
     gravityspy_split.add_argument("--seed", type=int, default=20260720)
 
+    gravityspy_strain = subparsers.add_parser("gravityspy-strain-plan")
+    gravityspy_strain.add_argument("--manifest", required=True)
+    gravityspy_strain.add_argument("--output-dir", required=True)
+    gravityspy_strain.add_argument("--sample-rate-khz", type=int, default=4)
+    gravityspy_strain.add_argument("--context-duration", type=float, default=64.0)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -604,6 +610,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_fraction,
                 args.test_fraction,
                 args.seed,
+            )
+        )
+    elif args.command == "gravityspy-strain-plan":
+        from .gravityspy import plan_gravityspy_strain
+
+        _print(
+            plan_gravityspy_strain(
+                args.manifest,
+                args.output_dir,
+                args.sample_rate_khz,
+                args.context_duration,
             )
         )
     elif args.command == "fit-curve":

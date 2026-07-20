@@ -89,6 +89,10 @@ the corresponding L1 file must be validated and aligned before any multi-detecto
 64-second GPS epoch, then hashes that group into train/validation/test. All H1/L1 records and all
 glitch IDs in the same network interval therefore remain together; the report explicitly audits
 glitch-ID and network-block overlap.
+`gwyolo gravityspy-strain-plan` then maps each already-split anchor to one official GWOSC HDF5 file
+that contains the entire requested whitening context. Boundary and unavailable cases remain explicit
+rejections. The plan is metadata only: no real-glitch learning claim is allowed until every selected
+source is downloaded, hash/DQ verified and converted to numeric arrays and masks.
 
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9

@@ -4,7 +4,18 @@ import csv
 import json
 from pathlib import Path
 
-from gwyolo.gravityspy import index_gravityspy_csv, split_gravityspy_anchors
+from gwyolo.gravityspy import (
+    index_gravityspy_csv,
+    match_glitch_to_strain_file,
+    split_gravityspy_anchors,
+)
+
+
+def test_glitch_strain_match_requires_full_context_in_one_file() -> None:
+    records = [{"gps_start": 1000, "duration": 100, "hdf5_url": "example"}]
+    assert match_glitch_to_strain_file(1050, records, 64) == records[0]
+    assert match_glitch_to_strain_file(1010, records, 64) is None
+    assert match_glitch_to_strain_file(1090, records, 64) is None
 
 
 def test_gravityspy_split_keeps_network_gps_blocks_together(tmp_path) -> None:

@@ -4,16 +4,144 @@ import csv
 import hashlib
 import json
 import random
+import re
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from .gwosc import USER_AGENT, _api_json, download_resumable
+from .gwosc import API_ROOT, USER_AGENT, _api_json, _api_results, download_resumable
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 
 
 ZENODO_API = "https://zenodo.org/api/records"
 DEFAULT_EXCLUDED_LABELS = ("Chirp", "No_Glitch", "None_of_the_Above")
+
+
+def match_glitch_to_strain_file(
+    event_time: float,
+    records: list[dict[str, Any]],
+    context_duration: float,
+) -> dict[str, Any] | None:
+    if context_duration <= 0:
+        raise ValueError("glitch context duration must be positive")
+    if not records:
+        return None
+    ordered = sorted(records, key=lambda row: int(row["gps_start"]))
+    starts = [int(row["gps_start"]) for row in ordered]
+    index = bisect_right(starts, event_time) - 1
+    if index < 0:
+        return None
+    record = ordered[index]
+    margin = context_duration / 2.0
+    if event_time - margin < float(record["gps_start"]):
+        return None
+    if event_time + margin > float(record["gps_start"]) + float(record["duration"]):
+        return None
+    return record
+
+
+def plan_gravityspy_strain(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    sample_rate_khz: int = 4,
+    context_duration: float = 64.0,
+) -> dict[str, Any]:
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Gravity Spy strain plan requires a non-empty manifest")
+    combinations = sorted({(str(row["observing_run"]), str(row["ifo"])) for row in rows})
+    records_by_key = {}
+    api_summaries = []
+    for observing_run, ifo in combinations:
+        endpoint = (
+            f"{API_ROOT}/runs/{observing_run}/strain-files?sample-rate={sample_rate_khz}"
+            f"&detector={ifo}&pagesize=500"
+        )
+        api_rows, api_summary = _api_results(endpoint)
+        records = []
+        for item in api_rows:
+            url = str(item["hdf5_url"])
+            match = re.search(r"-(\d+)\.hdf5$", url)
+            if match is None:
+                raise ValueError(f"Cannot infer strain-file duration from {url}")
+            records.append(
+                {
+                    "detector": ifo,
+                    "observing_run": observing_run,
+                    "gps_start": int(item["gps_start"]),
+                    "duration": int(match.group(1)),
+                    "sample_rate": sample_rate_khz * 1024,
+                    "hdf5_url": url,
+                    "detail_url": str(item["detail_url"]),
+                }
+            )
+        records_by_key[(observing_run, ifo)] = records
+        api_summaries.append(
+            {
+                "observing_run": observing_run,
+                "ifo": ifo,
+                "endpoint": endpoint,
+                "records": len(records),
+                **api_summary,
+            }
+        )
+    planned = []
+    rejected = []
+    for row in rows:
+        key = (str(row["observing_run"]), str(row["ifo"]))
+        record = match_glitch_to_strain_file(
+            float(row["event_time"]), records_by_key[key], context_duration
+        )
+        if record is None:
+            rejected.append(
+                {
+                    "glitch_id": row["glitch_id"],
+                    "reason": "no_single_file_with_full_context",
+                }
+            )
+            continue
+        planned.append(
+            {
+                **row,
+                "strain_source": record,
+                "context_duration": context_duration,
+            }
+        )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / "gravityspy_strain_plan.jsonl"
+    atomic_write_text(
+        target, "".join(json.dumps(row, sort_keys=True) + "\n" for row in planned)
+    )
+    unique_files = {row["strain_source"]["hdf5_url"] for row in planned}
+    report = {
+        "status": "gravityspy_strain_acquisition_plan",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "source files still require resumable download, full hash/DQ verification, numeric "
+            "mask construction and split-frozen evaluation"
+        ),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(target),
+        "manifest_sha256": file_sha256(target),
+        "input_rows": len(rows),
+        "planned_rows": len(planned),
+        "rejected_rows": len(rejected),
+        "coverage": len(planned) / len(rows),
+        "rejection_reason_counts": dict(
+            sorted(Counter(row["reason"] for row in rejected).items())
+        ),
+        "rejection_examples": rejected[:20],
+        "unique_source_files": len(unique_files),
+        "context_duration": context_duration,
+        "sample_rate_khz": sample_rate_khz,
+        "api_queries": api_summaries,
+    }
+    atomic_write_json(output / "gravityspy_strain_plan_report.json", report)
+    return report
 
 
 def _file_md5(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
