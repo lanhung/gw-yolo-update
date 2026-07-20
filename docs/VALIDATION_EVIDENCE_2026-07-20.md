@@ -140,6 +140,13 @@ both batches yields 4,009 context-safe windows and 128 blocks with zero overlap:
 train/validation/test windows and 19,080/6,592/6,400 seconds. The global manifest SHA256 is
 `8f2285bd2dfaaed3d6be06d8302f12981caf7e6669d83e2cd2da1601e3e28f61`.
 
+The next continuous-background acquisition is frozen rather than opportunistically downloaded. The
+official O4a API contains 3,309 aligned H1/L1 4-kHz files; seed 20260720 selected 800 4,096-second
+pairs spanning GPS 1368268800--1389408256. Their 37.93 raw coincident detector-days are only an
+upper bound before DQ, event, context and category exclusions. The acquisition-plan SHA256 is
+`d9043337438db689b581bade1922c1191ed52fde94ce056d460c4c9e74316d04`; its declared status is
+`development_acquisition_plan`, and it contains no O4b data.
+
 On that background, a 10k-train/3k-validation recipe plan contains 13,000 unique waveform and
 injection IDs over 102 blocks (manifest SHA256
 `90d258fdeeec19955f718bd5e565176fbb5893140b4b3da3ded9703b01b29cd5`). A fresh direct-LAL 30-case

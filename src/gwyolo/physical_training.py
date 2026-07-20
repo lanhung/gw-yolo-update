@@ -280,6 +280,7 @@ def _chirp_epoch(
     temporal_positive_weight: float = 1.0,
     temporal_peak_weight: float = 0.0,
     threshold: float = 0.5,
+    max_batches: int | None = None,
 ) -> dict[str, Any]:
     training = optimizer is not None
     model.train(training)
@@ -287,6 +288,7 @@ def _chirp_epoch(
     total_loss = 0.0
     true_positive = false_positive = false_negative = 0
     batches = 0
+    examples = 0
     positive = torch.as_tensor([positive_weight], device=device).reshape(1, 1, 1, 1)
     if (
         temporal_localization_weight < 0
@@ -294,6 +296,8 @@ def _chirp_epoch(
         or temporal_peak_weight < 0
     ):
         raise ValueError("temporal localization weights are invalid")
+    if max_batches is not None and max_batches <= 0:
+        raise ValueError("max_batches must be positive when provided")
     for features, target in loader:
         features = features.to(device)
         target = target.to(device)
@@ -351,12 +355,17 @@ def _chirp_epoch(
         false_negative += int((~predicted & expected).sum().cpu())
         total_loss += float(loss.detach().cpu())
         batches += 1
+        examples += int(features.shape[0])
+        if max_batches is not None and batches >= max_batches:
+            break
     iou = true_positive / max(true_positive + false_positive + false_negative, 1)
     return {
         "loss": total_loss / max(batches, 1),
         "chirp_iou": iou,
         "chirp_precision": true_positive / max(true_positive + false_positive, 1),
         "chirp_recall": true_positive / max(true_positive + false_negative, 1),
+        "batches": batches,
+        "examples": examples,
     }
 
 
@@ -500,6 +509,7 @@ def run_physical_finetune(
             shuffle=split == "train",
             num_workers=0,
             generator=generator if split == "train" else None,
+            drop_last=(split == "train" and bool(settings.get("drop_last", False))),
         )
         for split, dataset in datasets.items()
     }
@@ -525,6 +535,18 @@ def run_physical_finetune(
     best_iou = -1.0
     best_epoch = None
     start_epoch = 1
+    steps_per_full_epoch = len(loaders["train"])
+    max_optimizer_updates = settings.get("max_optimizer_updates")
+    if max_optimizer_updates is not None:
+        max_optimizer_updates = int(max_optimizer_updates)
+        maximum_possible_updates = int(settings["epochs"]) * steps_per_full_epoch
+        if max_optimizer_updates <= 0 or max_optimizer_updates > maximum_possible_updates:
+            raise ValueError(
+                "max_optimizer_updates must be positive and no larger than "
+                f"epochs * steps_per_full_epoch ({maximum_possible_updates})"
+            )
+    optimizer_updates = 0
+    optimizer_examples = 0
     if resume_path.is_file():
         resume = torch.load(resume_path, map_location=device, weights_only=False)
         if resume.get("run_identity") != run_identity:
@@ -536,8 +558,37 @@ def run_physical_finetune(
         best_iou = float(resume["best_validation_chirp_iou"])
         best_epoch = resume["best_epoch"]
         start_epoch = int(resume["epoch"]) + 1
+        optimizer_updates = int(
+            resume.get(
+                "optimizer_updates",
+                sum(
+                    int(item.get("train", {}).get("batches", steps_per_full_epoch))
+                    for item in history
+                ),
+            )
+        )
+        optimizer_examples = int(
+            resume.get(
+                "optimizer_examples",
+                sum(
+                    int(
+                        item.get("train", {}).get(
+                            "examples", len(train_rows)
+                        )
+                    )
+                    for item in history
+                ),
+            )
+        )
     started = time.time()
     for epoch in range(start_epoch, int(settings["epochs"]) + 1):
+        remaining_updates = (
+            None
+            if max_optimizer_updates is None
+            else max_optimizer_updates - optimizer_updates
+        )
+        if remaining_updates is not None and remaining_updates <= 0:
+            break
         train_metrics = _chirp_epoch(
             model,
             teacher,
@@ -550,7 +601,14 @@ def run_physical_finetune(
             float(settings.get("temporal_localization_weight", 0.0)),
             float(settings.get("temporal_positive_weight", 1.0)),
             float(settings.get("temporal_peak_weight", 0.0)),
+            max_batches=(
+                None
+                if remaining_updates is None
+                else min(remaining_updates, steps_per_full_epoch)
+            ),
         )
+        optimizer_updates += int(train_metrics["batches"])
+        optimizer_examples += int(train_metrics["examples"])
         validation_metrics = _chirp_epoch(
             model,
             teacher,
@@ -593,9 +651,13 @@ def run_physical_finetune(
                 "history": history,
                 "best_validation_chirp_iou": best_iou,
                 "best_epoch": best_epoch,
+                "optimizer_updates": optimizer_updates,
+                "optimizer_examples": optimizer_examples,
             },
         )
         atomic_write_json(output / "history.json", history)
+        if max_optimizer_updates is not None and optimizer_updates >= max_optimizer_updates:
+            break
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(selected["model"])
     threshold, threshold_curve = _calibrate_chirp_threshold(
@@ -661,6 +723,15 @@ def run_physical_finetune(
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "epochs": int(settings["epochs"]),
+        "completed_epochs": len(history),
+        "steps_per_full_epoch": steps_per_full_epoch,
+        "max_optimizer_updates": max_optimizer_updates,
+        "optimizer_updates": optimizer_updates,
+        "optimizer_examples": optimizer_examples,
+        "drop_last_training_batch": bool(settings.get("drop_last", False)),
+        "training_budget_reached": (
+            max_optimizer_updates is not None and optimizer_updates == max_optimizer_updates
+        ),
         "elapsed_seconds": time.time() - started,
         "test_evaluation": None,
     }

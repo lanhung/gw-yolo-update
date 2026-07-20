@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gwyolo.physical_training import (
+    _chirp_epoch,
     build_snr_curriculum_manifest,
     build_snr_quota_manifest,
     coalescence_bin_target,
@@ -20,6 +21,42 @@ from gwyolo.physical_training import (
     summarize_binary_mask_counts,
     timing_accuracy_gate,
 )
+
+
+def test_chirp_epoch_honors_exact_batch_budget() -> None:
+    torch = pytest.importorskip("torch")
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bias = torch.nn.Parameter(torch.zeros(2))
+
+        def forward(self, features):
+            shape = (features.shape[0], 2, *features.shape[-2:])
+            return self.bias.reshape(1, 2, 1, 1).expand(shape)
+
+    model = TinyModel()
+    teacher = TinyModel()
+    features = torch.zeros((1, 1, 2, 2))
+    target = torch.ones((1, 2, 2))
+    loader = [(features, target) for _ in range(5)]
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    metrics = _chirp_epoch(
+        model, teacher, loader, torch.device("cpu"), optimizer, 1.0, 0.0, max_batches=2
+    )
+    assert metrics["batches"] == 2
+    assert metrics["examples"] == 2
+    with pytest.raises(ValueError, match="max_batches"):
+        _chirp_epoch(
+            model,
+            teacher,
+            loader,
+            torch.device("cpu"),
+            optimizer,
+            1.0,
+            0.0,
+            max_batches=0,
+        )
 
 
 def test_binary_mask_counts_are_hand_calculated() -> None:

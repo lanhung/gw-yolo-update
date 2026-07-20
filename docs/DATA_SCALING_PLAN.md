@@ -341,6 +341,23 @@ All three levels currently reuse 76 O4a training GPS blocks. This is intentional
 diversity endpoint. More globally split O1--O4a blocks must be added as a separate scaling axis
 before interpreting a plateau as waveform-data saturation.
 
+The scale matrix now has two compute protocols. The primary protocol holds epochs, optimizer and
+batch size fixed, so it measures the practical benefit of adding data with proportionally more
+compute. A paired control sets `max_optimizer_updates: 3750`, equal to 30 passes over the frozen 2k
+reference at batch size 16. This control drops only the randomized incomplete training batch, stops
+exactly at that many updates, validates the final partial epoch, and records
+`steps_per_full_epoch`, `optimizer_updates`, `optimizer_examples` and the budget gate in its machine
+report. Thus every scale sees exactly 60,000 examples. A scale gain is attributed to independent
+data only if it survives this fixed-update/fixed-seen-example control; disagreement between
+protocols is reported as a compute-data interaction, not hidden.
+
+An official O4a acquisition plan was also frozen with seed 20260720. The API exposed 3,309 aligned
+H1/L1 4-kHz files; 800 disjoint 4,096-second pairs were selected over GPS
+1368268800--1389408256. This is 3,276,800 seconds (37.93 raw coincident detector-days) before DQ,
+known-event, context and category exclusions, leaving margin for the pre-registered >=30-day usable
+target. Plan SHA256 is `d9043337438db689b581bade1922c1191ed52fde94ce056d460c4c9e74316d04`.
+It is a development acquisition plan, not measured live time or a search result. O4b remains locked.
+
 The weak-mask gate is executable rather than rhetorical. `gravityspy-mask-audit-plan` samples only
 the frozen numeric validation split, deterministically stratified by morphology. Each task requires
 an odd panel of at least three independent annotators blinded to the metadata-derived mask, so
