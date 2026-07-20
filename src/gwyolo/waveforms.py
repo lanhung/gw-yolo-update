@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shlex
+import sys
 import tempfile
 from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
@@ -12,6 +15,192 @@ import numpy as np
 
 from .gwosc import _fft_downsample, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+
+
+def waveform_equivalence_metrics(
+    wrapper: np.ndarray,
+    reference: np.ndarray,
+    wrapper_epoch: float,
+    reference_epoch: float,
+) -> dict[str, Any]:
+    wrapper_values = np.asarray(wrapper, dtype=np.complex128).reshape(-1)
+    reference_values = np.asarray(reference, dtype=np.complex128).reshape(-1)
+    same_length = wrapper_values.size == reference_values.size
+    compared = min(wrapper_values.size, reference_values.size)
+    if compared == 0:
+        raise ValueError("Waveform comparison cannot be empty")
+    left = wrapper_values[:compared]
+    right = reference_values[:compared]
+    if not np.isfinite(left).all() or not np.isfinite(right).all():
+        raise ValueError("Waveform comparison contains non-finite values")
+    left_norm = float(np.linalg.norm(left))
+    right_norm = float(np.linalg.norm(right))
+    if left_norm == 0 or right_norm == 0:
+        raise ValueError("Waveform comparison cannot use a zero-norm waveform")
+    return {
+        "wrapper_samples": int(wrapper_values.size),
+        "reference_samples": int(reference_values.size),
+        "same_length": same_length,
+        "normalized_complex_overlap": float(
+            abs(np.vdot(left, right)) / (left_norm * right_norm)
+        ),
+        "relative_l2_error": float(np.linalg.norm(left - right) / right_norm),
+        "amplitude_norm_ratio": left_norm / right_norm,
+        "epoch_difference_seconds": abs(float(wrapper_epoch) - float(reference_epoch)),
+    }
+
+
+def validate_waveform_backend(
+    recipe_manifest: str | Path,
+    output_path: str | Path,
+    sample_rate: int = 2048,
+    reference_duration: float = 128.0,
+    per_family: int = 5,
+    minimum_overlap: float = 0.999999,
+    maximum_relative_error: float = 1e-8,
+    maximum_epoch_error_seconds: float = 1e-9,
+) -> dict[str, Any]:
+    """Validate PyCBC parameter routing against the direct LALSimulation FD API."""
+    if sample_rate <= 0 or reference_duration <= 0 or per_family <= 0:
+        raise ValueError("sample rate, reference duration and per-family count must be positive")
+    try:
+        import lal
+        import lalsimulation
+        from pycbc.waveform import get_fd_waveform
+    except ImportError as exc:
+        raise RuntimeError("Waveform validation requires PyCBC and LALSuite") from exc
+
+    with Path(recipe_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Waveform validation recipe manifest cannot be empty")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["source_family"]), []).append(row)
+    selected = []
+    for family in sorted(grouped):
+        selected.extend(
+            sorted(grouped[family], key=lambda row: str(row["injection_id"]))[:per_family]
+        )
+    delta_f = 1.0 / reference_duration
+    f_max = sample_rate / 2.0
+    cases = []
+    for recipe in selected:
+        approximant = str(recipe["waveform_approximant"])
+        pycbc_plus, pycbc_cross = get_fd_waveform(
+            approximant=approximant,
+            mass1=float(recipe["mass_1_detector_msun"]),
+            mass2=float(recipe["mass_2_detector_msun"]),
+            spin1z=float(recipe["spin_1z"]),
+            spin2z=float(recipe["spin_2z"]),
+            lambda1=float(recipe.get("lambda_1", 0.0)),
+            lambda2=float(recipe.get("lambda_2", 0.0)),
+            inclination=float(recipe["inclination"]),
+            coa_phase=float(recipe["coalescence_phase"]),
+            distance=float(recipe["luminosity_distance_mpc"]),
+            delta_f=delta_f,
+            f_lower=float(recipe["f_lower_hz"]),
+            f_final=f_max,
+        )
+        parameters = lal.CreateDict()
+        lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1(
+            parameters, float(recipe.get("lambda_1", 0.0))
+        )
+        lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2(
+            parameters, float(recipe.get("lambda_2", 0.0))
+        )
+        reference_plus, reference_cross = lalsimulation.SimInspiralChooseFDWaveform(
+            float(recipe["mass_1_detector_msun"]) * lal.MSUN_SI,
+            float(recipe["mass_2_detector_msun"]) * lal.MSUN_SI,
+            0.0,
+            0.0,
+            float(recipe["spin_1z"]),
+            0.0,
+            0.0,
+            float(recipe["spin_2z"]),
+            float(recipe["luminosity_distance_mpc"]) * 1e6 * lal.PC_SI,
+            float(recipe["inclination"]),
+            float(recipe["coalescence_phase"]),
+            0.0,
+            0.0,
+            0.0,
+            delta_f,
+            float(recipe["f_lower_hz"]),
+            f_max,
+            0.0,
+            parameters,
+            lalsimulation.GetApproximantFromString(approximant),
+        )
+        polarizations = {
+            "plus": waveform_equivalence_metrics(
+                pycbc_plus.numpy(),
+                reference_plus.data.data,
+                float(pycbc_plus.start_time),
+                float(reference_plus.epoch),
+            ),
+            "cross": waveform_equivalence_metrics(
+                pycbc_cross.numpy(),
+                reference_cross.data.data,
+                float(pycbc_cross.start_time),
+                float(reference_cross.epoch),
+            ),
+        }
+        passed = all(
+            metrics["same_length"]
+            and metrics["normalized_complex_overlap"] >= minimum_overlap
+            and metrics["relative_l2_error"] <= maximum_relative_error
+            and abs(metrics["amplitude_norm_ratio"] - 1.0) <= maximum_relative_error
+            and metrics["epoch_difference_seconds"] <= maximum_epoch_error_seconds
+            for metrics in polarizations.values()
+        )
+        cases.append(
+            {
+                "injection_id": recipe["injection_id"],
+                "source_family": recipe["source_family"],
+                "approximant": approximant,
+                "polarizations": polarizations,
+                "passed": passed,
+            }
+        )
+    passed = bool(cases) and all(case["passed"] for case in cases)
+    report = {
+        "passed": passed,
+        "validation_scope": "external_reference_waveform_equivalence",
+        "wrapper_backend": "pycbc_get_fd_waveform",
+        "reference_backend": "direct_lalsimulation_SimInspiralChooseFDWaveform",
+        "limitation": (
+            "This validates parameter routing, complex strain, amplitude and epoch against the "
+            "direct LALSimulation API; detector projection and astrophysical population validity "
+            "remain separate gates."
+        ),
+        "recipe_manifest_path": str(recipe_manifest),
+        "recipe_manifest_sha256": file_sha256(recipe_manifest),
+        "families": sorted(grouped),
+        "approximants": sorted({str(row["waveform_approximant"]) for row in selected}),
+        "selected_cases": len(cases),
+        "per_family": per_family,
+        "sample_rate": sample_rate,
+        "reference_duration": reference_duration,
+        "thresholds": {
+            "minimum_overlap": minimum_overlap,
+            "maximum_relative_error": maximum_relative_error,
+            "maximum_epoch_error_seconds": maximum_epoch_error_seconds,
+        },
+        "versions": {"pycbc": version("pycbc"), "lalsuite": version("lalsuite")},
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "cases": cases,
+    }
+    atomic_write_json(output_path, report)
+    if not passed:
+        raise RuntimeError(f"Waveform backend validation failed; see {output_path}")
+    return report
 
 
 def place_waveform_samples(

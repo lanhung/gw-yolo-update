@@ -13,7 +13,22 @@ from gwyolo.waveforms import (
     place_waveform_samples,
     run_injection_materialization,
     validate_recipe_identities,
+    waveform_equivalence_metrics,
 )
+
+
+def test_waveform_equivalence_metrics_exact_and_scaled() -> None:
+    reference = np.asarray([0.0, 1.0 + 2.0j, -3.0j])
+    exact = waveform_equivalence_metrics(reference, reference, -8.0, -8.0)
+    assert exact["same_length"]
+    assert exact["normalized_complex_overlap"] == pytest.approx(1.0)
+    assert exact["relative_l2_error"] == 0.0
+    assert exact["amplitude_norm_ratio"] == 1.0
+    scaled = waveform_equivalence_metrics(reference * 2, reference, -7.5, -8.0)
+    assert scaled["normalized_complex_overlap"] == pytest.approx(1.0)
+    assert scaled["relative_l2_error"] == pytest.approx(1.0)
+    assert scaled["amplitude_norm_ratio"] == pytest.approx(2.0)
+    assert scaled["epoch_difference_seconds"] == pytest.approx(0.5)
 
 
 def test_place_waveform_samples_clips_both_edges_by_hand() -> None:

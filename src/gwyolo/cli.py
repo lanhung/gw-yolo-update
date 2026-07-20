@@ -320,6 +320,13 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--limit", type=int)
     materialize.add_argument("--backend-validation-report")
 
+    waveform_validate = subparsers.add_parser("waveform-validate")
+    waveform_validate.add_argument("--recipes", required=True)
+    waveform_validate.add_argument("--output", required=True)
+    waveform_validate.add_argument("--sample-rate", type=int, default=2048)
+    waveform_validate.add_argument("--reference-duration", type=float, default=128.0)
+    waveform_validate.add_argument("--per-family", type=int, default=5)
+
     injection_score = subparsers.add_parser("injection-score")
     injection_score.add_argument("--manifest", required=True)
     injection_score.add_argument("--checkpoint", required=True)
@@ -725,6 +732,18 @@ def main(argv: list[str] | None = None) -> int:
                 backend_validation_report=args.backend_validation_report,
                 context_duration=args.context_duration,
                 storage_mode=args.storage_mode,
+            )
+        )
+    elif args.command == "waveform-validate":
+        from .waveforms import validate_waveform_backend
+
+        _print(
+            validate_waveform_backend(
+                args.recipes,
+                args.output,
+                args.sample_rate,
+                args.reference_duration,
+                args.per_family,
             )
         )
     elif args.command == "injection-score":

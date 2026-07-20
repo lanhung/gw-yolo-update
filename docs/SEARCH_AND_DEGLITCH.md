@@ -127,6 +127,13 @@ tidal proposal must be replaced or reweighted to documented GWTC population mode
 approximant must pass match/epoch/amplitude checks, and substantially more independent real
 background must be available.
 
+`gwyolo waveform-validate` makes that wrapper-level gate executable. It selects a deterministic,
+family-stratified sample and compares PyCBC frequency-domain output against the direct
+`LALSimulation.SimInspiralChooseFDWaveform` API for both polarizations. The gate checks array length,
+phase-invariant complex overlap, relative L2 error, amplitude ratio and epoch, records both package
+versions and full provenance, and exits nonzero on any failed case. This validates code-path and
+parameter equivalence; it does not validate the provisional population model or detector projection.
+
 The first 300-row materialization attempt exposed a useful hard failure at row 114: a source-frame
 NS mass drawn up to 2.5 solar masses can exceed the `IMRPhenomNSBH` detector-frame 3-solar-mass domain
 after cosmological redshift. No failed row was skipped. The planner now limits the NSBH source-frame
