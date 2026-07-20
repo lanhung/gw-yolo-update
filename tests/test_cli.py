@@ -133,3 +133,28 @@ def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
     compare.assert_called_once_with(
         "promotion.yaml", "v1.jsonl", "v2.jsonl", "comparison.json"
     )
+
+
+def test_candidate_proposal_audit_cli_routes_all_instance_inputs() -> None:
+    with patch(
+        "gwyolo.candidates.run_candidate_proposal_coverage_audit", return_value={}
+    ) as audit:
+        assert (
+            main(
+                [
+                    "candidate-proposal-audit",
+                    "--injection-manifest",
+                    "injections.jsonl",
+                    "--candidate-manifest",
+                    "candidates.jsonl",
+                    "--output",
+                    "coverage.json",
+                    "--padding-seconds",
+                    "0.5",
+                ]
+            )
+            == 0
+        )
+    audit.assert_called_once_with(
+        "injections.jsonl", "candidates.jsonl", "coverage.json", 0.5
+    )

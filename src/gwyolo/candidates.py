@@ -264,6 +264,186 @@ def _local_envelope_timing_refinement(
     return output
 
 
+def candidate_proposal_coverage(
+    injection_rows: list[dict[str, Any]],
+    candidate_rows: list[dict[str, Any]],
+    padding_seconds: float,
+) -> dict[str, Any]:
+    """Measure all-instance proposal support without relabeling it as search recall."""
+
+    if not injection_rows or padding_seconds < 0:
+        raise ValueError("proposal coverage requires injections and non-negative padding")
+    injections = {}
+    for row in injection_rows:
+        injection_id = str(row["injection_id"])
+        if injection_id in injections:
+            raise ValueError(f"duplicate proposal-audit injection: {injection_id}")
+        injections[injection_id] = row
+    candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    candidate_ids = set()
+    for row in candidate_rows:
+        candidate_id = str(row["candidate_id"])
+        if candidate_id in candidate_ids:
+            raise ValueError(f"duplicate proposal candidate: {candidate_id}")
+        candidate_ids.add(candidate_id)
+        injection_id = str(row["injection_id"])
+        if injection_id not in injections:
+            raise ValueError(f"proposal candidate has unknown injection: {injection_id}")
+        ifo = str(row["ifo"])
+        arrivals = injections[injection_id].get("detector_arrival_gps", {})
+        if ifo not in arrivals:
+            raise ValueError(f"proposal candidate uses unavailable IFO: {injection_id}/{ifo}")
+        start = float(row["gps_start"])
+        stop = float(row["gps_end"])
+        peak = float(row["gps_peak"])
+        if not np.isfinite([start, stop, peak]).all() or stop <= start:
+            raise ValueError(f"proposal candidate interval is invalid: {candidate_id}")
+        candidates.setdefault((injection_id, ifo), []).append(row)
+
+    audit_rows = []
+    for injection_id, injection in injections.items():
+        arrivals = {
+            str(ifo): float(value)
+            for ifo, value in injection.get("detector_arrival_gps", {}).items()
+        }
+        if len(arrivals) < 2:
+            raise ValueError(f"proposal audit injection lacks network arrivals: {injection_id}")
+        ifo_snr = {
+            str(ifo): float(value)
+            for ifo, value in injection.get("optimal_snr_by_ifo", {}).items()
+        }
+        for ifo, arrival in arrivals.items():
+            rows = candidates.get((injection_id, ifo), [])
+            interval_distances = []
+            peak_errors = []
+            for row in rows:
+                start = float(row["gps_start"])
+                stop = float(row["gps_end"])
+                interval_distances.append(
+                    max(start - arrival, 0.0, arrival - stop)
+                )
+                peak_errors.append(abs(float(row["gps_peak"]) - arrival))
+            nearest_interval = min(interval_distances) if interval_distances else None
+            nearest_peak = min(peak_errors) if peak_errors else None
+            audit_rows.append(
+                {
+                    "injection_id": injection_id,
+                    "waveform_id": str(injection["waveform_id"]),
+                    "ifo": ifo,
+                    "source_family": str(injection["source_family"]),
+                    "optimal_snr_stratum": str(
+                        injection.get("optimal_snr_stratum", "unassigned")
+                    ),
+                    "ifo_optimal_snr": ifo_snr.get(ifo),
+                    "proposal_count": len(rows),
+                    "has_proposal": bool(rows),
+                    "arrival_inside_proposal": nearest_interval == 0.0,
+                    "arrival_inside_padded_proposal": (
+                        nearest_interval is not None
+                        and nearest_interval <= padding_seconds
+                    ),
+                    "nearest_interval_distance_seconds": nearest_interval,
+                    "nearest_peak_error_seconds": nearest_peak,
+                }
+            )
+
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        total = len(rows)
+        if total == 0:
+            raise ValueError("proposal coverage group is empty")
+        any_count = sum(bool(row["has_proposal"]) for row in rows)
+        interval_count = sum(bool(row["arrival_inside_proposal"]) for row in rows)
+        padded_count = sum(
+            bool(row["arrival_inside_padded_proposal"]) for row in rows
+        )
+        proposal_counts = np.asarray(
+            [int(row["proposal_count"]) for row in rows], dtype=np.float64
+        )
+        peak_errors = np.asarray(
+            [
+                float(row["nearest_peak_error_seconds"])
+                for row in rows
+                if row["nearest_peak_error_seconds"] is not None
+            ],
+            dtype=np.float64,
+        )
+        result = {
+            "expected_detector_arrivals": total,
+            "arrivals_with_any_proposal": any_count,
+            "any_proposal_fraction": any_count / total,
+            "any_proposal_wilson_95": list(wilson_interval(any_count, total)),
+            "arrivals_inside_proposal": interval_count,
+            "interval_coverage_fraction": interval_count / total,
+            "interval_coverage_wilson_95": list(
+                wilson_interval(interval_count, total)
+            ),
+            "arrivals_inside_padded_proposal": padded_count,
+            "padded_coverage_fraction": padded_count / total,
+            "padded_coverage_wilson_95": list(wilson_interval(padded_count, total)),
+            "proposal_count_quantiles": {
+                str(q): float(np.quantile(proposal_counts, q))
+                for q in (0.0, 0.5, 0.9, 0.99, 1.0)
+            },
+        }
+        if peak_errors.size:
+            result["nearest_peak_error_seconds_quantiles_conditional_on_proposal"] = {
+                str(q): float(np.quantile(peak_errors, q))
+                for q in (0.0, 0.5, 0.9, 0.99, 1.0)
+            }
+        return result
+
+    groups: dict[str, list[dict[str, Any]]] = {"all": audit_rows}
+    for row in audit_rows:
+        for key in (
+            f"family:{row['source_family']}",
+            f"snr:{row['optimal_snr_stratum']}",
+            f"ifo:{row['ifo']}",
+        ):
+            groups.setdefault(key, []).append(row)
+    return {
+        "padding_seconds": padding_seconds,
+        "injections": len(injections),
+        "candidates": len(candidate_rows),
+        "audit_rows": audit_rows,
+        "groups": {key: summarize(rows) for key, rows in sorted(groups.items())},
+    }
+
+
+def run_candidate_proposal_coverage_audit(
+    injection_manifest: str | Path,
+    candidate_manifest: str | Path,
+    output_path: str | Path,
+    padding_seconds: float = 0.5,
+) -> dict[str, Any]:
+    with Path(injection_manifest).open("r", encoding="utf-8") as handle:
+        injections = [json.loads(line) for line in handle if line.strip()]
+    with Path(candidate_manifest).open("r", encoding="utf-8") as handle:
+        candidates = [json.loads(line) for line in handle if line.strip()]
+    coverage = candidate_proposal_coverage(injections, candidates, padding_seconds)
+    report = {
+        "status": "validation_only_all_instance_candidate_proposal_coverage",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "proposal support is not continuous-search recall and still requires frozen-threshold "
+            "background, conditional timing and VT evaluation"
+        ),
+        "injection_manifest": str(injection_manifest),
+        "injection_manifest_sha256": file_sha256(injection_manifest),
+        "candidate_manifest": str(candidate_manifest),
+        "candidate_manifest_sha256": file_sha256(candidate_manifest),
+        "candidate_extraction_provenance": _candidate_extraction_provenance(
+            candidate_manifest
+        ),
+        **coverage,
+        **execution_provenance(),
+    }
+    destination = Path(output_path)
+    if destination.is_file():
+        raise ValueError("candidate proposal coverage output already exists")
+    atomic_write_json(destination, report)
+    return report
+
+
 def _clusters_from_scored_row(
     row: dict[str, Any], chirp_threshold: float, minimum_bins: int
 ) -> list[dict[str, Any]]:

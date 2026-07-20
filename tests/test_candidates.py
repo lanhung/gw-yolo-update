@@ -8,6 +8,7 @@ from gwyolo.candidates import (
     build_injection_candidate_rankings,
     build_candidate_time_slides,
     calibrate_candidate_timing_rows,
+    candidate_proposal_coverage,
     extract_temporal_clusters,
 )
 
@@ -51,6 +52,64 @@ def test_local_strain_timing_refines_every_mask_cluster_at_sample_resolution() -
     assert rows[0]["mask_profile_gps_peak"] == 103.0
     assert rows[0]["timing_resolution_seconds"] == 1 / 16
     assert rows[0]["timing_empirically_calibrated"] is False
+
+
+def test_candidate_proposal_coverage_preserves_misses_by_hand() -> None:
+    injections = [
+        {
+            "injection_id": "i1",
+            "waveform_id": "w1",
+            "source_family": "BBH",
+            "optimal_snr_stratum": "snr_8_15",
+            "optimal_snr_by_ifo": {"H1": 10.0, "L1": 9.0},
+            "detector_arrival_gps": {"H1": 10.0, "L1": 10.005},
+        },
+        {
+            "injection_id": "i2",
+            "waveform_id": "w2",
+            "source_family": "BNS",
+            "optimal_snr_stratum": "snr_4_8",
+            "optimal_snr_by_ifo": {"H1": 5.0, "L1": 6.0},
+            "detector_arrival_gps": {"H1": 20.0, "L1": 20.005},
+        },
+    ]
+    candidates = [
+        {
+            "candidate_id": "c1",
+            "injection_id": "i1",
+            "ifo": "H1",
+            "gps_start": 9.9,
+            "gps_end": 10.1,
+            "gps_peak": 10.02,
+        },
+        {
+            "candidate_id": "c2",
+            "injection_id": "i1",
+            "ifo": "L1",
+            "gps_start": 9.0,
+            "gps_end": 9.5,
+            "gps_peak": 9.4,
+        },
+        {
+            "candidate_id": "c3",
+            "injection_id": "i2",
+            "ifo": "L1",
+            "gps_start": 19.8,
+            "gps_end": 20.0,
+            "gps_peak": 19.9,
+        },
+    ]
+
+    report = candidate_proposal_coverage(injections, candidates, padding_seconds=0.6)
+    all_rows = report["groups"]["all"]
+    assert all_rows["expected_detector_arrivals"] == 4
+    assert all_rows["any_proposal_fraction"] == 0.75
+    assert all_rows["interval_coverage_fraction"] == 0.25
+    assert all_rows["padded_coverage_fraction"] == 0.75
+    assert all_rows["proposal_count_quantiles"]["0.0"] == 0.0
+
+    with pytest.raises(ValueError, match="duplicate proposal candidate"):
+        candidate_proposal_coverage(injections, candidates + candidates[:1], 0.6)
 
 
 def test_candidate_time_slides_use_all_candidates_but_cluster_network_events() -> None:

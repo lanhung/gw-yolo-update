@@ -686,6 +686,12 @@ def build_parser() -> argparse.ArgumentParser:
     injection_candidates.add_argument("--chirp-threshold", type=float, default=0.3)
     injection_candidates.add_argument("--minimum-bins", type=int, default=1)
 
+    proposal_audit = subparsers.add_parser("candidate-proposal-audit")
+    proposal_audit.add_argument("--injection-manifest", required=True)
+    proposal_audit.add_argument("--candidate-manifest", required=True)
+    proposal_audit.add_argument("--output", required=True)
+    proposal_audit.add_argument("--padding-seconds", type=float, default=0.5)
+
     injection_candidate_rank = subparsers.add_parser("injection-candidate-rank")
     injection_candidate_rank.add_argument("--injection-triggers", required=True)
     injection_candidate_rank.add_argument("--candidates", required=True)
@@ -1781,6 +1787,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.chirp_threshold,
                 args.minimum_bins,
+            )
+        )
+    elif args.command == "candidate-proposal-audit":
+        from .candidates import run_candidate_proposal_coverage_audit
+
+        _print(
+            run_candidate_proposal_coverage_audit(
+                args.injection_manifest,
+                args.candidate_manifest,
+                args.output,
+                args.padding_seconds,
             )
         )
     elif args.command == "injection-candidate-rank":

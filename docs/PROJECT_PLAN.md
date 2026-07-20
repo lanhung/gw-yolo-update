@@ -208,6 +208,10 @@ Run one final same-budget representation control, the high-time-resolution numer
 arm. Do not scale it unless the already frozen paired v1 comparison passes every promotion check;
 otherwise move timing supervision into the all-instance candidate model rather than testing another
 standalone single-arrival classifier.
+Before training that fallback, run `candidate-proposal-audit` on the frozen 10k validation candidate
+manifest. If true arrivals are not covered by retained proposal intervals (with the declared 0.5 s
+context padding), repair proposal recall first; conditional localization cannot recover absent
+instances.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
