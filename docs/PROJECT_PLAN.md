@@ -232,6 +232,16 @@ longer the blocking representation; candidate-conditioned ranking, local timing 
 Do not prune to top-k by the current scalar score: top-16 padded coverage is only 92.45%, and every
 proposal must remain represented until the validation-calibrated refiner is applied.
 
+The first bounded refiner run is retained as a negative control: at commit `77f6880`, 1,500 updates
+reach calibration AP 0.2275 but only 6.87% of interval-positive candidates are timed within 10 ms.
+The failure is partly a target-definition error rather than evidence for blind data scaling. The
+local 2.5 s crop contains the true arrival for 24,279 training candidates, including 13,077 that the
+proposal-interval audit legitimately calls misses. Since the interval bounds are not model inputs,
+using that audit label as local strain supervision creates contradictory negatives. Commit
+`d4d0330` changes presence/timing supervision to the physical arrival-in-crop event and uses a soft
+distribution plus coordinate loss. Only validation AP/timing and then signal-free background false
+acceptance may promote it; candidate repetitions are not counted as new physical waveforms.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag

@@ -141,6 +141,17 @@ score ordering is inadequate: top-1/top-16/top-24 padded coverage is 30.65%/92.4
 Accordingly no top-k pruning is allowed; the next head must score every candidate, learn local timing
 and expose abstention before a frozen continuous-background threshold is considered.
 
+`candidate-refiner-train` implements that all-candidate local arm on aligned 2.5 s numeric strain.
+Parent injection hashes, rather than candidate rows, split validation into checkpoint-selection and
+threshold-calibration roles. The initial categorical baseline (`77f6880`) is a recorded failure:
+calibration AP 0.2275, timing median/p90 0.492/1.151 s and 6.87% within 10 ms. The corrected v2 target
+(`d4d0330`) asks whether the physical arrival lies inside the peak-centred crop; it does not misuse
+connected-component interval support as a feature-identifiability label. The original support label
+remains preserved for proposal auditing. `candidate-refiner-validation` scores every calibration
+candidate, freezes the highest predeclared presence threshold retaining at least 95% of detector
+arrivals, and writes every refined prediction. Even a passed timing gate cannot promote search use
+until signal-free continuous background supplies false acceptance and FAR/IFAR evidence.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

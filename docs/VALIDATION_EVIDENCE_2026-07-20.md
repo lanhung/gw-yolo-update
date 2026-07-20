@@ -430,6 +430,27 @@ of arrivals. Even top 16 reaches only 92.45%; top 24 reaches 95.42%. Thus the sc
 cannot be used as a timing estimate or silent top-k filter. Every proposal remains retained while a
 candidate-conditioned local refiner/abstention head is trained and calibrated.
 
+Commit `0c35bad` applied the frozen 0.39 proposal rule to the 2,000 training parents and produced
+74,126 candidates without top-k pruning. Its group-safe refiner plan has 596 validation-selection
+parents and 2,404 disjoint validation-calibration parents; train/validation waveform, injection and
+GPS-block overlap is zero. The training, selection and calibration manifest SHA256 values are
+`0bbc365e2dff8949454dccc76e289a79c0b4bd3ce2772fbb722251bd7c87f81e`,
+`2d0370d345209c87131034fd87fa9b709e8e08df8fbea4f6ee10d8b40d9a95a2` and
+`725ff8f44120311e8ee8d93794606405719a7dbfd723ada03ff01cc8a020df27`.
+
+The first local-refiner baseline at `77f6880` completed 1,500 updates and failed cleanly. Its selected
+epoch 3 has calibration candidate AP 0.2275, positive-candidate timing errors 0.492/1.151 s at the
+median/p90 and only 6.87% within 10 ms. Report/checkpoint SHA256 values are
+`14db2be133fb1e82166261eecd12f06f81040af5a4e8b53c6f725ee99d270774` and
+`53941d75bdc75374535604fe521e29d7f08e3be7ec90d4d0ed78a369b27cf970`. This is a
+validation-only negative result, not a search metric. A supervision audit then found that 24,279
+training crops physically contain the arrival, while the connected-interval support label marks only
+11,202; 13,077 valid timing crops were therefore being treated as negatives although interval
+geometry is absent from the local strain input. Commit `d4d0330` corrects the learning target to
+physical arrival-in-crop, keeps the original interval label as a proposal audit field, and adds a
+Gaussian timing distribution plus continuous coordinate loss. Its result must still pass the frozen
+`8f3554f` validation gate before background calibration.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
