@@ -319,3 +319,10 @@ not promoted.
 The Gravity Spy acquisition plan is now partitioned into 510 deterministic shards of at most 32
 whole source files. All 59,933 planned anchors and all 16,297 files are preserved exactly once; the
 sharded manifest SHA256 is `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
+
+High-yield source files alone are not an acceptable scaling rule because recurrent narrowband
+families can dominate a file. `gravityspy-strain-select` treats official HDF5 files as atomic
+download units and greedily fills frozen per-label deficits, accounting for already verified
+numeric rows and excluding their source files. Its report exposes every underfilled class, run/IFO
+coverage, and source/output hash. This controls bounded acquisition; it does not turn
+metadata-derived weak masks into human segmentation labels.

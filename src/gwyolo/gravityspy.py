@@ -230,6 +230,155 @@ def plan_gravityspy_strain(
     return report
 
 
+def select_gravityspy_source_files(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    per_label: int,
+    maximum_files: int,
+    seed: int = 20260720,
+    existing_manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Select whole source files greedily against label deficits in one frozen split."""
+    if per_label <= 0 or maximum_files <= 0:
+        raise ValueError("Gravity Spy label target and maximum files must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Gravity Spy source selection requires a non-empty strain plan")
+    splits = {str(row["split"]) for row in rows}
+    if len(splits) != 1:
+        raise ValueError(f"Gravity Spy source selection cannot mix splits: {sorted(splits)}")
+    split = next(iter(splits))
+    glitch_ids = [str(row["glitch_id"]) for row in rows]
+    if len(glitch_ids) != len(set(glitch_ids)):
+        raise ValueError("Gravity Spy strain plan contains duplicate glitch IDs")
+
+    existing_rows: list[dict[str, Any]] = []
+    existing_hash = None
+    if existing_manifest_path is not None:
+        existing_path = Path(existing_manifest_path)
+        with existing_path.open("r", encoding="utf-8") as handle:
+            existing_rows = [json.loads(line) for line in handle if line.strip()]
+        if any(str(row.get("split")) != split for row in existing_rows):
+            raise ValueError("Existing Gravity Spy numeric data belong to another split")
+        existing_hash = file_sha256(existing_path)
+    existing_counts = Counter(str(row["ml_label"]) for row in existing_rows)
+    existing_sources = {
+        str(row["strain_source"]["hdf5_url"])
+        for row in existing_rows
+        if row.get("strain_source", {}).get("hdf5_url")
+    }
+    labels = sorted({str(row["ml_label"]) for row in rows})
+    deficits = {label: max(0, per_label - existing_counts[label]) for label in labels}
+    by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        url = str(row["strain_source"]["hdf5_url"])
+        if url not in existing_sources:
+            by_source[url].append(row)
+
+    source_statistics = {
+        url: {
+            "counts": Counter(str(row["ml_label"]) for row in source_rows),
+            "rows": len(source_rows),
+            "tie_break": canonical_hash({"seed": seed, "url": url}, 64),
+        }
+        for url, source_rows in by_source.items()
+    }
+
+    selected_sources: list[str] = []
+    remaining = dict(by_source)
+    while any(deficits.values()) and len(selected_sources) < maximum_files and remaining:
+        scored = []
+        for url in remaining:
+            statistics = source_statistics[url]
+            counts = statistics["counts"]
+            covered = sum(min(counts[label], deficits[label]) for label in labels)
+            distinct = sum(counts[label] > 0 and deficits[label] > 0 for label in labels)
+            scored.append(
+                (
+                    covered,
+                    distinct,
+                    -int(statistics["rows"]),
+                    str(statistics["tie_break"]),
+                    url,
+                    counts,
+                )
+            )
+        covered, _, _, _, url, counts = max(scored)
+        if covered <= 0:
+            break
+        selected_sources.append(url)
+        del remaining[url]
+        for label in labels:
+            deficits[label] = max(0, deficits[label] - counts[label])
+
+    selected_rows = [row for url in selected_sources for row in by_source[url]]
+    selected_rows.sort(
+        key=lambda row: (
+            str(row["strain_source"]["hdf5_url"]),
+            str(row["glitch_id"]),
+        )
+    )
+    selected_counts = Counter(str(row["ml_label"]) for row in selected_rows)
+    combined_counts = {
+        label: existing_counts[label] + selected_counts[label] for label in labels
+    }
+    underfilled = {
+        label: per_label - combined_counts[label]
+        for label in labels
+        if combined_counts[label] < per_label
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / f"gravityspy_{split}_selected_sources.jsonl"
+    atomic_write_text(
+        target,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_rows),
+    )
+    report = {
+        "status": "bounded_label_deficit_gravityspy_source_selection",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "selected official strain still requires verified materialization and weak masks "
+            "require a frozen human pixel-mask audit"
+        ),
+        "split": split,
+        "seed": seed,
+        "per_label_target": per_label,
+        "maximum_files": maximum_files,
+        "target_met": not underfilled,
+        "underfilled_label_deficits": dict(sorted(underfilled.items())),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "existing_manifest_path": (
+            str(existing_manifest_path) if existing_manifest_path is not None else None
+        ),
+        "existing_manifest_sha256": existing_hash,
+        "existing_rows": len(existing_rows),
+        "existing_label_counts": dict(sorted(existing_counts.items())),
+        "excluded_existing_source_files": len(existing_sources),
+        "selected_rows": len(selected_rows),
+        "selected_source_files": len(selected_sources),
+        "selected_unique_glitches": len({row["glitch_id"] for row in selected_rows}),
+        "selected_unique_network_gps_blocks": len(
+            {row["network_gps_block"] for row in selected_rows}
+        ),
+        "selected_label_counts": dict(sorted(selected_counts.items())),
+        "combined_label_counts": dict(sorted(combined_counts.items())),
+        "selected_runs": dict(
+            sorted(Counter(str(row["observing_run"]) for row in selected_rows).items())
+        ),
+        "selected_ifos": dict(
+            sorted(Counter(str(row["ifo"]) for row in selected_rows).items())
+        ),
+        "manifest_path": str(target),
+        "manifest_sha256": file_sha256(target),
+        "selected_sources_hash": canonical_hash(selected_sources, 64),
+    }
+    atomic_write_json(output / "gravityspy_source_selection_report.json", report)
+    return report
+
+
 def shard_gravityspy_strain_plan(
     manifest_path: str | Path,
     output_dir: str | Path,

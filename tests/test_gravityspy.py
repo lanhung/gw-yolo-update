@@ -12,6 +12,7 @@ from gwyolo.gravityspy import (
     index_gravityspy_csv,
     match_glitch_to_strain_file,
     merge_gravityspy_numeric_manifests,
+    select_gravityspy_source_files,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
@@ -75,6 +76,51 @@ def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
     assert result["weak_masks"] == 2
     assert result["human_pixel_masks"] == 0
     assert result["labels"] == {"Blip": 2}
+
+
+def test_gravityspy_source_selection_fills_deficits_with_whole_files(tmp_path) -> None:
+    plan = tmp_path / "plan.jsonl"
+    rows = []
+    specifications = {
+        "a": ["Blip", "Blip", "Blip"],
+        "b": ["Tomte", "Tomte", "Blip"],
+        "c": ["Koi_Fish", "Koi_Fish"],
+    }
+    for source, labels in specifications.items():
+        for index, label in enumerate(labels):
+            rows.append(
+                {
+                    "glitch_id": f"{source}-{index}",
+                    "split": "train",
+                    "ml_label": label,
+                    "network_gps_block": f"block-{source}-{index}",
+                    "observing_run": "O3a",
+                    "ifo": "H1",
+                    "strain_source": {"hdf5_url": f"https://example/{source}.hdf5"},
+                }
+            )
+    plan.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    existing = tmp_path / "existing.jsonl"
+    existing.write_text(json.dumps({**rows[0], "path": "unused.npz"}) + "\n")
+    report = select_gravityspy_source_files(
+        plan,
+        tmp_path / "selection",
+        per_label=2,
+        maximum_files=2,
+        existing_manifest_path=existing,
+    )
+    assert report["target_met"]
+    assert report["selected_source_files"] == 2
+    assert report["selected_rows"] == 5
+    assert report["combined_label_counts"] == {"Blip": 2, "Koi_Fish": 2, "Tomte": 2}
+    selected = [
+        json.loads(line)
+        for line in Path(report["manifest_path"]).read_text().splitlines()
+    ]
+    assert {row["strain_source"]["hdf5_url"] for row in selected} == {
+        "https://example/b.hdf5",
+        "https://example/c.hdf5",
+    }
 
 
 def test_gravityspy_source_eviction_requires_verified_numeric_output(tmp_path) -> None:

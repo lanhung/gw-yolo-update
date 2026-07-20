@@ -249,6 +249,14 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_strain.add_argument("--sample-rate-khz", type=int, default=4)
     gravityspy_strain.add_argument("--context-duration", type=float, default=64.0)
 
+    gravityspy_select = subparsers.add_parser("gravityspy-strain-select")
+    gravityspy_select.add_argument("--manifest", required=True)
+    gravityspy_select.add_argument("--output-dir", required=True)
+    gravityspy_select.add_argument("--per-label", type=int, required=True)
+    gravityspy_select.add_argument("--maximum-files", type=int, required=True)
+    gravityspy_select.add_argument("--seed", type=int, default=20260720)
+    gravityspy_select.add_argument("--existing-manifest")
+
     gravityspy_shard = subparsers.add_parser("gravityspy-strain-shard")
     gravityspy_shard.add_argument("--manifest", required=True)
     gravityspy_shard.add_argument("--output-dir", required=True)
@@ -725,6 +733,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.files_per_shard,
                 args.seed,
+            )
+        )
+    elif args.command == "gravityspy-strain-select":
+        from .gravityspy import select_gravityspy_source_files
+
+        _print(
+            select_gravityspy_source_files(
+                args.manifest,
+                args.output_dir,
+                args.per_label,
+                args.maximum_files,
+                args.seed,
+                args.existing_manifest,
             )
         )
     elif args.command == "gravityspy-strain-materialize":
