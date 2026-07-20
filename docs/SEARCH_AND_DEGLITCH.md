@@ -83,6 +83,23 @@ H1 and L1 optimal SNR >=8, only 56.73% have both predictions within 10 ms and wo
 on the sub-10-ms conditional median; the tail, pairwise delay and retained-candidate coverage must
 all pass together.
 
+If the frozen v3 spectrogram arm fails, the next timing unit is a candidate instance, not a whole
+window. The fallback design is predeclared as follows:
+
+1. retain every connected chirp/glitch proposal from the frozen mask model, including overlapping
+   and low-score proposals needed to measure proposal recall;
+2. for each `(window, IFO, proposal)` construct a numeric high-resolution spectrogram crop plus an
+   explicit proposal-support channel and detector-availability mask;
+3. predict an arrival heatmap and an abstention probability per proposal, so multiple arrivals and
+   unknown glitches are not collapsed to one window-level argmax;
+4. train positives from group-disjoint physical injections/real-glitch overlaps and negatives from
+   held-family/OOD glitch proposals, with no auxiliary-channel veto of strain-coherent events;
+5. report proposal coverage, conditional timing, worst-IFO and pairwise-delay tails together, then
+   propagate every miss into the frozen-threshold `<VT>` denominator.
+
+A good conditional timing number cannot repair poor proposal coverage, and an abstaining proposal
+cannot be silently counted as a recovered injection.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,
