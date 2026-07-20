@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import platform
+import shlex
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json
+from .io import atomic_write_json, file_sha256
 
 
 EXPECTED_PROVENANCE_FIELDS = (
@@ -262,3 +266,121 @@ def run_curve_fit(points_path: str | Path, output_path: str | Path) -> dict[str,
     report = fit_power_law_curve(points)
     atomic_write_json(output_path, report)
     return report
+
+
+def summarize_physical_scale_reports(
+    report_paths: list[str | Path],
+    scale_subset_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Audit and summarize fixed-update physical scaling runs without opening test data."""
+    if not report_paths:
+        raise ValueError("At least one physical scale training report is required")
+    with Path(scale_subset_report_path).open("r", encoding="utf-8") as handle:
+        scale_plan = json.load(handle)
+    scale_by_hash = {
+        str(item["manifest_sha256"]): int(item["scale"])
+        for item in scale_plan.get("scales", [])
+    }
+    if not scale_by_hash:
+        raise ValueError("Physical scale subset report contains no scales")
+    expected_validation_hash = str(scale_plan["validation_manifest_sha256"])
+    records = []
+    seen = set()
+    for path_value in report_paths:
+        path = Path(path_value)
+        with path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+        train_hash = str(report.get("train_manifest_sha256"))
+        if train_hash not in scale_by_hash:
+            raise ValueError(f"Training report is not from the frozen scale plan: {path}")
+        if str(report.get("validation_manifest_sha256")) != expected_validation_hash:
+            raise ValueError(f"Training report uses a different validation manifest: {path}")
+        if report.get("test_evaluation") is not None:
+            raise ValueError(f"Physical scale summary refuses a report that opened test data: {path}")
+        if report.get("checkpoint_selection") != "final_update":
+            raise ValueError(f"Fixed-update scale report did not select the final update: {path}")
+        if not report.get("training_budget_reached"):
+            raise ValueError(f"Physical scale report did not reach its update budget: {path}")
+        scale = scale_by_hash[train_hash]
+        seed = int(report["seed"])
+        if (scale, seed) in seen:
+            raise ValueError(f"Duplicate physical scale/seed report: {scale}/{seed}")
+        seen.add((scale, seed))
+        if int(report["training_selection"]["selected_rows"]) != scale:
+            raise ValueError(f"Training selected-row count differs from frozen scale: {path}")
+        records.append(
+            {
+                "scale": scale,
+                "seed": seed,
+                "validation_chirp_iou": float(report["calibrated_validation"]["chirp_iou"]),
+                "selected_threshold": float(report["selected_chirp_threshold"]),
+                "optimizer_updates": int(report["optimizer_updates"]),
+                "optimizer_examples": int(report["optimizer_examples"]),
+                "pretrained_checkpoint_sha256": str(report["pretrained_checkpoint_sha256"]),
+                "config_hash": str(report["config_hash"]),
+                "checkpoint_sha256": str(report["checkpoint_sha256"]),
+                "report_path": str(path),
+                "report_sha256": file_sha256(path),
+            }
+        )
+    for field in (
+        "optimizer_updates",
+        "optimizer_examples",
+        "pretrained_checkpoint_sha256",
+        "config_hash",
+    ):
+        if len({record[field] for record in records}) != 1:
+            raise ValueError(f"Physical scale reports disagree on controlled field: {field}")
+    summaries = []
+    expected_scales = sorted(scale_by_hash.values())
+    for scale in expected_scales:
+        scale_records = sorted(
+            (record for record in records if record["scale"] == scale),
+            key=lambda item: item["seed"],
+        )
+        metrics = np.asarray([record["validation_chirp_iou"] for record in scale_records])
+        summaries.append(
+            {
+                "scale": scale,
+                "seeds": [record["seed"] for record in scale_records],
+                "seed_count": len(scale_records),
+                "validation_chirp_iou_mean": float(np.mean(metrics)) if len(metrics) else None,
+                "validation_chirp_iou_sample_std": (
+                    float(np.std(metrics, ddof=1)) if len(metrics) >= 2 else None
+                ),
+                "minimum_three_seed_gate": len(scale_records) >= 3,
+                "runs": scale_records,
+            }
+        )
+    complete = all(item["minimum_three_seed_gate"] for item in summaries)
+    result = {
+        "status": "physical_fixed_update_scale_summary",
+        "scientific_claim_allowed": complete,
+        "scientific_blocker": (
+            None
+            if complete
+            else "at least three completed seeds are required at every frozen scale"
+        ),
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "scale_subset_report_path": str(scale_subset_report_path),
+        "scale_subset_report_sha256": file_sha256(scale_subset_report_path),
+        "validation_manifest_sha256": expected_validation_hash,
+        "controlled_optimizer_updates": records[0]["optimizer_updates"],
+        "controlled_optimizer_examples": records[0]["optimizer_examples"],
+        "controlled_pretrained_checkpoint_sha256": records[0][
+            "pretrained_checkpoint_sha256"
+        ],
+        "controlled_config_hash": records[0]["config_hash"],
+        "scales": summaries,
+        "test_evaluation": None,
+    }
+    atomic_write_json(output_path, result)
+    return result

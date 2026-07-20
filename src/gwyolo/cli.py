@@ -116,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     scaling.add_argument("--research-target", type=int, default=200_000)
     scaling.add_argument("--seeds", type=int, default=3)
 
+    physical_scale_summary = subparsers.add_parser("physical-scale-summarize")
+    physical_scale_summary.add_argument("--scale-subset-report", required=True)
+    physical_scale_summary.add_argument("--report", action="append", required=True)
+    physical_scale_summary.add_argument("--output", required=True)
+
     factory = subparsers.add_parser("data-factory")
     factory.add_argument("--config", required=True)
     factory.add_argument("--output-dir", required=True)
@@ -579,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.baseline_target,
                 args.research_target,
                 args.seeds,
+            )
+        )
+    elif args.command == "physical-scale-summarize":
+        from .scaling import summarize_physical_scale_reports
+
+        _print(
+            summarize_physical_scale_reports(
+                args.report, args.scale_subset_report, args.output
             )
         )
     elif args.command == "data-factory":

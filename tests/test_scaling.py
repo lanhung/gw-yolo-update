@@ -1,8 +1,14 @@
 import csv
+import json
 
 import pytest
 
-from gwyolo.scaling import analyze_manifest, fit_power_law_curve, make_scaling_plan
+from gwyolo.scaling import (
+    analyze_manifest,
+    fit_power_law_curve,
+    make_scaling_plan,
+    summarize_physical_scale_reports,
+)
 
 
 def _write_manifest(path, rows):
@@ -81,3 +87,47 @@ def test_power_law_fit_recovers_hand_generated_curve():
     assert result["parameters"]["asymptote"] == pytest.approx(0.9, abs=0.001)
     assert result["parameters"]["amplitude"] == pytest.approx(0.6, abs=0.01)
     assert result["r_squared"] == pytest.approx(1.0)
+
+
+def test_physical_scale_summary_enforces_controls_and_calculates_seed_spread(tmp_path):
+    plan = tmp_path / "scale-plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "validation_manifest_sha256": "val-hash",
+                "scales": [{"scale": 2000, "manifest_sha256": "train-hash"}],
+            }
+        )
+    )
+    reports = []
+    for seed, metric in ((1, 0.2), (2, 0.4)):
+        path = tmp_path / f"run-{seed}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "train_manifest_sha256": "train-hash",
+                    "validation_manifest_sha256": "val-hash",
+                    "test_evaluation": None,
+                    "checkpoint_selection": "final_update",
+                    "training_budget_reached": True,
+                    "seed": seed,
+                    "training_selection": {"selected_rows": 2000},
+                    "calibrated_validation": {"chirp_iou": metric},
+                    "selected_chirp_threshold": 0.5,
+                    "optimizer_updates": 3750,
+                    "optimizer_examples": 60000,
+                    "pretrained_checkpoint_sha256": "pretrained-hash",
+                    "config_hash": "config-hash",
+                    "checkpoint_sha256": f"checkpoint-{seed}",
+                }
+            )
+        )
+        reports.append(path)
+    result = summarize_physical_scale_reports(
+        reports, plan, tmp_path / "summary.json"
+    )
+    scale = result["scales"][0]
+    assert scale["validation_chirp_iou_mean"] == pytest.approx(0.3)
+    assert scale["validation_chirp_iou_sample_std"] == pytest.approx(2**-0.5 * 0.2)
+    assert not scale["minimum_three_seed_gate"]
+    assert not result["scientific_claim_allowed"]
