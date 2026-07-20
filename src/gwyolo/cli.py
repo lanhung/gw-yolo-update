@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     background.add_argument("--seed", type=int, default=20260719)
 
     background_batch = subparsers.add_parser("background-batch-plan")
-    background_batch.add_argument("--batch-report", required=True)
+    background_batch.add_argument("--batch-report", action="append", required=True)
     background_batch.add_argument("--event-exclusions", required=True)
     background_batch.add_argument("--output-dir", required=True)
     background_batch.add_argument("--window-duration", type=int, default=8)

@@ -193,7 +193,9 @@ run strain-file endpoint, intersects exact GPS starts across requested IFOs and 
 deterministically. `gwosc-batch-download` then resumes each HDF5 transfer and requires a complete
 Fletcher32/statistics/DQ scan before recording it. `gwosc-event-exclusions` snapshots every catalog
 event in the run with a declared padding, and `background-batch-plan` applies those vetoes before one
-global GPS-block split across all files. All acquisition commands reject O4b development access.
+global GPS-block split across all files. Repeat `--batch-report` for every verified acquisition
+batch; planning batches separately is forbidden because adding files could otherwise change the
+validation/test allocation. All acquisition commands reject O4b development access.
 
 ## Storage and compute strategy
 

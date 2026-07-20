@@ -284,7 +284,7 @@ def run_background_plan(
 
 
 def run_batch_background_plan(
-    batch_report_path: str | Path,
+    batch_report_path: str | Path | Iterable[str | Path],
     event_exclusions_path: str | Path,
     output_dir: str | Path,
     window_duration: int = 8,
@@ -297,15 +297,31 @@ def run_batch_background_plan(
     test_fraction: float = 0.2,
     seed: int = 20260719,
 ) -> dict[str, Any]:
-    with Path(batch_report_path).open("r", encoding="utf-8") as handle:
-        batch = json.load(handle)
-    if batch.get("status") != "verified_development_strain_batch" or not batch.get("passed"):
-        raise ValueError("Batch strain report is not fully verified")
+    report_paths = (
+        [Path(batch_report_path)]
+        if isinstance(batch_report_path, (str, Path))
+        else [Path(path) for path in batch_report_path]
+    )
+    if not report_paths:
+        raise ValueError("At least one batch strain report is required")
+    batches = []
+    for report_path in report_paths:
+        with report_path.open("r", encoding="utf-8") as handle:
+            batch = json.load(handle)
+        if batch.get("status") != "verified_development_strain_batch" or not batch.get(
+            "passed"
+        ):
+            raise ValueError("Batch strain report is not fully verified")
+        batches.append((batch, file_sha256(report_path)))
+    runs = {str(batch.get("run")) for batch, _ in batches}
+    if len(runs) != 1:
+        raise ValueError("Batch strain reports must belong to one observing run")
+    run = next(iter(runs))
     with Path(event_exclusions_path).open("r", encoding="utf-8") as handle:
         exclusion_report = json.load(handle)
     if exclusion_report.get("status") != "development_catalog_event_exclusions":
         raise ValueError("Event exclusions are not a development catalog report")
-    if exclusion_report.get("run") != batch.get("run"):
+    if exclusion_report.get("run") != run:
         raise ValueError("Batch strain and event-exclusion runs differ")
     excluded_intervals = [
         (float(row["exclusion_start"]), float(row["exclusion_end"]))
@@ -313,21 +329,27 @@ def run_batch_background_plan(
     ]
     by_pair: dict[str, dict[str, str]] = {}
     pair_gps = {}
-    for source in batch.get("files", []):
-        if not source.get("verification", {}).get("passed"):
-            raise ValueError(f"Source verification did not pass: {source.get('path')}")
-        if file_sha256(source["path"]) != source["sha256"]:
-            raise ValueError(f"Batch source hash mismatch: {source['path']}")
-        pair_id = str(source["pair_id"])
-        ifo = str(source["detector"])
-        if ifo in by_pair.setdefault(pair_id, {}):
-            raise ValueError(f"Duplicate detector {ifo} in pair {pair_id}")
-        by_pair[pair_id][ifo] = str(source["path"])
-        pair_gps[pair_id] = int(source["gps_start"])
+    pair_batch_sha = {}
+    source_files = 0
+    for batch, batch_sha in batches:
+        for source in batch.get("files", []):
+            source_files += 1
+            if not source.get("verification", {}).get("passed"):
+                raise ValueError(f"Source verification did not pass: {source.get('path')}")
+            if file_sha256(source["path"]) != source["sha256"]:
+                raise ValueError(f"Batch source hash mismatch: {source['path']}")
+            pair_id = str(source["pair_id"])
+            if pair_id in pair_batch_sha and pair_batch_sha[pair_id] != batch_sha:
+                raise ValueError(f"Pair {pair_id} appears in multiple batch reports")
+            pair_batch_sha[pair_id] = batch_sha
+            ifo = str(source["detector"])
+            if ifo in by_pair.setdefault(pair_id, {}):
+                raise ValueError(f"Duplicate detector {ifo} in pair {pair_id}")
+            by_pair[pair_id][ifo] = str(source["path"])
+            pair_gps[pair_id] = int(source["gps_start"])
     detector_sets = {tuple(sorted(files)) for files in by_pair.values()}
     if len(detector_sets) != 1 or not detector_sets or len(next(iter(detector_sets))) < 2:
         raise ValueError("Batch report does not contain complete, consistent multi-IFO pairs")
-    batch_sha = file_sha256(batch_report_path)
     rows = []
     aggregate_grid_windows = 0
     aggregate_rejections: Counter[str] = Counter()
@@ -349,9 +371,9 @@ def run_batch_background_plan(
         aggregate_rejections.update(pair_report["rejection_counts"])
         for row in pair_rows:
             row["pair_id"] = pair_id
-            row["observing_run"] = batch["run"]
+            row["observing_run"] = run
             for source in row["source_files"].values():
-                source["verification_report_sha256"] = batch_sha
+                source["verification_report_sha256"] = pair_batch_sha[pair_id]
         rows.extend(pair_rows)
     if not rows:
         raise ValueError("Verified batch produced no DQ-safe background windows")
@@ -390,11 +412,11 @@ def run_batch_background_plan(
         "status": "verified_multi_segment_development_background",
         "scientific_claim_allowed": False,
         "passed": all(not values for values in overlaps.values()),
-        "run": batch["run"],
+        "run": run,
         "ifos": list(next(iter(detector_sets))),
         "source_pairs": len(by_pair),
-        "source_files": len(batch["files"]),
-        "source_batch_report_sha256": batch_sha,
+        "source_files": source_files,
+        "source_batch_report_sha256s": [sha for _, sha in batches],
         "event_exclusions_sha256": file_sha256(event_exclusions_path),
         "catalog_events_excluded": int(exclusion_report.get("events", 0)),
         "event_padding_seconds": float(exclusion_report["padding_seconds"]),

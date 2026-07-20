@@ -206,6 +206,7 @@ def test_batch_background_uses_global_disjoint_block_split(tmp_path: Path) -> No
         seed=3,
     )
     assert result["source_pairs"] == 2
+    assert len(result["source_batch_report_sha256s"]) == 1
     assert result["windows"] == 16
     assert result["unique_gps_blocks"] == 8
     assert all(not values for values in result["cross_split_block_overlaps"].values())
@@ -217,3 +218,64 @@ def test_batch_background_uses_global_disjoint_block_split(tmp_path: Path) -> No
     ]
     assert {row["pair_id"] for row in rows} == {"pair-0", "pair-1"}
     assert {row["observing_run"] for row in rows} == {"O4a"}
+
+
+def test_batch_background_merges_reports_before_global_split(tmp_path: Path) -> None:
+    reports = []
+    for pair_index, gps in enumerate((3000, 4000)):
+        files = []
+        for ifo in ("H1", "L1"):
+            path = tmp_path / f"multi-{ifo}-{gps}.hdf5"
+            _write_quality_file(path, gps, 64)
+            files.append(
+                {
+                    "pair_id": f"multi-pair-{pair_index}",
+                    "run": "O4a",
+                    "gps_start": gps,
+                    "detector": ifo,
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "verification": {"passed": True},
+                }
+            )
+        report = tmp_path / f"batch-{pair_index}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "verified_development_strain_batch",
+                    "passed": True,
+                    "run": "O4a",
+                    "files": files,
+                }
+            )
+        )
+        reports.append(report)
+    exclusions = tmp_path / "multi-exclusions.json"
+    exclusions.write_text(
+        json.dumps(
+            {
+                "status": "development_catalog_event_exclusions",
+                "run": "O4a",
+                "padding_seconds": 16,
+                "events": 0,
+                "intervals": [],
+            }
+        )
+    )
+    result = run_batch_background_plan(
+        reports,
+        exclusions,
+        tmp_path / "merged",
+        window_duration=8,
+        stride=8,
+        block_duration=16,
+        required_context_duration=8,
+        required_injection_bits=3,
+        validation_fraction=0.25,
+        test_fraction=0.25,
+        seed=3,
+    )
+    assert result["source_pairs"] == 2
+    assert len(result["source_batch_report_sha256s"]) == 2
+    assert result["unique_gps_blocks"] == 8
+    assert all(not values for values in result["cross_split_block_overlaps"].values())
