@@ -412,6 +412,134 @@ def plan_gravityspy_network_strain(
     return report
 
 
+def shard_gravityspy_network_strain_plan(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    files_per_shard: int = 16,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Shard connected source-file components without downloading a file twice."""
+
+    if files_per_shard < 2:
+        raise ValueError("Network Gravity Spy shards require at least two source files")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Network Gravity Spy sharding requires a non-empty plan")
+    glitch_ids = [str(row["glitch_id"]) for row in rows]
+    if len(glitch_ids) != len(set(glitch_ids)):
+        raise ValueError("Network Gravity Spy sharding found duplicate glitch IDs")
+
+    parents = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    source_owner: dict[str, int] = {}
+    row_sources: list[set[str]] = []
+    for index, row in enumerate(rows):
+        sources = {
+            str(source["hdf5_url"])
+            for source in row["network_strain_sources"].values()
+        }
+        if len(sources) < 2:
+            raise ValueError("A network Gravity Spy row has fewer than two source files")
+        row_sources.append(sources)
+        for url in sources:
+            if url in source_owner:
+                union(index, source_owner[url])
+            else:
+                source_owner[url] = index
+    components: dict[int, list[int]] = defaultdict(list)
+    for index in range(len(rows)):
+        components[find(index)].append(index)
+    component_records = []
+    for indices in components.values():
+        sources = set().union(*(row_sources[index] for index in indices))
+        if len(sources) > files_per_shard:
+            raise ValueError(
+                f"Connected network source component has {len(sources)} files, "
+                f"exceeding files_per_shard={files_per_shard}"
+            )
+        component_records.append(
+            {
+                "indices": indices,
+                "sources": sources,
+                "tie_break": canonical_hash(
+                    {"seed": seed, "source_files": sorted(sources)}, 64
+                ),
+            }
+        )
+    component_records.sort(key=lambda item: str(item["tie_break"]))
+    shards: list[dict[str, Any]] = []
+    for component in component_records:
+        if not shards or len(shards[-1]["sources"] | component["sources"]) > files_per_shard:
+            shards.append({"sources": set(), "indices": []})
+        shards[-1]["sources"].update(component["sources"])
+        shards[-1]["indices"].extend(component["indices"])
+    assignment = {
+        index: shard_index
+        for shard_index, shard in enumerate(shards)
+        for index in shard["indices"]
+    }
+    sharded = [
+        {**row, "network_strain_shard": assignment[index]}
+        for index, row in enumerate(rows)
+    ]
+    sharded.sort(
+        key=lambda row: (int(row["network_strain_shard"]), str(row["glitch_id"]))
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "gravityspy_network_strain_shards.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in sharded)
+    )
+    source_shards: dict[str, set[int]] = defaultdict(set)
+    for row in sharded:
+        for source in row["network_strain_sources"].values():
+            source_shards[str(source["hdf5_url"])].add(
+                int(row["network_strain_shard"])
+            )
+    if any(len(values) != 1 for values in source_shards.values()):
+        raise RuntimeError("Network source file was assigned to more than one shard")
+    report = {
+        "status": "bounded_gravityspy_network_strain_shards",
+        "scientific_claim_allowed": False,
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "seed": seed,
+        "files_per_shard": files_per_shard,
+        "rows": len(sharded),
+        "unique_glitches": len(glitch_ids),
+        "unique_source_files": len(source_shards),
+        "connected_components": len(component_records),
+        "shards": len(shards),
+        "all_source_files_assigned_once": True,
+        "shard_summaries": [
+            {
+                "shard": index,
+                "rows": len(shard["indices"]),
+                "unique_files": len(shard["sources"]),
+            }
+            for index, shard in enumerate(shards)
+        ],
+        **_execution_provenance(),
+    }
+    atomic_write_json(output / "gravityspy_network_strain_shard_report.json", report)
+    return report
+
+
 def materialize_gravityspy_network_strain(
     manifest_path: str | Path,
     config_path: str | Path,
@@ -420,13 +548,22 @@ def materialize_gravityspy_network_strain(
     output_duration: float = 8.0,
     download_workers: int = 8,
     chunk_samples: int = 1_048_576,
+    shard: int | None = None,
 ) -> dict[str, Any]:
     """Verify and transform aligned real H1/L1/V1 contexts around catalog glitches."""
 
     if output_duration <= 0 or download_workers <= 0 or chunk_samples <= 0:
         raise ValueError("Invalid Gravity Spy network materialization settings")
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
-        rows = [json.loads(line) for line in handle if line.strip()]
+        all_rows = [json.loads(line) for line in handle if line.strip()]
+    if shard is not None:
+        if shard < 0:
+            raise ValueError("Network Gravity Spy shard must be non-negative")
+        if any("network_strain_shard" not in row for row in all_rows):
+            raise ValueError("Requested network shard from an unsharded manifest")
+        rows = [row for row in all_rows if int(row["network_strain_shard"]) == shard]
+    else:
+        rows = all_rows
     if not rows:
         raise ValueError("Gravity Spy network materialization requires a non-empty plan")
     glitch_ids = [str(row["glitch_id"]) for row in rows]
@@ -468,6 +605,7 @@ def materialize_gravityspy_network_strain(
         "output_duration": output_duration,
         "download_workers": download_workers,
         "chunk_samples": chunk_samples,
+        "shard": shard,
     }
     state_path = output / "materialization_state.json"
     partial_path = output / "materialization_partial.json"
@@ -678,6 +816,7 @@ def materialize_gravityspy_network_strain(
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
         "rows": len(completed),
+        "shard": shard,
         "requested_rows": len(rows),
         "rejected_rows": len(rejected),
         "rejection_reason_counts": dict(
@@ -1321,6 +1460,91 @@ def merge_gravityspy_numeric_manifests(
         "weak_masks": sum(not bool(row.get("human_pixel_mask")) for row in rows),
     }
     atomic_write_json(output / "gravityspy_numeric_merge_report.json", result)
+    return result
+
+
+def merge_gravityspy_network_numeric_manifests(
+    report_paths: Iterable[str | Path],
+    output_dir: str | Path,
+    expected_split: str,
+) -> dict[str, Any]:
+    """Hash-verify aligned-network shards without mixing single-IFO artifacts."""
+
+    if expected_split not in {"train", "val", "test"}:
+        raise ValueError("Expected network Gravity Spy split must be train, val or test")
+    paths = [Path(path) for path in report_paths]
+    if not paths:
+        raise ValueError("At least one network Gravity Spy report is required")
+    rows: list[dict[str, Any]] = []
+    seen_glitches: set[str] = set()
+    source_reports = []
+    for path in paths:
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") != "verified_gravityspy_aligned_network_numeric_weak_masks":
+            raise ValueError(f"Network Gravity Spy report is incomplete: {path}")
+        manifest = Path(report["manifest_path"])
+        if file_sha256(manifest) != str(report["manifest_sha256"]):
+            raise ValueError(f"Network Gravity Spy manifest hash mismatch: {manifest}")
+        with manifest.open("r", encoding="utf-8") as handle:
+            source_rows = [json.loads(line) for line in handle if line.strip()]
+        if len(source_rows) != int(report["rows"]):
+            raise ValueError(f"Network Gravity Spy row count mismatch: {manifest}")
+        for row in source_rows:
+            glitch_id = str(row["glitch_id"])
+            if glitch_id in seen_glitches:
+                raise ValueError(f"Duplicate network Gravity Spy glitch: {glitch_id}")
+            if row.get("split") != expected_split:
+                raise ValueError("Network Gravity Spy shard mixes frozen splits")
+            if not row.get("aligned_network_context"):
+                raise ValueError("Network Gravity Spy row lacks aligned-context certification")
+            if len(row.get("available_ifos", [])) < 2:
+                raise ValueError("Network Gravity Spy row lacks a companion detector")
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError(f"Network Gravity Spy sample hash mismatch: {row['path']}")
+            seen_glitches.add(glitch_id)
+            rows.append(row)
+        source_reports.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "manifest_sha256": report["manifest_sha256"],
+                "rows": len(source_rows),
+                "shard": report.get("shard"),
+            }
+        )
+    rows.sort(key=lambda row: str(row["glitch_id"]))
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / f"gravityspy_network_numeric_{expected_split}.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    result = {
+        "status": "verified_merged_gravityspy_aligned_network_numeric_split",
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "scientific_blocker": (
+            "weak masks require human audit and aligned contexts require frozen continuous "
+            "background/coherence evaluation"
+        ),
+        "split": expected_split,
+        "source_reports": source_reports,
+        "source_reports_hash": canonical_hash(source_reports, 64),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "rows": len(rows),
+        "unique_glitch_ids": len(seen_glitches),
+        "unique_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in rows}
+        ),
+        "detector_subset_counts": dict(
+            sorted(Counter("".join(row["available_ifos"]) for row in rows).items())
+        ),
+        "human_pixel_masks": sum(bool(row.get("human_pixel_mask")) for row in rows),
+        "weak_masks": sum(not bool(row.get("human_pixel_mask")) for row in rows),
+        **_execution_provenance(),
+    }
+    atomic_write_json(output / "gravityspy_network_numeric_merge_report.json", result)
     return result
 
 

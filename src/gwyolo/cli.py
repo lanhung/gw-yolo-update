@@ -397,6 +397,13 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_materialize.add_argument("--output-duration", type=float, default=8.0)
     gravityspy_network_materialize.add_argument("--download-workers", type=int, default=8)
     gravityspy_network_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
+    gravityspy_network_materialize.add_argument("--shard", type=int)
+
+    gravityspy_network_shard = subparsers.add_parser("gravityspy-network-strain-shard")
+    gravityspy_network_shard.add_argument("--manifest", required=True)
+    gravityspy_network_shard.add_argument("--output-dir", required=True)
+    gravityspy_network_shard.add_argument("--files-per-shard", type=int, default=16)
+    gravityspy_network_shard.add_argument("--seed", type=int, default=20260720)
 
     gravityspy_select = subparsers.add_parser("gravityspy-strain-select")
     gravityspy_select.add_argument("--manifest", required=True)
@@ -426,6 +433,13 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_merge.add_argument("--report", action="append", required=True)
     gravityspy_merge.add_argument("--output-dir", required=True)
     gravityspy_merge.add_argument("--split", choices=("train", "val", "test"), required=True)
+
+    gravityspy_network_merge = subparsers.add_parser("gravityspy-network-numeric-merge")
+    gravityspy_network_merge.add_argument("--report", action="append", required=True)
+    gravityspy_network_merge.add_argument("--output-dir", required=True)
+    gravityspy_network_merge.add_argument(
+        "--split", choices=("train", "val", "test"), required=True
+    )
 
     gravityspy_evict = subparsers.add_parser("gravityspy-strain-evict")
     gravityspy_evict.add_argument("--materialization-report", required=True)
@@ -1160,6 +1174,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_duration,
                 args.download_workers,
                 args.chunk_samples,
+                args.shard,
+            )
+        )
+    elif args.command == "gravityspy-network-strain-shard":
+        from .gravityspy import shard_gravityspy_network_strain_plan
+
+        _print(
+            shard_gravityspy_network_strain_plan(
+                args.manifest, args.output_dir, args.files_per_shard, args.seed
             )
         )
     elif args.command == "gravityspy-strain-shard":
@@ -1205,6 +1228,14 @@ def main(argv: list[str] | None = None) -> int:
         from .gravityspy import merge_gravityspy_numeric_manifests
 
         _print(merge_gravityspy_numeric_manifests(args.report, args.output_dir, args.split))
+    elif args.command == "gravityspy-network-numeric-merge":
+        from .gravityspy import merge_gravityspy_network_numeric_manifests
+
+        _print(
+            merge_gravityspy_network_numeric_manifests(
+                args.report, args.output_dir, args.split
+            )
+        )
     elif args.command == "gravityspy-strain-evict":
         from .gravityspy import evict_gravityspy_verified_sources
 

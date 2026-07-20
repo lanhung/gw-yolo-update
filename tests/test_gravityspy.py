@@ -14,8 +14,10 @@ from gwyolo.gravityspy import (
     match_glitch_to_strain_file,
     materialize_gravityspy_network_strain,
     merge_gravityspy_numeric_manifests,
+    merge_gravityspy_network_numeric_manifests,
     plan_gravityspy_network_strain,
     select_gravityspy_source_files,
+    shard_gravityspy_network_strain_plan,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
@@ -216,6 +218,84 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         assert np.count_nonzero(arrays["features"][2]) == 0
         assert np.count_nonzero(arrays["glitch_mask"][0]) > 0
         assert np.count_nonzero(arrays["glitch_mask"][1:]) == 0
+
+
+def test_gravityspy_network_shards_keep_shared_sources_together(tmp_path) -> None:
+    manifest = tmp_path / "network-plan.jsonl"
+    rows = []
+    source_pairs = [
+        ("h1-a", "l1-a"),
+        ("h1-a", "l1-b"),
+        ("h1-c", "l1-c"),
+    ]
+    for index, (h1, l1) in enumerate(source_pairs):
+        rows.append(
+            {
+                "glitch_id": f"g-{index}",
+                "network_strain_sources": {
+                    "H1": {"hdf5_url": h1},
+                    "L1": {"hdf5_url": l1},
+                },
+            }
+        )
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = shard_gravityspy_network_strain_plan(
+        manifest, tmp_path / "shards", files_per_shard=3, seed=4
+    )
+    assert report["rows"] == 3
+    assert report["unique_source_files"] == 5
+    assert report["connected_components"] == 2
+    assert report["shards"] == 2
+    assert report["all_source_files_assigned_once"]
+    sharded = [
+        json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()
+    ]
+    by_glitch = {row["glitch_id"]: row["network_strain_shard"] for row in sharded}
+    assert by_glitch["g-0"] == by_glitch["g-1"]
+    assert by_glitch["g-2"] != by_glitch["g-0"]
+
+
+def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> None:
+    reports = []
+    for index in range(2):
+        sample = tmp_path / f"network-{index}.npz"
+        np.savez(sample, detector_availability=np.asarray([1, 1, 0]))
+        manifest = tmp_path / f"network-{index}.jsonl"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "glitch_id": f"g-{index}",
+                    "split": "val",
+                    "network_gps_block": f"block-{index}",
+                    "available_ifos": ["H1", "L1"],
+                    "aligned_network_context": True,
+                    "human_pixel_mask": False,
+                    "path": str(sample),
+                    "sha256": file_sha256(sample),
+                }
+            )
+            + "\n"
+        )
+        report = tmp_path / f"network-report-{index}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "rows": 1,
+                    "shard": index,
+                }
+            )
+        )
+        reports.append(report)
+    merged = merge_gravityspy_network_numeric_manifests(
+        reports, tmp_path / "merged-network", "val"
+    )
+    assert merged["rows"] == merged["unique_glitch_ids"] == 2
+    assert merged["detector_subset_counts"] == {"H1L1": 2}
+    assert merged["weak_masks"] == 2
+    assert merged["network_coherence_claim_allowed"] is False
 
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
