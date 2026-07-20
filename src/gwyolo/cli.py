@@ -413,6 +413,19 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_evict.add_argument("--cache-dir", required=True)
     gravityspy_evict.add_argument("--output", required=True)
 
+    physical_overlap = subparsers.add_parser("physical-overlap-materialize")
+    physical_overlap.add_argument("--gravityspy-manifest", required=True)
+    physical_overlap.add_argument("--injection-manifest", required=True)
+    physical_overlap.add_argument("--config", required=True)
+    physical_overlap.add_argument("--output-dir", required=True)
+    physical_overlap.add_argument("--split", required=True, choices=["train", "val", "test"])
+    physical_overlap.add_argument("--seed", type=int, default=20260720)
+    physical_overlap.add_argument("--limit", type=int)
+
+    physical_overlap_audit = subparsers.add_parser("physical-overlap-audit")
+    physical_overlap_audit.add_argument("--manifest", action="append", required=True)
+    physical_overlap_audit.add_argument("--output", required=True)
+
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
     mask_audit_plan.add_argument("--output-dir", required=True)
@@ -1143,6 +1156,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.materialization_report, args.cache_dir, args.output
             )
         )
+    elif args.command == "physical-overlap-materialize":
+        from .overlaps import materialize_physical_overlaps
+
+        _print(
+            materialize_physical_overlaps(
+                args.gravityspy_manifest,
+                args.injection_manifest,
+                args.config,
+                args.output_dir,
+                args.split,
+                args.seed,
+                args.limit,
+            )
+        )
+    elif args.command == "physical-overlap-audit":
+        from .overlaps import audit_physical_overlap_manifests
+
+        _print(audit_physical_overlap_manifests(args.manifest, args.output))
     elif args.command == "gravityspy-mask-audit-plan":
         from .mask_audit import plan_gravityspy_mask_audit
 
