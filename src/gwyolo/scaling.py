@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, file_sha256, load_yaml
 
 
 EXPECTED_PROVENANCE_FIELDS = (
@@ -319,6 +319,10 @@ def summarize_physical_scale_reports(
                 "optimizer_examples": int(report["optimizer_examples"]),
                 "pretrained_checkpoint_sha256": str(report["pretrained_checkpoint_sha256"]),
                 "config_hash": str(report["config_hash"]),
+                "code_commit": str(report.get("code_commit") or ""),
+                "validation_tensor_cache_version": report.get("run_identity", {}).get(
+                    "validation_tensor_cache_version"
+                ),
                 "checkpoint_sha256": str(report["checkpoint_sha256"]),
                 "report_path": str(path),
                 "report_sha256": file_sha256(path),
@@ -329,9 +333,13 @@ def summarize_physical_scale_reports(
         "optimizer_examples",
         "pretrained_checkpoint_sha256",
         "config_hash",
+        "code_commit",
+        "validation_tensor_cache_version",
     ):
         if len({record[field] for record in records}) != 1:
             raise ValueError(f"Physical scale reports disagree on controlled field: {field}")
+    if not records[0]["code_commit"]:
+        raise ValueError("Physical scale reports must identify their code commit")
     summaries = []
     expected_scales = sorted(scale_by_hash.values())
     for scale in expected_scales:
@@ -379,8 +387,72 @@ def summarize_physical_scale_reports(
             "pretrained_checkpoint_sha256"
         ],
         "controlled_config_hash": records[0]["config_hash"],
+        "controlled_code_commit": records[0]["code_commit"],
+        "controlled_validation_tensor_cache_version": records[0][
+            "validation_tensor_cache_version"
+        ],
         "scales": summaries,
         "test_evaluation": None,
     }
     atomic_write_json(output_path, result)
     return result
+
+
+def run_physical_fixed_update_series(
+    config_path: str | Path,
+    scale_subset_report_path: str | Path,
+    pretrained_checkpoint: str | Path,
+    output_dir: str | Path,
+    seeds: list[int],
+    validation_feature_cache_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run every frozen fixed-update scale/seed and produce one controlled summary."""
+    unique_seeds = sorted(set(int(seed) for seed in seeds))
+    if not unique_seeds or len(unique_seeds) != len(seeds):
+        raise ValueError("Physical scale series seeds must be non-empty and unique")
+    if not os.environ.get("GWYOLO_CODE_COMMIT"):
+        raise ValueError("Physical scale series requires GWYOLO_CODE_COMMIT provenance")
+    config = load_yaml(config_path)
+    settings = config.get("physical_training", {})
+    if (
+        settings.get("checkpoint_selection") != "final_update"
+        or int(settings.get("max_optimizer_updates", 0)) <= 0
+    ):
+        raise ValueError("Physical fixed-update series requires final_update and a positive budget")
+    with Path(scale_subset_report_path).open("r", encoding="utf-8") as handle:
+        scale_plan = json.load(handle)
+    validation_manifest = Path(scale_plan["validation_manifest_path"])
+    if file_sha256(validation_manifest) != scale_plan["validation_manifest_sha256"]:
+        raise ValueError("Frozen physical scale validation manifest hash mismatch")
+    scales = sorted(scale_plan.get("scales", []), key=lambda item: int(item["scale"]))
+    if not scales:
+        raise ValueError("Physical scale series plan contains no scales")
+    from .physical_training import run_physical_finetune
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    report_paths = []
+    for item in scales:
+        train_manifest = Path(item["manifest_path"])
+        if file_sha256(train_manifest) != item["manifest_sha256"]:
+            raise ValueError(f"Frozen physical scale manifest hash mismatch: {train_manifest}")
+        for seed in unique_seeds:
+            run_dir = output / f"scale-{int(item['scale'])}" / f"seed-{seed}"
+            run_physical_finetune(
+                config_path,
+                train_manifest,
+                validation_manifest,
+                pretrained_checkpoint,
+                run_dir,
+                seed,
+                validation_feature_cache_dir,
+            )
+            report_path = run_dir / "physical_finetune_report.json"
+            if not report_path.is_file():
+                raise RuntimeError(f"Physical scale run completed without a report: {run_dir}")
+            report_paths.append(report_path)
+    return summarize_physical_scale_reports(
+        report_paths,
+        scale_subset_report_path,
+        output / "physical_fixed_update_scale_summary.json",
+    )

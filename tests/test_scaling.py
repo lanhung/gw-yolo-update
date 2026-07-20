@@ -118,6 +118,8 @@ def test_physical_scale_summary_enforces_controls_and_calculates_seed_spread(tmp
                     "optimizer_examples": 60000,
                     "pretrained_checkpoint_sha256": "pretrained-hash",
                     "config_hash": "config-hash",
+                    "code_commit": "commit-hash",
+                    "run_identity": {"validation_tensor_cache_version": "cache-v1"},
                     "checkpoint_sha256": f"checkpoint-{seed}",
                 }
             )
@@ -131,3 +133,4 @@ def test_physical_scale_summary_enforces_controls_and_calculates_seed_spread(tmp
     assert scale["validation_chirp_iou_sample_std"] == pytest.approx(2**-0.5 * 0.2)
     assert not scale["minimum_three_seed_gate"]
     assert not result["scientific_claim_allowed"]
+    assert result["controlled_code_commit"] == "commit-hash"

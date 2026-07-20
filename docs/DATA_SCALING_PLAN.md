@@ -2,7 +2,7 @@
 
 ## Decision
 
-Data scale and physical coverage are now the program's highest-priority bottleneck. The current corpus is sufficient only for a legacy image-segmentation proof of concept. Architecture work beyond a compact baseline must not be treated as the main path until the project has measured a group-safe learning curve and built a substantially larger evaluation set.
+Data scale and physical coverage remain important, but the 2026-07-20 strategy review removes blind scale-up as the default path. The first decision is whether a compact physics-coherent detector-set model is limited by waveform count, GPS/run diversity, glitch/OOD coverage or representation. Architecture and data increments are promoted only by frozen O4a endpoints under fixed-epoch and fixed-update controls.
 
 The program distinguishes three quantities:
 
@@ -222,6 +222,13 @@ SNR/distance, source family, IFO network and observing run. Stop increasing coun
 uncertainty on paired `<VT>` improvement is below the predeclared effect size and performance has
 plateaued across at least two successive scale points.
 
+The 200k/0.5M--2M targets are now contingency ceilings, not scheduled deliverables. After the frozen
+2k/5k/10k controls, run 25k only if the primary O4a endpoint or a predeclared low-SNR/overlap
+endpoint improves materially. Run 50k under the same rule. If transfer is flat, spend the next unit
+of compute on new GPS blocks, observing runs, real/held-out glitches, detector subsets, calibration
+perturbations or hard negatives rather than duplicated waveform scenes. See
+`PHYSICS_COHERENT_STRATEGY.md`.
+
 On the current RTX 4090 D, a 100k-scene YOLO26m experiment is expected to be an order of roughly one day rather than minutes, before multi-Q generation overhead. Measure generator throughput before committing to a 1M-scene run.
 
 ## Promotion gates
@@ -371,6 +378,12 @@ IFO/Q order and sample rate. Features remain float32 and binary plane targets ar
 atomic writes and key/shape/content checks make a bad cache a hard failure. Training tensors are not
 disk-cached, avoiding a multi-gigabyte duplicate of every scale and preserving fresh online
 construction as the primary path.
+
+`physical-scale-series` is the publication runner for the fixed-update control. It hash-verifies the
+frozen subset and validation manifests, requires `final_update`, runs every requested scale/seed
+from the declared pretrained checkpoint, resumes only identity-matching outputs, and then invokes
+the strict summary gate. Summary pooling requires identical code commit, config, pretrained hash,
+optimizer updates/examples and validation-cache version; three seeds per scale remain the minimum.
 
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
