@@ -1,0 +1,18 @@
+physical_training:
+  seed: 20260720
+  epochs: 10
+  batch_size: 16
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  chirp_positive_weight: 10.0
+  glitch_distillation_weight: 0.25
+  cache_in_memory: true
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]
+  target_sample_rate: 1024
+  threshold_grid: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  tensor:
+    frequency_bins: 96
+    time_bins: 96
+    fmin: 16.0
+    fmax: 500.0

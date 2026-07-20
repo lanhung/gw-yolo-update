@@ -95,3 +95,12 @@ was disabled and remains null.
    O1–O4a background anchors. Synthetic ease may exaggerate the slope and absolute IoU.
 4. Keep O4b and the final test corpus locked until the real-data architecture, thresholds, and loss
    are frozen.
+
+`gwyolo physical-finetune` is the next executable bridge. It accepts separate train/validation
+materialized manifests, rejects waveform/injection/GPS-block overlap, constructs real-noise features
+and relative physical-waveform masks, selects checkpoints only on physical validation chirp IoU, and
+never accepts a test manifest. A frozen teacher distills the pretrained glitch head while the chirp
+path adapts; this is a preservation constraint, not a substitute for real glitch labels.
+Remote publication runs set `GWYOLO_CODE_COMMIT` to the exact deployed commit; the report also
+records the literal command, environment, config hash, both manifest hashes, pretrained-model hash,
+selected-model hash, and seed.

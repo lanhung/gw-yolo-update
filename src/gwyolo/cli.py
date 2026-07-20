@@ -186,6 +186,14 @@ def build_parser() -> argparse.ArgumentParser:
     numeric_evaluate.add_argument("--glitch-threshold", required=True, type=float)
     numeric_evaluate.add_argument("--output", required=True)
 
+    physical_finetune = subparsers.add_parser("physical-finetune")
+    physical_finetune.add_argument("--config", required=True)
+    physical_finetune.add_argument("--train-manifest", required=True)
+    physical_finetune.add_argument("--validation-manifest", required=True)
+    physical_finetune.add_argument("--pretrained-checkpoint", required=True)
+    physical_finetune.add_argument("--output-dir", required=True)
+    physical_finetune.add_argument("--seed", type=int)
+
     subset = subparsers.add_parser("recipe-subset")
     subset.add_argument("--manifest", required=True)
     subset.add_argument("--output", required=True)
@@ -524,6 +532,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.split,
                 (args.chirp_threshold, args.glitch_threshold),
                 args.output,
+            )
+        )
+    elif args.command == "physical-finetune":
+        from .physical_training import run_physical_finetune
+
+        _print(
+            run_physical_finetune(
+                args.config,
+                args.train_manifest,
+                args.validation_manifest,
+                args.pretrained_checkpoint,
+                args.output_dir,
+                args.seed,
             )
         )
     elif args.command == "recipe-subset":

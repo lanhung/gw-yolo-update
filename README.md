@@ -58,6 +58,7 @@ gwyolo gwosc-event-exclusions cache padded catalog-event vetoes for a developmen
 gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
 gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
+gwyolo physical-finetune adapt the selected model to split-safe physical injections and real noise
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
 gwyolo fit-curve fit an exploratory power-law learning curve to controlled scale points
