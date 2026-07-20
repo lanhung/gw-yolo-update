@@ -282,6 +282,17 @@ def candidate_crop_contains_arrival(
     return crop_start <= arrival < crop_start + local_duration_seconds
 
 
+def _candidate_timing_prediction(logits: Any, estimator: str) -> Any:
+    if estimator == "argmax":
+        return torch.argmax(logits, dim=1).to(logits.dtype)
+    if estimator == "expected_probability":
+        bins = torch.arange(
+            logits.shape[1], dtype=logits.dtype, device=logits.device
+        )[None]
+        return torch.sum(torch.softmax(logits, dim=1) * bins, dim=1)
+    raise ValueError("candidate timing estimator is unknown")
+
+
 def candidate_arrival_threshold_metrics(
     prediction_rows: list[dict[str, Any]],
     thresholds: list[float],
@@ -477,6 +488,7 @@ def _candidate_refiner_epoch(
     timing_loss_mode: str,
     gaussian_sigma_bins: float,
     coordinate_loss_weight: float,
+    timing_estimator: str,
     local_duration_seconds: float,
     local_output_bins: int,
     max_batches: int | None = None,
@@ -553,7 +565,9 @@ def _candidate_refiner_epoch(
         labels.extend(presence.detach().cpu().numpy().astype(bool).tolist())
         scores.extend(probability.detach().cpu().numpy().tolist())
         if torch.any(positive):
-            predicted = torch.argmax(timing_logits[positive], dim=1).cpu().numpy()
+            predicted = _candidate_timing_prediction(
+                timing_logits[positive], timing_estimator
+            ).cpu().numpy()
             predicted_offset = (
                 predicted.astype(np.float64) + 0.5
             ) * local_duration_seconds / local_output_bins
@@ -704,10 +718,13 @@ def run_candidate_local_refiner_training(
     timing_loss_mode = str(settings.get("timing_loss_mode", "categorical"))
     gaussian_sigma_bins = float(settings.get("gaussian_sigma_bins", 2.0))
     coordinate_loss_weight = float(settings.get("coordinate_loss_weight", 0.0))
+    timing_estimator = str(settings.get("timing_estimator", "argmax"))
     if timing_loss_mode not in {"categorical", "gaussian_coordinate"}:
         raise ValueError("candidate refiner timing loss mode is unknown")
     if gaussian_sigma_bins <= 0 or coordinate_loss_weight < 0:
         raise ValueError("candidate refiner soft timing loss settings are invalid")
+    if timing_estimator not in {"argmax", "expected_probability"}:
+        raise ValueError("candidate refiner timing estimator is unknown")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = CandidateLocalSpectrogramRefiner(
         len(model_ifos), local_output_bins, int(settings["base_channels"])
@@ -751,6 +768,7 @@ def run_candidate_local_refiner_training(
         timing_loss_mode,
         gaussian_sigma_bins,
         coordinate_loss_weight,
+        timing_estimator,
         local_duration,
         local_output_bins,
     )
@@ -795,6 +813,7 @@ def run_candidate_local_refiner_training(
                     "local_duration_seconds": local_duration,
                     "local_output_bins": local_output_bins,
                     "base_channels": int(settings["base_channels"]),
+                    "timing_estimator": timing_estimator,
                     "epoch": epoch,
                     "validation_selection_key": key,
                     "run_identity": identity,
@@ -852,6 +871,7 @@ def run_candidate_local_refiner_training(
             bool(row["refiner_positive"]) for row in train_candidates
         ),
         "timing_loss_mode": timing_loss_mode,
+        "timing_estimator": timing_estimator,
         "best_epoch": best_epoch,
         "selection_metric": (
             "maximum validation-selection candidate average precision, then minimum positive "
@@ -968,7 +988,9 @@ def run_candidate_local_refiner_validation(
                 crop.to(device), availability.to(device), ifo_index.to(device)
             )
             scores = torch.sigmoid(presence_logits).cpu().numpy()
-            timing_bins = torch.argmax(timing_logits, dim=1).cpu().numpy()
+            timing_bins = _candidate_timing_prediction(
+                timing_logits, str(settings["timing_estimator"])
+            ).cpu().numpy()
             for batch_index, (score, timing_bin) in enumerate(
                 zip(scores, timing_bins, strict=True)
             ):
@@ -990,7 +1012,7 @@ def run_candidate_local_refiner_validation(
                         "local_crop_contains_arrival": candidate_crop_contains_arrival(
                             source, local_duration
                         ),
-                        "predicted_local_timing_bin": int(timing_bin),
+                        "predicted_local_timing_bin": float(timing_bin),
                         "refined_arrival_gps": refined_gps,
                         "target_detector_arrival_gps": target_gps,
                         "refined_timing_error_seconds": abs(refined_gps - target_gps),
@@ -1076,6 +1098,7 @@ def run_candidate_local_refiner_validation(
         "all_candidates_scored": True,
         "top_k_pruning": None,
         "candidate_average_precision": average_precision,
+        "timing_estimator": str(settings["timing_estimator"]),
         "positive_candidate_timing_error_seconds_quantiles": timing_quantiles,
         "threshold_selection_rule": (
             "highest predeclared presence threshold retaining at least the configured "

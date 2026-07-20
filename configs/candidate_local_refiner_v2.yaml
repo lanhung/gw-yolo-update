@@ -11,6 +11,7 @@ candidate_local_refiner:
   timing_loss_mode: gaussian_coordinate
   gaussian_sigma_bins: 2.0
   coordinate_loss_weight: 10.0
+  timing_estimator: expected_probability
   base_channels: 16
   cache_parents: true
   analysis_duration_seconds: 8.0

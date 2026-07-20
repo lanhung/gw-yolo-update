@@ -9,6 +9,7 @@ candidate_local_refiner:
   timing_loss_weight: 1.0
   label_smoothing: 0.02
   timing_loss_mode: categorical
+  timing_estimator: argmax
   base_channels: 16
   cache_parents: true
   analysis_duration_seconds: 8.0
