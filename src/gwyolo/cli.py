@@ -120,6 +120,17 @@ def build_parser() -> argparse.ArgumentParser:
     physical_validation.add_argument("--seed", type=int, default=20260719)
     physical_validation.add_argument("--output", required=True)
 
+    physical_validation_summary = subparsers.add_parser(
+        "physical-validation-summarize"
+    )
+    physical_validation_summary.add_argument(
+        "--endpoint-report", action="append", required=True
+    )
+    physical_validation_summary.add_argument("--scale-subset-report", required=True)
+    physical_validation_summary.add_argument("--bootstrap-replicates", type=int, default=10000)
+    physical_validation_summary.add_argument("--seed", type=int, default=20260720)
+    physical_validation_summary.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -620,6 +631,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.background_score_report,
                 args.injection_score_report,
                 args.maximum_validation_false_alarms,
+                args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "physical-validation-summarize":
+        from .search import summarize_physical_validation_endpoints
+
+        _print(
+            summarize_physical_validation_endpoints(
+                args.endpoint_report,
+                args.scale_subset_report,
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,

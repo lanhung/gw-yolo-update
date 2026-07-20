@@ -5,6 +5,7 @@ import pytest
 
 from gwyolo.search import (
     calibrate_validation_count,
+    aggregate_physical_endpoint_records,
     calibrate_threshold,
     compare_search_methods,
     evaluate_search,
@@ -35,6 +36,24 @@ def test_validation_count_threshold_handles_ties_without_exceeding_budget():
     assert result["threshold"] == 0.9
     assert result["background_count"] == 1
     assert result["selection_data"] == "validation_background_only"
+
+
+def test_physical_endpoint_record_aggregation_pairs_seed_deltas_by_hand():
+    result = aggregate_physical_endpoint_records(
+        [
+            {"scale": 2000, "seed": 1, "weighted_efficiency": 0.2},
+            {"scale": 2000, "seed": 2, "weighted_efficiency": 0.4},
+            {"scale": 2000, "seed": 3, "weighted_efficiency": 0.3},
+            {"scale": 5000, "seed": 1, "weighted_efficiency": 0.3},
+            {"scale": 5000, "seed": 2, "weighted_efficiency": 0.35},
+            {"scale": 5000, "seed": 3, "weighted_efficiency": 0.5},
+        ]
+    )
+    assert result["minimum_three_seed_gate"] is True
+    assert result["scales"][0]["weighted_efficiency_mean"] == pytest.approx(0.3)
+    delta = result["adjacent_seed_deltas"][0]
+    assert delta["weighted_efficiency_delta_mean"] == pytest.approx((0.1 - 0.05 + 0.2) / 3)
+    assert delta["all_seed_deltas_positive"] is False
 
 
 def test_search_evaluation_reports_weighted_vt():

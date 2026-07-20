@@ -217,6 +217,12 @@ python -m gwyolo.cli physical-validation-endpoint \
   --output artifacts/endpoint/physical_validation_endpoint.json
 ```
 
+After all seeds finish, `physical-validation-summarize` re-verifies every endpoint and underlying
+trigger artifact, enforces identical scoring/training controls, reports seed mean/spread including
+null or negative deltas, and computes paired injection-level recovered-`<VT>` bootstrap changes for
+each adjacent scale and seed. Its promotion flag remains false until the equal-epoch checkpoints are
+scored on the same endpoint and adequate clustered background exposure exists.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing

@@ -680,6 +680,237 @@ def run_physical_validation_endpoint(
     return result
 
 
+def aggregate_physical_endpoint_records(
+    records: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate pre-audited endpoint records and retain seed-level null results."""
+    rows = list(records)
+    if not rows:
+        raise ValueError("At least one physical endpoint record is required")
+    keys = [(int(row["scale"]), int(row["seed"])) for row in rows]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Physical endpoint records contain duplicate scale/seed pairs")
+    scales = []
+    for scale in sorted({item[0] for item in keys}):
+        selected = sorted(
+            (row for row in rows if int(row["scale"]) == scale),
+            key=lambda row: int(row["seed"]),
+        )
+        values = np.asarray(
+            [float(row["weighted_efficiency"]) for row in selected], dtype=np.float64
+        )
+        scales.append(
+            {
+                "scale": scale,
+                "seeds": [int(row["seed"]) for row in selected],
+                "seed_count": len(selected),
+                "weighted_efficiency_mean": float(values.mean()),
+                "weighted_efficiency_sample_std": (
+                    float(values.std(ddof=1)) if len(values) >= 2 else None
+                ),
+                "minimum_three_seed_gate": len(selected) >= 3,
+                "runs": selected,
+            }
+        )
+    adjacent_seed_deltas = []
+    for lower, upper in zip(scales, scales[1:]):
+        lower_by_seed = {int(row["seed"]): row for row in lower["runs"]}
+        upper_by_seed = {int(row["seed"]): row for row in upper["runs"]}
+        common = sorted(set(lower_by_seed) & set(upper_by_seed))
+        deltas = np.asarray(
+            [
+                float(upper_by_seed[seed]["weighted_efficiency"])
+                - float(lower_by_seed[seed]["weighted_efficiency"])
+                for seed in common
+            ],
+            dtype=np.float64,
+        )
+        adjacent_seed_deltas.append(
+            {
+                "lower_scale": lower["scale"],
+                "upper_scale": upper["scale"],
+                "paired_seeds": common,
+                "seed_count": len(common),
+                "weighted_efficiency_delta_mean": (
+                    float(deltas.mean()) if len(deltas) else None
+                ),
+                "weighted_efficiency_delta_sample_std": (
+                    float(deltas.std(ddof=1)) if len(deltas) >= 2 else None
+                ),
+                "all_seed_deltas_positive": bool(len(deltas) and np.all(deltas > 0)),
+            }
+        )
+    return {
+        "scales": scales,
+        "adjacent_seed_deltas": adjacent_seed_deltas,
+        "minimum_three_seed_gate": all(item["minimum_three_seed_gate"] for item in scales),
+    }
+
+
+def summarize_physical_validation_endpoints(
+    endpoint_reports: list[str | Path],
+    scale_subset_report: str | Path,
+    output: str | Path,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Summarize controlled scale endpoints with paired injection-level comparisons."""
+    if not endpoint_reports:
+        raise ValueError("At least one physical validation endpoint report is required")
+    with Path(scale_subset_report).open("r", encoding="utf-8") as handle:
+        scale_plan = json.load(handle)
+    scale_by_train_hash = {
+        str(item["manifest_sha256"]): int(item["scale"])
+        for item in scale_plan.get("scales", [])
+    }
+    expected_validation = str(scale_plan["validation_manifest_sha256"])
+    records = []
+    scored_rows: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    controlled: dict[str, set[str]] = {
+        "scoring_code_commit": set(),
+        "scoring_config_sha256": set(),
+        "training_code_commit": set(),
+        "background_manifest_sha256": set(),
+        "validation_manifest_sha256": set(),
+        "maximum_validation_false_alarms": set(),
+        "live_time_seconds": set(),
+    }
+    for endpoint_path_value in endpoint_reports:
+        endpoint_path = Path(endpoint_path_value)
+        with endpoint_path.open("r", encoding="utf-8") as handle:
+            endpoint = json.load(handle)
+        if endpoint.get("status") != "validation_only_exposure_limited_physical_endpoint":
+            raise ValueError(f"Invalid physical validation endpoint status: {endpoint_path}")
+        if endpoint.get("scientific_claim_allowed") is not False:
+            raise ValueError(f"Endpoint lacks exposure-limited claim guard: {endpoint_path}")
+        training = endpoint["training"]
+        train_hash = str(training["train_manifest_sha256"])
+        if train_hash not in scale_by_train_hash:
+            raise ValueError(f"Endpoint is not from the frozen scale plan: {endpoint_path}")
+        if str(training["validation_manifest_sha256"]) != expected_validation:
+            raise ValueError(f"Endpoint uses a different validation manifest: {endpoint_path}")
+        scale = scale_by_train_hash[train_hash]
+        run_seed = int(training["seed"])
+        injection_report_path = Path(endpoint["injection_score_report_path"])
+        background_report_path = Path(endpoint["background_score_report_path"])
+        if file_sha256(injection_report_path) != endpoint["injection_score_report_sha256"]:
+            raise ValueError(f"Endpoint injection score report hash mismatch: {endpoint_path}")
+        if file_sha256(background_report_path) != endpoint["background_score_report_sha256"]:
+            raise ValueError(f"Endpoint background score report hash mismatch: {endpoint_path}")
+        injection_report, injection_rows = _verified_score_artifact(
+            injection_report_path, "injection"
+        )
+        background_report, _ = _verified_score_artifact(background_report_path, "background")
+        if str(injection_report["manifest_sha256"]) != expected_validation:
+            raise ValueError(f"Scored injection manifest differs from frozen validation: {endpoint_path}")
+        key = (scale, run_seed)
+        scored_rows[key] = injection_rows
+        overall = endpoint["injections"]["overall"]
+        records.append(
+            {
+                "scale": scale,
+                "seed": run_seed,
+                "weighted_efficiency": float(overall["weighted_efficiency"]),
+                "weighted_efficiency_bootstrap_95": overall[
+                    "weighted_efficiency_bootstrap_95"
+                ],
+                "recovered_vt": float(overall["recovered_vt"]),
+                "threshold": float(endpoint["calibration"]["threshold"]),
+                "checkpoint_sha256": str(endpoint["checkpoint_sha256"]),
+                "endpoint_report_path": str(endpoint_path),
+                "endpoint_report_sha256": file_sha256(endpoint_path),
+            }
+        )
+        controlled["scoring_code_commit"].add(str(endpoint["code_commit"]))
+        controlled["scoring_config_sha256"].add(str(endpoint["config_sha256"]))
+        controlled["training_code_commit"].add(str(training["code_commit"]))
+        controlled["background_manifest_sha256"].add(
+            str(background_report["manifest_sha256"])
+        )
+        controlled["validation_manifest_sha256"].add(
+            str(injection_report["manifest_sha256"])
+        )
+        controlled["maximum_validation_false_alarms"].add(
+            str(endpoint["calibration"]["maximum_validation_false_alarms"])
+        )
+        controlled["live_time_seconds"].add(str(endpoint["background"]["live_time_seconds"]))
+    disagreements = {field: sorted(values) for field, values in controlled.items() if len(values) != 1}
+    if disagreements:
+        raise ValueError(f"Physical validation endpoints disagree on controls: {disagreements}")
+    aggregate = aggregate_physical_endpoint_records(records)
+    paired = []
+    scales = [item["scale"] for item in aggregate["scales"]]
+    for pair_index, (lower, upper) in enumerate(zip(scales, scales[1:])):
+        for run_seed in sorted(
+            {key[1] for key in scored_rows if key[0] == lower}
+            & {key[1] for key in scored_rows if key[0] == upper}
+        ):
+            lower_rows = {str(row["injection_id"]): row for row in scored_rows[(lower, run_seed)]}
+            upper_rows = {str(row["injection_id"]): row for row in scored_rows[(upper, run_seed)]}
+            if set(lower_rows) != set(upper_rows):
+                raise ValueError("Adjacent endpoint scales use different physical injection IDs")
+            joined = []
+            for injection_id in sorted(lower_rows):
+                row_a = lower_rows[injection_id]
+                row_b = upper_rows[injection_id]
+                if (
+                    str(row_a["waveform_id"]) != str(row_b["waveform_id"])
+                    or float(row_a["vt_weight"]) != float(row_b["vt_weight"])
+                ):
+                    raise ValueError("Adjacent endpoint scales disagree on injection provenance")
+                joined.append(
+                    {
+                        **row_a,
+                        "lower_score": row_a["ranking_score"],
+                        "upper_score": row_b["ranking_score"],
+                    }
+                )
+            lower_record = next(
+                row for row in records if row["scale"] == lower and row["seed"] == run_seed
+            )
+            upper_record = next(
+                row for row in records if row["scale"] == upper and row["seed"] == run_seed
+            )
+            comparison = paired_vt_comparison(
+                joined,
+                lower_record["threshold"],
+                upper_record["threshold"],
+                "lower_score",
+                "upper_score",
+                bootstrap_replicates,
+                seed + pair_index * 100 + run_seed,
+            )
+            paired.append(
+                {
+                    "lower_scale": lower,
+                    "upper_scale": upper,
+                    "seed": run_seed,
+                    **comparison,
+                }
+            )
+    result = {
+        "status": "physical_fixed_update_validation_endpoint_summary",
+        "scientific_claim_allowed": False,
+        "promotion_allowed": False,
+        "promotion_blockers": [
+            "equal-epoch checkpoints still require the same frozen background/injection endpoint",
+            "O4a window exposure is insufficient for astrophysical FAR/IFAR",
+            "locked test remains unopened",
+        ],
+        "controls": {field: next(iter(values)) for field, values in controlled.items()},
+        "scale_subset_report_path": str(scale_subset_report),
+        "scale_subset_report_sha256": file_sha256(scale_subset_report),
+        **aggregate,
+        "paired_injection_comparisons": paired,
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": seed,
+        "test_evaluation": None,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
 def run_search_comparison(
     validation_background: str | Path,
     test_background: str | Path,
