@@ -191,7 +191,9 @@ long/multi-rate context and coherent fusion) before generating more correlated m
 The acquisition side is executable through `gwosc-run-plan`, which paginates the official GWOSC v2
 run strain-file endpoint, intersects exact GPS starts across requested IFOs and samples time strata
 deterministically. `gwosc-batch-download` then resumes each HDF5 transfer and requires a complete
-Fletcher32/statistics/DQ scan before recording it. Both commands reject O4b development access.
+Fletcher32/statistics/DQ scan before recording it. `gwosc-event-exclusions` snapshots every catalog
+event in the run with a declared padding, and `background-batch-plan` applies those vetoes before one
+global GPS-block split across all files. All acquisition commands reject O4b development access.
 
 ## Storage and compute strategy
 

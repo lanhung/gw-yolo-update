@@ -263,3 +263,133 @@ def run_background_plan(
     }
     atomic_write_json(output / "background_plan_report.json", result)
     return result
+
+
+def run_batch_background_plan(
+    batch_report_path: str | Path,
+    event_exclusions_path: str | Path,
+    output_dir: str | Path,
+    window_duration: int = 8,
+    stride: int = 8,
+    block_duration: int = 256,
+    required_context_duration: int = 64,
+    required_dq_bits: int = 1,
+    required_injection_bits: int = 0,
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.2,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    with Path(batch_report_path).open("r", encoding="utf-8") as handle:
+        batch = json.load(handle)
+    if batch.get("status") != "verified_development_strain_batch" or not batch.get("passed"):
+        raise ValueError("Batch strain report is not fully verified")
+    with Path(event_exclusions_path).open("r", encoding="utf-8") as handle:
+        exclusion_report = json.load(handle)
+    if exclusion_report.get("status") != "development_catalog_event_exclusions":
+        raise ValueError("Event exclusions are not a development catalog report")
+    if exclusion_report.get("run") != batch.get("run"):
+        raise ValueError("Batch strain and event-exclusion runs differ")
+    excluded_intervals = [
+        (float(row["exclusion_start"]), float(row["exclusion_end"]))
+        for row in exclusion_report.get("intervals", [])
+    ]
+    by_pair: dict[str, dict[str, str]] = {}
+    pair_gps = {}
+    for source in batch.get("files", []):
+        if not source.get("verification", {}).get("passed"):
+            raise ValueError(f"Source verification did not pass: {source.get('path')}")
+        if file_sha256(source["path"]) != source["sha256"]:
+            raise ValueError(f"Batch source hash mismatch: {source['path']}")
+        pair_id = str(source["pair_id"])
+        ifo = str(source["detector"])
+        if ifo in by_pair.setdefault(pair_id, {}):
+            raise ValueError(f"Duplicate detector {ifo} in pair {pair_id}")
+        by_pair[pair_id][ifo] = str(source["path"])
+        pair_gps[pair_id] = int(source["gps_start"])
+    detector_sets = {tuple(sorted(files)) for files in by_pair.values()}
+    if len(detector_sets) != 1 or not detector_sets or len(next(iter(detector_sets))) < 2:
+        raise ValueError("Batch report does not contain complete, consistent multi-IFO pairs")
+    batch_sha = file_sha256(batch_report_path)
+    rows = []
+    for pair_id in sorted(by_pair, key=lambda value: pair_gps[value]):
+        pair_rows, _ = plan_background_windows(
+            by_pair[pair_id],
+            window_duration=window_duration,
+            stride=stride,
+            block_duration=block_duration,
+            required_context_duration=required_context_duration,
+            required_dq_bits=required_dq_bits,
+            required_injection_bits=required_injection_bits,
+            excluded_intervals=excluded_intervals,
+            validation_fraction=0,
+            test_fraction=0,
+            seed=seed,
+        )
+        for row in pair_rows:
+            row["pair_id"] = pair_id
+            row["observing_run"] = batch["run"]
+            for source in row["source_files"].values():
+                source["verification_report_sha256"] = batch_sha
+        rows.extend(pair_rows)
+    if not rows:
+        raise ValueError("Verified batch produced no DQ-safe background windows")
+    block_mapping = _assign_blocks(
+        (row["gps_block"] for row in rows), validation_fraction, test_fraction, seed
+    )
+    for row in rows:
+        row["split"] = block_mapping[row["gps_block"]]
+    split_blocks = {
+        split: {row["gps_block"] for row in rows if row["split"] == split}
+        for split in ("train", "val", "test")
+    }
+    overlaps = {
+        f"{left}:{right}": sorted(split_blocks[left] & split_blocks[right])
+        for left, right in (("train", "val"), ("train", "test"), ("val", "test"))
+    }
+    split_summary = {}
+    for split in ("train", "val", "test"):
+        selected = [row for row in rows if row["split"] == split]
+        live_seconds = _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+        )
+        split_summary[split] = {
+            "windows": len(selected),
+            "gps_blocks": len(split_blocks[split]),
+            "live_time_seconds": live_seconds,
+            "live_time_years": live_seconds / SECONDS_PER_YEAR,
+        }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / "background_windows.jsonl"
+    atomic_write_text(
+        manifest_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    result = {
+        "status": "verified_multi_segment_development_background",
+        "scientific_claim_allowed": False,
+        "passed": all(not values for values in overlaps.values()),
+        "run": batch["run"],
+        "ifos": list(next(iter(detector_sets))),
+        "source_pairs": len(by_pair),
+        "source_files": len(batch["files"]),
+        "source_batch_report_sha256": batch_sha,
+        "event_exclusions_sha256": file_sha256(event_exclusions_path),
+        "catalog_events_excluded": int(exclusion_report.get("events", 0)),
+        "event_padding_seconds": float(exclusion_report["padding_seconds"]),
+        "window_duration": window_duration,
+        "stride": stride,
+        "block_duration": block_duration,
+        "required_context_duration": required_context_duration,
+        "required_dq_bits": required_dq_bits,
+        "required_injection_bits": required_injection_bits,
+        "windows": len(rows),
+        "unique_gps_blocks": len(block_mapping),
+        "cross_split_block_overlaps": overlaps,
+        "splits": split_summary,
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+    }
+    atomic_write_json(output / "background_plan_report.json", result)
+    if not result["passed"]:
+        raise RuntimeError("Batch background split audit failed")
+    return result

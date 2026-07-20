@@ -10,6 +10,7 @@ import pytest
 
 from gwyolo.background import (
     plan_background_windows,
+    run_batch_background_plan,
     run_background_plan,
     validate_source_verification,
 )
@@ -127,3 +128,71 @@ def test_background_run_requires_hash_matched_verified_sources(tmp_path: Path) -
         handle.write(b"changed")
     with pytest.raises(ValueError, match="hash differs"):
         validate_source_verification({"H1": h1}, verification_path)
+
+
+def test_batch_background_uses_global_disjoint_block_split(tmp_path: Path) -> None:
+    files = []
+    for pair_index, gps in enumerate((1000, 2000)):
+        for ifo in ("H1", "L1"):
+            path = tmp_path / f"{ifo}-{gps}.hdf5"
+            _write_quality_file(path, gps, 64)
+            files.append(
+                {
+                    "pair_id": f"pair-{pair_index}",
+                    "run": "O4a",
+                    "gps_start": gps,
+                    "detector": ifo,
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "verification": {"passed": True},
+                }
+            )
+    batch = tmp_path / "batch.json"
+    batch.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "run": "O4a",
+                "files": files,
+            }
+        ),
+        encoding="utf-8",
+    )
+    exclusions = tmp_path / "exclusions.json"
+    exclusions.write_text(
+        json.dumps(
+            {
+                "status": "development_catalog_event_exclusions",
+                "run": "O4a",
+                "padding_seconds": 16,
+                "events": 0,
+                "intervals": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_batch_background_plan(
+        batch,
+        exclusions,
+        tmp_path / "planned",
+        window_duration=8,
+        stride=8,
+        block_duration=16,
+        required_context_duration=8,
+        validation_fraction=0.25,
+        test_fraction=0.25,
+        seed=3,
+    )
+    assert result["source_pairs"] == 2
+    assert result["windows"] == 16
+    assert result["unique_gps_blocks"] == 8
+    assert all(not values for values in result["cross_split_block_overlaps"].values())
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "planned" / "background_windows.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert {row["pair_id"] for row in rows} == {"pair-0", "pair-1"}
+    assert {row["observing_run"] for row in rows} == {"O4a"}

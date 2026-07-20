@@ -54,6 +54,7 @@ gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
 gwyolo gwosc-verify scan every HDF5 chunk and match official GWOSC statistics/DQ sums
 gwyolo gwosc-run-plan stratify aligned development-run strain files across GPS time
 gwyolo gwosc-batch-download resume and fully verify every planned multi-IFO source file
+gwyolo gwosc-event-exclusions cache padded catalog-event vetoes for a development run
 gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
 gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
@@ -61,6 +62,7 @@ gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
 gwyolo fit-curve fit an exploratory power-law learning curve to controlled scale points
 gwyolo background-plan require verified sources, then build DQ-safe multi-IFO live-time windows
+gwyolo background-batch-plan globally split verified multi-file background and catalog vetoes
 gwyolo search-compare compare raw/mask-cleaned methods at a common validation-calibrated FAR
 gwyolo oracle-deglitch establish the chirp-protected mask-cleaning upper bound in the time domain
 gwyolo oracle-deglitch-benchmark measure the oracle upper bound over overlap and clean scenes

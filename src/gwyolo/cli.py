@@ -10,6 +10,7 @@ from .data import audit_and_split, scan_sources
 from .factory import run_data_factory
 from .gwosc import (
     run_gwosc_batch_download,
+    run_gwosc_event_exclusions,
     run_gwosc_pilot,
     run_gwosc_run_plan,
     run_gwosc_verification,
@@ -155,6 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_batch.add_argument("--download-workers", type=int, default=8)
     gwosc_batch.add_argument("--chunk-samples", type=int, default=1_048_576)
 
+    gwosc_exclusions = subparsers.add_parser("gwosc-event-exclusions")
+    gwosc_exclusions.add_argument("--run", required=True)
+    gwosc_exclusions.add_argument("--padding-seconds", type=float, default=16.0)
+    gwosc_exclusions.add_argument("--workers", type=int, default=4)
+    gwosc_exclusions.add_argument("--output", required=True)
+
     numeric = subparsers.add_parser("numeric-train")
     numeric.add_argument("--config", required=True)
     numeric.add_argument("--manifest", required=True)
@@ -214,6 +221,20 @@ def build_parser() -> argparse.ArgumentParser:
     background.add_argument("--validation-fraction", type=float, default=0.2)
     background.add_argument("--test-fraction", type=float, default=0.2)
     background.add_argument("--seed", type=int, default=20260719)
+
+    background_batch = subparsers.add_parser("background-batch-plan")
+    background_batch.add_argument("--batch-report", required=True)
+    background_batch.add_argument("--event-exclusions", required=True)
+    background_batch.add_argument("--output-dir", required=True)
+    background_batch.add_argument("--window-duration", type=int, default=8)
+    background_batch.add_argument("--stride", type=int, default=8)
+    background_batch.add_argument("--block-duration", type=int, default=256)
+    background_batch.add_argument("--required-context-duration", type=int, default=64)
+    background_batch.add_argument("--required-dq-bits", type=int, default=1)
+    background_batch.add_argument("--required-injection-bits", type=int, default=0)
+    background_batch.add_argument("--validation-fraction", type=float, default=0.2)
+    background_batch.add_argument("--test-fraction", type=float, default=0.2)
+    background_batch.add_argument("--seed", type=int, default=20260719)
 
     deglitch = subparsers.add_parser("oracle-deglitch")
     deglitch.add_argument("--input", required=True)
@@ -444,6 +465,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.chunk_samples,
             )
         )
+    elif args.command == "gwosc-event-exclusions":
+        _print(
+            run_gwosc_event_exclusions(
+                args.run,
+                args.output,
+                args.padding_seconds,
+                args.workers,
+            )
+        )
     elif args.command == "numeric-train":
         from .numeric import train_numeric_model
 
@@ -523,6 +553,25 @@ def main(argv: list[str] | None = None) -> int:
                 validation_fraction=args.validation_fraction,
                 test_fraction=args.test_fraction,
                 seed=args.seed,
+            )
+        )
+    elif args.command == "background-batch-plan":
+        from .background import run_batch_background_plan
+
+        _print(
+            run_batch_background_plan(
+                args.batch_report,
+                args.event_exclusions,
+                args.output_dir,
+                args.window_duration,
+                args.stride,
+                args.block_duration,
+                args.required_context_duration,
+                args.required_dq_bits,
+                args.required_injection_bits,
+                args.validation_fraction,
+                args.test_fraction,
+                args.seed,
             )
         )
     elif args.command == "oracle-deglitch":

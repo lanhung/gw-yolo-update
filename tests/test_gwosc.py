@@ -16,6 +16,7 @@ from gwyolo.gwosc import (
     event_strain_files,
     plan_run_strain_pairs,
     read_hdf5_segment,
+    run_gwosc_event_exclusions,
     run_gwosc_pilot,
     verify_hdf5_against_detail,
 )
@@ -129,6 +130,32 @@ def test_run_plan_rejects_locked_o4b_without_api_access() -> None:
     ):
         plan_run_strain_pairs("O4b")
     api.assert_not_called()
+
+
+def test_event_exclusions_use_latest_version_and_padding(tmp_path: Path) -> None:
+    events = [
+        {
+            "name": "event",
+            "versions": [
+                {"version": 1, "detail_url": "v1"},
+                {"version": 2, "detail_url": "v2"},
+            ],
+        }
+    ]
+    with patch(
+        "gwyolo.gwosc._api_results",
+        return_value=(events, {"api_results_count": 1, "api_pages": 1}),
+    ), patch(
+        "gwyolo.gwosc._api_json",
+        return_value={"run": "O4a", "gps": 1234.5, "catalog": "catalog", "version": 2},
+    ) as detail:
+        report = run_gwosc_event_exclusions(
+            "O4a", tmp_path / "exclusions.json", padding_seconds=8, workers=1
+        )
+    detail.assert_called_once_with("v2")
+    assert report["events"] == 1
+    assert report["intervals"][0]["exclusion_start"] == 1226.5
+    assert report["intervals"][0]["exclusion_end"] == 1242.5
 
 
 def test_read_hdf5_segment_and_downsample(tmp_path: Path) -> None:

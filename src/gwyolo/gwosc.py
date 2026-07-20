@@ -195,6 +195,59 @@ def run_gwosc_run_plan(
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
 
 
+def run_gwosc_event_exclusions(
+    run: str,
+    output: str | Path,
+    padding_seconds: float = 16.0,
+    workers: int = 4,
+) -> dict[str, Any]:
+    if run.lower().startswith("o4b"):
+        raise ValueError("O4b is locked evaluation data and cannot enter development exclusions")
+    if padding_seconds <= 0 or workers <= 0:
+        raise ValueError("padding and workers must be positive")
+    endpoint = f"{API_ROOT}/runs/{run}/events?pagesize=500"
+    events, api_summary = _api_results(endpoint)
+    selected = []
+    for event in events:
+        versions = list(event.get("versions", []))
+        if not versions:
+            raise ValueError(f"GWOSC event has no versions: {event.get('name')}")
+        preferred = max(versions, key=lambda row: int(row["version"]))
+        selected.append((str(event["name"]), str(preferred["detail_url"])))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        details = list(executor.map(lambda item: _api_json(item[1]), selected))
+    rows = []
+    for (name, detail_url), detail in zip(selected, details):
+        if str(detail["run"]) != run:
+            raise ValueError(f"Event {name} reports run {detail['run']}, expected {run}")
+        gps = float(detail["gps"])
+        rows.append(
+            {
+                "event": name,
+                "gps": gps,
+                "run": run,
+                "catalog": detail.get("catalog"),
+                "version": detail.get("version"),
+                "detail_url": detail_url,
+                "exclusion_start": gps - padding_seconds,
+                "exclusion_end": gps + padding_seconds,
+            }
+        )
+    rows.sort(key=lambda row: row["gps"])
+    result = {
+        "status": "development_catalog_event_exclusions",
+        "locked_evaluation_data": False,
+        "run": run,
+        "padding_seconds": padding_seconds,
+        "source_endpoint": endpoint,
+        **api_summary,
+        "events": len(rows),
+        "intervals": rows,
+    }
+    atomic_write_json(output, result)
+    return {**result, "output_path": str(output), "output_sha256": file_sha256(output)}
+
+
 def run_gwosc_batch_download(
     plan_path: str | Path,
     cache_dir: str | Path,
