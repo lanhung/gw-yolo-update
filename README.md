@@ -102,3 +102,7 @@ See [DATA_FACTORY.md](docs/DATA_FACTORY.md), [PROJECT_PLAN.md](docs/PROJECT_PLAN
 [SEARCH_AND_DEGLITCH.md](docs/SEARCH_AND_DEGLITCH.md), and [PAPER_PLAN.md](docs/PAPER_PLAN.md).
 [GWTC5_LOCKED_EVALUATION.md](docs/GWTC5_LOCKED_EVALUATION.md) defines the event-level O4b/GWTC-5
 pre-registration boundary now that the public release exists.
+
+`scripts/run_physical_validation_pipeline.sh` chains a train-only SNR curriculum, resumable physical
+fine-tune and frozen-threshold family/SNR audit. It requires `GWYOLO_CODE_COMMIT`, accepts explicit
+manifests/checkpoints/output roots, and deliberately has no test-manifest argument.
