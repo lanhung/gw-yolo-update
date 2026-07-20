@@ -11,6 +11,7 @@ from gwyolo.physical_training import (
     build_snr_quota_manifest,
     gate_component_by_ifo_snr,
     mask_endpoint_timing_error_seconds,
+    peak_to_endpoint_timing_error_seconds,
     focal_binary_cross_entropy,
     physical_split_audit,
     relative_component_mask,
@@ -41,6 +42,16 @@ def test_mask_endpoint_timing_error_is_hand_calculated() -> None:
     )
     assert missed["target_present"] and not missed["prediction_present"]
     assert missed["absolute_error_seconds"] is None
+
+
+def test_peak_to_endpoint_timing_error_is_hand_calculated() -> None:
+    probability = np.asarray([[0.1, 0.3, 0.9, 0.2, 0.4, 0.1, 0.1, 0.1]])
+    expected = np.asarray([[False, True, True, True, False, False, False, False]])
+    # Peak bin 2 versus target endpoint bin 3 at one second per bin.
+    assert peak_to_endpoint_timing_error_seconds(probability, expected, 8.0) == 1.0
+    assert peak_to_endpoint_timing_error_seconds(
+        probability, np.zeros_like(expected), 8.0
+    ) is None
 
 
 def test_focal_gamma_zero_matches_binary_cross_entropy() -> None:

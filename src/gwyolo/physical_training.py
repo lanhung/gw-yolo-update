@@ -895,6 +895,29 @@ def mask_endpoint_timing_error_seconds(
     }
 
 
+def peak_to_endpoint_timing_error_seconds(
+    probability: np.ndarray,
+    expected: np.ndarray,
+    duration: float,
+) -> float | None:
+    """Compare the strongest predicted time bin with the target mask endpoint."""
+    scores = np.asarray(probability, dtype=np.float64)
+    target = np.asarray(expected, dtype=bool)
+    if scores.shape != target.shape or scores.ndim < 1 or scores.shape[-1] < 2:
+        raise ValueError("peak timing arrays must share a valid time axis")
+    if not np.isfinite(scores).all() or duration <= 0:
+        raise ValueError("invalid peak timing input")
+    collapse_axes = tuple(range(scores.ndim - 1))
+    profile = np.max(scores, axis=collapse_axes)
+    target_profile = np.any(target, axis=collapse_axes)
+    target_active = np.flatnonzero(target_profile)
+    if target_active.size == 0:
+        return None
+    predicted_peak = int(np.argmax(profile))
+    target_endpoint = int(target_active[-1])
+    return abs(predicted_peak - target_endpoint) * duration / scores.shape[-1]
+
+
 def audit_physical_checkpoint(
     config_path: str | Path,
     validation_manifest: str | Path,
@@ -950,6 +973,7 @@ def audit_physical_checkpoint(
                 "timing_evaluable": 0,
                 "timing_prediction_misses": 0,
                 "timing_errors_seconds": [],
+                "peak_timing_errors_seconds": [],
             },
         )
 
@@ -967,6 +991,9 @@ def audit_physical_checkpoint(
                 fn = int(np.count_nonzero(~predicted & expected[index]))
                 timing = mask_endpoint_timing_error_seconds(
                     probabilities[index], expected[index], chirp_threshold, analysis_duration
+                )
+                peak_timing_error = peak_to_endpoint_timing_error_seconds(
+                    probabilities[index], expected[index], analysis_duration
                 )
                 keys = (
                     "all",
@@ -990,11 +1017,15 @@ def audit_physical_checkpoint(
                             )
                         else:
                             item["timing_prediction_misses"] += 1
+                        item["peak_timing_errors_seconds"].append(
+                            float(peak_timing_error)
+                        )
             offset += features.shape[0]
     summaries = {}
     for key, item in sorted(groups.items()):
         maximums = item.pop("max_probabilities")
         timing_errors = item.pop("timing_errors_seconds")
+        peak_timing_errors = item.pop("peak_timing_errors_seconds")
         counts = summarize_binary_mask_counts(item.pop("tp"), item.pop("fp"), item.pop("fn"))
         summaries[key] = {
             **item,
@@ -1013,11 +1044,22 @@ def audit_physical_checkpoint(
                 if timing_errors
                 else None
             ),
+            "peak_to_endpoint_absolute_error_seconds_quantiles": (
+                {
+                    str(q): float(np.quantile(peak_timing_errors, q))
+                    for q in (0.0, 0.5, 0.9, 1.0)
+                }
+                if peak_timing_errors
+                else None
+            ),
         }
     time_bins = int(settings["tensor"]["time_bins"])
     bin_width_seconds = analysis_duration / time_bins
     overall_timing = summaries["all"]
     overall_error = overall_timing["endpoint_absolute_error_seconds_quantiles"]
+    overall_peak_error = overall_timing[
+        "peak_to_endpoint_absolute_error_seconds_quantiles"
+    ]
     report = {
         "status": "physical_validation_checkpoint_audit",
         "scientific_claim_allowed": False,
@@ -1044,6 +1086,10 @@ def audit_physical_checkpoint(
                 overall_error is not None
                 and float(overall_error["0.9"]) <= 0.01
                 and overall_timing["timing_prediction_misses"] == 0
+            ),
+            "peak_accuracy_gate_passed": (
+                overall_peak_error is not None
+                and float(overall_peak_error["0.9"]) <= 0.01
             ),
         },
         "groups": summaries,

@@ -128,6 +128,9 @@ Because both per-bin temporal BCE weightings failed, the next frozen ablation in
 softmax cross-entropy to the last active target-mask bin. All time bins compete for one endpoint,
 which directly suppresses distant rival peaks; samples with no visible target are excluded only
 from this auxiliary term, not from the primary mask loss.
+Timing audits report both the thresholded last-active-mask endpoint and the temporal argmax used by
+candidate extraction. The peak-to-target-endpoint 90th percentile has its own <=10 ms gate; neither
+metric is allowed to stand in for the other.
 
 `gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
 from each injection's own full real-noise context, but integrates signal power only over the recorded
