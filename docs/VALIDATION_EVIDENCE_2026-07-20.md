@@ -202,6 +202,14 @@ have zero injection, waveform and GPS overlap with the shared 3k validation corp
 joint family/SNR-stratum report SHA256 is
 `13f943ec9ee87dc6f78cd88012c4d48d13cfa68fb314d3907117d914198d73ec`.
 
+The first scale-launch preflight exposed and fixed a tensor-contract regression before any optimizer
+update. Physical targets are nine IFO/Q planes and `MultiIFOQNet` outputs two classes for each of
+those nine planes; an intermediate implementation had incorrectly treated the output as a single
+network-level mask. Commit `eb463a4` restores plane-wise chirp supervision and collapses only
+IFO/Q plus frequency for the auxiliary temporal profile. A real O4a sample passed an actual
+forward/loss/backward smoke with feature and target shapes `(9,96,96)`. The failed launch artifacts
+are not reused; the fixed scaling series starts in a new commit-tagged output directory.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721
