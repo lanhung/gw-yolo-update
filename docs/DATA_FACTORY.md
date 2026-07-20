@@ -105,6 +105,10 @@ The command does not evict verified source files automatically.
 `gwyolo gravityspy-numeric-merge` then verifies every shard report, manifest and numeric-sample hash
 before merging one declared split. Duplicate glitch IDs and mixed train/validation/test rows are
 fatal; weak and human pixel-mask counts remain separate in the merged report.
+`gwyolo gravityspy-strain-evict` is the only supported cache-reclamation path. It rechecks the
+completed report, numeric manifest, every sample hash, source hash and cache-root containment before
+unlinking an exact HDF5 path. Its atomic tombstone retains URL, SHA256 and byte count so the source
+is reproducible from GWOSC; numeric samples are never evicted by this command.
 
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9

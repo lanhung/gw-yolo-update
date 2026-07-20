@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from gwyolo.gravityspy import (
+    evict_gravityspy_verified_sources,
     gravityspy_weak_mask,
     index_gravityspy_csv,
     match_glitch_to_strain_file,
@@ -74,6 +75,52 @@ def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
     assert result["weak_masks"] == 2
     assert result["human_pixel_masks"] == 0
     assert result["labels"] == {"Blip": 2}
+
+
+def test_gravityspy_source_eviction_requires_verified_numeric_output(tmp_path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    source = cache / "source.hdf5"
+    source.write_bytes(b"official source")
+    sample = tmp_path / "sample.npz"
+    np.savez(sample, features=np.asarray([1], dtype=np.float32))
+    manifest = tmp_path / "gravityspy_numeric_manifest.jsonl"
+    manifest.write_text(
+        json.dumps({"path": str(sample), "sha256": file_sha256(sample)}) + "\n"
+    )
+    identity = {"shard": 1}
+    report = tmp_path / "gravityspy_numeric_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_numeric_weak_masks",
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": 1,
+                "verified_files": 1,
+                "run_identity": identity,
+            }
+        )
+    )
+    (tmp_path / "materialization_partial.json").write_text(
+        json.dumps(
+            {
+                "run_identity": identity,
+                "verified_sources": {
+                    "https://gwosc/source.hdf5": {
+                        "path": str(source),
+                        "sha256": file_sha256(source),
+                    }
+                },
+            }
+        )
+    )
+    result = evict_gravityspy_verified_sources(report, cache, tmp_path / "eviction.json")
+    assert result["status"] == "complete"
+    assert result["evicted_files"] == 1
+    assert result["evicted_bytes"] == len(b"official source")
+    assert not source.exists()
+    assert sample.exists()
 
 
 def test_glitch_strain_match_requires_full_context_in_one_file() -> None:

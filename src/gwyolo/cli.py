@@ -270,6 +270,11 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_merge.add_argument("--output-dir", required=True)
     gravityspy_merge.add_argument("--split", choices=("train", "val", "test"), required=True)
 
+    gravityspy_evict = subparsers.add_parser("gravityspy-strain-evict")
+    gravityspy_evict.add_argument("--materialization-report", required=True)
+    gravityspy_evict.add_argument("--cache-dir", required=True)
+    gravityspy_evict.add_argument("--output", required=True)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -734,6 +739,14 @@ def main(argv: list[str] | None = None) -> int:
         from .gravityspy import merge_gravityspy_numeric_manifests
 
         _print(merge_gravityspy_numeric_manifests(args.report, args.output_dir, args.split))
+    elif args.command == "gravityspy-strain-evict":
+        from .gravityspy import evict_gravityspy_verified_sources
+
+        _print(
+            evict_gravityspy_verified_sources(
+                args.materialization_report, args.cache_dir, args.output
+            )
+        )
     elif args.command == "fit-curve":
         _print(run_curve_fit(args.points, args.output))
     elif args.command == "background-plan":

@@ -626,6 +626,82 @@ def merge_gravityspy_numeric_manifests(
     return result
 
 
+def evict_gravityspy_verified_sources(
+    materialization_report_path: str | Path,
+    cache_dir: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Evict only fully verified, reproducible source files after sample validation."""
+    report_path = Path(materialization_report_path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != "verified_gravityspy_numeric_weak_masks":
+        raise ValueError("Gravity Spy materialization is not complete")
+    manifest = Path(report["manifest_path"])
+    if file_sha256(manifest) != report["manifest_sha256"]:
+        raise ValueError("Gravity Spy materialized manifest hash mismatch before eviction")
+    with manifest.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if len(rows) != int(report["rows"]):
+        raise ValueError("Gravity Spy materialized row count mismatch before eviction")
+    for row in rows:
+        if file_sha256(row["path"]) != row["sha256"]:
+            raise ValueError(f"Gravity Spy numeric sample changed before eviction: {row['path']}")
+    partial_path = report_path.with_name("materialization_partial.json")
+    partial = json.loads(partial_path.read_text(encoding="utf-8"))
+    if partial.get("run_identity") != report.get("run_identity"):
+        raise ValueError("Gravity Spy partial state identity differs before eviction")
+    verified_sources = dict(partial.get("verified_sources", {}))
+    if not verified_sources or len(verified_sources) != int(report["verified_files"]):
+        raise ValueError("Gravity Spy verified source inventory is incomplete")
+    cache_root = Path(cache_dir).resolve()
+    output = Path(output_path)
+    identity = {
+        "materialization_report_sha256": file_sha256(report_path),
+        "manifest_sha256": report["manifest_sha256"],
+        "cache_root": str(cache_root),
+    }
+    if output.is_file():
+        state = json.loads(output.read_text(encoding="utf-8"))
+        if state.get("identity") != identity:
+            raise ValueError("Existing Gravity Spy eviction state belongs to another run")
+    else:
+        state = {
+            "status": "in_progress",
+            "identity": identity,
+            "recoverable_from": "official GWOSC hdf5_url recorded per source",
+            "numeric_outputs_verified": len(rows),
+            "sources": [],
+        }
+    completed = {str(item["hdf5_url"]): item for item in state["sources"]}
+    for url, verification in sorted(verified_sources.items()):
+        if url in completed and completed[url].get("evicted"):
+            if Path(completed[url]["path"]).exists():
+                raise ValueError("Previously evicted Gravity Spy source unexpectedly reappeared")
+            continue
+        source = Path(verification["path"]).resolve()
+        if not source.is_relative_to(cache_root):
+            raise ValueError(f"Refusing to evict source outside declared cache: {source}")
+        if not source.is_file() or file_sha256(source) != verification["sha256"]:
+            raise ValueError(f"Gravity Spy source changed or disappeared before eviction: {source}")
+        entry = {
+            "hdf5_url": url,
+            "path": str(source),
+            "sha256": verification["sha256"],
+            "bytes": source.stat().st_size,
+            "evicted": False,
+        }
+        state["sources"].append(entry)
+        atomic_write_json(output, state)
+        source.unlink()
+        entry["evicted"] = True
+        atomic_write_json(output, state)
+    state["status"] = "complete"
+    state["evicted_files"] = len(state["sources"])
+    state["evicted_bytes"] = sum(int(item["bytes"]) for item in state["sources"])
+    atomic_write_json(output, state)
+    return state
+
+
 def _file_md5(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.md5()  # noqa: S324 - required to verify the publisher-provided checksum
     with Path(path).open("rb") as handle:
