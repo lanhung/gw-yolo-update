@@ -261,6 +261,7 @@ def score_materialized_injections(
                         coherence["limits_seconds"],
                         coherence["timing_uncertainty_seconds"],
                         coherence["roi_duration_seconds"],
+                        coherence["envelope_smoothing_seconds"],
                     )
                 )
             probability_record = {}

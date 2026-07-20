@@ -187,6 +187,10 @@ correlation. Coarse mask-bin arrivals are not mislabeled as a timing gate. The c
 `coherence-validation-compare` independently calibrates morphology and coherence thresholds on the
 same validation background count and performs an injection-paired `<VT>` bootstrap. It remains a
 short-exposure development comparison until continuous clustered background and time slides exist.
+The scorer also records an 8 ms-smoothed analytic-envelope peak at native 1/1024 s resolution; its
+network-median absolute timing error and 10 ms success rate are audited against injection GPS. This
+refinement may feed candidate timing only if the empirical p90 gate passes—sample resolution alone
+is not treated as timing accuracy.
 
 The first detector-set architecture boundary is now implemented separately from the running
 fixed-channel control. `DetectorSetQNet` applies one shared Q-plane encoder to every configured IFO,

@@ -20,8 +20,8 @@ def test_coherence_assisted_score_uses_physical_lag_roi_by_hand() -> None:
     strain[0, 100] = 1.0
     strain[1, 101] = -1.0
     peaks = {
-        "H1": {"offset_seconds": 1.0},
-        "L1": {"offset_seconds": 1.0},
+        "H1": {"offset_seconds": 1.0, "gps": 1001.0},
+        "L1": {"offset_seconds": 1.0, "gps": 1001.0},
     }
     result = coherence_assisted_summary(
         strain,
@@ -38,6 +38,9 @@ def test_coherence_assisted_score_uses_physical_lag_roi_by_hand() -> None:
     assert result["coherence_mean_absolute_correlation"] == 1.0
     assert result["coherence_features"][0]["lag_samples"] == 1
     assert result["coherence_assisted_score"] == pytest.approx(0.8)
+    assert result["strain_envelope_peak_times"]["H1"]["sample_index"] == 100
+    assert result["strain_envelope_peak_times"]["L1"]["sample_index"] == 101
+    assert result["strain_envelope_arrival_gate"]["passed"] is True
 
 
 def test_network_ranking_uses_second_loudest_valid_ifo() -> None:

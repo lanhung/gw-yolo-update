@@ -21,7 +21,7 @@ from .io import (
 )
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz
-from .coherence import pairwise_lag_coherence
+from .coherence import arrival_time_coherence_gate, pairwise_lag_coherence
 
 
 def _load_resumable_trigger_rows(
@@ -165,6 +165,7 @@ def coherence_assisted_summary(
     limits_seconds: dict[str, float],
     timing_uncertainty_seconds: float,
     roi_duration_seconds: float,
+    envelope_smoothing_seconds: float = 0.008,
 ) -> dict[str, Any]:
     """Add physical-lag strain coherence without replacing the morphology baseline."""
     if whitened_strain.ndim != 2 or whitened_strain.shape[0] != len(model_ifos):
@@ -196,6 +197,37 @@ def coherence_assisted_summary(
     mean_absolute = float(absolute.mean())
     minimum_absolute = float(absolute.min())
     score = float(morphology_ranking_score) * math.sqrt(max(mean_absolute, 0.0))
+    smoothing_samples = max(1, int(round(envelope_smoothing_seconds * sample_rate)))
+    kernel = np.ones(smoothing_samples, dtype=np.float64) / smoothing_samples
+    refined_peaks = {}
+    analysis_gps_start = float(chirp_peak_times[valid_ifos[0]]["gps"]) - float(
+        chirp_peak_times[valid_ifos[0]]["offset_seconds"]
+    )
+    for ifo, values in by_ifo.items():
+        spectrum = np.fft.fft(values)
+        multiplier = np.zeros(values.size, dtype=np.float64)
+        multiplier[0] = 1.0
+        if values.size % 2 == 0:
+            multiplier[1 : values.size // 2] = 2.0
+            multiplier[values.size // 2] = 1.0
+        else:
+            multiplier[1 : (values.size + 1) // 2] = 2.0
+        envelope = np.abs(np.fft.ifft(spectrum * multiplier))
+        smoothed = np.convolve(envelope, kernel, mode="same")
+        peak_index = int(np.argmax(smoothed))
+        refined_peaks[ifo] = {
+            "offset_seconds": (start + peak_index) / sample_rate,
+            "gps": analysis_gps_start + (start + peak_index) / sample_rate,
+            "sample_index": start + peak_index,
+            "sample_resolution_seconds": 1.0 / sample_rate,
+            "smoothing_seconds": smoothing_samples / sample_rate,
+            "envelope_score": float(smoothed[peak_index]),
+        }
+    arrival_gate = arrival_time_coherence_gate(
+        {ifo: row["offset_seconds"] for ifo, row in refined_peaks.items()},
+        limits_seconds,
+        timing_uncertainty_seconds,
+    )
     return {
         "coherence_evaluable": True,
         "coherence_reason": None,
@@ -210,6 +242,8 @@ def coherence_assisted_summary(
         "coherence_mean_absolute_correlation": mean_absolute,
         "coherence_minimum_absolute_correlation": minimum_absolute,
         "coherence_features": features,
+        "strain_envelope_peak_times": refined_peaks,
+        "strain_envelope_arrival_gate": arrival_gate,
         "mask_peak_arrival_gate_applied": False,
         "mask_peak_arrival_gate_reason": (
             "coarse mask bins localize the common ROI; physical consistency is measured from "
@@ -238,6 +272,9 @@ def _coherence_settings(
             settings["timing_uncertainty_seconds"]
         ),
         "roi_duration_seconds": float(settings.get("roi_duration_seconds", 1.0)),
+        "envelope_smoothing_seconds": float(
+            settings.get("envelope_smoothing_seconds", 0.008)
+        ),
     }
 
 
@@ -410,6 +447,7 @@ def score_background_manifest(
                         coherence["limits_seconds"],
                         coherence["timing_uncertainty_seconds"],
                         coherence["roi_duration_seconds"],
+                        coherence["envelope_smoothing_seconds"],
                     )
                 )
             probability_record = {}

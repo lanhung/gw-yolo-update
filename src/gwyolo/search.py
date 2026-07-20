@@ -796,6 +796,39 @@ def run_coherence_validation_comparison(
         bootstrap_replicates,
         seed,
     )
+    timing_errors: dict[str, list[float]] = {}
+    network_errors = []
+    for row in injection_rows:
+        peaks = row.get("strain_envelope_peak_times")
+        if not peaks or "gps_time" not in row:
+            raise ValueError("coherence injection scores lack envelope peaks or injection GPS")
+        truth = float(row["gps_time"])
+        network_peaks = []
+        for ifo, peak in peaks.items():
+            value = float(peak["gps"])
+            timing_errors.setdefault(str(ifo), []).append(abs(value - truth))
+            network_peaks.append(value)
+        network_errors.append(abs(float(np.median(network_peaks)) - truth))
+
+    def timing_summary(values: list[float]) -> dict[str, Any]:
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            "injections": int(array.size),
+            "median_absolute_error_seconds": float(np.median(array)),
+            "p90_absolute_error_seconds": float(np.quantile(array, 0.9)),
+            "within_10ms": int(np.count_nonzero(array <= 0.01)),
+            "within_10ms_rate": float(np.mean(array <= 0.01)),
+        }
+
+    timing = {
+        "network_median_peak": timing_summary(network_errors),
+        "by_ifo": {
+            ifo: timing_summary(values) for ifo, values in sorted(timing_errors.items())
+        },
+    }
+    timing["empirical_10ms_gate_passed"] = (
+        timing["network_median_peak"]["p90_absolute_error_seconds"] <= 0.01
+    )
     result = {
         "status": "validation_only_morphology_vs_physical_coherence",
         "scientific_claim_allowed": False,
@@ -811,6 +844,7 @@ def run_coherence_validation_comparison(
         "checkpoint_sha256": background_report["checkpoint_sha256"],
         "config_sha256": background_report["config_sha256"],
         "coherence": background_report["coherence"],
+        "strain_envelope_timing": timing,
         "background_score_report_sha256": file_sha256(background_score_report),
         "injection_score_report_sha256": file_sha256(injection_score_report),
         **comparison,
