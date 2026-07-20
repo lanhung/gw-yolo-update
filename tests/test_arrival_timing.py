@@ -68,13 +68,16 @@ def test_detector_network_arrival_errors_include_pair_delay_by_hand() -> None:
 
 def test_detector_arrival_network_emits_per_ifo_high_resolution_logits() -> None:
     torch = pytest.importorskip("torch")
-    from gwyolo.numeric import DetectorArrivalTimingNet
+    from gwyolo.numeric import DetectorArrivalTimingContextNet, DetectorArrivalTimingNet
 
-    model = DetectorArrivalTimingNet(detector_count=3, base_channels=8)
     strain = torch.zeros((2, 3, 64), dtype=torch.float32)
     availability = torch.tensor([[True, True, False], [True, False, True]])
-    logits = model(strain, availability)
+    for model in (
+        DetectorArrivalTimingNet(detector_count=3, base_channels=8),
+        DetectorArrivalTimingContextNet(detector_count=3, base_channels=8),
+    ):
+        logits = model(strain, availability)
 
-    assert logits.shape == (2, 3, 8)
-    assert torch.isfinite(logits[availability]).all()
-    assert torch.isneginf(logits[~availability]).all()
+        assert logits.shape == (2, 3, 8)
+        assert torch.isfinite(logits[availability]).all()
+        assert torch.isneginf(logits[~availability]).all()

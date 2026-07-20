@@ -12,7 +12,11 @@ import numpy as np
 from .gwosc import _fft_downsample, _whiten
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
-from .numeric import DetectorArrivalTimingNet, _atomic_torch_save
+from .numeric import (
+    DetectorArrivalTimingContextNet,
+    DetectorArrivalTimingNet,
+    _atomic_torch_save,
+)
 from .physical_training import physical_split_audit
 from .runtime import execution_provenance
 from .waveforms import load_materialized_context
@@ -25,6 +29,16 @@ except ImportError:  # pragma: no cover
     torch = None
     torch_functional = None
     DataLoader = None
+
+
+def _build_detector_arrival_model(
+    architecture: str, detector_count: int, base_channels: int
+) -> Any:
+    if architecture == "detector_arrival_timing_net_v1":
+        return DetectorArrivalTimingNet(detector_count, base_channels)
+    if architecture == "detector_arrival_timing_context_net_v2":
+        return DetectorArrivalTimingContextNet(detector_count, base_channels)
+    raise ValueError(f"unsupported detector arrival timing architecture: {architecture}")
 
 
 def detector_arrival_bin_targets(
@@ -490,8 +504,11 @@ def run_detector_arrival_timing_training(
         for split, dataset in datasets.items()
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DetectorArrivalTimingNet(
-        len(model_ifos), int(settings.get("base_channels", 32))
+    architecture = str(
+        settings.get("architecture", "detector_arrival_timing_net_v1")
+    )
+    model = _build_detector_arrival_model(
+        architecture, len(model_ifos), int(settings.get("base_channels", 32))
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -568,7 +585,7 @@ def run_detector_arrival_timing_training(
             _atomic_torch_save(
                 checkpoint_path,
                 {
-                    "architecture": "detector_arrival_timing_net_v1",
+                    "architecture": architecture,
                     "model": model.state_dict(),
                     "model_ifos": model_ifos,
                     "target_sample_rate": target_rate,
@@ -691,8 +708,11 @@ def run_detector_arrival_timing_validation_stratification(
     duration = float(settings["analysis_duration"])
     output_bins = int(settings["output_bins"])
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    architecture = str(
+        settings.get("architecture", "detector_arrival_timing_net_v1")
+    )
     expected = {
-        "architecture": "detector_arrival_timing_net_v1",
+        "architecture": architecture,
         "model_ifos": model_ifos,
         "target_sample_rate": target_rate,
         "analysis_duration": duration,
@@ -719,8 +739,8 @@ def run_detector_arrival_timing_validation_stratification(
         num_workers=0,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DetectorArrivalTimingNet(
-        len(model_ifos), int(checkpoint["base_channels"])
+    model = _build_detector_arrival_model(
+        architecture, len(model_ifos), int(checkpoint["base_channels"])
     ).to(device)
     model.load_state_dict(checkpoint["model"])
     thresholds = tuple(

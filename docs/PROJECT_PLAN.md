@@ -193,6 +193,10 @@ checkpoint has 4.626 s all-validation p90 and therefore blocks 5k/10k promotion.
 dependence is now measured separately with per-IFO-SNR, worst-IFO and relative-delay diagnostics;
 these must be paired with candidate coverage at a frozen threshold and may not replace the failed
 all-population metric. Candidate integration remains blocked until the 10 ms empirical gate passes.
+Before increasing waveform count, run the full-context v2 timing arm on the identical 2k/3k split
+and exact 1,500-update budget. Its only intended change is an eight-second dilated receptive field;
+failure to improve BNS/NSBH and pairwise-delay strata will retire this time-domain family rather than
+trigger a larger training-data run.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

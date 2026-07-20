@@ -132,6 +132,15 @@ network context, and predicts 1,024 categorical bins per available detector over
 endpoints. Checkpoint selection is validation p90 per-detector error; both the representation and
 p90 must be <=10 ms before its output may enter candidate coincidence.
 
+The first 2k run of that compact head fails with 4.626 s all-validation p90. Its effective temporal
+receptive field is only about 126 ms, which is consistent with partial BBH/high-SNR success and near
+total BNS/NSBH failure. The next controlled arm is therefore
+`DetectorArrivalTimingContextNet`: nine dilated residual blocks preserve the same 7.8125 ms output
+grid while spanning the full eight-second input. It changes temporal context, not data or update
+budget: the 2k comparison uses the identical manifests, seed, 1,500 optimizer updates and validation
+selection rule. Scaling remains blocked unless this representation change improves the frozen
+all-sample and detectable-stratum endpoints without weakening pairwise-delay accuracy.
+
 ### Stage B — shortlisted evidence
 
 Run only the best two arms for three seeds at 10k. Compare 10k with 25k under fixed-epoch and

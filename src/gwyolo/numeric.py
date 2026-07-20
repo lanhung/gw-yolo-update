@@ -285,6 +285,84 @@ if nn is not None:
             logits = self.head(fused).reshape(batch, detectors, -1)
             return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
 
+
+    class _DilatedResidual1D(nn.Module):
+        def __init__(self, channels: int, dilation: int):
+            super().__init__()
+            groups = min(8, channels)
+            self.layers = nn.Sequential(
+                nn.Conv1d(
+                    channels,
+                    channels,
+                    3,
+                    padding=dilation,
+                    dilation=dilation,
+                    bias=False,
+                ),
+                nn.GroupNorm(groups, channels),
+                nn.SiLU(),
+                nn.Conv1d(channels, channels, 1, bias=False),
+                nn.GroupNorm(groups, channels),
+            )
+
+        def forward(self, value: Any) -> Any:
+            return torch_functional.silu(value + self.layers(value))
+
+
+    class DetectorArrivalTimingContextNet(nn.Module):
+        """Long-context timing head spanning the inspiral while preserving 7.8 ms bins."""
+
+        def __init__(self, detector_count: int, base_channels: int = 32):
+            super().__init__()
+            if detector_count < 2 or base_channels < 4:
+                raise ValueError("arrival timing context network dimensions are invalid")
+            self.detector_count = detector_count
+            groups = min(8, base_channels)
+            self.encoder = nn.Sequential(
+                nn.Conv1d(1, base_channels, 17, stride=4, padding=8, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(
+                    base_channels, base_channels, 9, stride=2, padding=4, bias=False
+                ),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+            )
+            self.long_context = nn.Sequential(
+                *(
+                    _DilatedResidual1D(base_channels, dilation)
+                    for dilation in (1, 2, 4, 8, 16, 32, 64, 128, 256)
+                )
+            )
+            self.head = nn.Sequential(
+                nn.Conv1d(2 * base_channels, base_channels, 5, padding=2, bias=False),
+                nn.GroupNorm(groups, base_channels),
+                nn.SiLU(),
+                nn.Conv1d(base_channels, 1, 1),
+            )
+
+        def forward(self, value: Any, availability: Any) -> Any:
+            if value.ndim != 3 or value.shape[1] != self.detector_count:
+                raise ValueError("arrival timing strain must have shape [batch, IFO, time]")
+            if availability.shape != value.shape[:2]:
+                raise ValueError("arrival timing availability shape differs from strain")
+            batch, detectors, samples = value.shape
+            encoded = self.long_context(
+                self.encoder(value.reshape(batch * detectors, 1, samples))
+            )
+            encoded = encoded.reshape(batch, detectors, encoded.shape[1], encoded.shape[2])
+            mask = availability.to(encoded.dtype)[:, :, None, None]
+            if torch.any(mask.sum(dim=1) < 1):
+                raise ValueError("arrival timing batch contains no available detector")
+            network = (encoded * mask).sum(dim=1, keepdim=True) / mask.sum(
+                dim=1, keepdim=True
+            )
+            fused = torch.cat(
+                [encoded, network.expand(-1, detectors, -1, -1)], dim=2
+            ).reshape(batch * detectors, 2 * encoded.shape[2], encoded.shape[3])
+            logits = self.head(fused).reshape(batch, detectors, -1)
+            return logits.masked_fill(~availability.to(torch.bool)[:, :, None], -torch.inf)
+
 else:
 
     class MultiIFOQNet:  # type: ignore[no-redef]
@@ -300,6 +378,10 @@ else:
             _require_torch()
 
     class DetectorArrivalTimingNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class DetectorArrivalTimingContextNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 
