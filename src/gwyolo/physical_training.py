@@ -257,10 +257,10 @@ class PhysicalInjectionDataset:
         features = _normalize_power(feature_power).reshape(
             -1, feature_power.shape[-2], feature_power.shape[-1]
         )
-        target = union_component_masks(
-            relative_component_mask(
-                signal_power, float(settings.get("mask_fraction", 0.08))
-            )
+        target = relative_component_mask(
+            signal_power, float(settings.get("mask_fraction", 0.08))
+        ).reshape(
+            -1, signal_power.shape[-2], signal_power.shape[-1]
         )
         if not np.isfinite(features).all() or not np.isfinite(target).all():
             raise ValueError("Physical tensor construction produced non-finite values")
@@ -321,10 +321,9 @@ def _chirp_epoch(
                 chirp_logits, target[:, None], positive, focal_gamma
             )
             dice = _dice_loss(chirp_logits, target[:, None])
-            # Collapse frequency only: the localization objective must retain the
-            # full time axis for endpoint classification.
-            temporal_logits = torch.amax(chirp_logits, dim=2)
-            temporal_target = torch.amax(target, dim=1)[:, None]
+            # Collapse IFO/Q channels and frequency while retaining time.
+            temporal_logits = torch.amax(chirp_logits, dim=(2, 3))
+            temporal_target = torch.amax(target, dim=(1, 2))[:, None]
             temporal_bce = torch_functional.binary_cross_entropy_with_logits(
                 temporal_logits,
                 temporal_target,

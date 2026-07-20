@@ -34,13 +34,13 @@ def test_chirp_epoch_honors_exact_batch_budget() -> None:
             self.bias = torch.nn.Parameter(torch.zeros(2))
 
         def forward(self, features):
-            shape = (features.shape[0], 2, *features.shape[-2:])
-            return self.bias.reshape(1, 2, 1, 1).expand(shape)
+            shape = (features.shape[0], 2, features.shape[1], *features.shape[-2:])
+            return self.bias.reshape(1, 2, 1, 1, 1).expand(shape)
 
     model = TinyModel()
     teacher = TinyModel()
     features = torch.zeros((1, 1, 2, 2))
-    target = torch.ones((1, 2, 2))
+    target = torch.ones((1, 1, 2, 2))
     loader = [(features, target) for _ in range(5)]
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     metrics = _chirp_epoch(

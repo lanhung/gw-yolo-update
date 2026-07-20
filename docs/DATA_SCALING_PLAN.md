@@ -385,11 +385,12 @@ All three pass zero-overlap injection/waveform/GPS audits against the frozen 3k 
 All three already saturate the current 76 train GPS blocks, so this curve isolates waveform scale;
 it cannot answer the separate run/GPS-domain scale question.
 
-The physical tensor target is explicitly the pixelwise union over all IFO and Q-plane component
-masks, matching the network's single chirp-mask output. The individual component masks remain
-deterministically regenerable from the stored signal and per-IFO visibility metadata; flattening
-them into nine independent target channels is forbidden because it disagrees with the output shape
-and can neither be interpreted as instance preservation nor as a valid union-mask loss.
+The physical tensor target explicitly retains every IFO and Q-plane component mask. `MultiIFOQNet`
+predicts two classes for each input plane, so chirp supervision has shape
+`[batch, 1, IFO*Q, frequency, time]`; it must not be collapsed before the plane-wise loss. A
+pixelwise IFO/Q union is a derived network-level mask for trigger clustering and catalog display,
+not a replacement for the preserved component masks. Temporal localization alone collapses the
+IFO/Q and frequency axes while retaining time.
 
 An official O4a acquisition plan was also frozen with seed 20260720. The API exposed 3,309 aligned
 H1/L1 4-kHz files; 800 disjoint 4,096-second pairs were selected over GPS
