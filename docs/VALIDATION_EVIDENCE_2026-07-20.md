@@ -312,6 +312,14 @@ ms grid only passes representation, not accuracy; validation p90 <=10 ms is stil
 bounded scale order is 2k then 5k/10k only after measured p90 improvement, so this architecture does
 not justify blind data expansion by itself.
 
+The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
+`a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
+errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
+time slides and threshold calibration. This clean negative result separates window-level sensitivity
+(which improved strongly with 30 epochs) from unusable sub-window localization. The staged pipeline
+then hash-verified and released 824 background plus 3,000 injection probability files (1,082,764,926
+bytes total); candidate/calibration reports and immutable eviction intents remain.
+
 ## Real-glitch physical overlap and aligned network contexts
 
 Commit `bcb7c8e` introduced a time-domain real-glitch overlap factory. A remote two-row validation

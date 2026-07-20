@@ -65,6 +65,9 @@ quantile to be at most the predeclared `--maximum-empirical-timing-uncertainty-s
 default). The first fixed-update candidate diagnostic had 0.9766 ms numeric resolution but a 99th
 percentile error of 245.8 ms and only 368/6000 arrivals matched within ±250 ms; its implied 501.6 ms
 H1–L1 coincidence and 3/3000 recovered injections are therefore rejected by this new hard gate.
+The 10k/30-epoch checkpoint improves the within-250-ms association count to 464/6000 but still has
+246.7 ms p99 error; it is likewise stopped before slides. More epochs improve window sensitivity,
+not the missing temporal representation.
 
 The executable timing path is now ordered and leakage-safe:
 
