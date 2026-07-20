@@ -232,6 +232,25 @@ contaminated gain of at least five percentage points with a positive bootstrap l
 report remains non-claimable until continuous clustered background, time slides and the locked
 injection corpus are complete.
 
+The full validation path is now executable as `mask-search-validation-pipeline`. It runs six score
+arms from one frozen detector-set checkpoint: raw/mask-conditioned background, clean
+raw/mask-conditioned injections, and real-glitch-contaminated raw/mask-conditioned injections.
+Raw arms save every IFO/Q chirp and glitch probability. Cleaning suppresses
+`glitch × (1−chirp)` only in the central analysis crop, stores a hash-locked numeric override, then
+reinserts that crop into the original 64-second context before a fresh full-context whitening and
+rescore. Thus raw and cleaned rankings do not accidentally use different PSD contexts.
+
+`physical-overlap-contamination` converts network-aware real-glitch overlaps into this scorer
+contract and emits the exactly waveform-matched clean manifest at the same time. Validation/test
+overrides reject any train-only signal rescaling. `learned-background-deglitch` provides the
+corresponding background overrides while hash-verifying every original source file. All
+intermediate score, probability, override and report hashes are retained; each stage is resumable,
+and the aggregate output still has `test_evaluation: null` and `promotion_allowed: false`.
+
+A successful five-row engineering pilot is not a sensitivity result. The paper gate still needs a
+statistically useful, group-independent contaminated corpus, clean non-inferiority, at least five
+learned seeds, clustered continuous background/time slides and the one-time locked evaluation.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
