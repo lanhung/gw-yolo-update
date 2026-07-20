@@ -223,6 +223,15 @@ null or negative deltas, and computes paired injection-level recovered-`<VT>` bo
 each adjacent scale and seed. Its promotion flag remains false until the equal-epoch checkpoints are
 scored on the same endpoint and adequate clustered background exposure exists.
 
+`mask-search-validation` freezes the deglitch promotion table before overlap results are examined.
+Raw and mask-conditioned rankings receive separate thresholds from identical validation background
+windows and the same allowed false-alarm count. Those thresholds are applied unchanged to
+waveform-matched clean and contaminated arms. Development success requires both a paired clean
+`<VT>` lower bound no worse than the predeclared one-percentage-point efficiency margin and a paired
+contaminated gain of at least five percentage points with a positive bootstrap lower bound. The
+report remains non-claimable until continuous clustered background, time slides and the locked
+injection corpus are complete.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
@@ -239,6 +248,10 @@ python -m gwyolo.cli pe-evaluate \
   --require-publication-provenance
 ```
 
+The publication protocol uses `pe-robustness-evaluate` instead of the legacy two-arm diagnostic. It
+requires clean, contaminated and mask-conditioned triplets and adds effective sample size, ESS/s,
+90% sky area and strict cross-condition backend/prior/waveform provenance checks.
+
 This adapter is backend-neutral: it does not pretend that a synthetic NPZ is an AMPLFI or DINGO
 result. Publication comparisons still require both actual backends to use matched priors, waveform
 conventions, detector data, injection truth and hardware, with the backend version and model hash
@@ -247,7 +260,8 @@ that either external inference run has already been completed.
 
 The publication gate requires matching `backend_version`, `backend_model_hash`, `prior_hash`,
 `waveform_approximant`, `detector_set`, `calibration_version`, `source_event_hash`, `hardware`, and
-`latency_scope` on each raw/cleaned pair. The report adds deterministic paired-bootstrap intervals
+`latency_scope` on each publication triplet (or each legacy raw/cleaned pair). The report adds
+deterministic paired-bootstrap intervals
 for absolute-bias changes, credible-width ratios and cleaning latency, plus paired coverage
 transitions. Development manifests may omit the gate, but no paper comparison may do so.
 

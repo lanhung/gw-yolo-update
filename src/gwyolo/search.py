@@ -766,6 +766,211 @@ def compare_validation_score_fields(
     }
 
 
+def evaluate_mask_search_robustness(
+    background_raw: list[dict[str, Any]],
+    background_mask: list[dict[str, Any]],
+    clean_raw: list[dict[str, Any]],
+    clean_mask: list[dict[str, Any]],
+    contaminated_raw: list[dict[str, Any]],
+    contaminated_mask: list[dict[str, Any]],
+    maximum_validation_false_alarms: int,
+    clean_noninferiority_margin: float = 0.01,
+    minimum_contaminated_efficiency_gain: float = 0.05,
+    score_field: str = "ranking_score",
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Evaluate paired mask gains and clean-data non-inferiority at frozen thresholds."""
+    if not 0 <= clean_noninferiority_margin < 1:
+        raise ValueError("clean non-inferiority margin must be in [0,1)")
+    if not 0 <= minimum_contaminated_efficiency_gain < 1:
+        raise ValueError("minimum contaminated gain must be in [0,1)")
+    for name, rows in (
+        ("background_raw", background_raw),
+        ("background_mask", background_mask),
+        ("clean_raw", clean_raw),
+        ("clean_mask", clean_mask),
+        ("contaminated_raw", contaminated_raw),
+        ("contaminated_mask", contaminated_mask),
+    ):
+        if not rows or any(row.get("split") != "val" for row in rows):
+            raise ValueError(f"mask search robustness requires non-empty val-only {name}")
+        if any(score_field not in row for row in rows):
+            raise ValueError(f"mask search robustness {name} lacks {score_field}")
+    raw_windows = {
+        str(row["window_id"]): (float(row["gps_start"]), float(row["gps_end"]))
+        for row in background_raw
+    }
+    mask_windows = {
+        str(row["window_id"]): (float(row["gps_start"]), float(row["gps_end"]))
+        for row in background_mask
+    }
+    if len(raw_windows) != len(background_raw) or raw_windows != mask_windows:
+        raise ValueError("raw/mask validation backgrounds use different windows or GPS intervals")
+    calibrations = {
+        "raw": calibrate_validation_count(
+            (float(row[score_field]) for row in background_raw),
+            maximum_validation_false_alarms,
+        ),
+        "mask_conditioned": calibrate_validation_count(
+            (float(row[score_field]) for row in background_mask),
+            maximum_validation_false_alarms,
+        ),
+    }
+
+    def paired_rows(
+        raw_rows: list[dict[str, Any]], mask_rows: list[dict[str, Any]], condition: str
+    ) -> list[dict[str, Any]]:
+        raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
+        mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
+        if len(raw_by_id) != len(raw_rows) or len(mask_by_id) != len(mask_rows):
+            raise ValueError(f"duplicate {condition} injection IDs")
+        if set(raw_by_id) != set(mask_by_id):
+            raise ValueError(f"raw/mask {condition} injection IDs differ")
+        joined = []
+        for injection_id in sorted(raw_by_id):
+            raw = raw_by_id[injection_id]
+            masked = mask_by_id[injection_id]
+            if (
+                str(raw["waveform_id"]) != str(masked["waveform_id"])
+                or float(raw["vt_weight"]) != float(masked["vt_weight"])
+            ):
+                raise ValueError(f"raw/mask {condition} injection provenance differs")
+            joined.append(
+                {
+                    **raw,
+                    "stratum": raw.get("contamination_stratum", condition),
+                    "raw_score": raw[score_field],
+                    "mask_score": masked[score_field],
+                }
+            )
+        return joined
+
+    clean = paired_rows(clean_raw, clean_mask, "clean")
+    contaminated = paired_rows(contaminated_raw, contaminated_mask, "contaminated")
+    clean_waveforms = {str(row["waveform_id"]) for row in clean}
+    contaminated_waveforms = {str(row["waveform_id"]) for row in contaminated}
+    if clean_waveforms != contaminated_waveforms:
+        raise ValueError("clean and contaminated arms use different waveform populations")
+    comparisons = {
+        "clean": paired_vt_comparison(
+            clean,
+            float(calibrations["raw"]["threshold"]),
+            float(calibrations["mask_conditioned"]["threshold"]),
+            "raw_score",
+            "mask_score",
+            bootstrap_replicates,
+            seed,
+        ),
+        "contaminated": paired_vt_comparison(
+            contaminated,
+            float(calibrations["raw"]["threshold"]),
+            float(calibrations["mask_conditioned"]["threshold"]),
+            "raw_score",
+            "mask_score",
+            bootstrap_replicates,
+            seed + 1,
+        ),
+    }
+    clean_total_vt = float(sum(float(row["vt_weight"]) for row in clean))
+    contaminated_total_vt = float(
+        sum(float(row["vt_weight"]) for row in contaminated)
+    )
+    allowed_clean_loss = clean_noninferiority_margin * clean_total_vt
+    clean_lower = float(comparisons["clean"]["paired_bootstrap_95"][0])
+    contaminated_lower = float(
+        comparisons["contaminated"]["paired_bootstrap_95"][0]
+    )
+    contaminated_gain = float(
+        comparisons["contaminated"]["delta_recovered_vt_b_minus_a"]
+        / contaminated_total_vt
+    )
+    gates = {
+        "clean_noninferiority": {
+            "absolute_efficiency_margin": clean_noninferiority_margin,
+            "maximum_allowed_vt_loss": allowed_clean_loss,
+            "paired_delta_lower_95": clean_lower,
+            "passed": clean_lower >= -allowed_clean_loss,
+        },
+        "contaminated_material_gain": {
+            "minimum_absolute_efficiency_gain": minimum_contaminated_efficiency_gain,
+            "observed_absolute_efficiency_gain": contaminated_gain,
+            "paired_delta_lower_95": contaminated_lower,
+            "passed": contaminated_gain >= minimum_contaminated_efficiency_gain
+            and contaminated_lower > 0,
+        },
+    }
+    return {
+        "protocol": (
+            "raw and mask thresholds independently frozen on paired validation background, then "
+            "applied unchanged to clean and contaminated waveform-matched injections"
+        ),
+        "score_field": score_field,
+        "maximum_validation_false_alarms": maximum_validation_false_alarms,
+        "background_windows": len(raw_windows),
+        "background_live_time_seconds": _union_duration(raw_windows.values()),
+        "calibrations": calibrations,
+        "comparisons": comparisons,
+        "gates": gates,
+        "development_gates_passed": all(item["passed"] for item in gates.values()),
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": seed,
+    }
+
+
+def run_mask_search_validation(
+    background_raw_path: str | Path,
+    background_mask_path: str | Path,
+    clean_raw_path: str | Path,
+    clean_mask_path: str | Path,
+    contaminated_raw_path: str | Path,
+    contaminated_mask_path: str | Path,
+    output: str | Path,
+    maximum_validation_false_alarms: int,
+    clean_noninferiority_margin: float = 0.01,
+    minimum_contaminated_efficiency_gain: float = 0.05,
+    score_field: str = "ranking_score",
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    paths = {
+        "background_raw": background_raw_path,
+        "background_mask": background_mask_path,
+        "clean_raw": clean_raw_path,
+        "clean_mask": clean_mask_path,
+        "contaminated_raw": contaminated_raw_path,
+        "contaminated_mask": contaminated_mask_path,
+    }
+    loaded = {name: load_jsonl(path) for name, path in paths.items()}
+    comparison = evaluate_mask_search_robustness(
+        **loaded,
+        maximum_validation_false_alarms=maximum_validation_false_alarms,
+        clean_noninferiority_margin=clean_noninferiority_margin,
+        minimum_contaminated_efficiency_gain=minimum_contaminated_efficiency_gain,
+        score_field=score_field,
+        bootstrap_replicates=bootstrap_replicates,
+        seed=seed,
+    )
+    result = {
+        "status": "validation_only_mask_search_robustness",
+        "scientific_claim_allowed": False,
+        "promotion_allowed": False,
+        "scientific_blocker": (
+            "continuous clustered background/time-slide exposure and locked injection evaluation "
+            "remain required even when development gates pass"
+        ),
+        "artifacts": {
+            name: {"path": str(path), "sha256": file_sha256(path)}
+            for name, path in paths.items()
+        },
+        **comparison,
+        "test_evaluation": None,
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result
+
+
 def run_coherence_validation_comparison(
     background_score_report: str | Path,
     injection_score_report: str | Path,

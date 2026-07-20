@@ -10,6 +10,7 @@ from gwyolo.search import (
     compare_search_methods,
     compare_validation_score_fields,
     detector_subset_noninferiority,
+    evaluate_mask_search_robustness,
     evaluate_search,
     far_upper_limit_zero_count,
     paired_vt_comparison,
@@ -127,6 +128,41 @@ def test_validation_score_comparison_calibrates_both_fields_by_hand() -> None:
     assert result["injection_summaries"]["raw"]["recovered_vt"] == 0.0
     assert result["injection_summaries"]["coherent"]["recovered_vt"] == 2.0
     assert result["paired_comparison"]["delta_recovered_vt_b_minus_a"] == 2.0
+
+
+def test_mask_search_robustness_applies_clean_margin_and_overlap_gain() -> None:
+    background_raw = [
+        {"window_id": "w0", "gps_start": 0, "gps_end": 8, "split": "val", "ranking_score": 0.9},
+        {"window_id": "w1", "gps_start": 8, "gps_end": 16, "split": "val", "ranking_score": 0.1},
+    ]
+    background_mask = [
+        {"window_id": "w0", "gps_start": 0, "gps_end": 8, "split": "val", "ranking_score": 0.8},
+        {"window_id": "w1", "gps_start": 8, "gps_end": 16, "split": "val", "ranking_score": 0.1},
+    ]
+
+    def injections(scores):
+        return [
+            {"injection_id": f"i{index}", "waveform_id": f"s{index}", "vt_weight": 1.0, "split": "val", "ranking_score": score}
+            for index, score in enumerate(scores)
+        ]
+
+    result = evaluate_mask_search_robustness(
+        background_raw,
+        background_mask,
+        injections([0.95, 0.95]),
+        injections([0.85, 0.85]),
+        injections([0.95, 0.2]),
+        injections([0.85, 0.85]),
+        1,
+        clean_noninferiority_margin=0.01,
+        minimum_contaminated_efficiency_gain=0.4,
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert result["comparisons"]["clean"]["delta_recovered_vt_b_minus_a"] == 0.0
+    assert result["comparisons"]["contaminated"]["delta_recovered_vt_b_minus_a"] == 1.0
+    assert result["gates"]["clean_noninferiority"]["passed"] is True
+    assert result["gates"]["contaminated_material_gain"]["passed"] is False
 
 
 def test_search_comparison_calibrates_each_method_on_validation_only():

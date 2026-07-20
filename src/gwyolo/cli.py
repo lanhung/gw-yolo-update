@@ -173,6 +173,21 @@ def build_parser() -> argparse.ArgumentParser:
     coherence_compare.add_argument("--seed", type=int, default=20260720)
     coherence_compare.add_argument("--output", required=True)
 
+    mask_search = subparsers.add_parser("mask-search-validation")
+    mask_search.add_argument("--background-raw", required=True)
+    mask_search.add_argument("--background-mask", required=True)
+    mask_search.add_argument("--clean-raw", required=True)
+    mask_search.add_argument("--clean-mask", required=True)
+    mask_search.add_argument("--contaminated-raw", required=True)
+    mask_search.add_argument("--contaminated-mask", required=True)
+    mask_search.add_argument("--maximum-validation-false-alarms", required=True, type=int)
+    mask_search.add_argument("--clean-noninferiority-margin", type=float, default=0.01)
+    mask_search.add_argument("--minimum-contaminated-efficiency-gain", type=float, default=0.05)
+    mask_search.add_argument("--score-field", default="ranking_score")
+    mask_search.add_argument("--bootstrap-replicates", type=int, default=10000)
+    mask_search.add_argument("--seed", type=int, default=20260720)
+    mask_search.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -779,6 +794,26 @@ def main(argv: list[str] | None = None) -> int:
                 args.injection_score_report,
                 args.output,
                 args.maximum_validation_false_alarms,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "mask-search-validation":
+        from .search import run_mask_search_validation
+
+        _print(
+            run_mask_search_validation(
+                args.background_raw,
+                args.background_mask,
+                args.clean_raw,
+                args.clean_mask,
+                args.contaminated_raw,
+                args.contaminated_mask,
+                args.output,
+                args.maximum_validation_false_alarms,
+                args.clean_noninferiority_margin,
+                args.minimum_contaminated_efficiency_gain,
+                args.score_field,
                 args.bootstrap_replicates,
                 args.seed,
             )
