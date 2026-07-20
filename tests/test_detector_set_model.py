@@ -8,6 +8,7 @@ from gwyolo.numeric import (  # noqa: E402
     DetectorSetQNet,
     MultiIFOQNet,
     initialize_detector_set_from_early_fusion,
+    model_from_checkpoint,
 )
 
 
@@ -66,3 +67,22 @@ def test_detector_set_rejects_implicit_or_empty_availability() -> None:
         model(features, torch.zeros(1, 2))
     with pytest.raises(ValueError, match="shape"):
         model(features, torch.ones(1, 3))
+
+
+def test_checkpoint_loader_preserves_architecture_and_detector_order() -> None:
+    source = DetectorSetQNet(ifo_count=3, q_count=1, base_channels=8)
+    checkpoint = {
+        "architecture": "detector_set",
+        "input_channels": 3,
+        "base_channels": 8,
+        "model_ifos": ["H1", "L1", "V1"],
+        "q_values": [4.0],
+        "model": source.state_dict(),
+    }
+    restored, architecture = model_from_checkpoint(
+        checkpoint, ("H1", "L1", "V1"), (4.0,)
+    )
+    assert isinstance(restored, DetectorSetQNet)
+    assert architecture == "detector_set"
+    with pytest.raises(ValueError, match="detector ordering"):
+        model_from_checkpoint(checkpoint, ("L1", "H1", "V1"), (4.0,))

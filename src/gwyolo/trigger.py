@@ -198,7 +198,7 @@ def score_background_manifest(
         import torch
     except ImportError as exc:
         raise RuntimeError("Trigger scoring requires torch") from exc
-    from .numeric import MultiIFOQNet
+    from .numeric import model_from_checkpoint
 
     config = load_yaml(config_path)
     tensor_config = training_tensor_config(config)
@@ -209,8 +209,8 @@ def score_background_manifest(
         raise ValueError(
             f"Checkpoint has {checkpoint['input_channels']} channels; scorer requires {expected_channels}"
         )
-    model = MultiIFOQNet(expected_channels, int(checkpoint["base_channels"])).to(device)
-    model.load_state_dict(checkpoint["model"])
+    model, architecture = model_from_checkpoint(checkpoint, model_ifos, q_values)
+    model = model.to(device)
     model.eval()
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
@@ -235,6 +235,7 @@ def score_background_manifest(
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "save_probabilities": save_probabilities,
+        "architecture": architecture,
         "required_split": required_split,
         "code_commit": execution_provenance()["code_commit"],
     }
@@ -266,7 +267,16 @@ def score_background_manifest(
                 1, expected_channels, power.shape[-2], power.shape[-1]
             )
             with torch.no_grad():
-                logits = model(torch.from_numpy(features).to(device))
+                feature_tensor = torch.from_numpy(features).to(device)
+                if architecture == "detector_set":
+                    availability = torch.as_tensor(
+                        [[ifo in valid_ifos for ifo in model_ifos]],
+                        dtype=feature_tensor.dtype,
+                        device=device,
+                    )
+                    logits = model(feature_tensor, availability)
+                else:
+                    logits = model(feature_tensor)
                 probabilities = torch.sigmoid(logits).cpu().numpy()[0]
             probabilities = probabilities.reshape(
                 2, len(model_ifos), len(q_values), power.shape[-2], power.shape[-1]
@@ -326,6 +336,7 @@ def score_background_manifest(
         "config_sha256": file_sha256(config_path),
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
+        "architecture": architecture,
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
         "probabilities_saved": save_probabilities,

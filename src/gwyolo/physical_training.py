@@ -19,7 +19,14 @@ import numpy as np
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten, _whiten_with_reference
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
-from .numeric import MultiIFOQNet, _atomic_torch_save, _dice_loss
+from .numeric import (
+    DetectorSetQNet,
+    MultiIFOQNet,
+    _atomic_torch_save,
+    _dice_loss,
+    initialize_detector_set_from_early_fusion,
+    model_from_checkpoint,
+)
 from .waveforms import load_materialized_context
 
 try:
@@ -209,6 +216,10 @@ class PhysicalInjectionDataset:
         cache_in_memory: bool,
         coalescence_time_bins: int | None = None,
         tensor_cache_dir: str | Path | None = None,
+        return_detector_availability: bool = False,
+        detector_dropout_probability: float = 0.0,
+        minimum_available_detectors: int = 2,
+        detector_dropout_seed: int = 0,
     ):
         self.rows = rows
         self.tensor_config = tensor_config
@@ -216,6 +227,14 @@ class PhysicalInjectionDataset:
         self.q_values = q_values
         self.target_sample_rate = target_sample_rate
         self.coalescence_time_bins = coalescence_time_bins
+        self.return_detector_availability = return_detector_availability
+        self.detector_dropout_probability = float(detector_dropout_probability)
+        self.minimum_available_detectors = int(minimum_available_detectors)
+        self.detector_dropout_seed = int(detector_dropout_seed)
+        if not 0 <= self.detector_dropout_probability <= 1:
+            raise ValueError("detector dropout probability must be between zero and one")
+        if self.minimum_available_detectors < 1:
+            raise ValueError("minimum available detectors must be positive")
         if tensor_cache_dir is not None and coalescence_time_bins is not None:
             raise ValueError("Physical tensor cache does not yet support timing targets")
         self.tensor_cache_dir = Path(tensor_cache_dir) if tensor_cache_dir is not None else None
@@ -229,6 +248,32 @@ class PhysicalInjectionDataset:
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    def detector_availability(self, index: int) -> np.ndarray:
+        present = {str(ifo) for ifo in self.rows[index]["ifos"]}
+        availability = np.asarray(
+            [ifo in present for ifo in self.model_ifos], dtype=np.float32
+        )
+        available_indices = np.flatnonzero(availability).tolist()
+        if len(available_indices) < self.minimum_available_detectors:
+            raise ValueError("physical row has fewer detectors than the configured minimum")
+        if (
+            self.detector_dropout_probability > 0
+            and len(available_indices) > self.minimum_available_detectors
+        ):
+            identity = {
+                "injection_id": str(self.rows[index]["injection_id"]),
+                "seed": self.detector_dropout_seed,
+                "purpose": "detector_dropout",
+            }
+            draw = int(canonical_hash(identity, 16), 16) / float(16**16 - 1)
+            if draw < self.detector_dropout_probability:
+                selector = int(
+                    canonical_hash({**identity, "purpose": "detector_dropout_slot"}, 16), 16
+                )
+                drop_index = available_indices[selector % len(available_indices)]
+                availability[drop_index] = 0.0
+        return availability
 
     def __getitem__(self, index: int) -> tuple[Any, ...]:
         if self.cache is not None and self.cache[index] is not None:
@@ -256,6 +301,8 @@ class PhysicalInjectionDataset:
                     tensor_cache_path, tensor_cache_key, expected_shape
                 )
                 self.tensor_cache_stats["hits"] += 1
+                if self.return_detector_availability:
+                    item = (*item, self.detector_availability(index))
                 if self.cache is not None:
                     self.cache[index] = item
                 return item
@@ -381,6 +428,8 @@ class PhysicalInjectionDataset:
                 self.coalescence_time_bins,
             )
             item = (*item, np.int64(timing_index), np.float64(timing_offset))
+        elif self.return_detector_availability:
+            item = (*item, self.detector_availability(index))
         if self.cache is not None:
             self.cache[index] = item
         return item
@@ -417,13 +466,25 @@ def _chirp_epoch(
         raise ValueError("temporal localization weights are invalid")
     if max_batches is not None and max_batches <= 0:
         raise ValueError("max_batches must be positive when provided")
-    for features, target in loader:
+    for batch in loader:
+        if len(batch) == 2:
+            features, target = batch
+            detector_availability = None
+        elif len(batch) == 3:
+            features, target, detector_availability = batch
+            detector_availability = detector_availability.to(device)
+        else:
+            raise ValueError("physical training batch has an unsupported tensor contract")
         features = features.to(device)
         target = target.to(device)
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
-            logits = model(features)
+            logits = (
+                model(features)
+                if detector_availability is None
+                else model(features, detector_availability)
+            )
             chirp_logits = logits[:, 0:1]
             bce = focal_binary_cross_entropy(
                 chirp_logits, target[:, None], positive, focal_gamma
@@ -455,9 +516,27 @@ def _chirp_epoch(
                 temporal_peak = temporal_logits.sum() * 0.0
             with torch.no_grad():
                 teacher_glitch = torch.sigmoid(teacher(features)[:, 1])
-            distillation = torch_functional.binary_cross_entropy_with_logits(
-                logits[:, 1], teacher_glitch
-            )
+            if detector_availability is None:
+                distillation = torch_functional.binary_cross_entropy_with_logits(
+                    logits[:, 1], teacher_glitch
+                )
+            else:
+                q_count = int(getattr(model, "q_count"))
+                channel_availability = detector_availability.repeat_interleave(
+                    q_count, dim=1
+                )[:, :, None, None]
+                elementwise_distillation = (
+                    torch_functional.binary_cross_entropy_with_logits(
+                        logits[:, 1], teacher_glitch, reduction="none"
+                    )
+                )
+                distillation = (
+                    elementwise_distillation * channel_availability
+                ).sum() / (
+                    channel_availability.sum()
+                    * elementwise_distillation.shape[-2]
+                    * elementwise_distillation.shape[-1]
+                )
             loss = (
                 bce
                 + dice
@@ -511,8 +590,16 @@ def _calibrate_chirp_threshold(
     probabilities = []
     targets = []
     with torch.no_grad():
-        for features, target in loader:
-            probabilities.append(torch.sigmoid(model(features.to(device))[:, 0]).cpu().numpy())
+        for batch in loader:
+            if len(batch) == 2:
+                features, target = batch
+                logits = model(features.to(device))
+            elif len(batch) == 3:
+                features, target, detector_availability = batch
+                logits = model(features.to(device), detector_availability.to(device))
+            else:
+                raise ValueError("physical calibration batch has an unsupported tensor contract")
+            probabilities.append(torch.sigmoid(logits[:, 0]).cpu().numpy())
             targets.append(target.numpy())
     probability = np.concatenate(probabilities)
     expected = np.concatenate(targets) >= 0.5
@@ -548,6 +635,15 @@ def run_physical_finetune(
     config = load_yaml(config_path)
     settings = deepcopy(config["physical_training"])
     seed = int(seed_override if seed_override is not None else settings["seed"])
+    architecture = str(settings.get("architecture", "fixed_channel"))
+    if architecture not in {"fixed_channel", "detector_set"}:
+        raise ValueError("physical architecture must be fixed_channel or detector_set")
+    detector_dropout_probability = float(
+        settings.get("detector_dropout_probability", 0.0)
+    )
+    minimum_available_detectors = int(settings.get("minimum_available_detectors", 2))
+    if architecture == "fixed_channel" and detector_dropout_probability != 0:
+        raise ValueError("detector dropout requires the detector_set architecture")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -557,6 +653,7 @@ def run_physical_finetune(
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
         "seed": seed,
+        "architecture": architecture,
         "validation_tensor_cache_version": (
             PHYSICAL_TENSOR_CACHE_VERSION
             if validation_feature_cache_dir is not None
@@ -617,6 +714,10 @@ def run_physical_finetune(
             q_values,
             target_sample_rate,
             bool(settings.get("cache_in_memory", True)),
+            return_detector_availability=architecture == "detector_set",
+            detector_dropout_probability=detector_dropout_probability,
+            minimum_available_detectors=minimum_available_detectors,
+            detector_dropout_seed=seed,
         ),
         "val": PhysicalInjectionDataset(
             validation_rows,
@@ -626,6 +727,9 @@ def run_physical_finetune(
             target_sample_rate,
             bool(settings.get("cache_in_memory", True)),
             tensor_cache_dir=validation_feature_cache_dir,
+            return_detector_availability=architecture == "detector_set",
+            minimum_available_detectors=minimum_available_detectors,
+            detector_dropout_seed=seed,
         ),
     }
     generator = torch.Generator().manual_seed(seed)
@@ -646,8 +750,17 @@ def run_physical_finetune(
     if int(pretrained["input_channels"]) != channels:
         raise ValueError("Pretrained checkpoint channel count differs from physical configuration")
     base_channels = int(pretrained["base_channels"])
-    model = MultiIFOQNet(channels, base_channels).to(device)
-    model.load_state_dict(pretrained["model"])
+    if architecture == "detector_set":
+        model = DetectorSetQNet(len(model_ifos), len(q_values), base_channels).to(device)
+        warm_start = initialize_detector_set_from_early_fusion(model, pretrained)
+    else:
+        model = MultiIFOQNet(channels, base_channels).to(device)
+        model.load_state_dict(pretrained["model"])
+        warm_start = {
+            "status": "exact_state_dict_warm_start",
+            "source_architecture": "MultiIFOQNet",
+            "target_architecture": "MultiIFOQNet",
+        }
     teacher = MultiIFOQNet(channels, base_channels).to(device)
     teacher.load_state_dict(pretrained["model"])
     teacher.requires_grad_(False)
@@ -767,6 +880,9 @@ def run_physical_finetune(
                     "epoch": epoch,
                     "validation_chirp_iou": float(validation_metrics["chirp_iou"]),
                     "checkpoint_selection": checkpoint_selection,
+                    "architecture": architecture,
+                    "model_ifos": list(model_ifos),
+                    "q_values": list(q_values),
                     "input_channels": channels,
                     "base_channels": base_channels,
                     "seed": seed,
@@ -835,6 +951,16 @@ def run_physical_finetune(
         },
         "seed": seed,
         "run_identity": run_identity,
+        "architecture": architecture,
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "detector_set": {
+            "enabled": architecture == "detector_set",
+            "training_dropout_probability": detector_dropout_probability,
+            "minimum_available_detectors": minimum_available_detectors,
+            "dropout_seed": seed,
+            "warm_start": warm_start,
+        },
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
         "split_audit": audit,
@@ -1312,6 +1438,7 @@ def audit_physical_checkpoint(
         raise ValueError("Physical checkpoint audit accepts a non-empty validation-only manifest")
     model_ifos = tuple(str(item) for item in settings["model_ifos"])
     q_values = tuple(float(item) for item in settings["q_values"])
+    checkpoint_architecture = str(settings.get("architecture", "fixed_channel"))
     dataset = PhysicalInjectionDataset(
         rows,
         settings["tensor"],
@@ -1319,6 +1446,8 @@ def audit_physical_checkpoint(
         q_values,
         int(settings["target_sample_rate"]),
         False,
+        return_detector_availability=checkpoint_architecture == "detector_set",
+        minimum_available_detectors=int(settings.get("minimum_available_detectors", 2)),
     )
     loader = DataLoader(dataset, batch_size=int(settings["batch_size"]), shuffle=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1326,8 +1455,10 @@ def audit_physical_checkpoint(
     channels = len(model_ifos) * len(q_values)
     if int(checkpoint["input_channels"]) != channels:
         raise ValueError("Checkpoint channel count differs from physical audit configuration")
-    model = MultiIFOQNet(channels, int(checkpoint["base_channels"])).to(device)
-    model.load_state_dict(checkpoint["model"])
+    model, architecture = model_from_checkpoint(checkpoint, model_ifos, q_values)
+    if architecture != checkpoint_architecture:
+        raise ValueError("physical audit config architecture differs from checkpoint")
+    model = model.to(device)
     model.eval()
     groups: dict[str, dict[str, Any]] = {}
     analysis_duration = float(settings.get("analysis_duration", 8.0))
@@ -1355,8 +1486,16 @@ def audit_physical_checkpoint(
     offset = 0
     started = time.time()
     with torch.no_grad():
-        for features, target in loader:
-            probabilities = torch.sigmoid(model(features.to(device))[:, 0]).cpu().numpy()
+        for batch in loader:
+            if len(batch) == 2:
+                features, target = batch
+                logits = model(features.to(device))
+            elif len(batch) == 3:
+                features, target, availability = batch
+                logits = model(features.to(device), availability.to(device))
+            else:
+                raise ValueError("physical audit batch has an unsupported tensor contract")
+            probabilities = torch.sigmoid(logits[:, 0]).cpu().numpy()
             expected = target.numpy() >= 0.5
             for index in range(features.shape[0]):
                 row = rows[offset + index]
@@ -1445,6 +1584,7 @@ def audit_physical_checkpoint(
         "validation_manifest_sha256": file_sha256(validation_manifest),
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
+        "architecture": architecture,
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),

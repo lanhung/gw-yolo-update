@@ -280,6 +280,35 @@ def initialize_detector_set_from_early_fusion(
     }
 
 
+def model_from_checkpoint(
+    checkpoint: dict[str, Any],
+    model_ifos: tuple[str, ...],
+    q_values: tuple[float, ...],
+) -> tuple[Any, str]:
+    """Construct a mask model without silently changing its detector contract."""
+    _require_torch()
+    architecture = str(checkpoint.get("architecture", "fixed_channel"))
+    expected_channels = len(model_ifos) * len(q_values)
+    if int(checkpoint["input_channels"]) != expected_channels:
+        raise ValueError(
+            f"checkpoint has {checkpoint['input_channels']} channels; "
+            f"requested detector/Q contract requires {expected_channels}"
+        )
+    if "model_ifos" in checkpoint and tuple(checkpoint["model_ifos"]) != model_ifos:
+        raise ValueError("checkpoint detector ordering differs from the requested model_ifos")
+    if "q_values" in checkpoint and tuple(float(x) for x in checkpoint["q_values"]) != q_values:
+        raise ValueError("checkpoint Q ordering differs from the requested q_values")
+    base_channels = int(checkpoint["base_channels"])
+    if architecture == "fixed_channel":
+        model = MultiIFOQNet(expected_channels, base_channels)
+    elif architecture == "detector_set":
+        model = DetectorSetQNet(len(model_ifos), len(q_values), base_channels)
+    else:
+        raise ValueError(f"unsupported checkpoint architecture: {architecture}")
+    model.load_state_dict(checkpoint["model"])
+    return model, architecture
+
+
 def _dice_loss(logits: Any, targets: Any, class_weights: Any | None = None) -> Any:
     probabilities = torch.sigmoid(logits)
     axes = tuple(range(2, probabilities.ndim))

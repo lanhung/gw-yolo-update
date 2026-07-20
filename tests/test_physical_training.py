@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gwyolo.physical_training import (
+    PhysicalInjectionDataset,
     _chirp_epoch,
     _atomic_write_physical_tensor_cache,
     _load_physical_tensor_cache,
@@ -25,6 +26,63 @@ from gwyolo.physical_training import (
     timing_accuracy_gate,
     union_component_masks,
 )
+
+
+def test_detector_availability_dropout_is_group_deterministic() -> None:
+    rows = [
+        {"injection_id": "triple", "ifos": ["H1", "L1", "V1"]},
+        {"injection_id": "double", "ifos": ["H1", "L1"]},
+    ]
+    dataset = PhysicalInjectionDataset(
+        rows,
+        {},
+        ("H1", "L1", "V1"),
+        (4.0,),
+        1024,
+        False,
+        return_detector_availability=True,
+        detector_dropout_probability=1.0,
+        minimum_available_detectors=2,
+        detector_dropout_seed=17,
+    )
+    first = dataset.detector_availability(0)
+    assert np.array_equal(first, dataset.detector_availability(0))
+    assert first.sum() == 2
+    assert dataset.detector_availability(1).tolist() == [1.0, 1.0, 0.0]
+
+
+def test_detector_set_distillation_ignores_missing_ifo_logits() -> None:
+    torch = pytest.importorskip("torch")
+
+    class Student(torch.nn.Module):
+        q_count = 1
+
+        def __init__(self, missing_value: float) -> None:
+            super().__init__()
+            self.missing_value = missing_value
+
+        def forward(self, features, availability):
+            batch, channels, frequency, time = features.shape
+            logits = torch.zeros((batch, 2, channels, frequency, time))
+            logits[:, 1, 1] = self.missing_value
+            return logits
+
+    class Teacher(torch.nn.Module):
+        def forward(self, features):
+            batch, channels, frequency, time = features.shape
+            return torch.zeros((batch, 2, channels, frequency, time))
+
+    features = torch.zeros((1, 2, 2, 2))
+    target = torch.zeros((1, 2, 2, 2))
+    availability = torch.tensor([[1.0, 0.0]])
+    loader = [(features, target, availability)]
+    low = _chirp_epoch(
+        Student(-20.0), Teacher(), loader, torch.device("cpu"), None, 1.0, 1.0
+    )
+    high = _chirp_epoch(
+        Student(20.0), Teacher(), loader, torch.device("cpu"), None, 1.0, 1.0
+    )
+    assert low["loss"] == pytest.approx(high["loss"])
 
 
 def test_chirp_epoch_honors_exact_batch_budget() -> None:
