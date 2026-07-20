@@ -282,6 +282,8 @@ def run_candidate_pair_scaling_evaluation(
             strata = report["selected_validation_strata"]
             record = {
                 "physical_parents": scale,
+                "unique_waveforms": int(report["train_unique_waveforms"]),
+                "unique_gps_blocks": int(report["train_unique_gps_blocks"]),
                 "optimizer_updates": int(report["optimizer_updates"]),
                 "top1_padded_truth_pair_fraction": float(
                     metrics["top1_padded_truth_pair_fraction"]
@@ -347,11 +349,19 @@ def run_candidate_pair_scaling_evaluation(
         final_records["fixed_updates"]["top1_gain_from_smallest"]
         >= float(settings["minimum_final_top1_gain"])
     )
+    gps_counts = {
+        int(record["unique_gps_blocks"])
+        for curve in curves.values()
+        for record in curve
+    }
+    gps_diversity_held_fixed = len(gps_counts) == 1
     diagnosis = (
-        "data_limited_signal"
+        "waveform_data_limited_signal_at_fixed_gps_support"
         if representation_gain
         else "update_limited_signal"
         if fixed_epoch_gain and not fixed_update_gain
+        else "waveform_scale_plateau_with_fixed_gps_support"
+        if gps_diversity_held_fixed
         else "representation_or_domain_limited"
     )
     result = {
@@ -366,6 +376,9 @@ def run_candidate_pair_scaling_evaluation(
         "predeclared_checks": checks,
         "representation_scaling_gate_passed": representation_gain,
         "scaling_diagnosis": diagnosis,
+        "data_scaling_axis": "unique waveform/injection parents",
+        "gps_diversity_held_fixed": gps_diversity_held_fixed,
+        "gps_block_counts": sorted(gps_counts),
         "scale_beyond_10000_allowed": False,
         "larger_scale_blocker": (
             "fresh group-disjoint O4a calibration, continuous-background FAR/VT, and a positive "

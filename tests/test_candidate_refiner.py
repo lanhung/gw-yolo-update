@@ -356,6 +356,8 @@ candidate_pair_scaling_evaluation:
                         "train_physical_parents": scale,
                         "architecture": "candidate_pair_trainable_stft_cnn_v3",
                         "optimizer_updates": scale // 2,
+                        "train_unique_waveforms": scale,
+                        "train_unique_gps_blocks": 12,
                         "run_identity": {
                             "train_injection_manifest_sha256": f"parent-{scale}",
                             "train_candidate_manifest_sha256": f"candidate-{scale}",
@@ -387,7 +389,10 @@ candidate_pair_scaling_evaluation:
         tmp_path / "evaluation.json",
     )
     assert result["representation_scaling_gate_passed"] is True
-    assert result["scaling_diagnosis"] == "data_limited_signal"
+    assert result["scaling_diagnosis"] == (
+        "waveform_data_limited_signal_at_fixed_gps_support"
+    )
+    assert result["gps_diversity_held_fixed"] is True
     assert np.isclose(
         result["curves"]["fixed_updates"][-1]["top1_gain_from_smallest"],
         0.06,
