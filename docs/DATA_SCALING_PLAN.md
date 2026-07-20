@@ -188,6 +188,11 @@ endpoint improves by at least one percentage point. If analytic IoU rises but O4
 not, add run/IFO/glitch diversity; if both plateau, change representation (higher temporal output,
 long/multi-rate context and coherent fusion) before generating more correlated mixtures.
 
+The acquisition side is executable through `gwosc-run-plan`, which paginates the official GWOSC v2
+run strain-file endpoint, intersects exact GPS starts across requested IFOs and samples time strata
+deterministically. `gwosc-batch-download` then resumes each HDF5 transfer and requires a complete
+Fletcher32/statistics/DQ scan before recording it. Both commands reject O4b development access.
+
 ## Storage and compute strategy
 
 At the current JPEG size, 100k plots would be only several GB, but RGB plots discard physical information. A float32 tensor with several Q planes and three IFOs can consume hundreds of GB per 100k scenes. Prefer:

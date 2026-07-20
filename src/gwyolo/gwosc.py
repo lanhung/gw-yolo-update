@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import urllib.request
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,7 +14,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, canonical_hash, file_sha256
 
 
 API_ROOT = "https://gwosc.org/api/v2"
@@ -80,6 +81,222 @@ def event_strain_files(
     if not records:
         raise ValueError(f"No {sample_rate_khz} kHz strain files found for {event}")
     return records
+
+
+def _api_results(url: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows = []
+    page_count = 0
+    results_count = None
+    while url:
+        payload = _api_json(url)
+        page_count += 1
+        if results_count is None:
+            results_count = int(payload.get("results_count", 0))
+        rows.extend(payload.get("results", []))
+        next_url = payload.get("next")
+        url = str(next_url) if next_url else ""
+    return rows, {"api_results_count": results_count, "api_pages": page_count}
+
+
+def _stratified_records(
+    records: list[dict[str, Any]], maximum: int | None, seed: int
+) -> list[dict[str, Any]]:
+    if maximum is None or maximum >= len(records):
+        return records
+    if maximum <= 0:
+        raise ValueError("maximum pair count must be positive")
+    boundaries = np.linspace(0, len(records), maximum + 1, dtype=int)
+    selected = []
+    for index in range(maximum):
+        candidates = records[boundaries[index] : boundaries[index + 1]]
+        selected.append(
+            min(
+                candidates,
+                key=lambda row: canonical_hash(
+                    {"gps_start": row["gps_start"], "seed": seed}, 64
+                ),
+            )
+        )
+    return sorted(selected, key=lambda row: int(row["gps_start"]))
+
+
+def plan_run_strain_pairs(
+    run: str,
+    detectors: Iterable[str] = ("H1", "L1"),
+    sample_rate_khz: int = 4,
+    maximum_pairs: int | None = None,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    if run.lower().startswith("o4b"):
+        raise ValueError("O4b is locked evaluation data and cannot enter a development plan")
+    wanted = tuple(sorted(set(str(ifo).upper() for ifo in detectors)))
+    if len(wanted) < 2:
+        raise ValueError("A run plan requires at least two detectors")
+    endpoint = (
+        f"{API_ROOT}/runs/{run}/strain-files?sample-rate={sample_rate_khz}&pagesize=500"
+    )
+    records, api_summary = _api_results(endpoint)
+    by_gps: dict[int, dict[str, dict[str, Any]]] = {}
+    for item in records:
+        if int(item["sample_rate_kHz"]) != sample_rate_khz:
+            continue
+        ifo = str(item["detector"])
+        if ifo not in wanted:
+            continue
+        gps_start = int(item["gps_start"])
+        if ifo in by_gps.setdefault(gps_start, {}):
+            raise ValueError(f"Duplicate {ifo} strain record at GPS {gps_start}")
+        by_gps[gps_start][ifo] = {
+            "detector": ifo,
+            "gps_start": gps_start,
+            "sample_rate": sample_rate_khz * 1024,
+            "hdf5_url": str(item["hdf5_url"]),
+            "detail_url": str(item["detail_url"]),
+        }
+    aligned = [
+        {
+            "pair_id": f"{run}-{gps_start}-{'-'.join(wanted)}",
+            "run": run,
+            "gps_start": gps_start,
+            "detectors": {ifo: by_gps[gps_start][ifo] for ifo in wanted},
+        }
+        for gps_start in sorted(by_gps)
+        if set(by_gps[gps_start]) == set(wanted)
+    ]
+    if not aligned:
+        raise ValueError(f"No aligned {wanted} strain-file pairs found for {run}")
+    selected = _stratified_records(aligned, maximum_pairs, seed)
+    return {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": run,
+        "detectors": list(wanted),
+        "sample_rate_khz": sample_rate_khz,
+        "seed": seed,
+        "source_endpoint": endpoint,
+        **api_summary,
+        "aligned_pairs_available": len(aligned),
+        "selected_pairs": len(selected),
+        "selected_gps_span": [selected[0]["gps_start"], selected[-1]["gps_start"]],
+        "pairs": selected,
+    }
+
+
+def run_gwosc_run_plan(
+    run: str,
+    detectors: Iterable[str],
+    output: str | Path,
+    sample_rate_khz: int = 4,
+    maximum_pairs: int | None = None,
+    seed: int = 20260719,
+) -> dict[str, Any]:
+    result = plan_run_strain_pairs(run, detectors, sample_rate_khz, maximum_pairs, seed)
+    atomic_write_json(output, result)
+    return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
+
+
+def run_gwosc_batch_download(
+    plan_path: str | Path,
+    cache_dir: str | Path,
+    output_dir: str | Path,
+    maximum_pairs: int | None = None,
+    download_workers: int = 8,
+    chunk_samples: int = 1_048_576,
+) -> dict[str, Any]:
+    with Path(plan_path).open("r", encoding="utf-8") as handle:
+        plan = json.load(handle)
+    if str(plan.get("run", "")).lower().startswith("o4b"):
+        raise ValueError("O4b is locked evaluation data and cannot be downloaded for development")
+    pairs = _stratified_records(list(plan.get("pairs", [])), maximum_pairs, int(plan["seed"]))
+    if not pairs:
+        raise ValueError("Acquisition plan contains no selected pairs")
+    cache = Path(cache_dir)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "plan_sha256": file_sha256(plan_path),
+        "selected_pair_ids_hash": canonical_hash([row["pair_id"] for row in pairs], 64),
+        "download_workers": download_workers,
+        "chunk_samples": chunk_samples,
+    }
+    state_path = output / "batch_download_state.json"
+    partial_path = output / "batch_download_partial.json"
+    completed = []
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing batch-download state belongs to a different run")
+        if partial_path.is_file():
+            with partial_path.open("r", encoding="utf-8") as handle:
+                completed = json.load(handle).get("files", [])
+    completed_keys = set()
+    for row in completed:
+        key = (str(row["pair_id"]), str(row["detector"]))
+        if key in completed_keys or file_sha256(row["path"]) != row["sha256"]:
+            raise ValueError(f"Invalid resumable batch-download entry: {key}")
+        completed_keys.add(key)
+    for pair in pairs:
+        for ifo, record in sorted(pair["detectors"].items()):
+            key = (str(pair["pair_id"]), str(ifo))
+            if key in completed_keys:
+                continue
+            filename = Path(urlparse(record["hdf5_url"]).path).name
+            download = download_resumable(
+                record["hdf5_url"], cache / str(plan["run"]) / filename, workers=download_workers
+            )
+            verification = verify_hdf5_against_detail(
+                download["path"], _api_json(record["detail_url"]), chunk_samples
+            )
+            entry = {
+                "pair_id": pair["pair_id"],
+                "run": plan["run"],
+                "gps_start": pair["gps_start"],
+                "detector": ifo,
+                "path": download["path"],
+                "sha256": download["sha256"],
+                "bytes": download["bytes"],
+                "downloaded": download["downloaded"],
+                "detail_url": record["detail_url"],
+                "verification": verification,
+            }
+            completed.append(entry)
+            completed_keys.add(key)
+            atomic_write_json(partial_path, {"run_identity": run_identity, "files": completed})
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress" if verification["passed"] else "failed",
+                    "run_identity": run_identity,
+                    "completed_files": len(completed),
+                    "requested_files": len(pairs) * len(plan["detectors"]),
+                },
+            )
+            if not verification["passed"]:
+                raise RuntimeError(f"Full-file verification failed for {key}")
+    result = {
+        "status": "verified_development_strain_batch",
+        "passed": all(row["verification"]["passed"] for row in completed),
+        "run": plan["run"],
+        "plan_path": str(plan_path),
+        "plan_sha256": run_identity["plan_sha256"],
+        "selected_pairs": len(pairs),
+        "verified_files": len(completed),
+        "files": completed,
+    }
+    report_path = output / "batch_download_report.json"
+    atomic_write_json(report_path, result)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed_files": len(completed),
+            "requested_files": len(pairs) * len(plan["detectors"]),
+            "report_sha256": file_sha256(report_path),
+        },
+    )
+    return result
 
 
 def verify_hdf5_against_detail(

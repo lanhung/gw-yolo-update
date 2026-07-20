@@ -8,7 +8,12 @@ from .catalog import evaluate_catalog_predictions
 from .config import load_config
 from .data import audit_and_split, scan_sources
 from .factory import run_data_factory
-from .gwosc import run_gwosc_pilot, run_gwosc_verification
+from .gwosc import (
+    run_gwosc_batch_download,
+    run_gwosc_pilot,
+    run_gwosc_run_plan,
+    run_gwosc_verification,
+)
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
@@ -133,6 +138,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gwosc_verify.add_argument("--output", required=True)
     gwosc_verify.add_argument("--chunk-samples", type=int, default=1_048_576)
+
+    gwosc_run_plan = subparsers.add_parser("gwosc-run-plan")
+    gwosc_run_plan.add_argument("--run", required=True)
+    gwosc_run_plan.add_argument("--detectors", nargs="+", default=["H1", "L1"])
+    gwosc_run_plan.add_argument("--sample-rate-khz", type=int, default=4)
+    gwosc_run_plan.add_argument("--maximum-pairs", type=int)
+    gwosc_run_plan.add_argument("--seed", type=int, default=20260719)
+    gwosc_run_plan.add_argument("--output", required=True)
+
+    gwosc_batch = subparsers.add_parser("gwosc-batch-download")
+    gwosc_batch.add_argument("--plan", required=True)
+    gwosc_batch.add_argument("--cache-dir", required=True)
+    gwosc_batch.add_argument("--output-dir", required=True)
+    gwosc_batch.add_argument("--maximum-pairs", type=int)
+    gwosc_batch.add_argument("--download-workers", type=int, default=8)
+    gwosc_batch.add_argument("--chunk-samples", type=int, default=1_048_576)
 
     numeric = subparsers.add_parser("numeric-train")
     numeric.add_argument("--config", required=True)
@@ -401,6 +422,28 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"Invalid or duplicate --file value: {item!r}")
             files[detector] = path
         _print(run_gwosc_verification(args.event, files, args.output, args.chunk_samples))
+    elif args.command == "gwosc-run-plan":
+        _print(
+            run_gwosc_run_plan(
+                args.run,
+                args.detectors,
+                args.output,
+                args.sample_rate_khz,
+                args.maximum_pairs,
+                args.seed,
+            )
+        )
+    elif args.command == "gwosc-batch-download":
+        _print(
+            run_gwosc_batch_download(
+                args.plan,
+                args.cache_dir,
+                args.output_dir,
+                args.maximum_pairs,
+                args.download_workers,
+                args.chunk_samples,
+            )
+        )
     elif args.command == "numeric-train":
         from .numeric import train_numeric_model
 

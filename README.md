@@ -52,6 +52,8 @@ gwyolo scale-plan   audit a manifest and generate independent-data scaling targe
 gwyolo data-factory create leak-safe physical recipes and optional numeric tensors
 gwyolo gwosc-pilot  acquire O4a strain and validate real multi-IFO preprocessing
 gwyolo gwosc-verify scan every HDF5 chunk and match official GWOSC statistics/DQ sums
+gwyolo gwosc-run-plan stratify aligned development-run strain files across GPS time
+gwyolo gwosc-batch-download resume and fully verify every planned multi-IFO source file
 gwyolo numeric-train train the validation-selected multi-IFO/multi-Q numeric baseline
 gwyolo numeric-multiseed resume and aggregate validation-only runs across at least five seeds
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds

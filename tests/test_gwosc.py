@@ -14,6 +14,7 @@ from gwyolo.gwosc import (
     _fft_downsample,
     download_resumable,
     event_strain_files,
+    plan_run_strain_pairs,
     read_hdf5_segment,
     run_gwosc_pilot,
     verify_hdf5_against_detail,
@@ -86,6 +87,48 @@ def test_full_hdf5_verification_matches_official_statistics(tmp_path: Path) -> N
     assert report["passed"]
     assert report["strain_samples"] == 4
     assert report["observed_bitsums"] == {"0": 2, "1": 2, "32": 2}
+
+
+def test_run_plan_keeps_only_aligned_pairs_and_stratifies() -> None:
+    first = {
+        "results_count": 7,
+        "results": [
+            {
+                "detector": ifo,
+                "gps_start": gps,
+                "sample_rate_kHz": 4,
+                "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                "detail_url": f"https://example/{ifo}-{gps}",
+            }
+            for gps in (100, 200, 300)
+            for ifo in ("H1", "L1")
+        ]
+        + [
+            {
+                "detector": "H1",
+                "gps_start": 400,
+                "sample_rate_kHz": 4,
+                "hdf5_url": "https://example/H1-400.hdf5",
+                "detail_url": "https://example/H1-400",
+            }
+        ],
+        "next": "next-page",
+    }
+    second = {"results_count": 7, "results": [], "next": None}
+    with patch("gwyolo.gwosc._api_json", side_effect=[first, second]):
+        plan = plan_run_strain_pairs("O4a", ["H1", "L1"], maximum_pairs=2, seed=3)
+    assert plan["api_pages"] == 2
+    assert plan["aligned_pairs_available"] == 3
+    assert plan["selected_pairs"] == 2
+    assert all(set(row["detectors"]) == {"H1", "L1"} for row in plan["pairs"])
+
+
+def test_run_plan_rejects_locked_o4b_without_api_access() -> None:
+    with patch("gwyolo.gwosc._api_json") as api, pytest.raises(
+        ValueError, match="locked evaluation"
+    ):
+        plan_run_strain_pairs("O4b")
+    api.assert_not_called()
 
 
 def test_read_hdf5_segment_and_downsample(tmp_path: Path) -> None:
