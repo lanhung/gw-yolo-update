@@ -385,6 +385,12 @@ All three pass zero-overlap injection/waveform/GPS audits against the frozen 3k 
 All three already saturate the current 76 train GPS blocks, so this curve isolates waveform scale;
 it cannot answer the separate run/GPS-domain scale question.
 
+The physical tensor target is explicitly the pixelwise union over all IFO and Q-plane component
+masks, matching the network's single chirp-mask output. The individual component masks remain
+deterministically regenerable from the stored signal and per-IFO visibility metadata; flattening
+them into nine independent target channels is forbidden because it disagrees with the output shape
+and can neither be interpreted as instance preservation nor as a valid union-mask loss.
+
 An official O4a acquisition plan was also frozen with seed 20260720. The API exposed 3,309 aligned
 H1/L1 4-kHz files; 800 disjoint 4,096-second pairs were selected over GPS
 1368268800--1389408256. This is 3,276,800 seconds (37.93 raw coincident detector-days) before DQ,

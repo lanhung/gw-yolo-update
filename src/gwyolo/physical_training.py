@@ -42,6 +42,16 @@ def relative_component_mask(power: np.ndarray, fraction: float = 0.08) -> np.nda
     return ((peaks > 0) & (values >= peaks * fraction)).astype(np.float32)
 
 
+def union_component_masks(component_masks: np.ndarray) -> np.ndarray:
+    """Collapse IFO/Q planes to the single chirp-class mask predicted by the network."""
+    values = np.asarray(component_masks)
+    if values.ndim != 4 or not np.isfinite(values).all():
+        raise ValueError("component masks must be finite [IFO, Q, frequency, time]")
+    if np.any((values != 0) & (values != 1)):
+        raise ValueError("component masks must be binary")
+    return np.max(values, axis=(0, 1)).astype(np.float32)
+
+
 def scale_component_for_transform(component: np.ndarray) -> np.ndarray:
     """Scale each IFO before power construction so physical strain cannot underflow float32."""
     values = np.asarray(component, dtype=np.float64)
@@ -247,10 +257,10 @@ class PhysicalInjectionDataset:
         features = _normalize_power(feature_power).reshape(
             -1, feature_power.shape[-2], feature_power.shape[-1]
         )
-        target = relative_component_mask(
-            signal_power, float(settings.get("mask_fraction", 0.08))
-        ).reshape(
-            -1, signal_power.shape[-2], signal_power.shape[-1]
+        target = union_component_masks(
+            relative_component_mask(
+                signal_power, float(settings.get("mask_fraction", 0.08))
+            )
         )
         if not np.isfinite(features).all() or not np.isfinite(target).all():
             raise ValueError("Physical tensor construction produced non-finite values")

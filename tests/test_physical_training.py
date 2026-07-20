@@ -21,6 +21,7 @@ from gwyolo.physical_training import (
     scale_component_for_transform,
     summarize_binary_mask_counts,
     timing_accuracy_gate,
+    union_component_masks,
 )
 
 
@@ -132,6 +133,17 @@ def test_relative_component_mask_handles_physical_amplitudes() -> None:
     mask = relative_component_mask(power)
     assert mask.sum() == 1
     assert mask[0, 0, 1, 1] == 1
+
+
+def test_union_component_masks_preserves_every_plane_pixel() -> None:
+    masks = np.zeros((2, 2, 2, 3), dtype=np.float32)
+    masks[0, 0, 0, 1] = 1
+    masks[1, 1, 1, 2] = 1
+    union = union_component_masks(masks)
+    assert union.shape == (2, 3)
+    assert union.tolist() == [[0, 1, 0], [0, 0, 1]]
+    with pytest.raises(ValueError, match="binary"):
+        union_component_masks(masks + 0.5)
 
 
 def test_component_scaling_prevents_physical_float32_power_underflow() -> None:
