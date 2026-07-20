@@ -226,6 +226,11 @@ crossing formally promotes proposal-objective repair. The next bounded arm adds 
 per-IFO endpoint/proposal output while retaining the existing chirp and glitch masks unchanged; it
 must pass the same frozen coverage--compactness gate on the shared 3k validation set before any
 candidate timing or continuous-background scale run.
+The dense arm now passes that gate at the validation-selected threshold 0.39, but produces a median
+22 candidates per expected detector arrival and 380 ms nearest-peak p90. Proposal coverage is no
+longer the blocking representation; candidate-conditioned ranking, local timing and abstention are.
+Do not prune to top-k by the current scalar score: top-16 padded coverage is only 92.45%, and every
+proposal must remain represented until the validation-calibrated refiner is applied.
 
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash

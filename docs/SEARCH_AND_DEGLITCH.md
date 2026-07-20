@@ -133,6 +133,14 @@ selection uses validation dense focal-BCE loss; only afterward does the fixed 0.
 grid face the unchanged proposal coverage--compactness gate. The command consumes no test rows and
 cannot make a search claim even if that validation gate passes.
 
+The systematic validation refinement selects threshold 0.39 and passes every frozen proposal gate:
+95.83% padded coverage, 0.212/0.257 median/p90 union fraction and 0.281 s median containing width.
+This promotes candidate-conditioned refinement, not search recall. There are still 127,102 retained
+proposals (median/p90 22/30 per detector arrival), and nearest-peak p90 is 380 ms. Current proposal
+score ordering is inadequate: top-1/top-16/top-24 padded coverage is 30.65%/92.45%/95.42%.
+Accordingly no top-k pruning is allowed; the next head must score every candidate, learn local timing
+and expose abstention before a frozen continuous-background threshold is considered.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,

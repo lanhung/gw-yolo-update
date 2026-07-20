@@ -402,6 +402,34 @@ After every candidate and audit report was hash-bound, the reusable probability 
 and selection decision remain; exact recovery is the frozen scorer followed by extraction. The
 eviction-report SHA256 is `a6fb3597f7ca6441b3affe4d29eaac1efb6acb312f7f2cb6a2600cd4c12824de`.
 
+The first independent dense endpoint-proposal arm at commits `376f297`/`fcb6f66` then completed the
+same group-safe 2k/3k split and exactly 1,500 optimizer updates. It warm-starts the v3 numeric
+spectrogram encoder but uses one sigmoid endpoint map per IFO, leaving the chirp/glitch segmentation
+checkpoint unchanged and retaining every connected proposal. The validation-loss-selected epoch 7
+checkpoint SHA256 is `b683b4442dd51799d21cfdca9406924f238d641f15ec54d05a23ca93494f7539`;
+the training report SHA256 is `c0c2d783c8bc238cedbc468a652986ebd110fdb640e0cf7f6744c53b55284786`.
+An invalid preliminary process exposed `BCEWithLogits(-inf, 0)=NaN` for missing V1 slots and was
+stopped before any epoch/checkpoint existed; `fcb6f66` indexes unavailable IFOs out of the loss and
+adds a regression test. The accepted rerun is finite and reports zero waveform, injection and GPS
+block overlap.
+
+The coarse 0.3/0.4 results bracketed a genuine validation Pareto region, so commit `078b761` evaluated
+the full systematic 0.31--0.39 grid with the same fixed checkpoint and no retraining/test access.
+Thresholds 0.35--0.39 all pass the predeclared gate. The machine selector chooses 0.39: padded
+coverage is 95.83% over 6,000 detector arrivals, every BBH/BNS/NSBH and SNR>=4 group exceeds 90%,
+median/p90 union fractions are 0.212/0.257, and median truth-containing width is 0.281 s. The
+selection report SHA256 is `160933842b4068a58a4e56eceef17837862d4cc82af2c5cc0091030a0754b62b`;
+the selected audit/candidate-manifest SHA256 values are
+`006b2d88d032dea542c987e7d5f5b600b7a0c476a68057f0175d0cbaa3594b9e` and
+`db1ed6338f8c2d8ef6800db1fc1ad1a6981bf4092e81e7f7e0f2f302a20a9bcc`.
+
+Passing proposal support does not imply useful timing or ranking. The selected threshold emits
+127,102 candidates: median/p90 22/30 per detector arrival. Nearest-peak median/p90 errors are
+72/380 ms, and taking only the highest-score proposal preserves padded truth support for just 30.65%
+of arrivals. Even top 16 reaches only 92.45%; top 24 reaches 95.42%. Thus the scalar proposal score
+cannot be used as a timing estimate or silent top-k filter. Every proposal remains retained while a
+candidate-conditioned local refiner/abstention head is trained and calibrated.
+
 The stronger 10k/30-epoch mask checkpoint was then evaluated under the corrected gate at commit
 `a83eadd`. It increases arrivals associated inside ±250 ms from 368 to 464/6000, but median/p90/p99
 errors remain 125.1/221.3/246.7 ms. The 10 ms empirical gate is false, so execution stops before
