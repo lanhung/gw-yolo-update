@@ -19,7 +19,7 @@ from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
 
 
-OVERLAP_ARTIFACT_VERSION = "gravityspy-physical-overlap-v1"
+OVERLAP_ARTIFACT_VERSION = "gravityspy-physical-overlap-v2-network-aware"
 OVERLAP_LEAKAGE_FIELDS = (
     "mixture_id",
     "injection_id",
@@ -68,6 +68,18 @@ def _supported_ifos(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(ifo) for ifo in ifos)
 
 
+def _glitch_available_ifos(row: dict[str, Any]) -> tuple[str, ...]:
+    values = row.get("available_ifos")
+    if values is None:
+        values = [row["ifo"]]
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("Gravity Spy detector availability is empty or invalid")
+    available = tuple(str(ifo) for ifo in values)
+    if len(available) != len(set(available)) or str(row["ifo"]) not in available:
+        raise ValueError("Gravity Spy available_ifos must uniquely include the event IFO")
+    return available
+
+
 def pair_overlap_rows(
     glitch_rows: list[dict[str, Any]],
     injection_rows: list[dict[str, Any]],
@@ -99,9 +111,13 @@ def pair_overlap_rows(
     pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for glitch_index in glitch_order:
         glitch = glitches[glitch_index]
-        ifo = str(glitch["ifo"])
+        required_ifos = set(_glitch_available_ifos(glitch))
         match = next(
-            (index for index in injection_order if index in remaining and ifo in supported[index]),
+            (
+                index
+                for index in injection_order
+                if index in remaining and required_ifos <= supported[index]
+            ),
             None,
         )
         if match is None:
@@ -134,8 +150,17 @@ def _load_gravityspy_sample(
         stored_ifos = tuple(str(value) for value in arrays["ifos"].tolist())
         stored_q = tuple(float(value) for value in arrays["q_values"].tolist())
         stored_rate = int(arrays["sample_rate"])
+        stored_availability = (
+            np.asarray(arrays["detector_availability"], dtype=np.uint8)
+            if "detector_availability" in arrays
+            else None
+        )
     expected_mask = (len(model_ifos), len(q_values), frequency_bins, time_bins)
-    if raw.ndim != 1 or not np.isfinite(raw).all():
+    if raw.ndim == 1:
+        expanded = np.zeros((len(model_ifos), raw.size), dtype=np.float64)
+        expanded[model_ifos.index(str(row["ifo"]))] = raw
+        raw = expanded
+    if raw.ndim != 2 or raw.shape[0] != len(model_ifos) or not np.isfinite(raw).all():
         raise ValueError(f"Gravity Spy raw strain is invalid: {row['glitch_id']}")
     if stored_ifos != model_ifos or not np.allclose(stored_q, q_values, rtol=0, atol=1e-6):
         raise ValueError("Gravity Spy detector/Q contract differs from overlap configuration")
@@ -147,20 +172,39 @@ def _load_gravityspy_sample(
         raise ValueError("Gravity Spy weak mask must be binary")
     if str(row["ifo"]) not in model_ifos:
         raise ValueError("Gravity Spy event IFO is absent from model_ifos")
-    return {"raw": raw, "glitch_mask": glitch_mask}
+    available_ifos = _glitch_available_ifos(row)
+    if any(ifo not in model_ifos for ifo in available_ifos):
+        raise ValueError("Gravity Spy available detector is absent from model_ifos")
+    expected_availability = np.asarray(
+        [int(ifo in available_ifos) for ifo in model_ifos], dtype=np.uint8
+    )
+    if stored_availability is not None and not np.array_equal(
+        stored_availability, expected_availability
+    ):
+        raise ValueError("Stored Gravity Spy detector availability differs from manifest")
+    if np.any(raw[expected_availability == 0] != 0):
+        raise ValueError("Unavailable Gravity Spy detector strain must be exactly zero")
+    return {
+        "raw": raw,
+        "glitch_mask": glitch_mask,
+        "availability": expected_availability,
+        "available_ifos": available_ifos,
+    }
 
 
 def _active_injection_signals(
     row: dict[str, Any],
-    ifo: str,
+    active_ifos: tuple[str, ...],
+    model_ifos: tuple[str, ...],
     target_sample_rate: int,
     output_samples: int,
     minimum_ifo_mask_snr: float | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     context = load_materialized_context(row)
     source_ifos = list(context["ifos"])
-    if ifo not in source_ifos:
-        raise ValueError(f"Injection {row['injection_id']} does not support {ifo}")
+    missing = sorted(set(active_ifos) - set(source_ifos))
+    if missing:
+        raise ValueError(f"Injection {row['injection_id']} does not support {missing}")
     scale = float(row.get("training_signal_scale", 1.0))
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError("training_signal_scale must be finite and positive")
@@ -178,15 +222,28 @@ def _active_injection_signals(
         )
     start = int(context["analysis_start_index"])
     stop = int(context["analysis_stop_index"])
-    physical = signal[source_ifos.index(ifo), start:stop]
-    target = target_signal[source_ifos.index(ifo), start:stop]
-    physical = _fft_downsample(physical, int(context["sample_rate"]), target_sample_rate)
-    target = _fft_downsample(target, int(context["sample_rate"]), target_sample_rate)
-    if physical.shape != (output_samples,) or target.shape != (output_samples,):
-        raise ValueError(
-            f"Injection analysis duration differs from Gravity Spy context: "
-            f"{physical.size}/{target.size} != {output_samples}"
+    physical = np.zeros((len(model_ifos), output_samples), dtype=np.float64)
+    target = np.zeros_like(physical)
+    for ifo in active_ifos:
+        source_index = source_ifos.index(ifo)
+        physical_ifo = _fft_downsample(
+            signal[source_index, start:stop],
+            int(context["sample_rate"]),
+            target_sample_rate,
         )
+        target_ifo = _fft_downsample(
+            target_signal[source_index, start:stop],
+            int(context["sample_rate"]),
+            target_sample_rate,
+        )
+        if physical_ifo.shape != (output_samples,) or target_ifo.shape != (output_samples,):
+            raise ValueError(
+                f"Injection analysis duration differs from Gravity Spy context: "
+                f"{physical_ifo.size}/{target_ifo.size} != {output_samples}"
+            )
+        model_index = model_ifos.index(ifo)
+        physical[model_index] = physical_ifo
+        target[model_index] = target_ifo
     if not np.isfinite(physical).all() or not np.isfinite(target).all():
         raise ValueError("Injection signal contains non-finite samples")
     return physical, target
@@ -234,20 +291,21 @@ def materialize_physical_overlaps(
         )
         raw_glitch = gravity["raw"]
         signal_active, target_signal_active = _active_injection_signals(
-            injection, ifo, target_rate, raw_glitch.size, minimum_snr
+            injection,
+            gravity["available_ifos"],
+            model_ifos,
+            target_rate,
+            raw_glitch.shape[1],
+            minimum_snr,
         )
-        detector_index = model_ifos.index(ifo)
-        availability = np.zeros(len(model_ifos), dtype=np.uint8)
-        availability[detector_index] = 1
-        glitch_strain = np.zeros((len(model_ifos), raw_glitch.size), dtype=np.float64)
-        signal_strain = np.zeros_like(glitch_strain)
-        target_signal_strain = np.zeros_like(glitch_strain)
-        glitch_strain[detector_index] = raw_glitch
-        signal_strain[detector_index] = signal_active
-        target_signal_strain[detector_index] = target_signal_active
+        availability = gravity["availability"]
+        glitch_strain = raw_glitch
+        signal_strain = signal_active
+        target_signal_strain = target_signal_active
         mixture_strain = glitch_strain + signal_strain
         whitened = np.zeros_like(mixture_strain)
-        whitened[detector_index] = _whiten(mixture_strain[detector_index])
+        for detector_index in np.flatnonzero(availability):
+            whitened[detector_index] = _whiten(mixture_strain[detector_index])
         feature_power = multiresolution_power(
             whitened,
             target_rate,
@@ -317,7 +375,7 @@ def materialize_physical_overlaps(
             "observing_run": glitch.get("observing_run"),
             "ml_label": glitch.get("ml_label"),
             "detector_availability": availability.tolist(),
-            "available_ifos": [ifo],
+            "available_ifos": list(gravity["available_ifos"]),
             "mask_provenance": glitch.get("mask_provenance"),
             "human_pixel_mask": bool(glitch.get("human_pixel_mask", False)),
             "glitch_artifact_sha256": str(glitch["sha256"]),
@@ -337,14 +395,16 @@ def materialize_physical_overlaps(
     atomic_write_text(
         manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in records)
     )
+    aligned_network_rows = sum(len(row["available_ifos"]) >= 2 for row in records)
+    single_ifo_rows = len(records) - aligned_network_rows
     report = {
-        "status": "verified_single_ifo_real_glitch_physical_overlap_training_data",
+        "status": "verified_real_glitch_physical_overlap_training_data",
         "scientific_claim_allowed": False,
         "search_claim_allowed": False,
         "network_coherence_claim_allowed": False,
         "reason": (
-            "Gravity Spy supplies physical strain only for the event IFO; aligned companion "
-            "detector strain and continuous-background evaluation remain required"
+            "Detector availability is preserved per source artifact; weak-mask audit, frozen "
+            "continuous-background evaluation and physical-lag coherence gates remain required"
         ),
         "artifact_version": OVERLAP_ARTIFACT_VERSION,
         "split": split,
@@ -357,7 +417,12 @@ def materialize_physical_overlaps(
             "glitch_gps_blocks": len({row["network_gps_block"] for row in records}),
         },
         "rendered_image_count": 0,
-        "detector_availability_counts": dict(Counter(row["ifo"] for row in records)),
+        "aligned_network_rows": aligned_network_rows,
+        "single_ifo_rows": single_ifo_rows,
+        "event_ifo_counts": dict(Counter(row["ifo"] for row in records)),
+        "detector_subset_counts": dict(
+            Counter("".join(row["available_ifos"]) for row in records)
+        ),
         "weak_masks": sum(not row["human_pixel_mask"] for row in records),
         "human_pixel_masks": sum(row["human_pixel_mask"] for row in records),
         "manifest_path": str(manifest),
@@ -369,9 +434,10 @@ def materialize_physical_overlaps(
         "required_next_gates": [
             "joint_cross_split_overlap_audit",
             "human_weak_mask_audit",
-            "aligned_companion_ifo_materialization",
             "continuous_background_far_ifar_vt",
-        ],
+        ]
+        + (["aligned_companion_ifo_materialization"] if single_ifo_rows else [])
+        + (["physical_lag_coherence_validation"] if aligned_network_rows else []),
         **execution_provenance(),
     }
     atomic_write_json(output / "physical_overlap_report.json", report)

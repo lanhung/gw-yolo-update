@@ -33,7 +33,7 @@ def test_overlap_pairing_is_unique_detector_compatible_and_deterministic() -> No
         (g["glitch_id"], i["injection_id"]) for g, i in second
     ]
     assert len({i["injection_id"] for _, i in first}) == 3
-    assert all(g["ifo"] in i["ifos"] for g, i in first)
+    assert all(set(g.get("available_ifos", [g["ifo"]])) <= set(i["ifos"]) for g, i in first)
 
 
 def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(tmp_path) -> None:
@@ -133,6 +133,101 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
         assert arrays["mixture_strain"][1] == pytest.approx(
             arrays["raw_glitch_strain"][1] + arrays["signal_strain"][1]
         )
+
+
+def test_network_overlap_adds_coherent_signal_to_every_available_ifo(tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """overlap_factory:
+  model_ifos: [H1, L1, V1]
+  q_values: [4]
+  target_sample_rate: 64
+  tensor:
+    whitening: self
+    target_whitening: morphology
+    mask_fraction: 0.08
+    frequency_bins: 8
+    time_bins: 8
+    fmin: 4
+    fmax: 30
+"""
+    )
+    samples = 128
+    raw = np.zeros((3, samples), dtype=np.float64)
+    raw[0] = np.sin(np.linspace(0, 15, samples)) * 1e-21
+    raw[1] = np.cos(np.linspace(0, 15, samples)) * 1e-21
+    gravity_path = tmp_path / "network-glitch.npz"
+    weak = np.zeros((3, 1, 8, 8), dtype=np.uint8)
+    weak[0, 0, 2:4, 3:5] = 1
+    np.savez(
+        gravity_path,
+        raw_strain=raw,
+        glitch_mask=weak,
+        detector_availability=np.asarray([1, 1, 0]),
+        ifos=np.asarray(["H1", "L1", "V1"]),
+        q_values=np.asarray([4]),
+        sample_rate=np.asarray(64),
+    )
+    gravity_manifest = tmp_path / "gravity.jsonl"
+    _write_jsonl(
+        gravity_manifest,
+        [
+            {
+                "split": "val",
+                "glitch_id": "network-g",
+                "network_gps_block": "O2:network",
+                "ifo": "H1",
+                "available_ifos": ["H1", "L1"],
+                "detector_availability": [1, 1, 0],
+                "event_time": 100.0,
+                "path": str(gravity_path),
+                "sha256": file_sha256(gravity_path),
+            }
+        ],
+    )
+    signal = np.zeros((2, 256), dtype=np.float64)
+    signal[0, 64:192] = np.sin(np.linspace(0, 20, samples)) * 2e-22
+    signal[1, 64:192] = np.sin(np.linspace(0.2, 20.2, samples)) * 3e-22
+    injection_path = tmp_path / "network-injection.npz"
+    np.savez(
+        injection_path,
+        signal=signal,
+        noise=np.zeros_like(signal),
+        strain=signal,
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(64),
+        context_gps_start=np.asarray(90.0),
+        analysis_gps_start=np.asarray(91.0),
+        analysis_start_index=np.asarray(64),
+        analysis_stop_index=np.asarray(192),
+    )
+    injection_manifest = tmp_path / "injection.jsonl"
+    _write_jsonl(
+        injection_manifest,
+        [
+            {
+                "split": "val",
+                "injection_id": "network-i",
+                "waveform_id": "network-w",
+                "gps_block": "O4a:network",
+                "ifos": ["H1", "L1"],
+                "materialized_path": str(injection_path),
+                "materialized_sha256": file_sha256(injection_path),
+            }
+        ],
+    )
+    report = materialize_physical_overlaps(
+        gravity_manifest, injection_manifest, config, tmp_path / "output", "val"
+    )
+    row = json.loads(Path(report["manifest_path"]).read_text().strip())
+    assert row["available_ifos"] == ["H1", "L1"]
+    assert report["detector_subset_counts"] == {"H1L1": 1}
+    with np.load(row["path"], allow_pickle=False) as arrays:
+        assert arrays["detector_availability"].tolist() == [1, 1, 0]
+        assert np.count_nonzero(arrays["signal_strain"][0]) > 0
+        assert np.count_nonzero(arrays["signal_strain"][1]) > 0
+        assert np.count_nonzero(arrays["signal_strain"][2]) == 0
+        assert np.count_nonzero(arrays["chirp_mask"][:2]) > 0
 
 
 def test_overlap_cross_split_audit_rejects_reused_waveform_or_glitch(tmp_path) -> None:
