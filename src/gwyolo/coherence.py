@@ -84,8 +84,9 @@ def arrival_time_coherence_gate(
                 "physical_limit_seconds": physical_limit,
                 "timing_uncertainty_seconds": uncertainty,
                 "allowed_delay_seconds": allowed,
-                "passed": observed <= allowed or np.isclose(
-                    observed, allowed, rtol=0.0, atol=1e-12
+                "passed": bool(
+                    observed <= allowed
+                    or np.isclose(observed, allowed, rtol=0.0, atol=1e-12)
                 ),
             }
         )

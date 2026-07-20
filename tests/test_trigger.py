@@ -44,6 +44,7 @@ def test_coherence_assisted_score_uses_physical_lag_roi_by_hand() -> None:
     assert result["strain_envelope_peak_times"]["H1"]["sample_index"] == 100
     assert result["strain_envelope_peak_times"]["L1"]["sample_index"] == 101
     assert result["strain_envelope_arrival_gate"]["passed"] is True
+    assert json.loads(json.dumps(result)) == result
 
 
 def test_network_ranking_uses_second_loudest_valid_ifo() -> None:

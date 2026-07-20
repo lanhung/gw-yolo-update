@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -30,6 +32,7 @@ def test_arrival_time_gate_is_hand_calculated_with_uncertainty() -> None:
     assert pair["observed_delay_seconds"] == pytest.approx(0.012)
     assert pair["allowed_delay_seconds"] == pytest.approx(0.012)
     assert report["passed"]
+    assert json.loads(json.dumps(report)) == report
 
     failed = arrival_time_coherence_gate(
         {"H1": 100.0, "L1": 100.0121},
