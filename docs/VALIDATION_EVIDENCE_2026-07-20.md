@@ -238,6 +238,23 @@ checkpoint SHA256 is `ed19e175e3d3ccb032bc510e0548ed1e03348a0802fb1821a9a60a410f
 This single-seed difference is not a scaling conclusion; formal same-commit seeds and the
 fixed-epoch protocol remain required.
 
+The exploratory n=10,000 point completed the same 3,750 updates/60,000 examples in six epochs and
+selected the required final update. Its validation-calibrated IoU is 0.03420 at threshold 0.5:
+only 0.00043 above n=5,000 and 0.00188 above n=2,000, again far below the 0.01 promotion margin.
+Report SHA256 is `e0adf35f2c31ef6cc20813f26b15a13a27be7b58fac94e39d1dbaa923fefe5ef`;
+checkpoint SHA256 is `e94da142fa30464b73265db299bef84c116810e6d0bc1dbf4979169c097ae3e8`.
+The one-seed curve therefore shows diminishing mask-IoU returns under a fixed example budget, but
+does not establish a data-scaling law. The formal same-commit 2k/5k/10k × three-seed fixed-update
+series has started, followed automatically by the frozen background/injection endpoint and the
+independent 30-epoch control; `test_evaluation` remains null throughout.
+
+For that endpoint the mixed 4,009-window O4a manifest was explicitly materialized to 824 validation
+rows rather than silently filtered in the scorer. The split manifest SHA256 is
+`a6dd57b9a1b3829cac534844f096e7151d0ada1934a40cb916ede86422429e2b`; its parent remains
+`8f2285bd2dfaaed3d6be06d8302f12981caf7e6669d83e2cd2da1601e3e28f61`. The predeclared
+development work point permits at most eight surviving background windows before applying the
+frozen threshold to all 3,000 validation injections. Its nominal window FAR is diagnostic-only.
+
 ## Model selection and physical injections
 
 Five 10k analytic-data seeds completed without test evaluation. Validation-selected seed 20260721
