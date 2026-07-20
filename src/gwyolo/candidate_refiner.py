@@ -269,6 +269,94 @@ def candidate_average_precision(labels: np.ndarray, scores: np.ndarray) -> float
     return float(np.sum(precision[ranked]) / np.count_nonzero(ranked))
 
 
+def candidate_arrival_threshold_metrics(
+    prediction_rows: list[dict[str, Any]],
+    thresholds: list[float],
+    timing_tolerances_seconds: list[float],
+) -> list[dict[str, Any]]:
+    """Measure abstention and refined top-score timing for each physical arrival."""
+
+    if not prediction_rows or not thresholds or not timing_tolerances_seconds:
+        raise ValueError("candidate arrival metrics require predictions and grids")
+    if thresholds != sorted(set(thresholds)) or any(
+        not 0 <= value <= 1 for value in thresholds
+    ):
+        raise ValueError("candidate presence thresholds must be sorted unique probabilities")
+    if timing_tolerances_seconds != sorted(set(timing_tolerances_seconds)) or any(
+        value <= 0 for value in timing_tolerances_seconds
+    ):
+        raise ValueError("candidate timing tolerances must be sorted and positive")
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    seen = set()
+    for row in prediction_rows:
+        candidate_id = str(row["candidate_id"])
+        if candidate_id in seen:
+            raise ValueError("candidate arrival metrics repeat a candidate")
+        seen.add(candidate_id)
+        score = float(row["presence_score"])
+        error = float(row["refined_timing_error_seconds"])
+        if not np.isfinite([score, error]).all() or not 0 <= score <= 1 or error < 0:
+            raise ValueError("candidate arrival metrics contain invalid predictions")
+        groups[(str(row["injection_id"]), str(row["ifo"]))].append(row)
+    arrival_count = len(groups)
+    output = []
+    for threshold in thresholds:
+        accepted = 0
+        retained_total = 0
+        correct = {tolerance: 0 for tolerance in timing_tolerances_seconds}
+        retained_counts = []
+        for rows in groups.values():
+            retained = [
+                row for row in rows if float(row["presence_score"]) >= threshold
+            ]
+            retained_total += len(retained)
+            retained_counts.append(len(retained))
+            if not retained:
+                continue
+            accepted += 1
+            selected = min(
+                retained,
+                key=lambda row: (
+                    -float(row["presence_score"]),
+                    str(row["candidate_id"]),
+                ),
+            )
+            error = float(selected["refined_timing_error_seconds"])
+            for tolerance in timing_tolerances_seconds:
+                correct[tolerance] += error <= tolerance
+        count_values = np.asarray(retained_counts, dtype=np.float64)
+        output.append(
+            {
+                "presence_threshold": threshold,
+                "physical_arrivals": arrival_count,
+                "accepted_arrivals": accepted,
+                "arrival_acceptance_fraction": accepted / arrival_count,
+                "arrival_acceptance_wilson_95": list(
+                    wilson_interval(accepted, arrival_count)
+                ),
+                "retained_candidates": retained_total,
+                "retained_candidates_per_arrival_quantiles": {
+                    str(q): float(np.quantile(count_values, q))
+                    for q in (0.5, 0.9, 0.99, 1.0)
+                },
+                "top_score_refined_timing": {
+                    str(tolerance): {
+                        "correct_arrivals": correct[tolerance],
+                        "unconditional_fraction": correct[tolerance] / arrival_count,
+                        "unconditional_wilson_95": list(
+                            wilson_interval(correct[tolerance], arrival_count)
+                        ),
+                        "conditional_on_acceptance_fraction": (
+                            correct[tolerance] / accepted if accepted else None
+                        ),
+                    }
+                    for tolerance in timing_tolerances_seconds
+                },
+            }
+        )
+    return output
+
+
 class CandidateLocalDataset:
     def __init__(
         self,
@@ -715,6 +803,223 @@ def run_candidate_local_refiner_training(
         "training_budget_reached": updates == maximum_updates,
         "history": history,
         "elapsed_seconds": time.time() - started,
+        **execution_provenance(torch),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
+def run_candidate_local_refiner_validation(
+    config_path: str | Path,
+    checkpoint_path: str | Path,
+    validation_injection_manifest: str | Path,
+    validation_candidate_manifest: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Freeze a validation-only abstention threshold and retain every prediction."""
+
+    if torch is None:
+        raise RuntimeError("Candidate local refiner validation requires torch")
+    config = load_yaml(config_path)
+    settings = config["candidate_refiner_validation"]
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "validation_injection_manifest_sha256": file_sha256(
+            validation_injection_manifest
+        ),
+        "validation_candidate_manifest_sha256": file_sha256(
+            validation_candidate_manifest
+        ),
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report_path = output / "candidate_local_refiner_validation_report.json"
+    if report_path.is_file():
+        result = json.loads(report_path.read_text(encoding="utf-8"))
+        if result.get("run_identity") != identity:
+            raise ValueError("completed candidate validation has another identity")
+        return result
+    if any(output.iterdir()):
+        raise FileExistsError("candidate validation output must be empty")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if checkpoint.get("architecture") != "candidate_local_spectrogram_refiner_v1":
+        raise ValueError("candidate validation checkpoint architecture differs")
+    injections = _read_jsonl(validation_injection_manifest)
+    candidates = _read_jsonl(validation_candidate_manifest)
+    parent_ids = {str(row["injection_id"]) for row in candidates}
+    if not parent_ids or any(
+        row.get("refiner_role") != "calibration" for row in candidates
+    ):
+        raise ValueError("candidate validation requires only calibration-role candidates")
+    selected_injections = [
+        row for row in injections if str(row["injection_id"]) in parent_ids
+    ]
+    if len(selected_injections) != len(parent_ids):
+        raise ValueError("candidate validation lacks calibration parents")
+    if any(row.get("split") != "val" for row in selected_injections):
+        raise ValueError("candidate validation may only use the validation split")
+    model_ifos = tuple(str(value) for value in checkpoint["model_ifos"])
+    target_rate = int(checkpoint["target_sample_rate"])
+    local_duration = float(checkpoint["local_duration_seconds"])
+    local_output_bins = int(checkpoint["local_output_bins"])
+    if (
+        model_ifos != tuple(str(value) for value in settings["model_ifos"])
+        or target_rate != int(settings["target_sample_rate"])
+        or local_duration != float(settings["local_duration_seconds"])
+        or local_output_bins != int(settings["local_output_bins"])
+    ):
+        raise ValueError("candidate validation geometry differs from checkpoint")
+    dataset = CandidateLocalDataset(
+        selected_injections,
+        candidates,
+        model_ifos,
+        target_rate,
+        float(settings["analysis_duration_seconds"]),
+        int(settings["parent_output_bins"]),
+        local_duration,
+        local_output_bins,
+        bool(settings.get("cache_parents", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = CandidateLocalSpectrogramRefiner(
+        len(model_ifos), local_output_bins, int(checkpoint["base_channels"])
+    ).to(device)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+    prediction_rows = []
+    cursor = 0
+    with torch.no_grad():
+        for crop, availability, ifo_index, _, _, _ in loader:
+            presence_logits, timing_logits = model(
+                crop.to(device), availability.to(device), ifo_index.to(device)
+            )
+            scores = torch.sigmoid(presence_logits).cpu().numpy()
+            timing_bins = torch.argmax(timing_logits, dim=1).cpu().numpy()
+            for batch_index, (score, timing_bin) in enumerate(
+                zip(scores, timing_bins, strict=True)
+            ):
+                source = candidates[cursor + batch_index]
+                crop_start = float(source["gps_peak"]) - local_duration / 2
+                refined_gps = crop_start + (
+                    float(timing_bin) + 0.5
+                ) * local_duration / local_output_bins
+                target_gps = float(source["target_detector_arrival_gps"])
+                prediction_rows.append(
+                    {
+                        "candidate_id": str(source["candidate_id"]),
+                        "injection_id": str(source["injection_id"]),
+                        "ifo": str(source["ifo"]),
+                        "presence_score": float(score),
+                        "refiner_positive": bool(source["refiner_positive"]),
+                        "predicted_local_timing_bin": int(timing_bin),
+                        "refined_arrival_gps": refined_gps,
+                        "target_detector_arrival_gps": target_gps,
+                        "refined_timing_error_seconds": abs(refined_gps - target_gps),
+                        "parent_split": "val",
+                        "validation_role": "calibration",
+                    }
+                )
+            cursor += len(scores)
+    if cursor != len(candidates):
+        raise RuntimeError("candidate validation did not score every candidate")
+    predictions_path = output / "candidate_local_refiner_predictions.jsonl"
+    atomic_write_text(
+        predictions_path,
+        "".join(
+            json.dumps(row, sort_keys=True) + "\n" for row in prediction_rows
+        ),
+    )
+    labels = np.asarray(
+        [row["refiner_positive"] for row in prediction_rows], dtype=bool
+    )
+    scores = np.asarray(
+        [row["presence_score"] for row in prediction_rows], dtype=np.float64
+    )
+    positive_errors = np.asarray(
+        [
+            row["refined_timing_error_seconds"]
+            for row in prediction_rows
+            if row["refiner_positive"]
+        ],
+        dtype=np.float64,
+    )
+    thresholds = [float(value) for value in settings["presence_thresholds"]]
+    tolerances = [float(value) for value in settings["timing_tolerances_seconds"]]
+    threshold_metrics = candidate_arrival_threshold_metrics(
+        prediction_rows, thresholds, tolerances
+    )
+    primary_tolerance = float(settings["primary_timing_tolerance_seconds"])
+    if primary_tolerance not in tolerances:
+        raise ValueError("primary candidate timing tolerance is absent from the grid")
+    minimum_acceptance = float(settings["minimum_arrival_acceptance_fraction"])
+    eligible = [
+        row
+        for row in threshold_metrics
+        if row["arrival_acceptance_fraction"] >= minimum_acceptance
+    ]
+    selected_threshold = eligible[-1] if eligible else None
+    average_precision = candidate_average_precision(labels, scores)
+    timing_quantiles = {
+        str(q): float(np.quantile(positive_errors, q))
+        for q in (0.5, 0.9, 0.99, 1.0)
+    }
+    gate_checks = {
+        "candidate_average_precision": average_precision
+        >= float(settings["minimum_candidate_average_precision"]),
+        "positive_candidate_timing_p90": timing_quantiles["0.9"]
+        <= float(settings["maximum_positive_timing_p90_seconds"]),
+        "threshold_with_required_arrival_acceptance": selected_threshold is not None,
+        "selected_top_score_primary_timing": (
+            selected_threshold is not None
+            and selected_threshold["top_score_refined_timing"][str(primary_tolerance)][
+                "unconditional_fraction"
+            ]
+            >= float(settings["minimum_top_score_primary_timing_fraction"])
+        ),
+    }
+    result = {
+        "status": "validation_calibrated_candidate_timing_abstention_threshold",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "the selected validation threshold has not been tested on signal-free continuous "
+            "background, so false acceptance, FAR/IFAR and VT remain unknown"
+        ),
+        "search_promotion_allowed": False,
+        "test_evaluation": None,
+        "run_identity": identity,
+        "checkpoint_training_identity": checkpoint.get("run_identity"),
+        "checkpoint_selected_epoch": checkpoint.get("epoch"),
+        "calibration_injections": len(parent_ids),
+        "calibration_candidates": len(candidates),
+        "physical_detector_arrivals": len(
+            {(row["injection_id"], row["ifo"]) for row in prediction_rows}
+        ),
+        "all_candidates_scored": True,
+        "top_k_pruning": None,
+        "candidate_average_precision": average_precision,
+        "positive_candidate_timing_error_seconds_quantiles": timing_quantiles,
+        "threshold_selection_rule": (
+            "highest predeclared presence threshold retaining at least the configured "
+            "fraction of calibration detector arrivals"
+        ),
+        "minimum_arrival_acceptance_fraction": minimum_acceptance,
+        "selected_presence_threshold": (
+            selected_threshold["presence_threshold"] if selected_threshold else None
+        ),
+        "selected_threshold_metrics": selected_threshold,
+        "threshold_metrics": threshold_metrics,
+        "validation_timing_gate_checks": gate_checks,
+        "validation_timing_gate_passed": all(gate_checks.values()),
+        "predictions_path": str(predictions_path),
+        "predictions_sha256": file_sha256(predictions_path),
         **execution_provenance(torch),
     }
     atomic_write_json(report_path, result)

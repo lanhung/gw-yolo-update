@@ -3,6 +3,7 @@ import pytest
 
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
+    candidate_arrival_threshold_metrics,
     label_candidate_refiner_rows,
 )
 
@@ -65,6 +66,43 @@ def test_candidate_average_precision_by_hand() -> None:
         np.asarray([True, True, False]), np.asarray([0.9, 0.7, 0.8])
     )
     assert np.isclose(value, 5 / 6)
+
+
+def test_candidate_arrival_threshold_metrics_counts_abstention_by_hand() -> None:
+    rows = [
+        {
+            "candidate_id": "a-high",
+            "injection_id": "a",
+            "ifo": "H1",
+            "presence_score": 0.8,
+            "refined_timing_error_seconds": 0.005,
+        },
+        {
+            "candidate_id": "a-low",
+            "injection_id": "a",
+            "ifo": "H1",
+            "presence_score": 0.2,
+            "refined_timing_error_seconds": 0.1,
+        },
+        {
+            "candidate_id": "b-only",
+            "injection_id": "b",
+            "ifo": "L1",
+            "presence_score": 0.4,
+            "refined_timing_error_seconds": 0.015,
+        },
+    ]
+    metrics = candidate_arrival_threshold_metrics(rows, [0.3, 0.5], [0.01, 0.02])
+    assert metrics[0]["accepted_arrivals"] == 2
+    assert metrics[0]["retained_candidates"] == 2
+    assert metrics[0]["top_score_refined_timing"]["0.02"][
+        "unconditional_fraction"
+    ] == 1.0
+    assert metrics[1]["accepted_arrivals"] == 1
+    assert metrics[1]["arrival_acceptance_fraction"] == 0.5
+    assert metrics[1]["top_score_refined_timing"]["0.01"][
+        "conditional_on_acceptance_fraction"
+    ] == 1.0
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

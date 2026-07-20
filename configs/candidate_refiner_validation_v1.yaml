@@ -1,0 +1,16 @@
+candidate_refiner_validation:
+  batch_size: 256
+  cache_parents: true
+  analysis_duration_seconds: 8.0
+  target_sample_rate: 1024
+  parent_output_bins: 1024
+  local_duration_seconds: 2.5
+  local_output_bins: 640
+  model_ifos: [H1, L1, V1]
+  presence_thresholds: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+  timing_tolerances_seconds: [0.01, 0.02, 0.05]
+  primary_timing_tolerance_seconds: 0.02
+  minimum_arrival_acceptance_fraction: 0.95
+  minimum_candidate_average_precision: 0.5
+  maximum_positive_timing_p90_seconds: 0.05
+  minimum_top_score_primary_timing_fraction: 0.8

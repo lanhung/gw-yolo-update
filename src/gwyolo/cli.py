@@ -463,6 +463,19 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_refiner_train.add_argument("--output-dir", required=True)
     candidate_refiner_train.add_argument("--seed", type=int)
 
+    candidate_refiner_validation = subparsers.add_parser(
+        "candidate-refiner-validation"
+    )
+    candidate_refiner_validation.add_argument("--config", required=True)
+    candidate_refiner_validation.add_argument("--checkpoint", required=True)
+    candidate_refiner_validation.add_argument(
+        "--validation-injection-manifest", required=True
+    )
+    candidate_refiner_validation.add_argument(
+        "--validation-candidate-manifest", required=True
+    )
+    candidate_refiner_validation.add_argument("--output-dir", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1549,6 +1562,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_calibration_candidate_manifest,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "candidate-refiner-validation":
+        from .candidate_refiner import run_candidate_local_refiner_validation
+
+        _print(
+            run_candidate_local_refiner_validation(
+                args.config,
+                args.checkpoint,
+                args.validation_injection_manifest,
+                args.validation_candidate_manifest,
+                args.output_dir,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":
