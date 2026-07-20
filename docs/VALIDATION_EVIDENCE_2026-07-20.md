@@ -12,8 +12,14 @@
   `573c901db4b2b9ce3e7dde44d9e3037a5d893252d22586997b256b70a50e0c9b`.
   These hashes are retained full-context diagnostics and were superseded after finding that their
   SNR integration included signal outside the model's eight-second analysis window.
+- Corrected eight-second SNR manifests: train SHA256
+  `66d84048891ca1d61b03dba149f7166b166d49c501f8b2216ab79067b828dafc`, validation SHA256
+  `bf6a7222cb9f6538e3dc3d5a54bf613c14738c21d65b524aebea3568e905d40f`. Corrected median network
+  SNR is 3.89/3.91 and 51.35%/51.2% of train/validation injections are below SNR 4.
 - Gravity Spy: 80,496 unique anchors; network-block-safe split has zero overlap. The train strain
   plan maps 59,933 anchors to 16,297 official GWOSC files at 93.23% coverage.
+  The bounded 32-file shard plan contains 510 shards, preserves all anchors/files once, and has
+  manifest SHA256 `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
 
 ## Evidence boundary
 

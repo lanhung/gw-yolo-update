@@ -257,7 +257,19 @@ scale:
 | train | 2,000 | 935 | 669 | 288 | 88 | 20 | 4.25 |
 | validation | 500 | 236 | 159 | 73 | 26 | 6 | 4.27 |
 
-Thus almost 47% of the volume-drawn pilot is below the training floor. Future training generation
+The corrected analysis-window annotation supersedes that table:
+
+| Split | Rows | SNR <4 | SNR 4–8 | SNR 8–15 | SNR 15–30 | SNR >=30 | Median SNR |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| train | 2,000 | 1,027 | 596 | 271 | 85 | 21 | 3.89 |
+| validation | 500 | 256 | 143 | 71 | 24 | 6 | 3.91 |
+
+Corrected manifest SHA256 values are
+`66d84048891ca1d61b03dba149f7166b166d49c501f8b2216ab79067b828dafc` (train) and
+`bf6a7222cb9f6538e3dc3d5a54bf613c14738c21d65b524aebea3568e905d40f` (validation).
+
+Thus the corrected audit finds just over 51% of the volume-drawn pilot below the training floor.
+Future training generation
 must deliberately cover SNR 4–50 (especially 4–15), rather than drawing distance only from the
 astrophysical evaluation proposal. Validation/test must retain the population proposal and weights.
 A train-only curriculum may rescale the existing 935 sub-floor signals into SNR 4–8, but it still
@@ -282,3 +294,7 @@ The promotion sequence is now:
 5. expand validation to >=10k injections and background to >=30 coincident detector-days, then
    accumulate pre-registered time-slide exposure in years;
 6. freeze architecture, calibration and thresholds before any O4b/locked-test evaluation.
+
+The Gravity Spy acquisition plan is now partitioned into 510 deterministic shards of at most 32
+whole source files. All 59,933 planned anchors and all 16,297 files are preserved exactly once; the
+sharded manifest SHA256 is `5fcc63ae5e0e3dc8d5504317f92be19d2cc703c149fe4bbebb8808708959e718`.
