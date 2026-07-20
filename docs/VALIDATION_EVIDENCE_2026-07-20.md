@@ -295,6 +295,16 @@ boolean and adds end-to-end serialization regressions. The failed output is non-
 same-commit validation run was started in a separate directory; no threshold or test data were
 consumed.
 
+That rerun completed as an integration diagnostic. The local per-cluster envelope has 0.9766 ms
+sample resolution, but only 368/6000 detector arrivals match any candidate inside ±250 ms; its
+median/90th/99th-percentile absolute errors are 133.4/223.2/245.8 ms. The resulting 501.6 ms H1–L1
+window yields 9,221 background coincidences over 0.012295 equivalent years and only 11/3000
+injections with any candidate pair. At the validation-only 100/year target, three injections survive
+(weighted efficiency 0.00285). This demonstrates that the current segmentation masks do not supply
+publication timing even though their saved strain gives sub-ms numerical resolution. The timing
+gate now additionally caps the empirical uncertainty at a predeclared 10 ms, so this method fails
+instead of converting a truncated ±250 ms association window into a misleading physical allowance.
+
 ## Real-glitch physical overlap and aligned network contexts
 
 Commit `bcb7c8e` introduced a time-domain real-glitch overlap factory. A remote two-row validation

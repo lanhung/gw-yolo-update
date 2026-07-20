@@ -384,14 +384,18 @@ def calibrate_candidate_timing_rows(
     association_window_seconds: float,
     uncertainty_quantile: float = 0.99,
     minimum_matches_per_method: int = 30,
+    maximum_empirical_timing_uncertainty_seconds: float = 0.01,
 ) -> dict[str, Any]:
     """Calibrate the exact candidate timing method using validation injections only."""
 
     rows = list(candidates)
     if association_window_seconds <= 0 or not 0.5 <= uncertainty_quantile < 1.0:
         raise ValueError("timing association window or uncertainty quantile is invalid")
-    if minimum_matches_per_method <= 0:
-        raise ValueError("minimum timing calibration matches must be positive")
+    if (
+        minimum_matches_per_method <= 0
+        or maximum_empirical_timing_uncertainty_seconds <= 0
+    ):
+        raise ValueError("timing calibration match and uncertainty limits must be positive")
     grouped_best: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         injection_id = str(row["injection_id"])
@@ -422,6 +426,7 @@ def calibrate_candidate_timing_rows(
         if not np.isfinite(errors).all() or not np.isfinite(resolutions).all():
             raise ValueError("timing calibration values must be finite")
         interval = wilson_interval(len(matches), target_count)
+        empirical_uncertainty = float(np.quantile(errors, uncertainty_quantile))
         methods[method] = {
             "matches": len(matches),
             "eligible_detector_arrivals": target_count,
@@ -433,15 +438,22 @@ def calibrate_candidate_timing_rows(
                 str(q): float(np.quantile(errors, q))
                 for q in (0.0, 0.5, 0.9, uncertainty_quantile, 1.0)
             },
-            "empirical_timing_uncertainty_seconds": float(
-                np.quantile(errors, uncertainty_quantile)
+            "empirical_timing_uncertainty_seconds": empirical_uncertainty,
+            "maximum_allowed_empirical_timing_uncertainty_seconds": (
+                maximum_empirical_timing_uncertainty_seconds
             ),
             "uncertainty_quantile": uncertainty_quantile,
             "minimum_matches_gate": len(matches) >= minimum_matches_per_method,
             "resolution_gate_10ms": float(resolutions.max()) <= 0.01,
+            "empirical_uncertainty_gate": (
+                empirical_uncertainty
+                <= maximum_empirical_timing_uncertainty_seconds
+            ),
             "calibration_gate_passed": (
                 len(matches) >= minimum_matches_per_method
                 and float(resolutions.max()) <= 0.01
+                and empirical_uncertainty
+                <= maximum_empirical_timing_uncertainty_seconds
             ),
         }
     return {
@@ -451,6 +463,9 @@ def calibrate_candidate_timing_rows(
         "association_window_seconds": association_window_seconds,
         "uncertainty_quantile": uncertainty_quantile,
         "minimum_matches_per_method": minimum_matches_per_method,
+        "maximum_empirical_timing_uncertainty_seconds": (
+            maximum_empirical_timing_uncertainty_seconds
+        ),
     }
 
 
@@ -462,6 +477,7 @@ def run_candidate_timing_calibration(
     association_window_seconds: float = 0.25,
     uncertainty_quantile: float = 0.99,
     minimum_matches_per_method: int = 30,
+    maximum_empirical_timing_uncertainty_seconds: float = 0.01,
 ) -> dict[str, Any]:
     with Path(injection_trigger_manifest).open("r", encoding="utf-8") as handle:
         scored_rows = [json.loads(line) for line in handle if line.strip()]
@@ -499,6 +515,7 @@ def run_candidate_timing_calibration(
         association_window_seconds,
         uncertainty_quantile,
         minimum_matches_per_method,
+        maximum_empirical_timing_uncertainty_seconds,
     )
     source_scoring_provenance = _scoring_provenance(
         injection_trigger_manifest, "injection_score_report.json"

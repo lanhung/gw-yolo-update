@@ -59,6 +59,7 @@ def run_candidate_validation_pipeline(
     timing_association_window_seconds: float = 0.25,
     timing_uncertainty_quantile: float = 0.99,
     minimum_timing_matches: int = 30,
+    maximum_timing_uncertainty_seconds: float = 0.01,
     truth_association_window_seconds: float = 0.25,
     slide_count: int = 512,
     slide_step_seconds: float = 8.0,
@@ -88,6 +89,7 @@ def run_candidate_validation_pipeline(
         "timing_association_window_seconds": timing_association_window_seconds,
         "timing_uncertainty_quantile": timing_uncertainty_quantile,
         "minimum_timing_matches": minimum_timing_matches,
+        "maximum_timing_uncertainty_seconds": maximum_timing_uncertainty_seconds,
         "truth_association_window_seconds": truth_association_window_seconds,
         "slide_count": slide_count,
         "slide_step_seconds": slide_step_seconds,
@@ -205,6 +207,7 @@ def run_candidate_validation_pipeline(
             timing_association_window_seconds,
             timing_uncertainty_quantile,
             minimum_timing_matches,
+            maximum_timing_uncertainty_seconds,
         )
         injection_eviction = evict_candidate_probability_artifacts(
             injection_candidate_path,

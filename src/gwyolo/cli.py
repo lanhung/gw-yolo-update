@@ -647,6 +647,9 @@ def build_parser() -> argparse.ArgumentParser:
     timing_calibration.add_argument("--association-window-seconds", type=float, default=0.25)
     timing_calibration.add_argument("--uncertainty-quantile", type=float, default=0.99)
     timing_calibration.add_argument("--minimum-matches-per-method", type=int, default=30)
+    timing_calibration.add_argument(
+        "--maximum-empirical-timing-uncertainty-seconds", type=float, default=0.01
+    )
 
     timing_apply = subparsers.add_parser("candidate-timing-apply")
     timing_apply.add_argument("--candidates", required=True)
@@ -708,6 +711,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_pipeline.add_argument("--timing-uncertainty-quantile", type=float, default=0.99)
     candidate_pipeline.add_argument("--minimum-timing-matches", type=int, default=30)
+    candidate_pipeline.add_argument(
+        "--maximum-timing-uncertainty-seconds", type=float, default=0.01
+    )
     candidate_pipeline.add_argument(
         "--truth-association-window-seconds", type=float, default=0.25
     )
@@ -1694,6 +1700,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.association_window_seconds,
                 args.uncertainty_quantile,
                 args.minimum_matches_per_method,
+                args.maximum_empirical_timing_uncertainty_seconds,
             )
         )
     elif args.command == "candidate-timing-apply":
@@ -1772,6 +1779,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.timing_association_window_seconds,
                 args.timing_uncertainty_quantile,
                 args.minimum_timing_matches,
+                args.maximum_timing_uncertainty_seconds,
                 args.truth_association_window_seconds,
                 args.slide_count,
                 args.slide_step_seconds,

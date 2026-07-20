@@ -60,13 +60,20 @@ to be available on each side of a pair, so missing-IFO windows cannot inflate li
 gate requires a predeclared light-travel limit, a validation-calibrated timing allowance, <=10 ms
 candidate resolution and one consistent calibration hash.
 
+Resolution is not accuracy. The timing calibration now also requires its frozen empirical error
+quantile to be at most the predeclared `--maximum-empirical-timing-uncertainty-seconds` (10 ms by
+default). The first fixed-update candidate diagnostic had 0.9766 ms numeric resolution but a 99th
+percentile error of 245.8 ms and only 368/6000 arrivals matched within ±250 ms; its implied 501.6 ms
+H1–L1 coincidence and 3/3000 recovered injections are therefore rejected by this new hard gate.
+
 The executable timing path is now ordered and leakage-safe:
 
 1. `injection-arrival-annotate` adds PyCBC geometric Earth-center-to-detector delays to an existing,
    hash-verified physical-injection manifest;
 2. validation injections and validation background are scored with `--save-probabilities`;
 3. `candidate-timing-calibrate` freezes the predeclared error quantile on validation injections only,
-   selecting at most the nearest candidate per `(injection, IFO, method)`;
+   selecting at most the nearest candidate per `(injection, IFO, method)` and requiring the error
+   quantile—not just array resolution—to pass the predeclared accuracy limit;
 4. `candidate-timing-apply` hash-links the calibration to background and injection candidates;
 5. time slides use exactly `physical delay + 2 × per-detector uncertainty`, while
    `injection-candidate-rank` retains misses with score zero in the `<VT>` denominator.

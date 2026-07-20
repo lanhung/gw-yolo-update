@@ -264,7 +264,24 @@ def test_candidate_timing_calibration_uses_nearest_candidate_once_per_target() -
     assert method["matches"] == 2
     assert method["conditional_match_fraction"] == 1.0
     assert method["empirical_timing_uncertainty_seconds"] == pytest.approx(0.0028)
+    assert method["empirical_uncertainty_gate"] is True
     assert method["calibration_gate_passed"] is True
+
+    rejected = calibrate_candidate_timing_rows(
+        [
+            {**row, "gps_peak": row["gps_peak"] + 0.02}
+            for row in candidates
+        ],
+        {"i1": {"H1": 100.0}, "i2": {"L1": 200.0}},
+        association_window_seconds=0.05,
+        uncertainty_quantile=0.9,
+        minimum_matches_per_method=2,
+        maximum_empirical_timing_uncertainty_seconds=0.01,
+    )["methods"]["strain"]
+    assert rejected["maximum_resolution_seconds"] < 0.01
+    assert rejected["minimum_matches_gate"] is True
+    assert rejected["empirical_uncertainty_gate"] is False
+    assert rejected["calibration_gate_passed"] is False
 
 
 def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator() -> None:
