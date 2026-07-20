@@ -6,9 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from gwyolo.io import file_sha256
+
 from gwyolo.trigger import (
     _load_resumable_trigger_rows,
     _save_trigger_progress,
+    _window_strain,
     coherence_assisted_summary,
     network_ranking,
     probability_summaries,
@@ -99,3 +102,41 @@ def test_trigger_resume_rejects_changed_identity(tmp_path: Path) -> None:
             {"manifest_sha256": "new"},
             [{"window_id": "one"}],
         )
+
+
+def test_window_override_is_inserted_before_full_context_whitening(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.hdf5"
+    source.write_bytes(b"source")
+    override = tmp_path / "cleaned.npz"
+    np.savez(
+        override,
+        cleaned_strain=np.asarray([[10.0, 11.0], [0.0, 0.0]]),
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(2),
+        analysis_gps_start=np.asarray(101.0),
+    )
+    monkeypatch.setattr(
+        "gwyolo.trigger.read_hdf5_segment",
+        lambda *args: {
+            "strain": np.asarray([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]),
+            "sample_rate": 2,
+        },
+    )
+    monkeypatch.setattr("gwyolo.trigger._whiten", lambda values: values)
+    row = {
+        "gps_start": 101.0,
+        "gps_end": 102.0,
+        "duration": 1.0,
+        "ifos": ["H1"],
+        "source_files": {"H1": {"path": str(source)}},
+        "analysis_override_path": str(override),
+        "analysis_override_sha256": file_sha256(override),
+    }
+    strain, valid_ifos, record = _window_strain(
+        row, ("H1", "L1"), 2, context_duration=4.0
+    )
+    assert valid_ifos == ["H1"]
+    assert strain.tolist() == [[10.0, 11.0], [0.0, 0.0]]
+    assert record["analysis_override_sha256"] == file_sha256(override)

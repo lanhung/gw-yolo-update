@@ -27,6 +27,51 @@ from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
 
 
+def apply_analysis_override(
+    row: dict[str, Any], context: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replace only the analysis crop while retaining the original PSD context."""
+
+    path_value = row.get("analysis_override_path")
+    hash_value = row.get("analysis_override_sha256")
+    if path_value is None and hash_value is None:
+        return context, {}
+    if not path_value or not hash_value:
+        raise ValueError("Analysis override requires both path and SHA256")
+    path = Path(path_value)
+    if file_sha256(path) != str(hash_value):
+        raise ValueError("Analysis override hash mismatch")
+    with np.load(path, allow_pickle=False) as arrays:
+        key = "analysis_strain" if "analysis_strain" in arrays else "cleaned_strain"
+        cleaned = np.asarray(arrays[key], dtype=np.float64)
+        ifos = [str(value) for value in arrays["ifos"].tolist()]
+        sample_rate = int(arrays["sample_rate"])
+        analysis_start = float(arrays["analysis_gps_start"])
+    expected_ifos = list(context["ifos"])
+    start = int(context["analysis_start_index"])
+    stop = int(context["analysis_stop_index"])
+    expected_shape = (len(expected_ifos), stop - start)
+    if ifos != expected_ifos:
+        raise ValueError("Analysis override detector order differs from materialized context")
+    if sample_rate != int(context["sample_rate"]):
+        raise ValueError("Analysis override sample rate differs from materialized context")
+    if not np.isclose(
+        analysis_start, float(context["analysis_gps_start"]), rtol=0.0, atol=1e-9
+    ):
+        raise ValueError("Analysis override GPS start differs from materialized context")
+    if cleaned.shape != expected_shape or not np.isfinite(cleaned).all():
+        raise ValueError("Analysis override strain shape/content is invalid")
+    updated = dict(context)
+    mixture = np.asarray(context["mixture"], dtype=np.float64).copy()
+    mixture[:, start:stop] = cleaned
+    updated["mixture"] = mixture
+    return updated, {
+        "analysis_override_path": str(path),
+        "analysis_override_sha256": str(hash_value),
+        "analysis_override_kind": str(row.get("analysis_override_kind", "unspecified")),
+    }
+
+
 def _load_resumable_rows(
     output: Path,
     run_identity: dict[str, Any],
@@ -177,6 +222,7 @@ def score_materialized_injections(
             continue
         try:
             context = load_materialized_context(row, verified_background_hashes)
+            context, override_record = apply_analysis_override(row, context)
             source_rate = int(context["sample_rate"])
             ifos = list(context["ifos"])
             context_start = float(context["context_gps_start"])
@@ -291,6 +337,7 @@ def score_materialized_injections(
                     "vt_weight": row["vt_weight"],
                     "vt_weight_unit": row["vt_weight_unit"],
                     "materialized_sha256": row["materialized_sha256"],
+                    **override_record,
                     "source_ifos": ifos,
                     "enabled_ifos": list(enabled_ifos),
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
@@ -333,6 +380,9 @@ def score_materialized_injections(
         "newly_scored_injections": newly_scored,
         "scored_injections": len(output_rows),
         "failed_injections": len(failures),
+        "analysis_override_injections": sum(
+            bool(row.get("analysis_override_sha256")) for row in output_rows
+        ),
         "failures": failures,
         "family_counts": dict(
             sorted(Counter(row["source_family"] for row in output_rows).items())
@@ -340,7 +390,10 @@ def score_materialized_injections(
         "triggers_path": str(triggers_path),
         "triggers_sha256": file_sha256(triggers_path),
         "elapsed_seconds": time.time() - started,
-        "preprocessing": "full-context PSD whitening then central analysis-window crop",
+        "preprocessing": (
+            "optional hash-verified cleaned analysis override inserted into original full "
+            "context, followed by full-context PSD whitening and central crop"
+        ),
         **execution_provenance(torch),
     }
     atomic_write_json(output / "injection_score_report.json", report)

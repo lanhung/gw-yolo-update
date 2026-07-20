@@ -8,7 +8,9 @@ import pytest
 
 from gwyolo.io import file_sha256
 from gwyolo.overlaps import (
+    _fft_upsample,
     audit_physical_overlap_manifests,
+    build_contaminated_injection_overrides,
     materialize_physical_overlaps,
     pair_overlap_rows,
 )
@@ -228,6 +230,29 @@ def test_network_overlap_adds_coherent_signal_to_every_available_ifo(tmp_path) -
         assert np.count_nonzero(arrays["signal_strain"][1]) > 0
         assert np.count_nonzero(arrays["signal_strain"][2]) == 0
         assert np.count_nonzero(arrays["chirp_mask"][:2]) > 0
+    contaminated = build_contaminated_injection_overrides(
+        report["manifest_path"],
+        injection_manifest,
+        tmp_path / "contaminated",
+        "val",
+    )
+    contaminated_row = json.loads(
+        Path(contaminated["manifest_path"]).read_text().strip()
+    )
+    assert contaminated_row["analysis_override_kind"] == "real_glitch_contaminated"
+    assert contaminated_row["glitch_id"] == "network-g"
+    with np.load(contaminated_row["analysis_override_path"], allow_pickle=False) as arrays:
+        assert arrays["analysis_strain"].shape == (2, samples)
+        assert arrays["ifos"].tolist() == ["H1", "L1"]
+
+
+def test_fft_upsample_preserves_bandlimited_amplitude_and_samples() -> None:
+    time = np.arange(64) / 64.0
+    signal = np.sin(2 * np.pi * 5 * time)
+    upsampled = _fft_upsample(signal, 64, 256)
+    assert upsampled.shape == (256,)
+    assert upsampled[::4] == pytest.approx(signal, abs=1e-12)
+    assert np.max(np.abs(upsampled)) == pytest.approx(1.0, abs=1e-12)
 
 
 def test_overlap_cross_split_audit_rejects_reused_waveform_or_glitch(tmp_path) -> None:

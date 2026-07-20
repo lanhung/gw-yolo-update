@@ -284,7 +284,7 @@ def _window_strain(
     target_sample_rate: int,
     context_duration: float,
     enabled_ifos: tuple[str, ...] | None = None,
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, list[str], dict[str, Any]]:
     center = (float(row["gps_start"]) + float(row["gps_end"])) / 2.0
     window_duration = float(row["duration"])
     source_ifos = [str(item) for item in row["ifos"]]
@@ -303,6 +303,48 @@ def _window_strain(
             segment["strain"], segment["sample_rate"], target_sample_rate
         )
     output_samples = int(round(window_duration * target_sample_rate))
+    override_record: dict[str, Any] = {}
+    override_path = row.get("analysis_override_path")
+    override_sha = row.get("analysis_override_sha256")
+    if override_path is not None or override_sha is not None:
+        if not override_path or not override_sha:
+            raise ValueError("Background analysis override requires path and SHA256")
+        path = Path(override_path)
+        if file_sha256(path) != str(override_sha):
+            raise ValueError("Background analysis override hash mismatch")
+        with np.load(path, allow_pickle=False) as arrays:
+            key = "analysis_strain" if "analysis_strain" in arrays else "cleaned_strain"
+            cleaned = np.asarray(arrays[key], dtype=np.float64)
+            override_ifos = tuple(str(value) for value in arrays["ifos"].tolist())
+            override_rate = int(arrays["sample_rate"])
+            override_start = float(arrays["analysis_gps_start"])
+        if override_ifos != model_ifos or cleaned.shape != (
+            len(model_ifos),
+            output_samples,
+        ):
+            raise ValueError("Background analysis override detector/shape contract differs")
+        if override_rate != target_sample_rate or not np.isfinite(cleaned).all():
+            raise ValueError("Background analysis override sample rate/content is invalid")
+        if not np.isclose(
+            override_start, float(row["gps_start"]), rtol=0.0, atol=1e-9
+        ):
+            raise ValueError("Background analysis override GPS start differs")
+        for ifo in valid_ifos:
+            context = context_by_ifo[ifo].copy()
+            center_index = context.size // 2
+            start = center_index - output_samples // 2
+            context[start : start + output_samples] = cleaned[model_ifos.index(ifo)]
+            context_by_ifo[ifo] = context
+        for ifo in model_ifos:
+            if ifo not in valid_ifos and np.any(cleaned[model_ifos.index(ifo)] != 0):
+                raise ValueError("Background override has strain for an unavailable detector")
+        override_record = {
+            "analysis_override_path": str(path),
+            "analysis_override_sha256": str(override_sha),
+            "analysis_override_kind": str(
+                row.get("analysis_override_kind", "unspecified")
+            ),
+        }
     strains = []
     for ifo in model_ifos:
         if ifo not in context_by_ifo:
@@ -312,7 +354,7 @@ def _window_strain(
         center_index = whitened.size // 2
         start = center_index - output_samples // 2
         strains.append(whitened[start : start + output_samples])
-    return np.stack(strains), valid_ifos
+    return np.stack(strains), valid_ifos, override_record
 
 
 def score_background_manifest(
@@ -398,7 +440,7 @@ def score_background_manifest(
             rows.append(resumed_by_id[window_id])
             continue
         try:
-            strain, valid_ifos = _window_strain(
+            strain, valid_ifos, override_record = _window_strain(
                 row, model_ifos, target_sample_rate, context_duration, enabled_ifos
             )
             power = multiresolution_power(
@@ -473,6 +515,7 @@ def score_background_manifest(
                     "gps_block": row["gps_block"],
                     "enabled_ifos": list(enabled_ifos),
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
+                    **override_record,
                     **probability_record,
                     **summary,
                 }
@@ -513,6 +556,9 @@ def score_background_manifest(
         "newly_scored_windows": newly_scored,
         "scored_windows": len(rows),
         "failed_windows": len(failures),
+        "analysis_override_windows": sum(
+            bool(row.get("analysis_override_sha256")) for row in rows
+        ),
         "failures": failures,
         "split_counts": dict(sorted(Counter(row["split"] for row in rows).items())),
         "network_mode_counts": dict(

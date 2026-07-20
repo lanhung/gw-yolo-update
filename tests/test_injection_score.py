@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
+import numpy as np
 
-from gwyolo.injection_score import _load_resumable_rows, _save_progress
+from gwyolo.injection_score import (
+    _load_resumable_rows,
+    _save_progress,
+    apply_analysis_override,
+)
 from gwyolo.io import file_sha256
 
 
@@ -45,3 +50,31 @@ def test_injection_score_resume_rejects_changed_run_identity(tmp_path: Path) -> 
             {"save_probabilities": False, "manifest_sha256": "new"},
             [{"injection_id": "one"}],
         )
+
+
+def test_analysis_override_replaces_only_locked_crop(tmp_path: Path) -> None:
+    override = tmp_path / "cleaned.npz"
+    np.savez(
+        override,
+        cleaned_strain=np.asarray([[10.0, 11.0], [20.0, 21.0]]),
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(2),
+        analysis_gps_start=np.asarray(101.0),
+    )
+    row = {
+        "analysis_override_path": str(override),
+        "analysis_override_sha256": file_sha256(override),
+    }
+    original = np.arange(8, dtype=np.float64).reshape(2, 4)
+    context = {
+        "ifos": ["H1", "L1"],
+        "sample_rate": 2,
+        "analysis_gps_start": 101.0,
+        "analysis_start_index": 1,
+        "analysis_stop_index": 3,
+        "mixture": original,
+    }
+    updated, record = apply_analysis_override(row, context)
+    assert updated["mixture"].tolist() == [[0.0, 10.0, 11.0, 3.0], [4.0, 20.0, 21.0, 7.0]]
+    assert np.array_equal(context["mixture"], original)
+    assert record["analysis_override_sha256"] == file_sha256(override)

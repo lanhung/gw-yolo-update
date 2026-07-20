@@ -488,3 +488,139 @@ def audit_physical_overlap_manifests(
     }
     atomic_write_json(output_path, report)
     return report
+
+
+def _fft_upsample(values: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    signal = np.asarray(values, dtype=np.float64)
+    if signal.ndim != 1 or not np.isfinite(signal).all():
+        raise ValueError("FFT upsampling requires finite one-dimensional strain")
+    if source_rate == target_rate:
+        return signal.copy()
+    if source_rate <= 0 or target_rate % source_rate:
+        raise ValueError("Target sample rate must be an integer multiple of source rate")
+    target_size = signal.size * (target_rate // source_rate)
+    source_spectrum = np.fft.rfft(signal)
+    target_spectrum = np.zeros(target_size // 2 + 1, dtype=np.complex128)
+    target_spectrum[: source_spectrum.size] = source_spectrum
+    return np.fft.irfft(target_spectrum, n=target_size) * (target_size / signal.size)
+
+
+def build_contaminated_injection_overrides(
+    overlap_manifest: str | Path,
+    injection_manifest: str | Path,
+    output_dir: str | Path,
+    required_split: str,
+) -> dict[str, Any]:
+    """Expose real-glitch overlap strain through the standard injection scorer contract."""
+
+    if required_split not in {"train", "val", "test"}:
+        raise ValueError("Contaminated override split must be train, val or test")
+    overlaps = _read_jsonl(overlap_manifest)
+    injections = _read_jsonl(injection_manifest)
+    if any(row.get("split") != required_split for row in overlaps):
+        raise ValueError("Overlap manifest contains a different split")
+    if any(row.get("split") != required_split for row in injections):
+        raise ValueError("Injection manifest contains a different split")
+    injection_by_id = {str(row["injection_id"]): row for row in injections}
+    if len(injection_by_id) != len(injections):
+        raise ValueError("Injection manifest contains duplicate injection IDs")
+    overlap_ids = [str(row["injection_id"]) for row in overlaps]
+    if len(overlap_ids) != len(set(overlap_ids)):
+        raise ValueError("Overlap manifest reuses an injection ID")
+    missing = sorted(set(overlap_ids) - set(injection_by_id))
+    if missing:
+        raise ValueError(f"Overlap rows lack source injection metadata: {missing[:10]}")
+
+    output = Path(output_dir)
+    records = []
+    verified_background_hashes: dict[str, str] = {}
+    for overlap in overlaps:
+        injection = injection_by_id[str(overlap["injection_id"])]
+        if str(overlap["injection_materialized_sha256"]) != str(
+            injection["materialized_sha256"]
+        ):
+            raise ValueError("Overlap and injection materialized hashes differ")
+        signal_scale = float(overlap.get("training_signal_scale", 1.0))
+        if required_split != "train" and not np.isclose(
+            signal_scale, 1.0, rtol=0.0, atol=1e-12
+        ):
+            raise ValueError("Validation/test contaminated overrides cannot rescale injections")
+        artifact = Path(overlap["path"])
+        if file_sha256(artifact) != str(overlap["sha256"]):
+            raise ValueError(f"Overlap artifact hash mismatch: {overlap['mixture_id']}")
+        with np.load(artifact, allow_pickle=False) as arrays:
+            mixture = np.asarray(arrays["mixture_strain"], dtype=np.float64)
+            overlap_ifos = [str(value) for value in arrays["ifos"].tolist()]
+            overlap_rate = int(arrays["sample_rate"])
+            availability = np.asarray(arrays["detector_availability"], dtype=np.uint8)
+        context = load_materialized_context(injection, verified_background_hashes)
+        source_ifos = list(context["ifos"])
+        source_rate = int(context["sample_rate"])
+        start = int(context["analysis_start_index"])
+        stop = int(context["analysis_stop_index"])
+        expected_samples = stop - start
+        selected = []
+        for ifo in source_ifos:
+            if ifo not in overlap_ifos:
+                raise ValueError(f"Overlap artifact lacks source detector {ifo}")
+            overlap_index = overlap_ifos.index(ifo)
+            if availability[overlap_index] != 1:
+                raise ValueError(f"Overlap artifact marks source detector {ifo} unavailable")
+            values = _fft_upsample(mixture[overlap_index], overlap_rate, source_rate)
+            if values.shape != (expected_samples,):
+                raise ValueError("Overlap and source injection analysis durations differ")
+            selected.append(values)
+        analysis = np.stack(selected)
+        override_path = output / "arrays" / f"{overlap['mixture_id']}.npz"
+        _atomic_save_npz(
+            override_path,
+            analysis_strain=analysis,
+            ifos=np.asarray(source_ifos),
+            sample_rate=np.asarray(source_rate, dtype=np.int64),
+            analysis_gps_start=np.asarray(
+                context["analysis_gps_start"], dtype=np.float64
+            ),
+        )
+        records.append(
+            {
+                **injection,
+                "analysis_override_path": str(override_path),
+                "analysis_override_sha256": file_sha256(override_path),
+                "analysis_override_kind": "real_glitch_contaminated",
+                "overlap_mixture_id": overlap["mixture_id"],
+                "overlap_artifact_sha256": overlap["sha256"],
+                "glitch_id": overlap["glitch_id"],
+                "glitch_gps_block": overlap["network_gps_block"],
+                "glitch_ifo": overlap["glitch_ifo"],
+                "glitch_label": overlap.get("ml_label"),
+                "glitch_mask_provenance": overlap.get("mask_provenance"),
+            }
+        )
+    manifest = output / f"contaminated_injection_{required_split}.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in records)
+    )
+    report = {
+        "status": "verified_real_glitch_contaminated_injection_overrides",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "contaminated and mask-conditioned scores require validation-only threshold "
+            "calibration, clean non-inferiority and continuous-background evaluation"
+        ),
+        "split": required_split,
+        "rows": len(records),
+        "unique_injection_ids": len({row["injection_id"] for row in records}),
+        "unique_waveform_ids": len({row["waveform_id"] for row in records}),
+        "unique_glitch_ids": len({row["glitch_id"] for row in records}),
+        "unique_injection_gps_blocks": len({row["gps_block"] for row in records}),
+        "unique_glitch_gps_blocks": len(
+            {row["glitch_gps_block"] for row in records}
+        ),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "overlap_manifest_sha256": file_sha256(overlap_manifest),
+        "injection_manifest_sha256": file_sha256(injection_manifest),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "contaminated_injection_report.json", report)
+    return report

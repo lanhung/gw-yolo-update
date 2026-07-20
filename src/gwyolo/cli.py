@@ -459,6 +459,16 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_audit.add_argument("--manifest", action="append", required=True)
     physical_overlap_audit.add_argument("--output", required=True)
 
+    physical_overlap_contamination = subparsers.add_parser(
+        "physical-overlap-contamination"
+    )
+    physical_overlap_contamination.add_argument("--overlap-manifest", required=True)
+    physical_overlap_contamination.add_argument("--injection-manifest", required=True)
+    physical_overlap_contamination.add_argument("--output-dir", required=True)
+    physical_overlap_contamination.add_argument(
+        "--required-split", required=True, choices=["train", "val", "test"]
+    )
+
     physical_overlap_train = subparsers.add_parser("physical-overlap-finetune")
     physical_overlap_train.add_argument("--config", required=True)
     physical_overlap_train.add_argument("--overlap-train-manifest", required=True)
@@ -530,6 +540,20 @@ def build_parser() -> argparse.ArgumentParser:
     learned_deglitch.add_argument("--scored-manifest", required=True)
     learned_deglitch.add_argument("--output-dir", required=True)
     learned_deglitch.add_argument("--strength", type=float, default=0.9)
+
+    learned_background_deglitch = subparsers.add_parser("learned-background-deglitch")
+    learned_background_deglitch.add_argument("--background-manifest", required=True)
+    learned_background_deglitch.add_argument("--scored-manifest", required=True)
+    learned_background_deglitch.add_argument("--output-dir", required=True)
+    learned_background_deglitch.add_argument("--strength", type=float, default=0.9)
+    learned_background_deglitch.add_argument(
+        "--model-ifos", nargs="+", default=["H1", "L1", "V1"]
+    )
+    learned_background_deglitch.add_argument("--target-sample-rate", type=int, default=1024)
+    learned_background_deglitch.add_argument("--context-duration", type=float, default=64.0)
+    learned_background_deglitch.add_argument(
+        "--required-split", choices=["train", "val", "test"]
+    )
 
     trigger = subparsers.add_parser("trigger-score")
     trigger.add_argument("--manifest", required=True)
@@ -1262,6 +1286,17 @@ def main(argv: list[str] | None = None) -> int:
         from .overlaps import audit_physical_overlap_manifests
 
         _print(audit_physical_overlap_manifests(args.manifest, args.output))
+    elif args.command == "physical-overlap-contamination":
+        from .overlaps import build_contaminated_injection_overrides
+
+        _print(
+            build_contaminated_injection_overrides(
+                args.overlap_manifest,
+                args.injection_manifest,
+                args.output_dir,
+                args.required_split,
+            )
+        )
     elif args.command == "physical-overlap-finetune":
         from .overlap_training import run_physical_overlap_finetune
 
@@ -1354,6 +1389,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.scored_manifest,
                 args.output_dir,
                 args.strength,
+            )
+        )
+    elif args.command == "learned-background-deglitch":
+        from .learned_deglitch import run_learned_background_deglitch
+
+        _print(
+            run_learned_background_deglitch(
+                args.background_manifest,
+                args.scored_manifest,
+                args.output_dir,
+                args.strength,
+                tuple(args.model_ifos),
+                args.target_sample_rate,
+                args.context_duration,
+                args.required_split,
             )
         )
     elif args.command == "trigger-score":
