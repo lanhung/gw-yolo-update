@@ -600,6 +600,12 @@ def build_contaminated_injection_overrides(
     atomic_write_text(
         manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in records)
     )
+    clean_manifest = output / f"paired_clean_injection_{required_split}.jsonl"
+    paired_clean = [injection_by_id[str(row["injection_id"])] for row in overlaps]
+    atomic_write_text(
+        clean_manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in paired_clean),
+    )
     report = {
         "status": "verified_real_glitch_contaminated_injection_overrides",
         "scientific_claim_allowed": False,
@@ -618,6 +624,8 @@ def build_contaminated_injection_overrides(
         ),
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
+        "paired_clean_manifest_path": str(clean_manifest),
+        "paired_clean_manifest_sha256": file_sha256(clean_manifest),
         "overlap_manifest_sha256": file_sha256(overlap_manifest),
         "injection_manifest_sha256": file_sha256(injection_manifest),
         **execution_provenance(),

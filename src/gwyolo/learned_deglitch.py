@@ -139,6 +139,9 @@ def run_learned_deglitch(
                 "input_analysis_override_sha256": input_override.get(
                     "analysis_override_sha256"
                 ),
+                "input_analysis_override_kind": input_override.get(
+                    "analysis_override_kind"
+                ),
                 "probability_sha256": scored["probability_sha256"],
                 "metrics": metrics,
                 "suppression": suppression,
@@ -161,6 +164,11 @@ def run_learned_deglitch(
         "materialized_manifest_sha256": file_sha256(materialized_manifest),
         "scored_manifest_sha256": file_sha256(scored_manifest),
         "summary": _summarize(result_rows),
+        "signal_retention_interpretation_valid": all(
+            row.get("input_analysis_override_kind")
+            in {None, "clean", "clean_reference"}
+            for row in result_rows
+        ),
         "unique_injection_ids": len({row["injection_id"] for row in result_rows}),
         "unique_waveform_ids": len({row["waveform_id"] for row in result_rows}),
         "unique_gps_blocks": len({row["gps_block"] for row in result_rows}),

@@ -239,6 +239,11 @@ def test_network_overlap_adds_coherent_signal_to_every_available_ifo(tmp_path) -
     contaminated_row = json.loads(
         Path(contaminated["manifest_path"]).read_text().strip()
     )
+    clean_row = json.loads(
+        Path(contaminated["paired_clean_manifest_path"]).read_text().strip()
+    )
+    assert clean_row["injection_id"] == contaminated_row["injection_id"]
+    assert clean_row["waveform_id"] == contaminated_row["waveform_id"]
     assert contaminated_row["analysis_override_kind"] == "real_glitch_contaminated"
     assert contaminated_row["glitch_id"] == "network-g"
     with np.load(contaminated_row["analysis_override_path"], allow_pickle=False) as arrays:

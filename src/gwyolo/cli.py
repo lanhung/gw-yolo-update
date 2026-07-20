@@ -188,6 +188,30 @@ def build_parser() -> argparse.ArgumentParser:
     mask_search.add_argument("--seed", type=int, default=20260720)
     mask_search.add_argument("--output", required=True)
 
+    mask_search_pipeline = subparsers.add_parser("mask-search-validation-pipeline")
+    mask_search_pipeline.add_argument("--background-manifest", required=True)
+    mask_search_pipeline.add_argument("--clean-injection-manifest", required=True)
+    mask_search_pipeline.add_argument("--contaminated-injection-manifest", required=True)
+    mask_search_pipeline.add_argument("--checkpoint", required=True)
+    mask_search_pipeline.add_argument("--config", required=True)
+    mask_search_pipeline.add_argument("--output-dir", required=True)
+    mask_search_pipeline.add_argument(
+        "--maximum-validation-false-alarms", required=True, type=int
+    )
+    mask_search_pipeline.add_argument("--strength", type=float, default=0.9)
+    mask_search_pipeline.add_argument("--clean-noninferiority-margin", type=float, default=0.01)
+    mask_search_pipeline.add_argument(
+        "--minimum-contaminated-efficiency-gain", type=float, default=0.05
+    )
+    mask_search_pipeline.add_argument("--bootstrap-replicates", type=int, default=10000)
+    mask_search_pipeline.add_argument("--seed", type=int, default=20260720)
+    mask_search_pipeline.add_argument("--model-ifos", nargs="+", default=["H1", "L1", "V1"])
+    mask_search_pipeline.add_argument(
+        "--q-values", nargs="+", type=float, default=[4, 8, 16]
+    )
+    mask_search_pipeline.add_argument("--target-sample-rate", type=int, default=1024)
+    mask_search_pipeline.add_argument("--context-duration", type=float, default=64.0)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -897,6 +921,29 @@ def main(argv: list[str] | None = None) -> int:
                 args.score_field,
                 args.bootstrap_replicates,
                 args.seed,
+            )
+        )
+    elif args.command == "mask-search-validation-pipeline":
+        from .mask_pipeline import run_mask_search_validation_pipeline
+
+        _print(
+            run_mask_search_validation_pipeline(
+                args.background_manifest,
+                args.clean_injection_manifest,
+                args.contaminated_injection_manifest,
+                args.checkpoint,
+                args.config,
+                args.output_dir,
+                args.maximum_validation_false_alarms,
+                args.strength,
+                args.clean_noninferiority_margin,
+                args.minimum_contaminated_efficiency_gain,
+                args.bootstrap_replicates,
+                args.seed,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
             )
         )
     elif args.command == "manifest-select-split":

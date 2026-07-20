@@ -19,10 +19,15 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 
 def training_tensor_config(config: dict[str, Any]) -> dict[str, Any]:
-    sections = [name for name in ("numeric_training", "physical_training") if name in config]
+    sections = [
+        name
+        for name in ("numeric_training", "physical_training", "overlap_training")
+        if name in config
+    ]
     if len(sections) != 1:
         raise ValueError(
-            "Configuration must contain exactly one numeric_training or physical_training section"
+            "Configuration must contain exactly one numeric_training, physical_training or "
+            "overlap_training section"
         )
     tensor = config[sections[0]].get("tensor")
     if not isinstance(tensor, dict):
