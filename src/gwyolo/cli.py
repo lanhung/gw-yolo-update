@@ -1470,7 +1470,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.pretrained_checkpoint,
                 args.output_dir,
                 args.seed,
-                args.pretrained_endpoint_checkpoint,
             )
         )
     elif args.command == "detector-arrival-timing-train":
@@ -1564,6 +1563,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_calibration_candidate_manifest,
                 args.output_dir,
                 args.seed,
+                args.pretrained_endpoint_checkpoint,
             )
         )
     elif args.command == "candidate-refiner-validation":

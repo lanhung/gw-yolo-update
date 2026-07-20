@@ -182,3 +182,45 @@ def test_candidate_proposal_audit_cli_routes_all_instance_inputs() -> None:
     select.assert_called_once_with(
         "proposal.yaml", ["audit-03.json", "audit-05.json"], "selection.json"
     )
+
+
+def test_candidate_refiner_train_cli_routes_endpoint_warm_start() -> None:
+    target = "gwyolo.candidate_refiner.run_candidate_local_refiner_training"
+    with patch(target, return_value={}) as train:
+        assert (
+            main(
+                [
+                    "candidate-refiner-train",
+                    "--config",
+                    "refiner.yaml",
+                    "--train-injection-manifest",
+                    "train-injections.jsonl",
+                    "--train-candidate-manifest",
+                    "train-candidates.jsonl",
+                    "--validation-injection-manifest",
+                    "val-injections.jsonl",
+                    "--validation-selection-candidate-manifest",
+                    "selection.jsonl",
+                    "--validation-calibration-candidate-manifest",
+                    "calibration.jsonl",
+                    "--output-dir",
+                    "output",
+                    "--seed",
+                    "7",
+                    "--pretrained-endpoint-checkpoint",
+                    "endpoint.pt",
+                ]
+            )
+            == 0
+        )
+    train.assert_called_once_with(
+        "refiner.yaml",
+        "train-injections.jsonl",
+        "train-candidates.jsonl",
+        "val-injections.jsonl",
+        "selection.jsonl",
+        "calibration.jsonl",
+        "output",
+        7,
+        "endpoint.pt",
+    )
