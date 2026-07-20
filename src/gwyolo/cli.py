@@ -429,6 +429,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     endpoint_proposal_apply.add_argument("--output-dir", required=True)
 
+    candidate_refiner_plan = subparsers.add_parser("candidate-refiner-plan")
+    candidate_refiner_plan.add_argument("--train-injection-manifest", required=True)
+    candidate_refiner_plan.add_argument("--train-candidate-manifest", required=True)
+    candidate_refiner_plan.add_argument(
+        "--validation-injection-manifest", required=True
+    )
+    candidate_refiner_plan.add_argument(
+        "--validation-candidate-manifest", required=True
+    )
+    candidate_refiner_plan.add_argument("--output-dir", required=True)
+    candidate_refiner_plan.add_argument(
+        "--positive-padding-seconds", type=float, default=0.5
+    )
+    candidate_refiner_plan.add_argument(
+        "--validation-selection-fraction", type=float, default=0.2
+    )
+    candidate_refiner_plan.add_argument("--seed", type=int, default=20260720)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1485,6 +1503,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.threshold,
                 args.required_split,
                 args.output_dir,
+            )
+        )
+    elif args.command == "candidate-refiner-plan":
+        from .candidate_refiner import run_candidate_refiner_plan
+
+        _print(
+            run_candidate_refiner_plan(
+                args.train_injection_manifest,
+                args.train_candidate_manifest,
+                args.validation_injection_manifest,
+                args.validation_candidate_manifest,
+                args.output_dir,
+                args.positive_padding_seconds,
+                args.validation_selection_fraction,
+                args.seed,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":
