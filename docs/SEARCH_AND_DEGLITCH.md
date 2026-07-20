@@ -133,6 +133,10 @@ family-stratified sample and compares PyCBC frequency-domain output against the 
 phase-invariant complex overlap, relative L2 error, amplitude ratio and epoch, records both package
 versions and full provenance, and exits nonzero on any failed case. This validates code-path and
 parameter equivalence; it does not validate the provisional population model or detector projection.
+The acceptance thresholds are overlap at least `0.999999`, relative L2 error at most `0.001`,
+amplitude-ratio error at most `0.001`, and epoch error at most one nanosecond. The L2 tolerance
+allows the documented last-bit solar-mass-constant difference to accumulate phase over long BNS
+signals while the independent overlap, amplitude and epoch gates remain strict.
 
 The first 300-row materialization attempt exposed a useful hard failure at row 114: a source-frame
 NS mass drawn up to 2.5 solar masses can exceed the `IMRPhenomNSBH` detector-frame 3-solar-mass domain

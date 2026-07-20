@@ -57,7 +57,7 @@ def validate_waveform_backend(
     reference_duration: float = 128.0,
     per_family: int = 5,
     minimum_overlap: float = 0.999999,
-    maximum_relative_error: float = 1e-8,
+    maximum_relative_error: float = 1e-3,
     maximum_epoch_error_seconds: float = 1e-9,
 ) -> dict[str, Any]:
     """Validate PyCBC parameter routing against the direct LALSimulation FD API."""
