@@ -116,3 +116,9 @@ The `physical_finetune_highres.yaml` promotion configuration uses 1,024 time bin
 (7.8125 ms nominal bins). Its STFT path uses batched FFTs and vectorized frequency/time interpolation,
 with a hand-checked equivalence test against `numpy.interp`; this makes the <=10 ms timing experiment
 computationally executable without changing physical split identities.
+
+`gwyolo injection-snr-annotate` computes per-IFO and network optimal SNR against a median-Welch PSD
+from each injection's own real-noise context. It is resumable and writes explicit `<4`, `4–8`,
+`8–15`, `15–30`, and `>=30` strata. Physical training may require an annotated manifest and select
+only train injections above a configured SNR floor; validation remains unfiltered so sensitivity
+loss at low SNR stays visible rather than being removed from evaluation.

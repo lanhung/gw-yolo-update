@@ -6,6 +6,7 @@ import platform
 import shlex
 import sys
 import tempfile
+import time
 from collections import Counter
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -15,6 +16,181 @@ import numpy as np
 
 from .gwosc import _fft_downsample, read_hdf5_segment
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+
+
+def optimal_snr_stratum(network_snr: float) -> str:
+    if not np.isfinite(network_snr) or network_snr < 0:
+        raise ValueError("network optimal SNR must be finite and non-negative")
+    for upper, label in ((4.0, "snr_lt_4"), (8.0, "snr_4_8"), (15.0, "snr_8_15"), (30.0, "snr_15_30")):
+        if network_snr < upper:
+            return label
+    return "snr_ge_30"
+
+
+def annotate_materialized_optimal_snr(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    low_frequency: float = 20.0,
+    high_frequency: float = 500.0,
+    psd_segment_seconds: float = 8.0,
+    psd_stride_seconds: float = 4.0,
+) -> dict[str, Any]:
+    """Add empirical-noise optimal SNR to materialized physical injections."""
+    try:
+        from pycbc.filter import sigma
+        from pycbc.psd import interpolate, welch
+        from pycbc.types import TimeSeries
+    except ImportError as exc:
+        raise RuntimeError("Optimal-SNR annotation requires PyCBC") from exc
+    if low_frequency <= 0 or high_frequency <= low_frequency:
+        raise ValueError("SNR frequency bounds are invalid")
+    if psd_segment_seconds <= 0 or psd_stride_seconds <= 0:
+        raise ValueError("PSD segment and stride must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Materialized manifest cannot be empty")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "manifest_sha256": file_sha256(manifest_path),
+        "low_frequency": low_frequency,
+        "high_frequency": high_frequency,
+        "psd_segment_seconds": psd_segment_seconds,
+        "psd_stride_seconds": psd_stride_seconds,
+        "pycbc_version": version("pycbc"),
+        "lalsuite_version": version("lalsuite"),
+    }
+    state_path = output / "snr_annotation_state.json"
+    partial_path = output / "materialized_injections_snr.partial.jsonl"
+    completed = []
+    if state_path.is_file():
+        with state_path.open("r", encoding="utf-8") as handle:
+            prior = json.load(handle)
+        if prior.get("run_identity") != run_identity:
+            raise ValueError("Existing SNR annotation belongs to a different run")
+        if partial_path.is_file():
+            with partial_path.open("r", encoding="utf-8") as handle:
+                completed = [json.loads(line) for line in handle if line.strip()]
+    elif partial_path.is_file():
+        raise ValueError("Partial SNR manifest exists without run identity")
+    requested_ids = [str(row["injection_id"]) for row in rows]
+    if [str(row["injection_id"]) for row in completed] != requested_ids[: len(completed)]:
+        raise ValueError("Partial SNR annotation is not a prefix of the requested manifest")
+    verified_background_hashes: dict[str, str] = {}
+    started = time.time()
+    for index, row in enumerate(rows[len(completed) :], start=len(completed) + 1):
+        context = load_materialized_context(row, verified_background_hashes)
+        sample_rate = int(context["sample_rate"])
+        segment_samples = int(round(psd_segment_seconds * sample_rate))
+        stride_samples = int(round(psd_stride_seconds * sample_rate))
+        if segment_samples > context["noise"].shape[1]:
+            raise ValueError("PSD segment is longer than materialized context")
+        by_ifo = {}
+        for ifo, noise, signal_values in zip(
+            context["ifos"], context["noise"], context["signal"]
+        ):
+            noise_series = TimeSeries(noise, delta_t=1.0 / sample_rate)
+            signal_series = TimeSeries(signal_values, delta_t=1.0 / sample_rate)
+            signal_frequency = signal_series.to_frequencyseries()
+            psd = interpolate(
+                welch(
+                    noise_series,
+                    seg_len=segment_samples,
+                    seg_stride=stride_samples,
+                    avg_method="median",
+                ),
+                signal_frequency.delta_f,
+            )
+            ifo_snr = float(
+                sigma(
+                    signal_series,
+                    psd=psd,
+                    low_frequency_cutoff=low_frequency,
+                    high_frequency_cutoff=min(high_frequency, sample_rate / 2.0 - 1.0),
+                )
+            )
+            if not np.isfinite(ifo_snr) or ifo_snr < 0:
+                raise ValueError(f"Invalid optimal SNR for {row['injection_id']} {ifo}")
+            by_ifo[str(ifo)] = ifo_snr
+        network_snr = float(np.sqrt(np.sum(np.square(list(by_ifo.values())))))
+        completed.append(
+            {
+                **row,
+                "optimal_snr_by_ifo": by_ifo,
+                "network_optimal_snr": network_snr,
+                "optimal_snr_stratum": optimal_snr_stratum(network_snr),
+                "optimal_snr_definition": (
+                    "PyCBC sigma with median-Welch empirical noise PSD over full context"
+                ),
+            }
+        )
+        if index % 10 == 0 or index == len(rows):
+            atomic_write_text(
+                partial_path,
+                "".join(json.dumps(item, sort_keys=True) + "\n" for item in completed),
+            )
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress",
+                    "run_identity": run_identity,
+                    "completed": len(completed),
+                    "requested": len(rows),
+                },
+            )
+    target = output / "materialized_injections_snr.jsonl"
+    atomic_write_text(
+        target, "".join(json.dumps(item, sort_keys=True) + "\n" for item in completed)
+    )
+    report = {
+        "status": "empirical_noise_optimal_snr_annotation",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "SNR annotation supports curriculum and stratification but does not replace locked "
+            "injection recovery at frozen FAR"
+        ),
+        "input_manifest_path": str(manifest_path),
+        "input_manifest_sha256": file_sha256(manifest_path),
+        "output_manifest_path": str(target),
+        "output_manifest_sha256": file_sha256(target),
+        "rows": len(completed),
+        "split_counts": dict(sorted(Counter(row["split"] for row in completed).items())),
+        "family_counts": dict(
+            sorted(Counter(row["source_family"] for row in completed).items())
+        ),
+        "snr_stratum_counts": dict(
+            sorted(Counter(row["optimal_snr_stratum"] for row in completed).items())
+        ),
+        "network_snr_quantiles": {
+            str(quantile): float(
+                np.quantile([row["network_optimal_snr"] for row in completed], quantile)
+            )
+            for quantile in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0)
+        },
+        "run_identity": run_identity,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+        "elapsed_seconds": time.time() - started,
+    }
+    atomic_write_json(output / "snr_annotation_report.json", report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed": len(completed),
+            "requested": len(rows),
+            "manifest_sha256": report["output_manifest_sha256"],
+        },
+    )
+    return report
 
 
 def waveform_equivalence_metrics(

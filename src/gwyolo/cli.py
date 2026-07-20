@@ -334,6 +334,14 @@ def build_parser() -> argparse.ArgumentParser:
     waveform_validate.add_argument("--reference-duration", type=float, default=128.0)
     waveform_validate.add_argument("--per-family", type=int, default=5)
 
+    snr_annotate = subparsers.add_parser("injection-snr-annotate")
+    snr_annotate.add_argument("--manifest", required=True)
+    snr_annotate.add_argument("--output-dir", required=True)
+    snr_annotate.add_argument("--low-frequency", type=float, default=20.0)
+    snr_annotate.add_argument("--high-frequency", type=float, default=500.0)
+    snr_annotate.add_argument("--psd-segment-seconds", type=float, default=8.0)
+    snr_annotate.add_argument("--psd-stride-seconds", type=float, default=4.0)
+
     injection_score = subparsers.add_parser("injection-score")
     injection_score.add_argument("--manifest", required=True)
     injection_score.add_argument("--checkpoint", required=True)
@@ -763,6 +771,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate,
                 args.reference_duration,
                 args.per_family,
+            )
+        )
+    elif args.command == "injection-snr-annotate":
+        from .waveforms import annotate_materialized_optimal_snr
+
+        _print(
+            annotate_materialized_optimal_snr(
+                args.manifest,
+                args.output_dir,
+                args.low_frequency,
+                args.high_frequency,
+                args.psd_segment_seconds,
+                args.psd_stride_seconds,
             )
         )
     elif args.command == "injection-score":

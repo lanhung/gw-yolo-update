@@ -279,9 +279,24 @@ def run_physical_finetune(
         torch.cuda.manual_seed_all(seed)
     torch.use_deterministic_algorithms(True, warn_only=True)
     with Path(train_manifest).open("r", encoding="utf-8") as handle:
-        train_rows = [json.loads(line) for line in handle if line.strip()]
+        all_train_rows = [json.loads(line) for line in handle if line.strip()]
     with Path(validation_manifest).open("r", encoding="utf-8") as handle:
         validation_rows = [json.loads(line) for line in handle if line.strip()]
+    minimum_training_snr = settings.get("minimum_training_network_snr")
+    if minimum_training_snr is not None:
+        missing_snr = [row["injection_id"] for row in all_train_rows if "network_optimal_snr" not in row]
+        if missing_snr:
+            raise ValueError(
+                "SNR-filtered physical training requires an annotated manifest; missing "
+                f"{missing_snr[:10]}"
+            )
+        train_rows = [
+            row
+            for row in all_train_rows
+            if float(row["network_optimal_snr"]) >= float(minimum_training_snr)
+        ]
+    else:
+        train_rows = all_train_rows
     audit = physical_split_audit(train_rows, validation_rows)
     model_ifos = tuple(str(item) for item in settings["model_ifos"])
     q_values = tuple(float(item) for item in settings["q_values"])
@@ -420,6 +435,12 @@ def run_physical_finetune(
         "config_path": str(config_path),
         "config_hash": canonical_hash(config),
         "split_audit": audit,
+        "training_selection": {
+            "input_rows": len(all_train_rows),
+            "selected_rows": len(train_rows),
+            "excluded_rows": len(all_train_rows) - len(train_rows),
+            "minimum_network_optimal_snr": minimum_training_snr,
+        },
         "pretrained_checkpoint_sha256": file_sha256(pretrained_checkpoint),
         "train_manifest_sha256": file_sha256(train_manifest),
         "validation_manifest_sha256": file_sha256(validation_manifest),

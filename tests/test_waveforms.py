@@ -10,11 +10,20 @@ from gwyolo.io import file_sha256
 from gwyolo.waveforms import (
     materialize_recipe,
     load_materialized_context,
+    optimal_snr_stratum,
     place_waveform_samples,
     run_injection_materialization,
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_optimal_snr_strata_boundaries() -> None:
+    assert optimal_snr_stratum(3.999) == "snr_lt_4"
+    assert optimal_snr_stratum(4.0) == "snr_4_8"
+    assert optimal_snr_stratum(8.0) == "snr_8_15"
+    assert optimal_snr_stratum(15.0) == "snr_15_30"
+    assert optimal_snr_stratum(30.0) == "snr_ge_30"
 
 
 def test_waveform_equivalence_metrics_exact_and_scaled() -> None:

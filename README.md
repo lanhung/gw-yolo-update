@@ -60,6 +60,7 @@ gwyolo numeric-multiseed resume and aggregate validation-only runs across at lea
 gwyolo numeric-evaluate evaluate one selected numeric checkpoint with frozen thresholds
 gwyolo physical-finetune adapt the selected model to split-safe physical injections and real noise
 gwyolo waveform-validate compare stratified PyCBC waveforms to the direct LALSimulation API
+gwyolo injection-snr-annotate add empirical-noise optimal SNR for curriculum and strata
 gwyolo recipe-subset build nested, leak-audited manifests for learning curves
 gwyolo gravityspy-index download and stratify official real-glitch metadata anchors
 gwyolo gravityspy-split split all IFOs in a network GPS block as one leakage-safe group
