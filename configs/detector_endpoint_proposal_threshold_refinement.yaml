@@ -1,0 +1,26 @@
+detector_endpoint_proposal:
+  batch_size: 16
+  base_channels: 16
+  cache_in_memory: true
+  analysis_duration: 8.0
+  target_sample_rate: 1024
+  output_bins: 1024
+  minimum_bins: 1
+  threshold_grid: [0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39]
+  model_ifos: [H1, L1, V1]
+
+candidate_proposal_threshold_selection:
+  padding_seconds: 0.5
+  minimum_all_padded_coverage: 0.95
+  minimum_required_group_padded_coverage: 0.90
+  maximum_median_union_fraction: 0.50
+  maximum_p90_union_fraction: 0.80
+  maximum_median_containing_width_seconds: 2.0
+  required_groups:
+    - family:BBH
+    - family:BNS
+    - family:NSBH
+    - snr:snr_4_8
+    - snr:snr_8_15
+    - snr:snr_15_30
+    - snr:snr_ge_30

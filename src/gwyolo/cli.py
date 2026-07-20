@@ -409,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
     endpoint_proposal.add_argument("--output-dir", required=True)
     endpoint_proposal.add_argument("--seed", type=int)
 
+    endpoint_proposal_evaluate = subparsers.add_parser(
+        "detector-endpoint-proposal-evaluate"
+    )
+    endpoint_proposal_evaluate.add_argument("--config", required=True)
+    endpoint_proposal_evaluate.add_argument("--validation-manifest", required=True)
+    endpoint_proposal_evaluate.add_argument("--checkpoint", required=True)
+    endpoint_proposal_evaluate.add_argument("--output-dir", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1441,6 +1449,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.pretrained_checkpoint,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "detector-endpoint-proposal-evaluate":
+        from .endpoint_proposal import run_detector_endpoint_proposal_evaluation
+
+        _print(
+            run_detector_endpoint_proposal_evaluation(
+                args.config,
+                args.validation_manifest,
+                args.checkpoint,
+                args.output_dir,
             )
         )
     elif args.command == "detector-arrival-timing-validation-compare":

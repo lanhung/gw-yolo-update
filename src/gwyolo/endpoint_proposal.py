@@ -305,6 +305,63 @@ def _predict_proposals(model: Any, loader: Any, device: Any) -> tuple[np.ndarray
     )
 
 
+def _evaluate_threshold_grid(
+    probabilities: np.ndarray,
+    availability: np.ndarray,
+    offsets: np.ndarray,
+    validation_rows: list[dict[str, Any]],
+    model_ifos: tuple[str, ...],
+    duration: float,
+    checkpoint_path: str | Path,
+    output: Path,
+    settings: dict[str, Any],
+    gates: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    threshold_records = []
+    audit_hashes = {}
+    for threshold in (float(value) for value in settings["threshold_grid"]):
+        tag = f"{threshold:.4f}".rstrip("0").rstrip(".").replace(".", "p")
+        threshold_dir = output / f"threshold-{tag}"
+        threshold_dir.mkdir(parents=True, exist_ok=False)
+        candidates = extract_dense_endpoint_candidates(
+            probabilities,
+            availability,
+            offsets,
+            validation_rows,
+            model_ifos,
+            duration,
+            threshold,
+            int(settings.get("minimum_bins", 1)),
+        )
+        candidate_path = threshold_dir / "endpoint_injection_candidates.jsonl"
+        atomic_write_text(
+            candidate_path,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in candidates),
+        )
+        coverage = candidate_proposal_coverage(
+            validation_rows, candidates, float(gates["padding_seconds"])
+        )
+        audit = {
+            "status": "validation_only_dense_endpoint_proposal_coverage",
+            "scientific_claim_allowed": False,
+            "threshold": threshold,
+            "candidate_manifest": str(candidate_path),
+            "candidate_manifest_sha256": file_sha256(candidate_path),
+            "checkpoint_sha256": file_sha256(checkpoint_path),
+            **coverage,
+            **execution_provenance(torch),
+        }
+        audit_path = threshold_dir / "proposal_coverage.json"
+        atomic_write_json(audit_path, audit)
+        audit_hashes[str(threshold)] = file_sha256(audit_path)
+        record = proposal_gate_record(coverage, threshold, gates)
+        record["audit_path"] = str(audit_path)
+        record["audit_sha256"] = audit_hashes[str(threshold)]
+        record["candidate_manifest_sha256"] = file_sha256(candidate_path)
+        threshold_records.append(record)
+    return threshold_records, audit_hashes
+
+
 def run_detector_endpoint_proposal_training(
     config_path: str | Path,
     train_manifest: str | Path,
@@ -483,42 +540,18 @@ def run_detector_endpoint_proposal_training(
     selected_checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(selected_checkpoint["model"])
     probabilities, availability, offsets = _predict_proposals(model, loaders["val"], device)
-    threshold_records = []
-    audit_hashes = {}
-    for threshold in (float(value) for value in settings["threshold_grid"]):
-        tag = f"{threshold:.4f}".rstrip("0").rstrip(".").replace(".", "p")
-        threshold_dir = output / f"threshold-{tag}"
-        threshold_dir.mkdir(parents=True, exist_ok=True)
-        candidates = extract_dense_endpoint_candidates(
-            probabilities, availability, offsets, validation_rows, model_ifos,
-            duration, threshold, int(settings.get("minimum_bins", 1)),
-        )
-        candidate_path = threshold_dir / "endpoint_injection_candidates.jsonl"
-        atomic_write_text(
-            candidate_path,
-            "".join(json.dumps(row, sort_keys=True) + "\n" for row in candidates),
-        )
-        coverage = candidate_proposal_coverage(
-            validation_rows, candidates, float(gates["padding_seconds"])
-        )
-        audit = {
-            "status": "validation_only_dense_endpoint_proposal_coverage",
-            "scientific_claim_allowed": False,
-            "threshold": threshold,
-            "candidate_manifest": str(candidate_path),
-            "candidate_manifest_sha256": file_sha256(candidate_path),
-            "checkpoint_sha256": file_sha256(checkpoint_path),
-            **coverage,
-            **execution_provenance(torch),
-        }
-        audit_path = threshold_dir / "proposal_coverage.json"
-        atomic_write_json(audit_path, audit)
-        audit_hashes[str(threshold)] = file_sha256(audit_path)
-        record = proposal_gate_record(coverage, threshold, gates)
-        record["audit_path"] = str(audit_path)
-        record["audit_sha256"] = audit_hashes[str(threshold)]
-        record["candidate_manifest_sha256"] = file_sha256(candidate_path)
-        threshold_records.append(record)
+    threshold_records, audit_hashes = _evaluate_threshold_grid(
+        probabilities,
+        availability,
+        offsets,
+        validation_rows,
+        model_ifos,
+        duration,
+        checkpoint_path,
+        output,
+        settings,
+        gates,
+    )
     selected = select_dense_proposal_record(threshold_records)
     result = {
         "status": "validation_only_dense_detector_endpoint_proposal",
@@ -562,6 +595,119 @@ def run_detector_endpoint_proposal_training(
             str(record["threshold"]): record["candidates"] for record in threshold_records
         },
         "history": history,
+        "elapsed_seconds": time.time() - started,
+        **execution_provenance(torch),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
+def run_detector_endpoint_proposal_evaluation(
+    config_path: str | Path,
+    validation_manifest: str | Path,
+    checkpoint_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Refine a validation-only proposal threshold without retraining or test access."""
+
+    if torch is None:
+        raise RuntimeError("Detector endpoint proposal evaluation requires torch")
+    config = load_yaml(config_path)
+    settings = config["detector_endpoint_proposal"]
+    gates = config["candidate_proposal_threshold_selection"]
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "config_sha256": file_sha256(config_path),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    report_path = output / "detector_endpoint_proposal_evaluation.json"
+    if report_path.is_file():
+        result = json.loads(report_path.read_text(encoding="utf-8"))
+        if result.get("run_identity") != identity:
+            raise ValueError("completed endpoint proposal evaluation has another identity")
+        return result
+    if any(output.iterdir()):
+        raise FileExistsError("endpoint proposal evaluation output must be empty")
+    validation_rows = [
+        json.loads(line)
+        for line in Path(validation_manifest).read_text().splitlines()
+        if line
+    ]
+    if not validation_rows or any(row.get("split") != "val" for row in validation_rows):
+        raise ValueError("endpoint proposal threshold refinement accepts validation rows only")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if checkpoint.get("architecture") != "detector_endpoint_spectrogram_dense_v1":
+        raise ValueError("endpoint proposal evaluation checkpoint has the wrong architecture")
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    duration = float(settings["analysis_duration"])
+    output_bins = int(settings["output_bins"])
+    base_channels = int(settings["base_channels"])
+    expected = {
+        "model_ifos": list(model_ifos),
+        "target_sample_rate": int(settings["target_sample_rate"]),
+        "analysis_duration": duration,
+        "output_bins": output_bins,
+        "base_channels": base_channels,
+    }
+    for key, value in expected.items():
+        observed = checkpoint.get(key)
+        if key == "model_ifos" and observed is not None:
+            observed = list(observed)
+        if observed != value:
+            raise ValueError(f"endpoint proposal checkpoint {key} differs from evaluation config")
+    dataset = DetectorArrivalDataset(
+        validation_rows,
+        model_ifos,
+        int(settings["target_sample_rate"]),
+        duration,
+        output_bins,
+        bool(settings.get("cache_in_memory", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DetectorArrivalSpectrogramNet(len(model_ifos), base_channels).to(device)
+    model.load_state_dict(checkpoint["model"])
+    started = time.time()
+    probabilities, availability, offsets = _predict_proposals(model, loader, device)
+    threshold_records, audit_hashes = _evaluate_threshold_grid(
+        probabilities,
+        availability,
+        offsets,
+        validation_rows,
+        model_ifos,
+        duration,
+        checkpoint_path,
+        output,
+        settings,
+        gates,
+    )
+    selected = select_dense_proposal_record(threshold_records)
+    result = {
+        "status": "validation_only_dense_endpoint_proposal_threshold_refinement",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation proposal selection is not search recall and still requires timing, "
+            "continuous background and locked-test VT"
+        ),
+        "test_evaluation": None,
+        "run_identity": identity,
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "validation_injections": len(validation_rows),
+        "threshold_records": threshold_records,
+        "proposal_gate_passed": selected is not None,
+        "selected_threshold": selected,
+        "audit_hashes": audit_hashes,
         "elapsed_seconds": time.time() - started,
         **execution_provenance(torch),
     }
