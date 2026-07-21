@@ -106,10 +106,21 @@ def main() -> int:
         raise FileExistsError("DINGO inference refuses to overwrite an existing output")
 
     import torch
+    dingo_version = importlib.metadata.version("dingo-gw")
+    compatibility_shims = []
+    if dingo_version == "0.5.8":
+        import scipy.signal
+
+        if not hasattr(scipy.signal, "tukey"):
+            from scipy.signal.windows import tukey
+
+            scipy.signal.tukey = tukey
+            compatibility_shims.append(
+                "scipy.signal.tukey=the_identical_scipy.signal.windows.tukey"
+            )
     from dingo.gw.data.event_dataset import EventDataset
     from dingo.gw.inference.gw_samplers import GWSampler, GWSamplerGNPE
 
-    dingo_version = importlib.metadata.version("dingo-gw")
     if dingo_version == "0.5.8":
         from dingo.core.models import PosteriorModel
 
@@ -206,6 +217,7 @@ def main() -> int:
         "backend": "DINGO",
         "backend_version": dingo_version,
         "model_load_api": model_load_api,
+        "compatibility_shims": compatibility_shims,
         "event_path": str(event_path),
         "event_sha256": observed["event"],
         "model_path": str(model_path),

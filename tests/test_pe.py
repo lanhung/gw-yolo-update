@@ -79,6 +79,8 @@ def test_dingo_event_runner_supports_only_frozen_native_and_current_apis() -> No
     assert 'dingo_version == "0.9.8"' in source
     assert "from dingo.core.posterior_models.build_model import" in source
     assert "unsupported DINGO inference API version" in source
+    assert "scipy.signal.windows import tukey" in source
+    assert "the_identical_scipy.signal.windows.tukey" in source
 
 
 def test_posterior_truth_metrics_match_quantiles_and_bias() -> None:
