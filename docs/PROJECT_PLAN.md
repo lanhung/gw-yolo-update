@@ -311,4 +311,15 @@ Acquisition can now be distributed deterministically: each worker consumes a par
 non-overlapping GWOSC plan slice through `background-stream-shard`. The final shard report retains
 the stable split counts and calibrated candidate hashes while proving that temporary arrays and HDF
 sources were released only after all evaluation rows were reduced.
+
+The 2026-07-21 evidence further sharpens this order. The single-IFO weak-mask overlap arm fails its
+0.95 clean-retention gate and never learns a nonzero glitch mask; the Blip-held-out embedding arm
+falsely accepts 17/17 unknowns. Neither is promoted to five seeds. Complete the already frozen
+aligned H1/L1/V1 Gravity Spy bank, then replace both with a detector-set dual-mask arm and a
+known-validation-calibrated energy/distance or contrastive OOD arm. The fresh 301-window O4a
+validation shard provides only 0.01145 years of positive-lag exposure and a zero-count 90% upper
+limit of 201.17 events/year. Independent background GPS support, not additional waveform copies,
+is consequently the dominant data acquisition priority. A dated execution snapshot is maintained
+in `docs/STATUS_2026-07-21.md`.
+
 6. reproducibility lead: CI, containers, artifact registry, paper tables.

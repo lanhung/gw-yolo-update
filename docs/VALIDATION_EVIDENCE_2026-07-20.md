@@ -652,3 +652,39 @@ independent GPS/glitch coverage, background exposure and temporal representation
 experiment must use validated physical waveforms on real O1–O4a noise, scale unique waveform and GPS
 groups independently, extract sub-window clustered candidates, and choose thresholds only from the
 expanded validation background. O4b/GWTC-5 remains locked until those choices are frozen.
+
+## Real-glitch, OOD and exposure update — 2026-07-21
+
+The split-safe physical-overlap bank is complete at 300 train and 100 validation mixtures. A joint
+audit reports zero overlap for glitch ID, glitch GPS block, injection GPS block, injection ID,
+mixture ID, network GPS block and waveform ID. The first single-IFO weak-mask fine-tune completed
+20 epochs but no checkpoint passed the frozen clean-retention requirement. At epoch 20, clean chirp
+IoU retention is 0.5522, overlap chirp IoU is 0.0164 and overlap glitch IoU is zero. This arm is a
+negative control; it is not eligible for checkpoint promotion or a five-seed claim.
+
+The first held-family OOD baseline also fails. Its threshold was selected on 307 known-family
+validation rows only and fixes known abstention at 15/307 = 4.89%. On a disjoint 19-row evaluation
+set, all 17 held-out Blips are falsely accepted: true abstention 0/17 and unknown false acceptance
+17/17 (Wilson 95% interval 81.57%--100%). Diagnostic AUROC is 0.5294. The report SHA256 is
+`8ae3bea24ba1653e9cdf1417985042c75561ebbfbb13ac3a1a8d6e421fa8be47`; the selected checkpoint
+SHA256 is `82b9574ce61c892823cac24efb55414c158cfb3b4d32060684a8765bf9ade94c`. These results reject
+closed-set softmax-style embedding confidence as the O4 OOD policy.
+
+Aligned network-context planning now covers 1,345 train rows over 448 network GPS blocks and 91
+source files, plus 306 validation rows over 123 network GPS blocks and 95 source files. Train
+detector subsets are H1L1=572, H1L1V1=721, H1V1=51 and L1V1=1; validation subsets are
+H1L1=85, H1L1V1=189, H1V1=24 and L1V1=8. Both plans are assigned to seven bounded,
+source-connected shards, ensuring that each official source file is materialized and evicted as a
+unit. The validation plan/report SHA256 values are
+`a552e4db3ab2e0bdd57319d769d02273bbdc02d6115df86beb3f143c30e53976` and
+`4cf0e0c7d5b15a2f8da0f3acc355acb08e2e17ae865ad151481fc5b6915147e3`; its shard manifest
+SHA256 is `3396267edfb0062d82bd4090ca166ac4f9ad30520d27d0c4d5596acf1ac38641`.
+
+The fresh O4a background shard contains 1,393 eight-second windows over 45 GPS blocks. Its frozen
+validation partition contains 301 windows over ten blocks. Three hundred non-cyclic positive-lag
+shifts yield only 361,200 seconds = 0.01145 years of observed exposure. Even with zero surviving
+events, the 90% FAR upper limit is 201.17/year, just 0.0497% of the exposure needed for a
+0.1/year claim. The optimistic all-unordered-pairs lower bound is 13,479 valid dual-IFO windows.
+The exposure report SHA256 is
+`b55d36a14ddee6cd7d948bf20f349130953d0ef575a298448a09b34dc8414b85`. Therefore the current
+background remains an engineering shard and cannot support FAR/IFAR or `<VT>` publication claims.
