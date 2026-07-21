@@ -478,6 +478,9 @@ def run_amplfi_common_batch(
     artifacts = metadata.get("artifacts", {})
     training_identity = artifacts.get("training_config", {})
     conditioning_identity = artifacts.get("native_conditioning_config", {})
+    analysis_prior_identity = artifacts.get("analysis_prior", {})
+    native_prior_identity = artifacts.get("native_prior", {})
+    prior_projection_identity = artifacts.get("prior_projection_report", {})
     model_config = Path(str(training_identity.get("path", ""))).resolve()
     if (
         not model_config.is_file()
@@ -486,6 +489,34 @@ def run_amplfi_common_batch(
         raise ValueError("AMPLFI training configuration hash differs from metadata")
     native_prior = Path(native_prior_path).resolve()
     native_prior_sha = file_sha256(native_prior)
+    verified_prior_artifacts = {
+        "analysis_prior": analysis_prior_identity,
+        "native_prior": native_prior_identity,
+        "prior_projection_report": prior_projection_identity,
+    }
+    for label, identity in verified_prior_artifacts.items():
+        artifact = Path(str(identity.get("path", ""))).resolve()
+        if (
+            not artifact.is_file()
+            or file_sha256(artifact) != identity.get("sha256")
+        ):
+            raise ValueError(f"AMPLFI {label} hash differs from model metadata")
+    if native_prior_sha != native_prior_identity.get("sha256"):
+        raise ValueError("AMPLFI runtime native prior differs from model metadata")
+    projection_path = Path(str(prior_projection_identity["path"])).resolve()
+    projection = load_yaml(projection_path)
+    if (
+        projection.get("status") != "passed"
+        or projection.get("publication_ready") is not True
+        or projection.get("failures") not in (None, [])
+        or projection.get("canonical_prior_sha256")
+        != analysis_prior_identity.get("sha256")
+        or projection.get("amplfi_prior_sha256")
+        != native_prior_identity.get("sha256")
+        or projection.get("amplfi_training_config_sha256")
+        != training_identity.get("sha256")
+    ):
+        raise ValueError("AMPLFI prior projection differs from model metadata")
     python = Path(python_executable).resolve()
     runner = Path(runner_script).resolve()
     if not python.is_file() or not runner.is_file():
@@ -534,6 +565,8 @@ def run_amplfi_common_batch(
         "model_sha256": metadata["model_sha256"],
         "model_config_sha256": training_identity["sha256"],
         "native_prior_sha256": native_prior_sha,
+        "analysis_prior_sha256": analysis_prior_identity["sha256"],
+        "prior_projection_report_sha256": prior_projection_identity["sha256"],
         "python_executable": str(python),
         "runner_sha256": file_sha256(runner),
         "required_split": required_split,

@@ -587,6 +587,7 @@ a test-selected model from entering the paper table.
 python -m gwyolo.cli pe-backend-model-freeze \
   --backend DINGO \
   --model artifacts/pe/dingo/model.pt \
+  --initialization-model artifacts/pe/dingo/time_model.pt \
   --training-config artifacts/pe/dingo/train.yaml \
   --training-data-manifest artifacts/pe/dingo/train.jsonl \
   --analysis-prior artifacts/pe/common/analysis_prior.yaml \
@@ -710,6 +711,10 @@ model and time-initialization model hashes, loads upstream `EventDataset`, `GWSa
 `GWSamplerGNPE`, retains the native result HDF5, and writes numeric posterior NPZ plus measured
 latency. Backend import or model compatibility failures are explicit and non-zero; no synthetic
 posterior fallback exists. A resumed batch revalidates every posterior and native-result hash.
+The standardized metadata requires the time-initialization network as a DINGO-specific artifact;
+the batch executor also reopens every training-config, training-manifest, analysis-prior,
+selection-report and conditioning-config artifact, requires native rows to use that conditioning
+hash, and refuses a runtime initialization network whose bytes differ from metadata.
 
 Real AMPLFI sampling follows the same fail-closed contract through `amplfi-common-batch` and
 `scripts/run_amplfi_common_event.py`. The pinned interpreter reconstructs the exact v0.6 NSF and
@@ -723,6 +728,12 @@ retained, together with model-load, preprocessing, sampling and end-to-end laten
 `MultiModalPsd` scales its ASD argument in place, so the runner supplies a fresh clone to every
 embedding call; otherwise the sampling context would be multiplied again during log-probability
 evaluation and subsequent sample chunks.
+
+The batch boundary independently reopens and hashes the metadata-bound canonical prior, native
+prior and semantic projection report before launching any subprocess. The runtime `--native-prior`
+must match the metadata artifact byte-for-byte, and the passed projection must bind that prior, the
+canonical prior and the exact training config. Thus a caller cannot swap the sampling support after
+checkpoint freeze even if the runner command itself is otherwise well formed.
 
 ```bash
 python -m gwyolo.cli amplfi-common-batch \

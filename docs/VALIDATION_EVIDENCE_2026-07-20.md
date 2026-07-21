@@ -795,6 +795,12 @@ the event/condition level. CPU tests exercise a fake subprocess only to validate
 failure semantics; no AMPLFI scientific result exists until the queued common-domain training and
 real checkpoint-load smoke complete.
 
+The DINGO metadata/batch boundary now also binds the GNPE time-initialization model rather than only
+the main posterior network. Runtime execution revalidates that second model plus the training
+config, training manifest, common analysis prior, validation-selection report and native
+conditioning config; conditioned rows must carry the same config hash. A substituted initialization
+network fails before sampling. This is a required provenance correction and not a DINGO result.
+
 The standardized checkpoint sidecar now closes the remaining AMPLFI prior-provenance gap. AMPLFI
 metadata cannot be frozen without both the native training-prior file and a passed semantic
 prior-projection report. The environment audit reloads that report and requires its canonical-prior,
@@ -808,3 +814,9 @@ passed; the canonical prior, AMPLFI native prior and training-config hashes are 
 `ff5f70d6f8859e0be5c2388cac6374dcf1e2229b3b863f872311be59e9dfd18e` and
 `ce18d1a334faa4b50e7adc1beef6a0340e49292b3b50ef832476826c00044f7d`; the report SHA256 is
 `e003e687199e1fef9b56ca4420e6c6091b311fa755ae8d22ba5b22602d333669`.
+
+The AMPLFI batch executor now enforces the same closure at runtime. Before spawning the pinned
+backend it independently hash-verifies the metadata-bound canonical prior, native prior and
+projection report; requires the command-line native prior to match; and rechecks all three hashes
+inside the passed projection. A changed runtime prior now fails before any posterior output or
+resume state is accepted. This is covered by a negative unit test and creates no new posterior.

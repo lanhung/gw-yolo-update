@@ -158,8 +158,24 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
     model.write_bytes(b"model")
     training_config = tmp_path / "amplfi-training.yaml"
     training_config.write_text("model: frozen\n", encoding="utf-8")
+    analysis_prior = tmp_path / "analysis-prior.yaml"
+    analysis_prior.write_text("prior: common\n", encoding="utf-8")
     native_prior = tmp_path / "amplfi-prior.yaml"
     native_prior.write_text("prior: frozen\n", encoding="utf-8")
+    prior_projection = tmp_path / "prior-projection.json"
+    prior_projection.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "publication_ready": True,
+                "canonical_prior_sha256": file_sha256(analysis_prior),
+                "amplfi_prior_sha256": file_sha256(native_prior),
+                "amplfi_training_config_sha256": file_sha256(training_config),
+                "failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     metadata = tmp_path / "metadata.json"
     metadata.write_text(
         json.dumps(
@@ -184,6 +200,18 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
                     "native_conditioning_config": {
                         "path": str(conditioning_config),
                         "sha256": file_sha256(conditioning_config),
+                    },
+                    "analysis_prior": {
+                        "path": str(analysis_prior),
+                        "sha256": file_sha256(analysis_prior),
+                    },
+                    "native_prior": {
+                        "path": str(native_prior),
+                        "sha256": file_sha256(native_prior),
+                    },
+                    "prior_projection_report": {
+                        "path": str(prior_projection),
+                        "sha256": file_sha256(prior_projection),
                     },
                 },
             }
@@ -217,3 +245,8 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
 
     resumed = run_amplfi_common_batch(**kwargs)
     assert resumed["manifest_sha256"] == report["manifest_sha256"]
+
+    other_prior = tmp_path / "other-prior.yaml"
+    other_prior.write_text("prior: changed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime native prior differs"):
+        run_amplfi_common_batch(**{**kwargs, "native_prior_path": other_prior})

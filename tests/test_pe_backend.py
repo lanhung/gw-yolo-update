@@ -114,6 +114,10 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "prior_projection_report": projection,
                 }
             )
+        else:
+            initialization_model = tmp_path / "dingo-initialization.pt"
+            initialization_model.write_bytes(b"dingo-initialization")
+            artifacts["initialization_model"] = initialization_model
         metadata.write_text(
             yaml.safe_dump(
                 {
@@ -259,6 +263,8 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
         encoding="utf-8",
     )
     output = tmp_path / "model-metadata.json"
+    initialization_model = tmp_path / "initialization-model.pt"
+    initialization_model.write_bytes(b"initialization-weights")
     report = freeze_pe_backend_model_metadata(
         backend="DINGO",
         model_path=model,
@@ -278,6 +284,7 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
         model_training_backend_version="0.5.8",
         native_inference_parameters=["chirp_mass", "mass_ratio"],
         reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
+        initialization_model_path=initialization_model,
     )
     assert report["model_sha256"] == file_sha256(model)
     assert report["selection_split"] == "validation"
@@ -306,6 +313,7 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
             model_training_backend_version="0.5.8",
             native_inference_parameters=["chirp_mass", "mass_ratio"],
             reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
+            initialization_model_path=initialization_model,
         )
 
 

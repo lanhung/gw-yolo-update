@@ -84,6 +84,34 @@ def run_dingo_common_batch(
         raise ValueError("DINGO model hash differs from standardized metadata")
     model_init = Path(model_init_path).resolve()
     model_init_sha = file_sha256(model_init)
+    artifacts = metadata.get("artifacts", {})
+    required_artifacts = (
+        "training_config",
+        "training_data_manifest",
+        "analysis_prior",
+        "selection_report",
+        "native_conditioning_config",
+        "initialization_model",
+    )
+    verified_artifacts = {}
+    for label in required_artifacts:
+        identity = artifacts.get(label, {})
+        artifact = Path(str(identity.get("path", ""))).resolve()
+        if (
+            not artifact.is_file()
+            or file_sha256(artifact) != identity.get("sha256")
+        ):
+            raise ValueError(f"DINGO {label} hash differs from model metadata")
+        verified_artifacts[label] = identity
+    if model_init_sha != verified_artifacts["initialization_model"]["sha256"]:
+        raise ValueError("DINGO runtime initialization model differs from metadata")
+    selection = load_yaml(verified_artifacts["selection_report"]["path"])
+    if (
+        selection.get("selection_split") != "validation"
+        or selection.get("selected_checkpoint_sha256") != metadata["model_sha256"]
+        or selection.get("selection_metric") != metadata.get("selection_metric")
+    ):
+        raise ValueError("DINGO validation selection report differs from metadata")
     python = Path(python_executable).resolve()
     runner = Path(runner_script).resolve()
     if not python.is_file() or not runner.is_file():
@@ -98,6 +126,7 @@ def run_dingo_common_batch(
     ):
         raise ValueError("DINGO model metadata lacks the common H1/L1 ASD contract")
     rows = _load_native_rows(native_manifest, required_split)
+    conditioning_sha = verified_artifacts["native_conditioning_config"]["sha256"]
     if any(
         row.get("input_ifos") != source_input["ifos"]
         or not np.isclose(
@@ -115,6 +144,11 @@ def run_dingo_common_batch(
         for row in rows
     ):
         raise ValueError("DINGO native rows differ from the model common-source contract")
+    if any(
+        row.get("native_conditioning_config_sha256") != conditioning_sha
+        for row in rows
+    ):
+        raise ValueError("DINGO native rows use conditioning outside model metadata")
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -123,6 +157,13 @@ def run_dingo_common_batch(
         "model_metadata_sha256": file_sha256(metadata_path),
         "model_sha256": metadata["model_sha256"],
         "model_init_sha256": model_init_sha,
+        "training_config_sha256": verified_artifacts["training_config"]["sha256"],
+        "training_data_manifest_sha256": verified_artifacts[
+            "training_data_manifest"
+        ]["sha256"],
+        "analysis_prior_sha256": verified_artifacts["analysis_prior"]["sha256"],
+        "selection_report_sha256": verified_artifacts["selection_report"]["sha256"],
+        "native_conditioning_config_sha256": conditioning_sha,
         "python_executable": str(python),
         "runner_sha256": file_sha256(runner),
         "required_split": required_split,

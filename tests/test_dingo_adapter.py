@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from gwyolo.dingo_adapter import run_dingo_common_batch
@@ -12,7 +13,7 @@ from gwyolo.pe_conditioning import materialize_native_pe_conditioning
 from test_pe_conditioning import _common_sources
 
 
-def _native_manifest(tmp_path: Path) -> Path:
+def _native_manifest(tmp_path: Path) -> tuple[Path, Path]:
     source = _common_sources(tmp_path)
     config = tmp_path / "dingo-config.yaml"
     config.write_text(
@@ -42,7 +43,7 @@ def _native_manifest(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     report = materialize_native_pe_conditioning(source, config, tmp_path / "native", "val")
-    return Path(report["manifest_path"])
+    return Path(report["manifest_path"]), config
 
 
 def _fake_runner(path: Path) -> None:
@@ -64,11 +65,28 @@ pathlib.Path(a.report_output).write_text(json.dumps(r))
 
 
 def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path) -> None:
-    native = _native_manifest(tmp_path)
+    native, conditioning_config = _native_manifest(tmp_path)
     model = tmp_path / "model.pt"
     model_init = tmp_path / "model-init.pt"
     model.write_bytes(b"model")
     model_init.write_bytes(b"init")
+    training_config = tmp_path / "training.yaml"
+    training_config.write_text("backend: DINGO\n", encoding="utf-8")
+    training_manifest = tmp_path / "training.jsonl"
+    training_manifest.write_text('{"split":"train"}\n', encoding="utf-8")
+    analysis_prior = tmp_path / "analysis-prior.yaml"
+    analysis_prior.write_text("prior: common\n", encoding="utf-8")
+    selection_report = tmp_path / "selection.json"
+    selection_report.write_text(
+        json.dumps(
+            {
+                "selection_split": "validation",
+                "selection_metric": "validation_loss",
+                "selected_checkpoint_sha256": file_sha256(model),
+            }
+        ),
+        encoding="utf-8",
+    )
     metadata = tmp_path / "metadata.json"
     metadata.write_text(
         json.dumps(
@@ -85,6 +103,33 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
                     "post_trigger_seconds": 1,
                 },
                 "analysis_waveform_approximant": "IMRPhenomXPHM",
+                "selection_metric": "validation_loss",
+                "artifacts": {
+                    "training_config": {
+                        "path": str(training_config),
+                        "sha256": file_sha256(training_config),
+                    },
+                    "training_data_manifest": {
+                        "path": str(training_manifest),
+                        "sha256": file_sha256(training_manifest),
+                    },
+                    "analysis_prior": {
+                        "path": str(analysis_prior),
+                        "sha256": file_sha256(analysis_prior),
+                    },
+                    "selection_report": {
+                        "path": str(selection_report),
+                        "sha256": file_sha256(selection_report),
+                    },
+                    "native_conditioning_config": {
+                        "path": str(conditioning_config),
+                        "sha256": file_sha256(conditioning_config),
+                    },
+                    "initialization_model": {
+                        "path": str(model_init),
+                        "sha256": file_sha256(model_init),
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -114,3 +159,8 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
 
     resumed = run_dingo_common_batch(**kwargs)
     assert resumed["manifest_sha256"] == report["manifest_sha256"]
+
+    other_init = tmp_path / "other-init.pt"
+    other_init.write_bytes(b"changed-init")
+    with pytest.raises(ValueError, match="runtime initialization model differs"):
+        run_dingo_common_batch(**{**kwargs, "model_init_path": other_init})

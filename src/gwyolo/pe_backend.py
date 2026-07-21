@@ -25,6 +25,7 @@ AMPLFI_MODEL_METADATA_ARTIFACTS = (
     "native_prior",
     "prior_projection_report",
 )
+DINGO_MODEL_METADATA_ARTIFACTS = ("initialization_model",)
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
@@ -328,6 +329,8 @@ def _audit_model_metadata_semantics(
     required_artifacts = MODEL_METADATA_ARTIFACTS
     if name == "AMPLFI":
         required_artifacts += AMPLFI_MODEL_METADATA_ARTIFACTS
+    elif name == "DINGO":
+        required_artifacts += DINGO_MODEL_METADATA_ARTIFACTS
     verified_artifacts = {
         label: _verified_metadata_artifact(name, label, artifacts.get(label), failures)
         for label in required_artifacts
@@ -518,6 +521,7 @@ def freeze_pe_backend_model_metadata(
     reported_parameter_mapping: list[str],
     native_prior_path: str | Path | None = None,
     prior_projection_report_path: str | Path | None = None,
+    initialization_model_path: str | Path | None = None,
 ) -> dict[str, Any]:
     normalized_backend = backend.upper()
     if normalized_backend not in REQUIRED_BACKENDS:
@@ -573,6 +577,12 @@ def freeze_pe_backend_model_metadata(
         )
     elif any(value is not None for value in amplfi_specific):
         raise ValueError("native prior projection artifacts are AMPLFI-specific")
+    if normalized_backend == "DINGO":
+        if initialization_model_path is None:
+            raise ValueError("DINGO model metadata requires an initialization model")
+        paths["initialization_model"] = Path(initialization_model_path).resolve()
+    elif initialization_model_path is not None:
+        raise ValueError("initialization model artifact is DINGO-specific")
     model = Path(model_path).resolve()
     for label, path in {"model": model, **paths}.items():
         if not path.is_file():
