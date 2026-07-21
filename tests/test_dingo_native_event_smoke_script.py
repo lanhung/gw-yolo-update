@@ -29,6 +29,7 @@ def test_native_dingo_event_smoke_is_synthetic_and_test_blind() -> None:
     assert "DINGO 0.5.8" in source
     assert "--num-samples 4" in source
     assert "--num-gnpe-iterations 1" in source
+    assert "int(1024.0 * duration) + 1" in source
     assert '"scientific_claim_allowed": False' in source
     assert '"test_rows_read": 0' in source
     assert "--required-split test" not in source

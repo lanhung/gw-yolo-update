@@ -63,7 +63,7 @@ target = pathlib.Path(sys.argv[1]).resolve()
 sample_rate = 4096
 duration = 16.0
 post_trigger = 2.0
-frequency_bins = int(sample_rate * duration / 2) + 1
+frequency_bins = int(1024.0 * duration) + 1
 settings = {
     "time_event": 0.0,
     "time_buffer": post_trigger,
