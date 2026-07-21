@@ -688,3 +688,23 @@ events, the 90% FAR upper limit is 201.17/year, just 0.0497% of the exposure nee
 The exposure report SHA256 is
 `b55d36a14ddee6cd7d948bf20f349130953d0ef575a298448a09b34dc8414b85`. Therefore the current
 background remains an engineering shard and cannot support FAR/IFAR or `<VT>` publication claims.
+
+Tomte was then frozen as the next held family by validation sample count before any Tomte model
+score was opened. Its split contains 1,427 known train rows, 273 known calibration rows and a
+53-row evaluation set with 27 unknown Tomtes plus 26 group-coincident known artifacts; all three
+roles have disjoint GPS blocks. The split-report SHA256 is
+`cd7d4fbe8ed3f4641766643ca190d5f9b887c6d84549c2ce575c7f86022630e8`.
+Commit `7f3b566` precommits supervised contrastive training and logit-energy scoring. The known-only
+threshold abstains on 13/273 calibration rows. Frozen Tomte evaluation reaches diagnostic AUROC
+0.7735 and true abstention 5/27, but unknown false acceptance remains 22/27 (81.48%; Wilson 95%
+63.30%--91.82%) and known false abstention is 3/26. Its report SHA256 is
+`54aa87d7ef7490c70c5fb5813e2500eb9429ffd3458dc21e28de3a202f7cb5dc`. This is an improvement
+over the first embedding diagnostic but fails operational promotion; further OOD development waits
+for aligned detector contexts and a precommitted outlier-exposure or self-supervised representation.
+
+To address the exposure deficit, parent-plan pair indices 4--39 are frozen as nine additional
+four-pair O4a shards. They are queued after aligned Gravity Spy acquisition to avoid competing for
+the bounded cache. A global `hash_threshold_v1` 40-pair background plan and exposure audit are
+queued after all source files pass full-file verification. Raw pair count is not a success gate:
+only DQ-valid validation windows and their realized non-cyclic positive-lag exposure determine
+whether the 0.1/year target becomes measurable.
