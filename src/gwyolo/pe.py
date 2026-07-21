@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, file_sha256
+from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -23,6 +23,11 @@ PAIRED_PE_LATENCY_COMPONENT_FIELDS = (
     "posterior_sampling",
     "posterior_postprocessing_and_write",
 )
+
+PERIODIC_POSTERIOR_PARAMETERS = {
+    "ra": 2 * np.pi,
+    "psi": np.pi,
+}
 
 
 PUBLICATION_PROVENANCE_FIELDS = (
@@ -395,22 +400,67 @@ def posterior_truth_metrics(
     metrics = {}
     for parameter, true_value in sorted(truth.items()):
         samples = posterior[parameter]
-        lower, median, upper = np.quantile(samples, [tail, 0.5, 1.0 - tail])
-        mean = float(np.mean(samples))
-        standard_deviation = float(np.std(samples))
+        period = PERIODIC_POSTERIOR_PARAMETERS.get(parameter)
+        if period is None:
+            lower, median, upper = np.quantile(samples, [tail, 0.5, 1.0 - tail])
+            mean = float(np.mean(samples))
+            standard_deviation = float(np.std(samples))
+            metrics[parameter] = {
+                "truth": float(true_value),
+                "mean": mean,
+                "median": float(median),
+                "bias": mean - float(true_value),
+                "absolute_bias": abs(mean - float(true_value)),
+                "posterior_std": standard_deviation,
+                "credible_interval": [float(lower), float(upper)],
+                "credible_width": float(upper - lower),
+                "covered": bool(lower <= true_value <= upper),
+                "mean_absolute_distance_to_truth": float(
+                    np.mean(np.abs(samples - float(true_value)))
+                ),
+                "periodic": False,
+            }
+            continue
+        wrapped = np.mod(samples, period)
+        phase = wrapped * (2 * np.pi / period)
+        cosine = float(np.mean(np.cos(phase)))
+        sine = float(np.mean(np.sin(phase)))
+        mean = float(np.mod(np.arctan2(sine, cosine), 2 * np.pi) * period / (2 * np.pi))
+        if np.isclose(mean, period, rtol=0, atol=1e-12):
+            mean = 0.0
+        residuals = np.mod(wrapped - mean + period / 2, period) - period / 2
+        lower, median_residual, upper = np.quantile(
+            residuals, [tail, 0.5, 1.0 - tail]
+        )
+        truth_wrapped = float(np.mod(true_value, period))
+        truth_residual = float(
+            np.mod(truth_wrapped - mean + period / 2, period) - period / 2
+        )
+        bias = float(np.mod(mean - truth_wrapped + period / 2, period) - period / 2)
+        lower_wrapped = float(np.mod(mean + lower, period))
+        upper_wrapped = float(np.mod(mean + upper, period))
+        truth_distances = np.abs(
+            np.mod(wrapped - truth_wrapped + period / 2, period) - period / 2
+        )
         metrics[parameter] = {
-            "truth": float(true_value),
+            "truth": truth_wrapped,
             "mean": mean,
-            "median": float(median),
-            "bias": mean - float(true_value),
-            "absolute_bias": abs(mean - float(true_value)),
-            "posterior_std": standard_deviation,
-            "credible_interval": [float(lower), float(upper)],
+            "median": float(np.mod(mean + median_residual, period)),
+            "bias": bias,
+            "absolute_bias": abs(bias),
+            "posterior_std": float(np.std(residuals)),
+            "credible_interval": [lower_wrapped, upper_wrapped],
+            "credible_interval_wraps": lower_wrapped > upper_wrapped,
+            "credible_interval_residual_to_circular_mean": [
+                float(lower),
+                float(upper),
+            ],
             "credible_width": float(upper - lower),
-            "covered": bool(lower <= true_value <= upper),
-            "mean_absolute_distance_to_truth": float(
-                np.mean(np.abs(samples - float(true_value)))
-            ),
+            "covered": bool(lower <= truth_residual <= upper),
+            "mean_absolute_distance_to_truth": float(np.mean(truth_distances)),
+            "periodic": True,
+            "period": float(period),
+            "circular_resultant_length": float(np.hypot(cosine, sine)),
         }
     return metrics
 
@@ -752,6 +802,21 @@ def evaluate_pe_robustness_rows(
                 "mask_absolute_bias_change_vs_clean": (
                     masked_metric["absolute_bias"] - clean_metric["absolute_bias"]
                 ),
+                "mask_absolute_bias_change_vs_contaminated_normalized_by_clean_width": (
+                    (
+                        masked_metric["absolute_bias"]
+                        - contaminated_metric["absolute_bias"]
+                    )
+                    / clean_metric["credible_width"]
+                    if clean_metric["credible_width"] > 0
+                    else None
+                ),
+                "mask_absolute_bias_change_vs_clean_normalized_by_clean_width": (
+                    (masked_metric["absolute_bias"] - clean_metric["absolute_bias"])
+                    / clean_metric["credible_width"]
+                    if clean_metric["credible_width"] > 0
+                    else None
+                ),
                 "contamination_width_ratio_vs_clean": (
                     contaminated_metric["credible_width"] / clean_metric["credible_width"]
                     if clean_metric["credible_width"] > 0
@@ -772,6 +837,12 @@ def evaluate_pe_robustness_rows(
                     f"{int(clean_metric['covered'])}->"
                     f"{int(contaminated_metric['covered'])}->"
                     f"{int(masked_metric['covered'])}"
+                ),
+                "coverage_mask_minus_contaminated": float(
+                    masked_metric["covered"] - contaminated_metric["covered"]
+                ),
+                "coverage_mask_minus_clean": float(
+                    masked_metric["covered"] - clean_metric["covered"]
                 ),
             }
         def ratio(field: str, numerator: str, denominator: str) -> float | None:
@@ -891,9 +962,13 @@ def evaluate_pe_robustness_rows(
                     "contamination_absolute_bias_change",
                     "mask_absolute_bias_change_vs_contaminated",
                     "mask_absolute_bias_change_vs_clean",
+                    "mask_absolute_bias_change_vs_contaminated_normalized_by_clean_width",
+                    "mask_absolute_bias_change_vs_clean_normalized_by_clean_width",
                     "contamination_width_ratio_vs_clean",
                     "mask_width_ratio_vs_contaminated",
                     "mask_width_ratio_vs_clean",
+                    "coverage_mask_minus_contaminated",
+                    "coverage_mask_minus_clean",
                 )
             ):
                 values = [row[metric] for row in parameter_rows if row[metric] is not None]
@@ -1110,6 +1185,251 @@ def run_joint_pe_robustness_evaluation(
     )
     atomic_write_json(report_output, report)
     return report
+
+
+def promote_pe_robustness_validation(
+    joint_report_path: str | Path,
+    config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Apply a frozen validation-only PE gate before any locked-test access."""
+
+    joint_path = Path(joint_report_path).resolve()
+    report = json.loads(joint_path.read_text(encoding="utf-8"))
+    if (
+        report.get("status")
+        != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
+        or report.get("dingo_amplfi_joint_gate") is not True
+        or report.get("cross_backend_matched_input_gate") is not True
+        or report.get("publication_provenance_required") is not True
+    ):
+        raise ValueError("PE promotion requires a strict completed joint validation report")
+    manifest = Path(str(report.get("manifest_path", ""))).resolve()
+    if not manifest.is_file() or file_sha256(manifest) != report.get("manifest_sha256"):
+        raise ValueError("PE promotion joint manifest hash mismatch")
+    with manifest.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if len(rows) != int(report.get("rows", -1)) or not rows:
+        raise ValueError("PE promotion joint manifest row count mismatch")
+    if any(row.get("split") != "val" for row in rows):
+        raise ValueError("PE promotion may only inspect validation posterior rows")
+    for backend, identity in report.get("source_batch_reports", {}).items():
+        source_report = Path(str(identity.get("path", ""))).resolve()
+        source_manifest = Path(str(identity.get("manifest_path", ""))).resolve()
+        if (
+            backend not in {"DINGO", "AMPLFI"}
+            or not source_report.is_file()
+            or not source_manifest.is_file()
+            or file_sha256(source_report) != identity.get("sha256")
+            or file_sha256(source_manifest) != identity.get("manifest_sha256")
+        ):
+            raise ValueError("PE promotion source batch identity mismatch")
+    if set(report.get("source_batch_reports", {})) != {"DINGO", "AMPLFI"}:
+        raise ValueError("PE promotion requires both hash-bound source batch reports")
+
+    config = load_yaml(config_path)
+    settings = config.get("pe_robustness_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("PE robustness promotion configuration is missing")
+    required_backends = [str(value).upper() for value in settings["required_backends"]]
+    required_parameters = [str(value) for value in settings["required_parameters"]]
+    if set(required_backends) != {"DINGO", "AMPLFI"} or not required_parameters:
+        raise ValueError("PE promotion must predeclare DINGO, AMPLFI and paper parameters")
+    minimum_injections = int(settings["minimum_paired_injections"])
+    minimum_bootstraps = int(settings["minimum_bootstrap_replicates"])
+    clean_coverage_margin = float(settings["coverage_noninferiority_margin_vs_clean"])
+    contaminated_coverage_margin = float(
+        settings["coverage_noninferiority_margin_vs_contaminated"]
+    )
+    maximum_bias_regression = float(settings["maximum_normalized_bias_regression_upper"])
+    significant_bias_upper = float(
+        settings["significant_normalized_bias_improvement_upper"]
+    )
+    minimum_bias_improvements = int(
+        settings["minimum_significant_bias_improvements_per_backend"]
+    )
+    minimum_width_ratio = float(settings["minimum_width_ratio_vs_clean_lower"])
+    maximum_width_ratio = float(settings["maximum_width_ratio_vs_clean_upper"])
+    maximum_sky_ratio = float(settings["maximum_sky_area_ratio_upper"])
+    minimum_ess_ratio = float(settings["minimum_ess_rate_ratio_lower"])
+    maximum_latency_overhead = float(settings["maximum_latency_overhead_upper_seconds"])
+    if (
+        minimum_injections <= 0
+        or minimum_bootstraps <= 0
+        or not 0 <= clean_coverage_margin < 1
+        or not 0 <= contaminated_coverage_margin < 1
+        or maximum_bias_regression < 0
+        or minimum_bias_improvements < 0
+        or minimum_width_ratio <= 0
+        or maximum_width_ratio < minimum_width_ratio
+        or maximum_sky_ratio <= 0
+        or minimum_ess_ratio <= 0
+        or maximum_latency_overhead < 0
+    ):
+        raise ValueError("PE robustness promotion thresholds are invalid")
+
+    def interval(summary: Any, label: str) -> tuple[float, float]:
+        if not isinstance(summary, dict):
+            raise ValueError(f"PE promotion metric is absent: {label}")
+        bounds = summary.get("paired_bootstrap_95")
+        if not isinstance(bounds, list) or len(bounds) != 2:
+            raise ValueError(f"PE promotion metric lacks a paired interval: {label}")
+        low, high = map(float, bounds)
+        if not np.isfinite([low, high]).all() or low > high:
+            raise ValueError(f"PE promotion metric has an invalid interval: {label}")
+        return low, high
+
+    global_checks = {
+        "minimum_bootstrap_replicates": {
+            "observed": int(report.get("bootstrap_replicates", -1)),
+            "required": minimum_bootstraps,
+            "passed": int(report.get("bootstrap_replicates", -1)) >= minimum_bootstraps,
+        },
+        "validation_only": {"passed": True},
+        "joint_input_gate": {"passed": True},
+    }
+    backend_checks: dict[str, Any] = {}
+    for backend in required_backends:
+        summary = report.get("paired_summaries", {}).get(backend)
+        if not isinstance(summary, dict):
+            raise ValueError(f"PE promotion lacks backend summary: {backend}")
+        paired_injections = int(summary.get("paired_injections", -1))
+        parameter_checks = {}
+        significant_improvements = 0
+        for parameter in required_parameters:
+            metrics = summary.get("parameters", {}).get(parameter)
+            if not isinstance(metrics, dict):
+                raise ValueError(f"PE promotion lacks {backend}/{parameter} metrics")
+            coverage_clean = interval(
+                metrics.get("coverage_mask_minus_clean"),
+                f"{backend}/{parameter}/coverage_vs_clean",
+            )
+            coverage_contaminated = interval(
+                metrics.get("coverage_mask_minus_contaminated"),
+                f"{backend}/{parameter}/coverage_vs_contaminated",
+            )
+            normalized_bias = interval(
+                metrics.get(
+                    "mask_absolute_bias_change_vs_contaminated_normalized_by_clean_width"
+                ),
+                f"{backend}/{parameter}/normalized_bias",
+            )
+            width_ratio = interval(
+                metrics.get("mask_width_ratio_vs_clean"),
+                f"{backend}/{parameter}/width_ratio_vs_clean",
+            )
+            significant = normalized_bias[1] < significant_bias_upper
+            significant_improvements += int(significant)
+            checks = {
+                "coverage_vs_clean": {
+                    "paired_bootstrap_95": list(coverage_clean),
+                    "minimum_lower": -clean_coverage_margin,
+                    "passed": coverage_clean[0] >= -clean_coverage_margin,
+                },
+                "coverage_vs_contaminated": {
+                    "paired_bootstrap_95": list(coverage_contaminated),
+                    "minimum_lower": -contaminated_coverage_margin,
+                    "passed": coverage_contaminated[0] >= -contaminated_coverage_margin,
+                },
+                "normalized_bias_nonregression": {
+                    "paired_bootstrap_95": list(normalized_bias),
+                    "maximum_upper": maximum_bias_regression,
+                    "passed": normalized_bias[1] <= maximum_bias_regression,
+                },
+                "significant_normalized_bias_improvement": {
+                    "paired_bootstrap_95": list(normalized_bias),
+                    "required_upper_below": significant_bias_upper,
+                    "passed": significant,
+                },
+                "width_ratio_vs_clean": {
+                    "paired_bootstrap_95": list(width_ratio),
+                    "required_interval": [minimum_width_ratio, maximum_width_ratio],
+                    "passed": (
+                        width_ratio[0] >= minimum_width_ratio
+                        and width_ratio[1] <= maximum_width_ratio
+                    ),
+                },
+            }
+            parameter_checks[parameter] = {
+                "passed_safety": all(
+                    value["passed"]
+                    for key, value in checks.items()
+                    if key != "significant_normalized_bias_improvement"
+                ),
+                "checks": checks,
+            }
+        resources = summary.get("resources", {})
+        sky = interval(
+            resources.get("sky_area_mask_over_contaminated"),
+            f"{backend}/sky_area_mask_over_contaminated",
+        )
+        ess = interval(
+            resources.get("ess_rate_mask_over_contaminated"),
+            f"{backend}/ess_rate_mask_over_contaminated",
+        )
+        latency = interval(
+            resources.get("latency_mask_minus_contaminated_seconds"),
+            f"{backend}/latency_mask_minus_contaminated_seconds",
+        )
+        resource_checks = {
+            "sky_area_nonregression": {
+                "paired_bootstrap_95": list(sky),
+                "maximum_upper": maximum_sky_ratio,
+                "passed": sky[1] <= maximum_sky_ratio,
+            },
+            "effective_sample_rate_noninferiority": {
+                "paired_bootstrap_95": list(ess),
+                "minimum_lower": minimum_ess_ratio,
+                "passed": ess[0] >= minimum_ess_ratio,
+            },
+            "latency_overhead": {
+                "paired_bootstrap_95": list(latency),
+                "maximum_upper_seconds": maximum_latency_overhead,
+                "passed": latency[1] <= maximum_latency_overhead,
+            },
+        }
+        backend_checks[backend] = {
+            "paired_injections": paired_injections,
+            "minimum_paired_injections": minimum_injections,
+            "sample_size_passed": paired_injections >= minimum_injections,
+            "significant_bias_improvements": significant_improvements,
+            "minimum_significant_bias_improvements": minimum_bias_improvements,
+            "bias_improvement_passed": significant_improvements >= minimum_bias_improvements,
+            "parameters": parameter_checks,
+            "resources": resource_checks,
+            "passed": (
+                paired_injections >= minimum_injections
+                and significant_improvements >= minimum_bias_improvements
+                and all(value["passed_safety"] for value in parameter_checks.values())
+                and all(value["passed"] for value in resource_checks.values())
+            ),
+        }
+    passed = all(value["passed"] for value in global_checks.values()) and all(
+        value["passed"] for value in backend_checks.values()
+    )
+    result = {
+        "status": "pe_robustness_validation_promotion_decision",
+        "passed": passed,
+        "promote_to_locked_test": passed,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "this is a validation-only promotion decision; a frozen one-time locked-test "
+            "evaluation is still required"
+        ),
+        "joint_report_path": str(joint_path),
+        "joint_report_sha256": file_sha256(joint_path),
+        "joint_manifest_path": str(manifest),
+        "joint_manifest_sha256": file_sha256(manifest),
+        "config_path": str(Path(config_path).resolve()),
+        "config_sha256": file_sha256(config_path),
+        "required_backends": required_backends,
+        "required_parameters": required_parameters,
+        "global_checks": global_checks,
+        "backend_checks": backend_checks,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
 
 
 def run_pe_evaluation(

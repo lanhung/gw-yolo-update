@@ -147,6 +147,12 @@ wait_for_idle_gpu
   --bootstrap-seed "${PE_BOOTSTRAP_SEED:-20260721}" \
   >"$OUTPUT_ROOT/logs/joint-evaluation.log" 2>&1
 
+"$TASK_PYTHON" -m gwyolo.cli pe-robustness-promote \
+  --joint-report "$OUTPUT_ROOT/paired_pe_robustness_report.json" \
+  --config configs/pe_robustness_promotion.yaml \
+  --output "$OUTPUT_ROOT/pe_robustness_promotion.json" \
+  >"$OUTPUT_ROOT/logs/promotion.log" 2>&1
+
 "$TASK_PYTHON" - "$OUTPUT_ROOT" <<'PY'
 import hashlib
 import json
@@ -159,6 +165,7 @@ artifacts = {
     "dingo_batch": root / "dingo/dingo_batch_report.json",
     "amplfi_batch": root / "amplfi/amplfi_batch_report.json",
     "joint_evaluation": root / "paired_pe_robustness_report.json",
+    "promotion": root / "pe_robustness_promotion.json",
 }
 identities = {}
 for name, path in artifacts.items():
@@ -170,6 +177,7 @@ for name, path in artifacts.items():
         "report": json.loads(path.read_text(encoding="utf-8")),
     }
 joint = identities["joint_evaluation"]["report"]
+promotion = identities["promotion"]["report"]
 if (
     joint.get("status")
     != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
@@ -184,6 +192,7 @@ summary = {
         "bounded validation PE must satisfy the frozen sample-size and promotion protocol "
         "before a locked test claim"
     ),
+    "promote_to_locked_test": promotion.get("promote_to_locked_test") is True,
     "artifacts": identities,
 }
 target = root / "joint_paired_pe_summary.json"

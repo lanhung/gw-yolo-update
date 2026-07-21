@@ -15,6 +15,7 @@ from gwyolo.pe import (
     evaluate_pe_robustness_rows,
     posterior_sky_area_equal_solid_angle,
     posterior_truth_metrics,
+    promote_pe_robustness_validation,
     run_joint_pe_robustness_evaluation,
     sky_area_estimator_identity,
     validate_paired_pe_latency,
@@ -77,6 +78,18 @@ def test_posterior_truth_metrics_match_quantiles_and_bias() -> None:
     assert result["mass"]["credible_interval"] == pytest.approx([0.4, 3.6])
     assert result["mass"]["covered"]
     assert result["mass"]["mean_absolute_distance_to_truth"] == 1.2
+
+
+def test_posterior_truth_metrics_wrap_ra_without_a_false_large_bias() -> None:
+    values = np.asarray([2 * np.pi - 0.1, 0.0, 0.1])
+    result = posterior_truth_metrics({"ra": values}, {"ra": 0.0}, 0.8)["ra"]
+    assert result["periodic"] is True
+    assert result["period"] == pytest.approx(2 * np.pi)
+    assert result["mean"] == pytest.approx(0.0, abs=1e-12)
+    assert result["absolute_bias"] == pytest.approx(0.0, abs=1e-12)
+    assert result["mean_absolute_distance_to_truth"] == pytest.approx(0.2 / 3)
+    assert result["credible_width"] == pytest.approx(0.16)
+    assert result["covered"] is True
 
 
 def test_pe_evaluation_requires_and_compares_raw_cleaned_pairs(tmp_path) -> None:
@@ -273,6 +286,7 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
             row = {
                 "backend": backend,
                 "injection_id": "i-1",
+                "split": "val",
                 "condition": condition,
                 "posterior_path": str(posterior),
                 "latency_seconds": 2.0,
@@ -365,6 +379,48 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
     assert joint["common_injection_count"] == 1
     assert file_sha256(joint["manifest_path"]) == joint["manifest_sha256"]
     assert set(joint["source_batch_reports"]) == {"DINGO", "AMPLFI"}
+    promotion_config = tmp_path / "pe-promotion.yaml"
+    promotion_config.write_text(
+        """pe_robustness_promotion:
+  required_backends: [DINGO, AMPLFI]
+  required_parameters: [mass]
+  minimum_paired_injections: 1
+  minimum_bootstrap_replicates: 20
+  coverage_noninferiority_margin_vs_clean: 0.0
+  coverage_noninferiority_margin_vs_contaminated: 0.0
+  maximum_normalized_bias_regression_upper: 0.0
+  significant_normalized_bias_improvement_upper: 0.0
+  minimum_significant_bias_improvements_per_backend: 0
+  minimum_width_ratio_vs_clean_lower: 1.0
+  maximum_width_ratio_vs_clean_upper: 1.0
+  maximum_sky_area_ratio_upper: 1.0
+  minimum_ess_rate_ratio_lower: 1.0
+  maximum_latency_overhead_upper_seconds: 0.0
+""",
+        encoding="utf-8",
+    )
+    promotion = promote_pe_robustness_validation(
+        tmp_path / "joint-report.json",
+        promotion_config,
+        tmp_path / "pe-promotion.json",
+    )
+    assert promotion["passed"] is True
+    assert promotion["promote_to_locked_test"] is True
+    assert promotion["scientific_claim_allowed"] is False
+
+    promotion_config.write_text(
+        promotion_config.read_text(encoding="utf-8").replace(
+            "minimum_paired_injections: 1", "minimum_paired_injections: 2"
+        ),
+        encoding="utf-8",
+    )
+    failed_promotion = promote_pe_robustness_validation(
+        tmp_path / "joint-report.json",
+        promotion_config,
+        tmp_path / "pe-promotion-failed.json",
+    )
+    assert failed_promotion["passed"] is False
+    assert failed_promotion["backend_checks"]["DINGO"]["sample_size_passed"] is False
 
     mismatched = [dict(row) for row in rows]
     target = next(

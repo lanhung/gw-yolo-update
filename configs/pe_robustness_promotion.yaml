@@ -1,0 +1,22 @@
+pe_robustness_promotion:
+  required_backends: [DINGO, AMPLFI]
+  required_parameters:
+    - chirp_mass
+    - mass_ratio
+    - luminosity_distance
+    - theta_jn
+    - ra
+    - dec
+    - psi
+  minimum_paired_injections: 100
+  minimum_bootstrap_replicates: 10000
+  coverage_noninferiority_margin_vs_clean: 0.05
+  coverage_noninferiority_margin_vs_contaminated: 0.02
+  maximum_normalized_bias_regression_upper: 0.10
+  significant_normalized_bias_improvement_upper: 0.0
+  minimum_significant_bias_improvements_per_backend: 2
+  minimum_width_ratio_vs_clean_lower: 0.75
+  maximum_width_ratio_vs_clean_upper: 1.35
+  maximum_sky_area_ratio_upper: 1.10
+  minimum_ess_rate_ratio_lower: 0.80
+  maximum_latency_overhead_upper_seconds: 60.0

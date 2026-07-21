@@ -880,6 +880,11 @@ cross-backend input-lineage, prior, waveform, detector, hardware, sky-area and l
 before atomically writing a combined manifest. `scripts/run_joint_paired_pe_validation.sh` wires the
 validation-only native-input smoke to both pinned backend interpreters and this strict joint gate;
 it remains fail-closed until validation-selected model sidecars for both backends are present.
+The subsequent `pe-robustness-promote` command applies the pre-result thresholds in
+`configs/pe_robustness_promotion.yaml`. Bias deltas are normalized by each event's clean-posterior
+credible width, while coverage non-inferiority uses paired bootstrap differences. Both backends must
+pass sample-size, coverage, bias, width, sky-area, effective-sample-rate and latency gates before
+`promote_to_locked_test` can become true; the validation decision itself never enables a paper claim.
 
 `scripts/run_paired_pe_smoke.sh` closes the preceding validation-data gap without touching a locked
 test corpus. After a detector-set overlap run writes its validation-selected checkpoint, the script

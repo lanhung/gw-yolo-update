@@ -1326,6 +1326,11 @@ def build_parser() -> argparse.ArgumentParser:
     pe_joint.add_argument("--bootstrap-replicates", type=int, default=2000)
     pe_joint.add_argument("--bootstrap-seed", type=int, default=20260720)
 
+    pe_promotion = subparsers.add_parser("pe-robustness-promote")
+    pe_promotion.add_argument("--joint-report", required=True)
+    pe_promotion.add_argument("--config", required=True)
+    pe_promotion.add_argument("--output", required=True)
+
     pe_inputs = subparsers.add_parser("pe-input-materialize")
     pe_inputs.add_argument("--clean-manifest", required=True)
     pe_inputs.add_argument("--contaminated-manifest", required=True)
@@ -3080,6 +3085,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.credible_level,
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
+            )
+        )
+    elif args.command == "pe-robustness-promote":
+        from .pe import promote_pe_robustness_validation
+
+        _print(
+            promote_pe_robustness_validation(
+                args.joint_report,
+                args.config,
+                args.output,
             )
         )
     elif args.command == "pe-input-materialize":
