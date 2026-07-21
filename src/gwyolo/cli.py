@@ -1550,6 +1550,13 @@ def build_parser() -> argparse.ArgumentParser:
     amplfi_capacity.add_argument("--policy", required=True)
     amplfi_capacity.add_argument("--output", required=True)
 
+    amplfi_stage = subparsers.add_parser("amplfi-training-stage-freeze")
+    amplfi_stage.add_argument("--base-config", required=True)
+    amplfi_stage.add_argument("--stage-policy", required=True)
+    amplfi_stage.add_argument("--stage", required=True)
+    amplfi_stage.add_argument("--output-config", required=True)
+    amplfi_stage.add_argument("--output-report", required=True)
+
     amplfi_prior = subparsers.add_parser("amplfi-common-prior-audit")
     amplfi_prior.add_argument("--canonical-prior", required=True)
     amplfi_prior.add_argument("--amplfi-prior", required=True)
@@ -3530,6 +3537,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.manifest,
                 args.policy,
                 args.output,
+            )
+        )
+    elif args.command == "amplfi-training-stage-freeze":
+        from .amplfi_adapter import freeze_amplfi_training_stage_config
+
+        _print(
+            freeze_amplfi_training_stage_config(
+                args.base_config,
+                args.stage_policy,
+                args.stage,
+                args.output_config,
+                args.output_report,
             )
         )
     elif args.command == "amplfi-common-prior-audit":

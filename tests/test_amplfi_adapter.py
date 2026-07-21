@@ -13,6 +13,7 @@ from gwyolo.amplfi_adapter import (
     audit_amplfi_background_capacity,
     audit_amplfi_common_prior_projection,
     export_amplfi_group_safe_background,
+    freeze_amplfi_training_stage_config,
     run_amplfi_background_capacity_audit,
     run_amplfi_common_batch,
 )
@@ -147,6 +148,50 @@ def test_amplfi_background_capacity_writes_failure_report_before_nonzero(
     assert report["status"] == "amplfi_background_capacity_insufficient"
     assert report["checks"]["train"]["duration_passed"] is False
     assert report["checks"]["val"]["duration_passed"] is False
+
+
+def test_amplfi_training_stage_freezes_hand_calculated_compute_budget(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[1]
+    output_config = tmp_path / "stage.yaml"
+    output_report = tmp_path / "stage.json"
+    report = freeze_amplfi_training_stage_config(
+        root / "configs/amplfi_common_bbh_publication.yaml",
+        root / "configs/amplfi_training_stage_policy.yaml",
+        "publication_stage_1",
+        output_config,
+        output_report,
+    )
+    resolved = yaml.safe_load(output_config.read_text(encoding="utf-8"))
+    assert resolved["trainer"]["max_epochs"] == 100
+    assert resolved["data"]["init_args"]["batches_per_epoch"] == 200
+    assert resolved["data"]["init_args"]["batch_size"] == 256
+    assert resolved["data"]["init_args"]["min_valid_duration"] == 50000
+    assert resolved["trainer"]["logger"]["init_args"]["version"] == (
+        "gwyolo_publication_stage_1"
+    )
+    assert report["compute_budget"]["updates"] == 20000
+    assert report["compute_budget"]["online_waveform_examples"] == 5_120_000
+    assert report["publication_candidate"] is True
+    assert report["test_rows_read"] == 0
+    assert report["resolved_config_sha256"] == file_sha256(output_config)
+
+
+def test_amplfi_training_stage_rejects_unbound_base_config(tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    base = tmp_path / "changed.yaml"
+    base.write_bytes((root / "configs/amplfi_common_bbh_publication.yaml").read_bytes())
+    with base.open("a", encoding="utf-8") as handle:
+        handle.write("# changed\n")
+    with pytest.raises(ValueError, match="does not bind"):
+        freeze_amplfi_training_stage_config(
+            base,
+            root / "configs/amplfi_training_stage_policy.yaml",
+            "publication_stage_1",
+            tmp_path / "resolved.yaml",
+            tmp_path / "report.json",
+        )
 
 
 def test_amplfi_common_prior_projection_matches_every_native_distribution() -> None:

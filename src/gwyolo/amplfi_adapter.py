@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .pe import (
@@ -362,6 +363,96 @@ def run_amplfi_background_capacity_audit(
     atomic_write_json(output_path, report)
     if not report["passed"]:
         raise RuntimeError(f"AMPLFI background capacity is insufficient; inspect {output_path}")
+    return report
+
+
+def freeze_amplfi_training_stage_config(
+    base_config_path: str | Path,
+    stage_policy_path: str | Path,
+    stage: str,
+    output_config_path: str | Path,
+    output_report_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze one predeclared AMPLFI compute budget into a resolved config."""
+
+    base_path = Path(base_config_path).resolve()
+    policy_path = Path(stage_policy_path).resolve()
+    policy = load_yaml(policy_path)
+    config = load_yaml(base_path)
+    if policy.get("schema_version") != 1:
+        raise ValueError("AMPLFI stage policy schema_version must be 1")
+    if policy.get("expected_base_config_sha256") != file_sha256(base_path):
+        raise ValueError("AMPLFI stage policy does not bind the base training config")
+    stages = policy.get("stages")
+    if not isinstance(stages, dict) or stage not in stages:
+        raise ValueError(f"AMPLFI training stage is not predeclared: {stage}")
+    selected = stages[stage]
+    if not isinstance(selected, dict):
+        raise ValueError("AMPLFI training stage must be a mapping")
+    values = {
+        "trainer.max_epochs": int(selected.get("max_epochs", 0)),
+        "data.init_args.batches_per_epoch": int(selected.get("batches_per_epoch", 0)),
+        "data.init_args.batch_size": int(selected.get("batch_size", 0)),
+        "data.init_args.min_valid_duration": float(
+            selected.get("min_valid_duration", 0)
+        ),
+        "data.init_args.waveform_sampler.init_args.num_fit_params": int(
+            selected.get("num_fit_params", 0)
+        ),
+        "data.init_args.waveform_sampler.init_args.num_val_waveforms": int(
+            selected.get("num_val_waveforms", 0)
+        ),
+    }
+    if any(value <= 0 for value in values.values()):
+        raise ValueError("AMPLFI training stage budgets must be positive")
+    for dotted, value in values.items():
+        target: dict[str, Any] = config
+        fields = dotted.split(".")
+        for field in fields[:-1]:
+            child = target.get(field)
+            if not isinstance(child, dict):
+                raise ValueError(f"AMPLFI base config lacks stage field: {dotted}")
+            target = child
+        target[fields[-1]] = value
+    logger_args = (
+        config.get("trainer", {}).get("logger", {}).get("init_args", {})
+    )
+    if not isinstance(logger_args, dict):
+        raise ValueError("AMPLFI base config lacks CSV logger init_args")
+    logger_args["version"] = f"gwyolo_{stage}"
+    max_epochs = int(values["trainer.max_epochs"])
+    batches = int(values["data.init_args.batches_per_epoch"])
+    batch_size = int(values["data.init_args.batch_size"])
+    resolved = Path(output_config_path).resolve()
+    report_target = Path(output_report_path).resolve()
+    if resolved.exists() or report_target.exists():
+        raise FileExistsError("AMPLFI resolved stage config/report are immutable")
+    atomic_write_text(resolved, yaml.safe_dump(config, sort_keys=False))
+    report = {
+        "status": "frozen_amplfi_training_stage_config",
+        "stage": stage,
+        "publication_candidate": bool(selected.get("publication_candidate", False)),
+        "base_config_path": str(base_path),
+        "base_config_sha256": file_sha256(base_path),
+        "stage_policy_path": str(policy_path),
+        "stage_policy_sha256": file_sha256(policy_path),
+        "resolved_config_path": str(resolved),
+        "resolved_config_sha256": file_sha256(resolved),
+        "overrides": values,
+        "logger_version": logger_args["version"],
+        "compute_budget": {
+            "epochs": max_epochs,
+            "updates": max_epochs * batches,
+            "online_waveform_examples": max_epochs * batches * batch_size,
+            "validation_waveforms_per_evaluation": int(
+                values["data.init_args.waveform_sampler.init_args.num_val_waveforms"]
+            ),
+        },
+        "test_rows_read": 0,
+        "scientific_claim_allowed": False,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_target, report)
     return report
 
 

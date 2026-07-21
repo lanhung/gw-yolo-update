@@ -726,6 +726,14 @@ the recoverable public source HDF5 copies. The final merge replays all shard-pla
 hashes, rejects duplicate windows/files or cross-split GPS blocks, and must pass the frozen capacity
 policy before writing a training-background receipt.
 
+AMPLFI compute scaling is separately frozen by `amplfi-training-stage-freeze`. Stage 1 is exactly
+100 epochs, 200 batches per epoch and batch size 256: 20,000 optimizer updates and 5.12 million
+online waveform examples, with 10,000 validation waveforms per evaluation. The resolved YAML fixes
+one logger identity for resumable training. `scripts/run_amplfi_publication_stage1.sh` accepts only
+a passing 200k/50k-second background receipt, trains under pinned AMPLFI 0.6.0, selects a checkpoint
+from the complete validation trajectory, loads the real model/scaler on CUDA and freezes standardized
+metadata. The 800-epoch stage remains unpromoted until stage 1 supplies actual validation evidence.
+
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
 `validation_selected_checkpoint`, says `selection_split: validation`, is explicitly

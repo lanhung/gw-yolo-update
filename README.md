@@ -98,6 +98,7 @@ gwyolo dingo-common-prior-audit prove or reject DINGO/common-prior equivalence b
 gwyolo dingo-runtime-failure-adjudicate authorize only a hash-bound native-runtime retry
 gwyolo amplfi-background-capacity-audit measure group-safe physical noise duration before training
 gwyolo amplfi-background-source-evict release recoverable GWOSC sources after verified export
+gwyolo amplfi-training-stage-freeze resolve a predeclared fixed-update AMPLFI budget
 gwyolo pe-robustness-joint-evaluate join hash-matched DINGO/AMPLFI posterior batches
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
