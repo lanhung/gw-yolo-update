@@ -1008,6 +1008,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat to freeze physical group counts; defaults to injection/waveform/GPS/family",
     )
 
+    evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
+    evaluation_open.add_argument("--freeze-report", required=True)
+    evaluation_open.add_argument("--code-commit", required=True)
+    evaluation_open.add_argument(
+        "--artifact",
+        action="append",
+        required=True,
+        help=(
+            "repeat LABEL=PATH; config, model, threshold_calibration and ood_policy "
+            "are mandatory"
+        ),
+    )
+    evaluation_open.add_argument(
+        "--comparison-manifest", action="append", required=True
+    )
+    evaluation_open.add_argument("--evaluation-output", required=True)
+    evaluation_open.add_argument("--evaluation-command", required=True)
+    evaluation_open.add_argument("--overlap-field", action="append", default=[])
+
     background_bank = subparsers.add_parser("background-bank-materialize")
     background_bank.add_argument("--background-manifest", required=True)
     background_bank.add_argument("--output-dir", required=True)
@@ -2352,6 +2371,30 @@ def main(argv: list[str] | None = None) -> int:
                     "gps_block",
                     "source_family",
                 ),
+            )
+        )
+    elif args.command == "evaluation-corpus-open-once":
+        from .evaluation_lock import open_evaluation_corpus_once
+
+        artifacts = {}
+        for value in args.artifact:
+            label, separator, path = value.partition("=")
+            if not separator or not label or not path or label in artifacts:
+                raise ValueError(
+                    "--artifact must use a unique non-empty LABEL=PATH value"
+                )
+            artifacts[label] = path
+        _print(
+            open_evaluation_corpus_once(
+                args.freeze_report,
+                args.code_commit,
+                artifacts,
+                tuple(args.comparison_manifest),
+                args.evaluation_output,
+                args.evaluation_command,
+                tuple(args.overlap_field)
+                if args.overlap_field
+                else ("injection_id", "waveform_id", "gps_block", "glitch_id"),
             )
         )
     elif args.command == "injection-materialize":
