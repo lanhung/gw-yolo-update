@@ -874,6 +874,12 @@ against `config_file_sha256` in the model report before scoring, so a family-bal
 silently be evaluated under the uniform-arm provenance. The smoke defaults to three validation
 injections and remains ineligible for a scientific claim.
 
+`scripts/run_promoted_paired_pe_smoke.sh` is the five-seed handoff. It resolves the selected
+checkpoint back to exactly one hash-listed finetune report, chooses the matching uniform or
+family-balanced configuration, and re-hashes the selected checkpoint, configuration, overlap
+validation manifest and clean validation manifest before invoking the paired smoke. It rejects a
+non-validation summary or an ambiguous report rather than guessing a champion path.
+
 Before an event is admitted, `scripts/run_pe_model_load_smoke.py` verifies checkpoint/config hashes
 inside the pinned interpreter and loads both DINGO GNPE networks or the AMPLFI Lightning model,
 architecture and fitted scaler. It records backend version, parameter counts, GPU runtime and load
