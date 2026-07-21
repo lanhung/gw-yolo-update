@@ -901,6 +901,13 @@ then creates a validation-only background manifest, annotates independent valida
 with PyCBC detector arrivals, and runs timing calibration, calibrated time slides and threshold
 freezing. Its 40-pair `100/year` setting is an engineering gate; it is not the final 0.1/year FAR
 claim or a substitute for the frozen exposure target.
+Before any 800-pair continuous-background scale-up,
+`candidate-search-validation-compare` evaluates the old fixed-channel baseline and promoted
+detector-set model on the same independent-GPS validation injections and background, using the same
+scorer commit, slide schedule and target FAR. Each model freezes its own validation threshold. The
+promotion gate uses paired injection outcomes and VT weights, requires a positive paired-bootstrap
+lower bound, bounds timing degradation and limits source-family/SNR-stratum regressions. Only a
+report with `scale_continuous_background=true` can authorize the expensive background run.
 
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every

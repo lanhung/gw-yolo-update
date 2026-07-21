@@ -1016,6 +1016,14 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline.add_argument("--seed", type=int, default=20260720)
     candidate_pipeline.add_argument("--model-selection-report")
 
+    candidate_pipeline_compare = subparsers.add_parser(
+        "candidate-search-validation-compare"
+    )
+    candidate_pipeline_compare.add_argument("--baseline-report", required=True)
+    candidate_pipeline_compare.add_argument("--promoted-report", required=True)
+    candidate_pipeline_compare.add_argument("--config", required=True)
+    candidate_pipeline_compare.add_argument("--output", required=True)
+
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
     exposure_plan.add_argument("--output", required=True)
@@ -2587,6 +2595,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.bootstrap_replicates,
                 args.seed,
+            )
+        )
+    elif args.command == "candidate-search-validation-compare":
+        from .candidate_pipeline import compare_candidate_validation_pipelines
+
+        _print(
+            compare_candidate_validation_pipelines(
+                args.baseline_report,
+                args.promoted_report,
+                args.config,
+                args.output,
             )
         )
     elif args.command == "candidate-time-slide-merge":

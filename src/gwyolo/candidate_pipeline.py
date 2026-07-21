@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .candidates import (
     run_apply_candidate_timing_calibration,
     run_candidate_extraction,
@@ -71,6 +73,226 @@ def validate_candidate_model_selection(
         "selected_checkpoint_sha256": checkpoint_hash,
         "selected_config_file_sha256": str(expected_config),
     }
+
+
+def compare_candidate_validation_pipelines(
+    baseline_report_path: str | Path,
+    promoted_report_path: str | Path,
+    config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Gate continuous-background scaling with a paired validation comparison."""
+
+    reports = {
+        "baseline": json.loads(Path(baseline_report_path).read_text(encoding="utf-8")),
+        "promoted": json.loads(Path(promoted_report_path).read_text(encoding="utf-8")),
+    }
+    if any(
+        report.get("status") != "validation_only_clustered_candidate_search_pipeline"
+        or report.get("test_evaluation") is not None
+        for report in reports.values()
+    ):
+        raise ValueError("Candidate comparison requires validation-only completed pipelines")
+    config = load_yaml(config_path)
+    settings = config.get("candidate_validation_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("Candidate validation promotion configuration is missing")
+    controlled_fields = (
+        "background_manifest_sha256",
+        "injection_manifest_sha256",
+        "coherence_config_sha256",
+        "reference_ifo",
+        "second_ifo",
+        "model_ifos",
+        "q_values",
+        "target_sample_rate",
+        "context_duration",
+        "chirp_threshold",
+        "minimum_bins",
+        "timing_association_window_seconds",
+        "timing_uncertainty_quantile",
+        "minimum_timing_matches",
+        "maximum_timing_uncertainty_seconds",
+        "truth_association_window_seconds",
+        "slide_count",
+        "slide_step_seconds",
+        "cluster_window_seconds",
+        "target_far_per_year",
+        "bootstrap_replicates",
+        "seed",
+        "code_commit",
+    )
+    mismatches = {
+        field: [reports[name]["run_identity"].get(field) for name in reports]
+        for field in controlled_fields
+        if len(
+            {
+                json.dumps(reports[name]["run_identity"].get(field), sort_keys=True)
+                for name in reports
+            }
+        )
+        != 1
+    }
+    if mismatches:
+        raise ValueError(f"Candidate validation pipelines are not paired: {mismatches}")
+    if reports["promoted"].get("model_selection") is None:
+        raise ValueError("Promoted candidate pipeline lacks five-seed model selection")
+
+    ranking_rows = {}
+    for name, report in reports.items():
+        ranking = report["injection_rankings"]
+        manifest = Path(ranking["manifest_path"])
+        if file_sha256(manifest) != str(ranking["manifest_sha256"]):
+            raise ValueError(f"Candidate {name} injection ranking hash mismatch")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(ranking["ranked_injections"]):
+            raise ValueError(f"Candidate {name} injection ranking count mismatch")
+        by_id = {str(row["injection_id"]): row for row in rows}
+        if len(by_id) != len(rows):
+            raise ValueError(f"Candidate {name} rankings repeat injection IDs")
+        ranking_rows[name] = by_id
+    if set(ranking_rows["baseline"]) != set(ranking_rows["promoted"]):
+        raise ValueError("Candidate pipelines evaluated different injection IDs")
+
+    ids = sorted(ranking_rows["baseline"])
+    for injection_id in ids:
+        baseline = ranking_rows["baseline"][injection_id]
+        promoted = ranking_rows["promoted"][injection_id]
+        for field in (
+            "waveform_id",
+            "gps_block",
+            "source_family",
+            "stratum",
+            "vt_weight",
+            "vt_weight_unit",
+        ):
+            if baseline.get(field) != promoted.get(field):
+                raise ValueError(
+                    f"Candidate paired injection metadata differs for {injection_id}: {field}"
+                )
+    thresholds = {
+        name: float(report["frozen_search"]["calibration"]["threshold"])
+        for name, report in reports.items()
+    }
+    weights = np.asarray(
+        [float(ranking_rows["baseline"][value]["vt_weight"]) for value in ids],
+        dtype=np.float64,
+    )
+    if np.any(~np.isfinite(weights)) or np.any(weights < 0) or weights.sum() <= 0:
+        raise ValueError("Candidate comparison has invalid VT weights")
+    recovered = {
+        name: np.asarray(
+            [
+                float(ranking_rows[name][value]["ranking_score"]) >= thresholds[name]
+                for value in ids
+            ],
+            dtype=np.float64,
+        )
+        for name in reports
+    }
+    denominator = float(weights.sum())
+    efficiencies = {
+        name: float((weights * values).sum() / denominator)
+        for name, values in recovered.items()
+    }
+    contributions = weights * (recovered["promoted"] - recovered["baseline"])
+    delta = float(contributions.sum() / denominator)
+    replicates = int(settings["bootstrap_replicates"])
+    seed = int(settings["seed"])
+    if replicates <= 0:
+        raise ValueError("Candidate promotion bootstrap count must be positive")
+    rng = np.random.default_rng(seed)
+    bootstrap = []
+    for _ in range(replicates):
+        indices = rng.integers(0, len(ids), size=len(ids))
+        sampled_weight = float(weights[indices].sum())
+        if sampled_weight > 0:
+            bootstrap.append(float(contributions[indices].sum() / sampled_weight))
+    interval = [
+        float(np.percentile(bootstrap, 2.5)),
+        float(np.percentile(bootstrap, 97.5)),
+    ]
+    strata = {}
+    maximum_regression = float(settings["maximum_stratum_efficiency_regression"])
+    regressed = []
+    for stratum in sorted(
+        {str(ranking_rows["baseline"][value].get("stratum", "all")) for value in ids}
+    ):
+        indices = np.asarray(
+            [
+                index
+                for index, value in enumerate(ids)
+                if str(ranking_rows["baseline"][value].get("stratum", "all"))
+                == stratum
+            ],
+            dtype=np.int64,
+        )
+        stratum_weight = float(weights[indices].sum())
+        values = {
+            name: float((weights[indices] * recovered[name][indices]).sum() / stratum_weight)
+            for name in reports
+        }
+        stratum_delta = values["promoted"] - values["baseline"]
+        if stratum_delta < -maximum_regression:
+            regressed.append(stratum)
+        strata[stratum] = {
+            "injections": int(indices.size),
+            "weight": stratum_weight,
+            "baseline_weighted_efficiency": values["baseline"],
+            "promoted_weighted_efficiency": values["promoted"],
+            "delta": stratum_delta,
+        }
+    timing = {
+        name: float(report["empirical_timing_uncertainty_seconds"])
+        for name, report in reports.items()
+    }
+    exposure_checks = {
+        name: bool(report["frozen_search"]["publication_calibration_eligible"])
+        for name, report in reports.items()
+    }
+    gates = {
+        "paired_population": True,
+        "complete_exposure_schedule": all(exposure_checks.values()),
+        "minimum_weighted_efficiency_gain": delta
+        >= float(settings["minimum_weighted_efficiency_gain"]),
+        "paired_bootstrap_lower_bound_positive": interval[0] > 0,
+        "maximum_regressed_strata": len(regressed)
+        <= int(settings["maximum_regressed_strata"]),
+        "promoted_timing_limit": timing["promoted"]
+        <= float(settings["maximum_promoted_timing_uncertainty_seconds"]),
+        "timing_regression": timing["promoted"] - timing["baseline"]
+        <= float(settings["maximum_timing_uncertainty_regression_seconds"]),
+    }
+    result = {
+        "status": "paired_validation_candidate_search_promotion",
+        "passed": all(gates.values()),
+        "scale_continuous_background": all(gates.values()),
+        "scientific_claim_allowed": False,
+        "test_data_opened": False,
+        "gates": gates,
+        "target_far_per_year": reports["baseline"]["run_identity"][
+            "target_far_per_year"
+        ],
+        "thresholds": thresholds,
+        "weighted_efficiencies": efficiencies,
+        "weighted_efficiency_delta_promoted_minus_baseline": delta,
+        "paired_bootstrap_95": interval,
+        "bootstrap_replicates": replicates,
+        "seed": seed,
+        "timing_uncertainty_seconds": timing,
+        "regressed_strata": regressed,
+        "strata": strata,
+        "input_report_hashes": {
+            "baseline": file_sha256(baseline_report_path),
+            "promoted": file_sha256(promoted_report_path),
+        },
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
 
 
 def run_candidate_validation_pipeline(
