@@ -616,3 +616,159 @@ def run_disjoint_background_subset(
     }
     atomic_write_json(output / "background_plan_report.json", result)
     return result
+
+
+def run_background_purpose_partition(
+    background_manifest: str | Path,
+    background_report: str | Path,
+    output_dir: str | Path,
+    injection_fraction: float = 0.5,
+    seed: int = 20260725,
+) -> dict[str, Any]:
+    """Partition validation GPS blocks between calibration and injection purposes."""
+
+    if not 0 < injection_fraction < 1:
+        raise ValueError("injection purpose fraction must be strictly between zero and one")
+    manifest_path = Path(background_manifest)
+    report_path = Path(background_report)
+    with report_path.open("r", encoding="utf-8") as handle:
+        source_report = json.load(handle)
+    allowed_statuses = {
+        "verified_multi_segment_development_background",
+        "verified_group_disjoint_development_background_subset",
+    }
+    if (
+        source_report.get("status") not in allowed_statuses
+        or not source_report.get("passed")
+        or source_report.get("split_strategy") != "hash_threshold_v1"
+        or source_report.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError("purpose partition requires a verified stable-hash background")
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(str(row.get("split")) != "val" for row in rows):
+        raise ValueError("purpose partition requires a non-empty validation-only manifest")
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    if any(not value for value in window_ids) or len(set(window_ids)) != len(window_ids):
+        raise ValueError("purpose partition source has missing or duplicate window IDs")
+    blocks = sorted({str(row.get("gps_block", "")) for row in rows})
+    if len(blocks) < 2 or any(not block for block in blocks):
+        raise ValueError("purpose partition requires at least two named GPS blocks")
+    denominator = float(16**64)
+    block_purpose = {
+        block: (
+            "injection_validation"
+            if int(
+                canonical_hash(
+                    {
+                        "gps_block": block,
+                        "seed": seed,
+                        "protocol": "validation_purpose_partition_v1",
+                    },
+                    64,
+                ),
+                16,
+            )
+            / denominator
+            < injection_fraction
+            else "candidate_calibration"
+        )
+        for block in blocks
+    }
+    if set(block_purpose.values()) != {
+        "candidate_calibration",
+        "injection_validation",
+    }:
+        raise ValueError("purpose partition produced an empty GPS-block arm")
+    grouped = {
+        purpose: [row for row in rows if block_purpose[str(row["gps_block"])] == purpose]
+        for purpose in ("candidate_calibration", "injection_validation")
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    purpose_reports = {}
+    purpose_blocks = {}
+    for purpose, selected in grouped.items():
+        purpose_dir = output / purpose
+        purpose_dir.mkdir(parents=True, exist_ok=True)
+        selected_blocks = {str(row["gps_block"]) for row in selected}
+        purpose_blocks[purpose] = selected_blocks
+        live_seconds = _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+        )
+        selected_manifest = purpose_dir / "background_windows.jsonl"
+        atomic_write_text(
+            selected_manifest,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+        )
+        child = {
+            "status": "verified_purpose_disjoint_development_background",
+            "scientific_claim_allowed": False,
+            "scientific_blocker": "purpose-specific validation input; no locked test data",
+            "passed": True,
+            "purpose": purpose,
+            "required_split": "val",
+            "split_strategy": "hash_threshold_v1",
+            "split_seed": source_report.get("split_seed"),
+            "purpose_partition_seed": seed,
+            "injection_fraction": injection_fraction,
+            "windows": len(selected),
+            "unique_gps_blocks": len(selected_blocks),
+            "splits": {
+                name: {
+                    "windows": len(selected) if name == "val" else 0,
+                    "gps_blocks": len(selected_blocks) if name == "val" else 0,
+                    "live_time_seconds": live_seconds if name == "val" else 0.0,
+                    "live_time_years": (
+                        live_seconds / SECONDS_PER_YEAR if name == "val" else 0.0
+                    ),
+                }
+                for name in ("train", "val", "test")
+            },
+            "cross_split_block_overlaps": {
+                "train:val": [],
+                "train:test": [],
+                "val:test": [],
+            },
+            "source_background_manifest_path": str(manifest_path.resolve()),
+            "source_background_manifest_sha256": file_sha256(manifest_path),
+            "source_background_report_path": str(report_path.resolve()),
+            "source_background_report_sha256": file_sha256(report_path),
+            "manifest_path": str(selected_manifest.resolve()),
+            "manifest_sha256": file_sha256(selected_manifest),
+            **execution_provenance(),
+        }
+        child_report = purpose_dir / "background_plan_report.json"
+        atomic_write_json(child_report, child)
+        purpose_reports[purpose] = {
+            "windows": len(selected),
+            "unique_gps_blocks": len(selected_blocks),
+            "live_time_seconds": live_seconds,
+            "manifest_path": str(selected_manifest.resolve()),
+            "manifest_sha256": file_sha256(selected_manifest),
+            "report_path": str(child_report.resolve()),
+            "report_sha256": file_sha256(child_report),
+        }
+    overlap = purpose_blocks["candidate_calibration"] & purpose_blocks["injection_validation"]
+    covered = purpose_blocks["candidate_calibration"] | purpose_blocks["injection_validation"]
+    if overlap or covered != set(blocks):
+        raise RuntimeError("purpose partition is overlapping or incomplete")
+    result = {
+        "status": "verified_validation_gps_purpose_partition",
+        "scientific_claim_allowed": False,
+        "passed": True,
+        "protocol": "validation_purpose_partition_v1",
+        "seed": seed,
+        "injection_fraction": injection_fraction,
+        "source_windows": len(rows),
+        "source_unique_gps_blocks": len(blocks),
+        "purpose_gps_block_overlap": 0,
+        "complete_source_gps_block_coverage": True,
+        "block_assignment_hash": canonical_hash(block_purpose, 64),
+        "source_background_manifest_sha256": file_sha256(manifest_path),
+        "source_background_report_sha256": file_sha256(report_path),
+        "purposes": purpose_reports,
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "background_purpose_partition_report.json", result)
+    return result

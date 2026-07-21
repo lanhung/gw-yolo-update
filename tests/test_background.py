@@ -11,6 +11,7 @@ import pytest
 from gwyolo.background import (
     _assign_blocks_hash_threshold,
     plan_background_windows,
+    run_background_purpose_partition,
     run_batch_background_plan,
     run_disjoint_background_subset,
     run_background_plan,
@@ -367,3 +368,66 @@ def test_disjoint_background_subset_excludes_declared_gps_groups(tmp_path: Path)
     assert result["splits"]["val"]["live_time_seconds"] == 16.0
     assert result["splits"]["test"]["windows"] == 0
     assert result["exclusion_manifests"][0]["sha256"] == file_sha256(exclusion)
+
+
+def test_background_purpose_partition_is_complete_and_group_disjoint(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "validation-background.jsonl"
+    rows = [
+        {
+            "window_id": f"window-{index}",
+            "split": "val",
+            "gps_block": f"block-{index}",
+            "gps_start": float(index * 8),
+            "gps_end": float(index * 8 + 8),
+        }
+        for index in range(20)
+    ]
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    source_report = tmp_path / "validation-background-report.json"
+    source_report.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_disjoint_development_background_subset",
+                "passed": True,
+                "split_strategy": "hash_threshold_v1",
+                "split_seed": 5,
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_background_purpose_partition(
+        manifest, source_report, tmp_path / "purposes", injection_fraction=0.5, seed=7
+    )
+
+    assert result["passed"]
+    assert result["purpose_gps_block_overlap"] == 0
+    assert result["complete_source_gps_block_coverage"] is True
+    assert result["source_unique_gps_blocks"] == 20
+    purpose_blocks = []
+    total_windows = 0
+    total_live_seconds = 0.0
+    for purpose in ("candidate_calibration", "injection_validation"):
+        summary = result["purposes"][purpose]
+        purpose_rows = [
+            json.loads(line)
+            for line in Path(summary["manifest_path"])
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        blocks = {row["gps_block"] for row in purpose_rows}
+        purpose_blocks.append(blocks)
+        assert blocks
+        assert summary["manifest_sha256"] == file_sha256(summary["manifest_path"])
+        assert summary["report_sha256"] == file_sha256(summary["report_path"])
+        total_windows += summary["windows"]
+        total_live_seconds += summary["live_time_seconds"]
+    assert purpose_blocks[0].isdisjoint(purpose_blocks[1])
+    assert purpose_blocks[0] | purpose_blocks[1] == {row["gps_block"] for row in rows}
+    assert total_windows == 20
+    assert total_live_seconds == 160.0

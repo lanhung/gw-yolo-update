@@ -12,11 +12,14 @@ SCRIPT = Path(__file__).parents[1] / "scripts" / "run_independent_validation_inj
 def test_independent_validation_runner_is_group_disjoint_and_test_blind() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "background-disjoint-subset" in source
+    assert "background-purpose-partition" in source
     assert '--exclude-manifest "$BASELINE_TRAIN_MANIFEST"' in source
     assert '--exclude-manifest "$BASELINE_VALIDATION_MANIFEST"' in source
     assert '--split val' in source
     assert '--test-count 0' in source
     assert "selected_exclusion_gps_block_overlap" in source
+    assert "purpose_gps_block_overlap" in source
+    assert "MINIMUM_PURPOSE_GPS_BLOCKS" in source
     assert "waveform-validate" in source
     assert "signal_scaled_float16" in source
     assert "injection-snr-annotate" in source
@@ -26,7 +29,7 @@ def test_independent_validation_runner_is_group_disjoint_and_test_blind() -> Non
 def test_independent_validation_embedded_python_compiles() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     snippets = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
-    assert len(snippets) == 5
+    assert len(snippets) == 6
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
 

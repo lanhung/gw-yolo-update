@@ -20,6 +20,8 @@ done
 VALIDATION_COUNT=${VALIDATION_COUNT:-3000}
 INJECTION_SEED=${INJECTION_SEED:-20260725}
 MINIMUM_UNIQUE_GPS_BLOCKS=${MINIMUM_UNIQUE_GPS_BLOCKS:-50}
+MINIMUM_PURPOSE_GPS_BLOCKS=${MINIMUM_PURPOSE_GPS_BLOCKS:-25}
+PURPOSE_PARTITION_SEED=${PURPOSE_PARTITION_SEED:-20260725}
 WAVEFORM_CASES_PER_FAMILY=${WAVEFORM_CASES_PER_FAMILY:-10}
 SAMPLE_RATE=${SAMPLE_RATE:-2048}
 CONTEXT_DURATION=${CONTEXT_DURATION:-64}
@@ -28,6 +30,7 @@ RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-60}
 
 if ! [[ "$VALIDATION_COUNT" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$MINIMUM_UNIQUE_GPS_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
+  || ! [[ "$MINIMUM_PURPOSE_GPS_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$WAVEFORM_CASES_PER_FAMILY" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
@@ -98,6 +101,61 @@ if (
     raise SystemExit("independent validation background failed its frozen GPS-disjoint gate")
 PY
 
+purpose_dir="$OUTPUT_ROOT/purpose-partition"
+purpose_report="$purpose_dir/background_purpose_partition_report.json"
+calibration_manifest="$purpose_dir/candidate_calibration/background_windows.jsonl"
+injection_background_manifest="$purpose_dir/injection_validation/background_windows.jsonl"
+injection_background_report="$purpose_dir/injection_validation/background_plan_report.json"
+if [[ ! -s "$purpose_report" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+    "$TASK_PYTHON" -m gwyolo.cli background-purpose-partition \
+      --background-manifest "$disjoint_manifest" \
+      --background-report "$disjoint_report" \
+      --output-dir "$purpose_dir" \
+      --injection-fraction 0.5 \
+      --seed "$PURPOSE_PARTITION_SEED"
+  )
+fi
+"$TASK_PYTHON" - "$purpose_report" "$disjoint_manifest" "$disjoint_report" \
+  "$calibration_manifest" "$injection_background_manifest" \
+  "$injection_background_report" "$MINIMUM_PURPOSE_GPS_BLOCKS" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+(
+    report_path,
+    source_manifest,
+    source_report,
+    calibration_manifest,
+    injection_manifest,
+    injection_report,
+    minimum_blocks,
+) = sys.argv[1:]
+report = json.loads(pathlib.Path(report_path).read_text(encoding="utf-8"))
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+purposes = report.get("purposes", {})
+calibration = purposes.get("candidate_calibration", {})
+injection = purposes.get("injection_validation", {})
+if (
+    report.get("status") != "verified_validation_gps_purpose_partition"
+    or not report.get("passed")
+    or int(report.get("purpose_gps_block_overlap", -1)) != 0
+    or report.get("complete_source_gps_block_coverage") is not True
+    or report.get("source_background_manifest_sha256") != digest(source_manifest)
+    or report.get("source_background_report_sha256") != digest(source_report)
+    or int(calibration.get("unique_gps_blocks", -1)) < int(minimum_blocks)
+    or int(injection.get("unique_gps_blocks", -1)) < int(minimum_blocks)
+    or calibration.get("manifest_sha256") != digest(calibration_manifest)
+    or injection.get("manifest_sha256") != digest(injection_manifest)
+    or injection.get("report_sha256") != digest(injection_report)
+):
+    raise SystemExit("candidate-calibration/injection-validation GPS partition failed")
+PY
+
 recipes_dir="$OUTPUT_ROOT/recipes"
 recipes="$recipes_dir/injection_recipes.jsonl"
 recipe_report="$recipes_dir/injection_plan_report.json"
@@ -106,8 +164,8 @@ if [[ ! -s "$recipe_report" ]]; then
     cd "$TASK_CODE_DIR"
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
     "$TASK_PYTHON" -m gwyolo.cli injection-plan \
-      --background-manifest "$disjoint_manifest" \
-      --background-report "$disjoint_report" \
+      --background-manifest "$injection_background_manifest" \
+      --background-report "$injection_background_report" \
       --output-dir "$recipes_dir" \
       --train-count 0 \
       --validation-count "$VALIDATION_COUNT" \
@@ -115,8 +173,8 @@ if [[ ! -s "$recipe_report" ]]; then
       --seed "$INJECTION_SEED"
   )
 fi
-"$TASK_PYTHON" - "$recipe_report" "$recipes" "$disjoint_manifest" \
-  "$disjoint_report" "$VALIDATION_COUNT" <<'PY'
+"$TASK_PYTHON" - "$recipe_report" "$recipes" "$injection_background_manifest" \
+  "$injection_background_report" "$VALIDATION_COUNT" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -188,7 +246,7 @@ if [[ ! -s "$materialization_report" ]]; then
       export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
       "$TASK_PYTHON" -m gwyolo.cli injection-materialize \
         --recipes "$recipes" \
-        --background-manifest "$disjoint_manifest" \
+        --background-manifest "$injection_background_manifest" \
         --output-dir "$materialized_dir" \
         --sample-rate "$SAMPLE_RATE" \
         --context-duration "$CONTEXT_DURATION" \
@@ -209,7 +267,7 @@ if [[ ! -s "$materialization_report" ]]; then
   fi
 fi
 "$TASK_PYTHON" - "$materialization_report" "$materialized_manifest" "$recipes" \
-  "$disjoint_manifest" "$waveform_report" "$VALIDATION_COUNT" <<'PY'
+  "$injection_background_manifest" "$waveform_report" "$VALIDATION_COUNT" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -293,3 +351,5 @@ PY
 
 printf '%s independent-validation-arrivals=%s\n' \
   "$(date -u +%FT%TZ)" "$arrival_manifest"
+printf '%s candidate-calibration-background=%s\n' \
+  "$(date -u +%FT%TZ)" "$calibration_manifest"

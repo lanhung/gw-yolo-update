@@ -853,6 +853,13 @@ def build_parser() -> argparse.ArgumentParser:
     background_disjoint.add_argument("--output-dir", required=True)
     background_disjoint.add_argument("--split", choices=("train", "val"), default="val")
 
+    background_purpose = subparsers.add_parser("background-purpose-partition")
+    background_purpose.add_argument("--background-manifest", required=True)
+    background_purpose.add_argument("--background-report", required=True)
+    background_purpose.add_argument("--output-dir", required=True)
+    background_purpose.add_argument("--injection-fraction", type=float, default=0.5)
+    background_purpose.add_argument("--seed", type=int, default=20260725)
+
     deglitch = subparsers.add_parser("oracle-deglitch")
     deglitch.add_argument("--input", required=True)
     deglitch.add_argument("--output", required=True)
@@ -2576,6 +2583,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.exclude_manifest,
                 args.output_dir,
                 args.split,
+            )
+        )
+    elif args.command == "background-purpose-partition":
+        from .background import run_background_purpose_partition
+
+        _print(
+            run_background_purpose_partition(
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                args.injection_fraction,
+                args.seed,
             )
         )
     elif args.command == "oracle-deglitch":

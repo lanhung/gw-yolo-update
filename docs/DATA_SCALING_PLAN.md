@@ -284,6 +284,13 @@ signal-only scaled-float16 injections, annotates empirical SNR and adds geometri
 It never creates or reads a test split. The resulting arm measures transfer to new detector noise;
 it must not be confounded with drawing another waveform population on reused GPS blocks.
 
+Within that new validation domain, threshold/FAR calibration and injection efficiency also receive
+disjoint noise groups. `background-purpose-partition` assigns whole validation GPS blocks by a
+frozen hash to `candidate_calibration` or `injection_validation`, writes a compatible background
+report for each purpose, and records complete coverage plus zero cross-purpose block overlap. The
+primary 3k endpoint requires at least 25 blocks per arm. A broader unpartitioned 3k run may be kept
+as engineering evidence, but it cannot be the paper's threshold-versus-efficiency validation pair.
+
 After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
 timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one
 split per GPS block across every shard. It writes globally ordered background plus val/test
