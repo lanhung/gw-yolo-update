@@ -1517,6 +1517,11 @@ def build_parser() -> argparse.ArgumentParser:
     pe_sources.add_argument("--retry-delay-seconds", type=float, default=5.0)
     pe_sources.add_argument("--maximum-stalled-attempts", type=int, default=5)
 
+    dingo_failure = subparsers.add_parser("dingo-runtime-failure-adjudicate")
+    dingo_failure.add_argument("--failure-receipt", required=True)
+    dingo_failure.add_argument("--policy", required=True)
+    dingo_failure.add_argument("--output", required=True)
+
     amplfi_background = subparsers.add_parser("amplfi-background-export")
     amplfi_background.add_argument("--manifest", required=True)
     amplfi_background.add_argument("--output-dir", required=True)
@@ -3446,6 +3451,16 @@ def main(argv: list[str] | None = None) -> int:
                 selection_metric_mode=args.selection_metric_mode,
                 minimum_publication_epochs=args.minimum_publication_epochs,
                 minimum_validation_points=args.minimum_validation_points,
+            )
+        )
+    elif args.command == "dingo-runtime-failure-adjudicate":
+        from .pe_compatibility import run_dingo_runtime_failure_adjudication
+
+        _print(
+            run_dingo_runtime_failure_adjudication(
+                args.failure_receipt,
+                args.policy,
+                args.output,
             )
         )
     elif args.command == "amplfi-background-export":

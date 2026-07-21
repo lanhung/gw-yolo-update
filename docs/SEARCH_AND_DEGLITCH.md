@@ -989,8 +989,14 @@ the complete acquisition report against the four-entry source configuration, inc
 filename, size, published MD5 and local SHA-256. It then verifies the pinned `dingo-gw` runtime and
 loads both the posterior and GNPE time-initialization networks on the requested device. An immutable
 receipt binds the acquisition, source configuration, backend load report, model hashes, parameter
-counts and runtime environment. A compatibility failure is retained as such; it does not silently
-switch the official 0.5.8-trained serialization to a different runtime or become PE evidence.
+counts and runtime environment. A failed load freezes a separate receipt plus the complete attempt
+log. `dingo-runtime-failure-adjudicate` then replays every source/model/log hash and evaluates the
+frozen `configs/dingo_runtime_compatibility_policy.yaml`: an explicit serialization/API signature
+is required, while CUDA, memory, storage, checksum, path, permission and network failures override
+and reject fallback. `scripts/run_dingo_native_fallback.sh` accepts only a passing adjudication,
+verifies an exact DINGO 0.5.8 runtime, and reloads the identical posterior and time-model hashes.
+Neither compatibility path reads test rows or becomes PE evidence; no model substitution is
+allowed.
 
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
