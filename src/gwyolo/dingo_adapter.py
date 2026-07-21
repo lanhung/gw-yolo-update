@@ -275,6 +275,8 @@ def freeze_official_dingo_native_model_metadata(
     source_config_path: str | Path,
     acquisition_report_path: str | Path,
     model_load_receipt_path: str | Path,
+    native_runtime_receipt_path: str | Path,
+    native_event_smoke_summary_path: str | Path,
     native_conditioning_config_path: str | Path,
     output_path: str | Path,
 ) -> dict[str, Any]:
@@ -283,6 +285,8 @@ def freeze_official_dingo_native_model_metadata(
     source_config = load_yaml(source_config_path)
     acquisition = load_yaml(acquisition_report_path)
     load_receipt = load_yaml(model_load_receipt_path)
+    runtime_receipt = load_yaml(native_runtime_receipt_path)
+    event_summary = load_yaml(native_event_smoke_summary_path)
     conditioning = load_yaml(native_conditioning_config_path)
     source_by_role = {
         str(row.get("role")): row for row in source_config.get("sources", [])
@@ -307,6 +311,17 @@ def freeze_official_dingo_native_model_metadata(
         or load_receipt.get("passed") is not True
         or load_receipt.get("scientific_claim_allowed") is not False
         or load_receipt.get("test_rows_read") != 0
+        or runtime_receipt.get("status")
+        != "verified_dingo_official_native_runtime_overlay"
+        or runtime_receipt.get("passed") is not True
+        or runtime_receipt.get("scientific_claim_allowed") is not False
+        or runtime_receipt.get("test_rows_read") != 0
+        or runtime_receipt.get("backend") != "DINGO"
+        or event_summary.get("status")
+        != "dingo_official_native_synthetic_event_runtime_smoke_complete"
+        or event_summary.get("passed") is not True
+        or event_summary.get("scientific_claim_allowed") is not False
+        or event_summary.get("test_rows_read") != 0
         or conditioning.get("schema_version") != 1
         or conditioning.get("backend") != "DINGO"
     ):
@@ -367,10 +382,63 @@ def freeze_official_dingo_native_model_metadata(
         raise ValueError(
             "official DINGO inference runtime must match the model training runtime"
         )
+    if (
+        runtime_receipt.get("backend_version") != version_match.group(1)
+        or runtime_receipt.get("runtime", {}).get("version") != version_match.group(1)
+    ):
+        raise ValueError("official DINGO native runtime receipt has a different version")
+    runtime_python = Path(str(runtime_receipt.get("python_executable", ""))).resolve()
+    if not runtime_python.is_file():
+        raise ValueError("official DINGO native runtime interpreter is absent")
+    runtime_artifacts = runtime_receipt.get("artifacts", {})
+    if set(runtime_artifacts) != {
+        "config",
+        "base_runtime_pip_freeze",
+        "native_overlay_pip_freeze",
+    }:
+        raise ValueError("official DINGO native runtime artifact set is incomplete")
+    for identity in runtime_artifacts.values():
+        artifact = Path(str(identity.get("path", ""))).resolve()
+        if not artifact.is_file() or file_sha256(artifact) != identity.get("sha256"):
+            raise ValueError("official DINGO native runtime artifact replay failed")
+    event_report_path = Path(
+        str(event_summary.get("inference_report_path", ""))
+    ).resolve()
+    if (
+        not event_report_path.is_file()
+        or file_sha256(event_report_path)
+        != event_summary.get("inference_report_sha256")
+    ):
+        raise ValueError("official DINGO native event smoke report replay failed")
+    event_report = load_yaml(event_report_path)
+    if (
+        event_report.get("status") != "real_dingo_gnpe_posterior_complete"
+        or event_report.get("backend") != "DINGO"
+        or event_report.get("backend_version") != version_match.group(1)
+        or event_report.get("model_load_api")
+        != "dingo.core.models.PosteriorModel"
+        or event_report.get("compatibility_shims")
+        != ["scipy.signal.tukey=the_identical_scipy.signal.windows.tukey"]
+        or event_report.get("model_sha256") != file_sha256(posterior)
+        or event_report.get("model_init_sha256") != file_sha256(initialization)
+        or event_report.get("event_sha256") != event_summary.get("event_sha256")
+        or int(event_report.get("posterior_samples", 0)) <= 0
+    ):
+        raise ValueError("official DINGO native event smoke identity failed")
+    for prefix in ("posterior", "native_result"):
+        artifact = Path(str(event_report.get(f"{prefix}_path", ""))).resolve()
+        if (
+            not artifact.is_file()
+            or file_sha256(artifact) != event_report.get(f"{prefix}_sha256")
+        ):
+            raise ValueError(f"official DINGO native event {prefix} replay failed")
     artifacts = {
         "source_config": source_config_path,
         "acquisition_report": acquisition_report_path,
         "model_load_receipt": model_load_receipt_path,
+        "native_runtime_receipt": native_runtime_receipt_path,
+        "native_event_smoke_summary": native_event_smoke_summary_path,
+        "native_event_inference_report": event_report_path,
         "training_settings": settings_path,
         "native_conditioning_config": native_conditioning_config_path,
         "initialization_model": initialization,
@@ -391,6 +459,8 @@ def freeze_official_dingo_native_model_metadata(
         "test_rows_read": 0,
         "training_backend_version": version_match.group(1),
         "load_runtime_version": load_receipt["backend_version"],
+        "native_runtime_version": runtime_receipt["backend_version"],
+        "native_runtime_python": str(runtime_python),
         "model_epoch": int(epoch_match.group(1)),
         "training_waveforms": int(dataset["num_samples"]),
         "native_model_waveform_approximant": waveform["approximant"],
@@ -504,6 +574,9 @@ def run_dingo_common_batch(
             "training_settings",
             "acquisition_report",
             "model_load_receipt",
+            "native_runtime_receipt",
+            "native_event_smoke_summary",
+            "native_event_inference_report",
             "native_conditioning_config",
             "initialization_model",
         )
@@ -635,6 +708,16 @@ def run_dingo_common_batch(
             None if official_native else verified_artifacts["selection_report"]["sha256"]
         ),
         "native_conditioning_config_sha256": conditioning_sha,
+        "native_runtime_receipt_sha256": (
+            verified_artifacts["native_runtime_receipt"]["sha256"]
+            if official_native
+            else None
+        ),
+        "native_event_smoke_summary_sha256": (
+            verified_artifacts["native_event_smoke_summary"]["sha256"]
+            if official_native
+            else None
+        ),
         "python_executable": str(python),
         "runner_sha256": file_sha256(runner),
         "required_split": required_split,

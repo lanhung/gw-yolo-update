@@ -14,6 +14,8 @@ required=(
   DINGO_SOURCE_CONFIG
   DINGO_ACQUISITION_REPORT
   DINGO_MODEL_LOAD_RECEIPT
+  DINGO_NATIVE_RUNTIME_RECEIPT
+  DINGO_NATIVE_EVENT_SMOKE_SUMMARY
   DINGO_NATIVE_CONDITIONING_CONFIG
   OUTPUT_ROOT
 )
@@ -32,6 +34,8 @@ for path in \
   "$DINGO_SOURCE_CONFIG" \
   "$DINGO_ACQUISITION_REPORT" \
   "$DINGO_MODEL_LOAD_RECEIPT" \
+  "$DINGO_NATIVE_RUNTIME_RECEIPT" \
+  "$DINGO_NATIVE_EVENT_SMOKE_SUMMARY" \
   "$DINGO_NATIVE_CONDITIONING_CONFIG" \
   "$dingo_native_report" \
   "$smoke_summary"; do
@@ -61,6 +65,8 @@ metadata="$OUTPUT_ROOT/dingo_official_native_model_metadata.json"
   --source-config "$DINGO_SOURCE_CONFIG" \
   --acquisition-report "$DINGO_ACQUISITION_REPORT" \
   --model-load-receipt "$DINGO_MODEL_LOAD_RECEIPT" \
+  --native-runtime-receipt "$DINGO_NATIVE_RUNTIME_RECEIPT" \
+  --native-event-smoke-summary "$DINGO_NATIVE_EVENT_SMOKE_SUMMARY" \
   --native-conditioning-config "$DINGO_NATIVE_CONDITIONING_CONFIG" \
   --output "$metadata" \
   >"$OUTPUT_ROOT/logs/model-metadata.log" 2>&1
@@ -101,7 +107,13 @@ if (
     or metadata.get("common_prior_equivalent") is not False
 ):
     raise SystemExit("official DINGO native comparison boundary is absent")
-for label in ("training_settings", "initialization_model"):
+for label in (
+    "training_settings",
+    "initialization_model",
+    "native_runtime_receipt",
+    "native_event_smoke_summary",
+    "native_event_inference_report",
+):
     artifact = metadata.get("artifacts", {}).get(label, {})
     path = pathlib.Path(artifact.get("path", ""))
     if not path.is_file() or digest(path) != artifact.get("sha256"):

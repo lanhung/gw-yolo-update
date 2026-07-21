@@ -25,6 +25,10 @@ def test_dingo_official_native_smoke_fails_closed_when_inputs_are_unset() -> Non
 def test_dingo_official_native_smoke_is_validation_only_and_not_joint() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "dingo-official-native-model-freeze" in source
+    assert "DINGO_NATIVE_RUNTIME_RECEIPT" in source
+    assert "DINGO_NATIVE_EVENT_SMOKE_SUMMARY" in source
+    assert "--native-runtime-receipt" in source
+    assert "--native-event-smoke-summary" in source
     assert "--comparison-mode official_native" in source
     assert source.count("--required-split val") == 1
     assert "pe-robustness-evaluate" in source

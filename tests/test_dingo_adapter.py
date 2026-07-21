@@ -358,7 +358,9 @@ def _official_settings_text() -> str:
     )
 
 
-def _official_source_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dict[str, Path]]:
+def _official_source_inputs(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, Path, Path, dict[str, Path]]:
     roles = {
         "model_manifest": ("MODEL_MANIFEST.md", "official manifest\n"),
         "training_settings": ("settings.yaml", _official_settings_text()),
@@ -426,6 +428,81 @@ def _official_source_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dic
         ),
         encoding="utf-8",
     )
+    runtime_artifact = tmp_path / "native-overlay-freeze.txt"
+    runtime_artifact.write_text("dingo-gw==0.5.8\n", encoding="utf-8")
+    runtime_receipt = tmp_path / "native-runtime-receipt.json"
+    runtime_receipt.write_text(
+        json.dumps(
+            {
+                "status": "verified_dingo_official_native_runtime_overlay",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "backend": "DINGO",
+                "backend_version": "0.5.8",
+                "python_executable": sys.executable,
+                "runtime": {"version": "0.5.8"},
+                "artifacts": {
+                    label: {
+                        "path": str(runtime_artifact),
+                        "sha256": file_sha256(runtime_artifact),
+                    }
+                    for label in (
+                        "config",
+                        "base_runtime_pip_freeze",
+                        "native_overlay_pip_freeze",
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    event_posterior = tmp_path / "smoke-posterior.npz"
+    event_posterior.write_bytes(b"posterior")
+    event_result = tmp_path / "smoke-result.hdf5"
+    event_result.write_bytes(b"native-result")
+    event_report = tmp_path / "native-event-report.json"
+    event_report.write_text(
+        json.dumps(
+            {
+                "status": "real_dingo_gnpe_posterior_complete",
+                "backend": "DINGO",
+                "backend_version": "0.5.8",
+                "model_load_api": "dingo.core.models.PosteriorModel",
+                "compatibility_shims": [
+                    "scipy.signal.tukey=the_identical_scipy.signal.windows.tukey"
+                ],
+                "model_sha256": file_sha256(paths["posterior_model"]),
+                "model_init_sha256": file_sha256(
+                    paths["time_initialization_model"]
+                ),
+                "event_sha256": "synthetic-event-sha256",
+                "posterior_samples": 4,
+                "posterior_path": str(event_posterior),
+                "posterior_sha256": file_sha256(event_posterior),
+                "native_result_path": str(event_result),
+                "native_result_sha256": file_sha256(event_result),
+            }
+        ),
+        encoding="utf-8",
+    )
+    event_summary = tmp_path / "native-event-summary.json"
+    event_summary.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "dingo_official_native_synthetic_event_runtime_smoke_complete"
+                ),
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "event_sha256": "synthetic-event-sha256",
+                "inference_report_path": str(event_report),
+                "inference_report_sha256": file_sha256(event_report),
+            }
+        ),
+        encoding="utf-8",
+    )
     conditioning = tmp_path / "conditioning.yaml"
     conditioning.write_text(
         yaml.safe_dump(
@@ -440,16 +517,38 @@ def _official_source_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dic
         ),
         encoding="utf-8",
     )
-    return source, acquisition, receipt, conditioning, paths
+    return (
+        source,
+        acquisition,
+        receipt,
+        runtime_receipt,
+        event_summary,
+        conditioning,
+        paths,
+    )
 
 
 def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
     tmp_path: Path,
 ) -> None:
-    source, acquisition, receipt, conditioning, paths = _official_source_inputs(tmp_path)
+    (
+        source,
+        acquisition,
+        receipt,
+        runtime_receipt,
+        event_summary,
+        conditioning,
+        paths,
+    ) = _official_source_inputs(tmp_path)
     output = tmp_path / "official-metadata.json"
     report = freeze_official_dingo_native_model_metadata(
-        source, acquisition, receipt, conditioning, output
+        source,
+        acquisition,
+        receipt,
+        runtime_receipt,
+        event_summary,
+        conditioning,
+        output,
     )
     assert report["status"] == "verified_official_dingo_native_model_metadata"
     assert report["training_backend_version"] == "0.5.8"
@@ -468,7 +567,13 @@ def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
     receipt.write_text(json.dumps(incompatible_receipt), encoding="utf-8")
     with pytest.raises(ValueError, match="inference runtime must match"):
         freeze_official_dingo_native_model_metadata(
-            source, acquisition, receipt, conditioning, output
+            source,
+            acquisition,
+            receipt,
+            runtime_receipt,
+            event_summary,
+            conditioning,
+            output,
         )
     incompatible_receipt["backend_version"] = "0.5.8"
     receipt.write_text(json.dumps(incompatible_receipt), encoding="utf-8")
@@ -478,7 +583,13 @@ def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
     conditioning.write_text(yaml.safe_dump(changed), encoding="utf-8")
     with pytest.raises(ValueError, match="frozen native contract"):
         freeze_official_dingo_native_model_metadata(
-            source, acquisition, receipt, conditioning, output
+            source,
+            acquisition,
+            receipt,
+            runtime_receipt,
+            event_summary,
+            conditioning,
+            output,
         )
 
 
@@ -496,6 +607,12 @@ def test_dingo_official_native_batch_is_not_cross_backend_comparable(
     acquisition.write_text("{}\n", encoding="utf-8")
     receipt = tmp_path / "official-load.json"
     receipt.write_text("{}\n", encoding="utf-8")
+    native_runtime_receipt = tmp_path / "official-native-runtime.json"
+    native_runtime_receipt.write_text("{}\n", encoding="utf-8")
+    native_event_summary = tmp_path / "official-native-event-summary.json"
+    native_event_summary.write_text("{}\n", encoding="utf-8")
+    native_event_report = tmp_path / "official-native-event-report.json"
+    native_event_report.write_text("{}\n", encoding="utf-8")
     metadata = tmp_path / "official-metadata.json"
     metadata.write_text(
         json.dumps(
@@ -529,6 +646,18 @@ def test_dingo_official_native_batch_is_not_cross_backend_comparable(
                     "model_load_receipt": {
                         "path": str(receipt),
                         "sha256": file_sha256(receipt),
+                    },
+                    "native_runtime_receipt": {
+                        "path": str(native_runtime_receipt),
+                        "sha256": file_sha256(native_runtime_receipt),
+                    },
+                    "native_event_smoke_summary": {
+                        "path": str(native_event_summary),
+                        "sha256": file_sha256(native_event_summary),
+                    },
+                    "native_event_inference_report": {
+                        "path": str(native_event_report),
+                        "sha256": file_sha256(native_event_report),
                     },
                     "native_conditioning_config": {
                         "path": str(conditioning_config),

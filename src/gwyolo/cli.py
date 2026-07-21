@@ -1478,6 +1478,10 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_official_metadata.add_argument("--source-config", required=True)
     dingo_official_metadata.add_argument("--acquisition-report", required=True)
     dingo_official_metadata.add_argument("--model-load-receipt", required=True)
+    dingo_official_metadata.add_argument("--native-runtime-receipt", required=True)
+    dingo_official_metadata.add_argument(
+        "--native-event-smoke-summary", required=True
+    )
     dingo_official_metadata.add_argument("--native-conditioning-config", required=True)
     dingo_official_metadata.add_argument("--output", required=True)
 
@@ -3451,6 +3455,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.source_config,
                 args.acquisition_report,
                 args.model_load_receipt,
+                args.native_runtime_receipt,
+                args.native_event_smoke_summary,
                 args.native_conditioning_config,
                 args.output,
             )
