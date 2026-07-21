@@ -24,6 +24,7 @@ from gwyolo.gwosc import (
     extend_gwosc_run_plan,
     event_strain_files,
     plan_run_strain_pairs,
+    run_disjoint_gwosc_run_plan,
     run_gwosc_batch_download,
     read_hdf5_segment,
     run_gwosc_event_exclusions,
@@ -196,6 +197,63 @@ def test_gwosc_plan_extension_preserves_parent_prefix_and_is_score_blind(
     assert extended["selection_data"] == "GWOSC strain-file metadata only"
     with pytest.raises(FileExistsError, match="immutable"):
         extend_gwosc_run_plan(parent, output, 5)
+
+
+def test_disjoint_gwosc_plan_excludes_frozen_source_pairs(tmp_path: Path) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://example/{ifo}-{gps}.json",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    full_pairs = [pair(gps) for gps in (100, 200, 300, 400, 500, 600)]
+    full = {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": "O4a",
+        "detectors": ["H1", "L1"],
+        "sample_rate_khz": 4,
+        "seed": 11,
+        "source_endpoint": "https://gwosc.org/api/v2/runs/O4a/strain-files",
+        "aligned_pairs_available": len(full_pairs),
+        "selected_pairs": len(full_pairs),
+        "selected_gps_span": [100, 600],
+        "pairs": full_pairs,
+    }
+    exclusion = tmp_path / "reserved.json"
+    exclusion.write_text(
+        json.dumps({**full, "selected_pairs": 2, "pairs": [full_pairs[1], full_pairs[4]]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "training-plan.json"
+    with patch("gwyolo.gwosc.plan_run_strain_pairs", return_value=full):
+        report = run_disjoint_gwosc_run_plan(
+            "O4a",
+            ["H1", "L1"],
+            [exclusion],
+            output,
+            target_pairs=3,
+            seed=17,
+        )
+    selected = {row["gps_start"] for row in report["pairs"]}
+    assert len(selected) == 3
+    assert not selected & {200, 500}
+    assert report["excluded_unique_pair_ids"] == 2
+    assert report["eligible_pairs_after_exclusion"] == 4
+    assert report["candidate_scores_inspected"] is False
+    assert report["test_data_opened"] is False
+    assert report["exclusion_plans"][0]["sha256"] == file_sha256(exclusion)
 
 
 def test_reference_whitening_is_linear_for_signal_component() -> None:

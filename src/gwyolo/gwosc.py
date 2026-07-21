@@ -320,6 +320,120 @@ def extend_gwosc_run_plan(
     return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
 
 
+def run_disjoint_gwosc_run_plan(
+    run: str,
+    detectors: Iterable[str],
+    exclusion_plan_paths: Iterable[str | Path],
+    output: str | Path,
+    *,
+    target_pairs: int,
+    sample_rate_khz: int = 4,
+    seed: int = 20260727,
+) -> dict[str, Any]:
+    """Select a score-blind development plan disjoint from frozen source-pair plans."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("disjoint GWOSC acquisition plans are immutable")
+    if target_pairs <= 0:
+        raise ValueError("disjoint GWOSC plan target_pairs must be positive")
+    paths = [Path(path).resolve() for path in exclusion_plan_paths]
+    if not paths:
+        raise ValueError("disjoint GWOSC plan requires at least one exclusion plan")
+    wanted = tuple(sorted(set(str(ifo).upper() for ifo in detectors)))
+    excluded_ids: set[str] = set()
+    excluded_gps: set[int] = set()
+    excluded_rows: dict[str, dict[str, Any]] = {}
+    exclusion_records = []
+    for path in paths:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        pairs = list(plan.get("pairs", []))
+        pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+        gps_values = [int(row.get("gps_start")) for row in pairs]
+        if (
+            plan.get("status") != "development_acquisition_plan"
+            or plan.get("locked_evaluation_data") is not False
+            or plan.get("run") != run
+            or tuple(sorted(plan.get("detectors", []))) != wanted
+            or int(plan.get("sample_rate_khz", -1)) != sample_rate_khz
+            or not pairs
+            or any(not value for value in pair_ids)
+            or len(pair_ids) != len(set(pair_ids))
+            or len(gps_values) != len(set(gps_values))
+            or int(plan.get("selected_pairs", -1)) != len(pairs)
+        ):
+            raise ValueError(f"invalid disjoint GWOSC exclusion plan: {path}")
+        for pair_id, row in zip(pair_ids, pairs):
+            if pair_id in excluded_rows and excluded_rows[pair_id] != row:
+                raise ValueError(f"exclusion plans disagree about source pair: {pair_id}")
+            excluded_rows[pair_id] = row
+        excluded_ids.update(pair_ids)
+        excluded_gps.update(gps_values)
+        exclusion_records.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "selected_pairs": len(pairs),
+                "pair_ids_hash": canonical_hash(pair_ids, 64),
+            }
+        )
+    full = plan_run_strain_pairs(
+        run,
+        wanted,
+        sample_rate_khz=sample_rate_khz,
+        maximum_pairs=None,
+        seed=seed,
+    )
+    full_by_id = {str(row["pair_id"]): row for row in full["pairs"]}
+    changed_exclusions = [
+        pair_id
+        for pair_id, row in excluded_rows.items()
+        if full_by_id.get(pair_id) != row
+    ]
+    if changed_exclusions:
+        raise ValueError(
+            f"frozen exclusion pairs are absent or changed: {changed_exclusions[:5]}"
+        )
+    eligible = [
+        row
+        for row in full["pairs"]
+        if str(row["pair_id"]) not in excluded_ids
+        and int(row["gps_start"]) not in excluded_gps
+    ]
+    if target_pairs > len(eligible):
+        raise ValueError("disjoint GWOSC target exceeds the unreserved source inventory")
+    selected = _stratified_records(eligible, target_pairs, seed)
+    selected_ids = [str(row["pair_id"]) for row in selected]
+    selected_gps = [int(row["gps_start"]) for row in selected]
+    if (
+        len(selected) != target_pairs
+        or len(selected_ids) != len(set(selected_ids))
+        or set(selected_ids) & excluded_ids
+        or set(selected_gps) & excluded_gps
+    ):
+        raise RuntimeError("disjoint GWOSC selection violated source-pair exclusion")
+    result = {
+        **{key: value for key, value in full.items() if key != "pairs"},
+        "status": "development_acquisition_plan",
+        "selected_pairs": len(selected),
+        "selected_gps_span": [min(selected_gps), max(selected_gps)],
+        "pairs": selected,
+        "selection_rule": "stratified_exclusion_complement_v1",
+        "selection_data": "GWOSC strain-file metadata only",
+        "candidate_scores_inspected": False,
+        "test_data_opened": False,
+        "exclusion_plans": exclusion_records,
+        "excluded_unique_pair_ids": len(excluded_ids),
+        "excluded_unique_gps_starts": len(excluded_gps),
+        "eligible_pairs_after_exclusion": len(eligible),
+        "selected_pair_ids_hash": canonical_hash(selected_ids, 64),
+        "selected_gps_starts_hash": canonical_hash(selected_gps, 64),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
+
+
 def run_gwosc_plan_shard(
     plan_path: str | Path,
     output: str | Path,

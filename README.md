@@ -82,6 +82,7 @@ gwyolo candidate-block-permutation-schedule-freeze plan score-blind fragmented-b
 gwyolo candidate-block-permutation-capacity-forecast size the parent bank before scoring
 gwyolo candidate-block-permutation-capacity-extension-freeze bind the minimum reserve decision
 gwyolo gwosc-plan-extend append a score-blind reserve while preserving a frozen parent prefix
+gwyolo gwosc-plan-disjoint select a source-pair plan outside frozen development/evaluation plans
 gwyolo candidate-block-permutations execute frozen relative-slot GPS-block background pairings
 gwyolo gravityspy-ood-family-freeze freeze the next score-blind held-family protocol
 gwyolo gravityspy-mask-consensus-materialize build a validation-only blinded human gold bank

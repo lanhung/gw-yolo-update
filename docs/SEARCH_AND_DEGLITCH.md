@@ -712,6 +712,13 @@ across 13 validation blocks, with H1/L1 availability and zero block overlap. Tes
 counted only to prove exclusion; no test strain array is opened. An insufficient audit is retained
 as machine-readable negative evidence and exits nonzero.
 
+`gwosc-plan-disjoint` constructs the corresponding acquisition parent from public O4a strain-file
+metadata. It replays one or more frozen exclusion plans, requires every excluded source pair to be
+unchanged in the current GWOSC inventory, removes those pair IDs and file GPS starts, and then uses
+a seeded stratified selection from the complement. The intended AMPLFI training plan excludes the
+entire frozen 880-pair candidate/independent-validation parent before selecting 80 new H1/L1 pairs.
+It cannot query O4b, inspect candidate scores or open test strain.
+
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
 `validation_selected_checkpoint`, says `selection_split: validation`, is explicitly

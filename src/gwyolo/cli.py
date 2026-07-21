@@ -324,6 +324,15 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_plan_extend.add_argument("--extension-seed", type=int)
     gwosc_plan_extend.add_argument("--output", required=True)
 
+    gwosc_plan_disjoint = subparsers.add_parser("gwosc-plan-disjoint")
+    gwosc_plan_disjoint.add_argument("--run", required=True)
+    gwosc_plan_disjoint.add_argument("--detectors", nargs="+", default=["H1", "L1"])
+    gwosc_plan_disjoint.add_argument("--sample-rate-khz", type=int, default=4)
+    gwosc_plan_disjoint.add_argument("--exclude-plan", action="append", required=True)
+    gwosc_plan_disjoint.add_argument("--target-pairs", type=int, required=True)
+    gwosc_plan_disjoint.add_argument("--seed", type=int, default=20260727)
+    gwosc_plan_disjoint.add_argument("--output", required=True)
+
     gwosc_plan_shard = subparsers.add_parser("gwosc-plan-shard")
     gwosc_plan_shard.add_argument("--plan", required=True)
     gwosc_plan_shard.add_argument("--shard-index", type=int, required=True)
@@ -1933,6 +1942,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.target_pairs,
                 args.extension_seed,
+            )
+        )
+    elif args.command == "gwosc-plan-disjoint":
+        from .gwosc import run_disjoint_gwosc_run_plan
+
+        _print(
+            run_disjoint_gwosc_run_plan(
+                args.run,
+                args.detectors,
+                args.exclude_plan,
+                args.output,
+                target_pairs=args.target_pairs,
+                sample_rate_khz=args.sample_rate_khz,
+                seed=args.seed,
             )
         )
     elif args.command == "gwosc-batch-download":
