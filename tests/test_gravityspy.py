@@ -219,6 +219,98 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         assert np.count_nonzero(arrays["glitch_mask"][0]) > 0
         assert np.count_nonzero(arrays["glitch_mask"][1:]) == 0
 
+    def reject_redundant_download(*_args, **_kwargs):
+        raise AssertionError("completed materialization reacquired source strain")
+
+    monkeypatch.setattr(
+        "gwyolo.gravityspy.download_resumable", reject_redundant_download
+    )
+    resumed = materialize_gravityspy_network_strain(
+        plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
+    )
+    assert resumed == report
+
+
+def test_completed_gravityspy_network_materialization_rejects_changed_sample(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """physical_training:
+  model_ifos: [H1, L1, V1]
+  q_values: [4]
+  target_sample_rate: 64
+  tensor: {frequency_bins: 8, time_bins: 8, fmin: 4, fmax: 30}
+"""
+    )
+    sources = {
+        ifo: {
+            "detector": ifo,
+            "observing_run": "O2",
+            "hdf5_url": f"https://example/{ifo}.hdf5",
+            "detail_url": f"https://example/{ifo}/detail",
+        }
+        for ifo in ("H1", "L1")
+    }
+    plan = tmp_path / "plan.jsonl"
+    plan.write_text(
+        json.dumps(
+            {
+                "glitch_id": "g",
+                "split": "train",
+                "network_gps_block": "O2:block",
+                "observing_run": "O2",
+                "ifo": "H1",
+                "event_time": 1100.0,
+                "duration": 0.2,
+                "peak_frequency": 20.0,
+                "q_value": 4.0,
+                "context_duration": 4.0,
+                "available_ifos": ["H1", "L1"],
+                "detector_availability": [1, 1, 0],
+                "network_strain_sources": sources,
+            }
+        )
+        + "\n"
+    )
+
+    def fake_download(url, path, workers):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(url.encode())
+        return {"path": str(path)}
+
+    monkeypatch.setattr("gwyolo.gravityspy.download_resumable", fake_download)
+    monkeypatch.setattr(
+        "gwyolo.gravityspy.verify_hdf5_against_detail",
+        lambda path, detail, chunk_samples: {
+            "passed": True,
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "bytes": Path(path).stat().st_size,
+        },
+    )
+    monkeypatch.setattr("gwyolo.gravityspy._api_json", lambda _: {})
+    monkeypatch.setattr(
+        "gwyolo.gravityspy.read_hdf5_segment",
+        lambda *_args: {
+            "strain": np.sin(np.linspace(0, 20, 256)) * 1e-21,
+            "sample_rate": 64,
+            "quality": {
+                "DQmask": np.ones(4, dtype=np.int64),
+                "Injmask": np.zeros(4, dtype=np.int64),
+            },
+        },
+    )
+    report = materialize_gravityspy_network_strain(
+        plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
+    )
+    row = json.loads(Path(report["manifest_path"]).read_text().strip())
+    Path(row["path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="sample changed"):
+        materialize_gravityspy_network_strain(
+            plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
+        )
+
 
 def test_gravityspy_network_shards_keep_shared_sources_together(tmp_path) -> None:
     manifest = tmp_path / "network-plan.jsonl"

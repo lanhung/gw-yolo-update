@@ -609,6 +609,7 @@ def materialize_gravityspy_network_strain(
     }
     state_path = output / "materialization_state.json"
     partial_path = output / "materialization_partial.json"
+    report_path = output / "gravityspy_network_numeric_report.json"
     completed: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     verified_sources: dict[str, dict[str, Any]] = {}
@@ -616,6 +617,16 @@ def materialize_gravityspy_network_strain(
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state.get("run_identity") != run_identity:
             raise ValueError("Existing network materialization belongs to another run")
+        if state.get("status") == "complete":
+            return _load_completed_gravityspy_materialization(
+                state=state,
+                report_path=report_path,
+                partial_path=partial_path,
+                run_identity=run_identity,
+                expected_status=(
+                    "verified_gravityspy_aligned_network_numeric_weak_masks"
+                ),
+            )
         if partial_path.is_file():
             partial = json.loads(partial_path.read_text(encoding="utf-8"))
             completed = list(partial.get("records", []))
@@ -844,7 +855,6 @@ def materialize_gravityspy_network_strain(
         "human_pixel_masks": 0,
         "source_cache_evicted": False,
     }
-    report_path = output / "gravityspy_network_numeric_report.json"
     atomic_write_json(report_path, report)
     atomic_write_json(
         state_path,
@@ -858,6 +868,69 @@ def materialize_gravityspy_network_strain(
             "report_sha256": file_sha256(report_path),
         },
     )
+    return report
+
+
+def _load_completed_gravityspy_materialization(
+    *,
+    state: dict[str, Any],
+    report_path: Path,
+    partial_path: Path,
+    run_identity: dict[str, Any],
+    expected_status: str,
+) -> dict[str, Any]:
+    """Hash-validate and reuse a completed shard without reacquiring source strain."""
+
+    if not report_path.is_file() or not partial_path.is_file():
+        raise ValueError("Completed Gravity Spy state is missing its final artifacts")
+    if state.get("report_sha256") != file_sha256(report_path):
+        raise ValueError("Completed Gravity Spy report changed after finalization")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != expected_status:
+        raise ValueError("Completed Gravity Spy report has an unexpected status")
+    if report.get("run_identity") != run_identity:
+        raise ValueError("Completed Gravity Spy report belongs to another run")
+    manifest = Path(str(report.get("manifest_path", "")))
+    if not manifest.is_file() or report.get("manifest_sha256") != file_sha256(manifest):
+        raise ValueError("Completed Gravity Spy manifest is missing or changed")
+    with manifest.open("r", encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle if line.strip()]
+    if len(records) != int(report.get("rows", -1)):
+        raise ValueError("Completed Gravity Spy manifest row count changed")
+    glitch_ids: set[str] = set()
+    for record in records:
+        glitch_id = str(record["glitch_id"])
+        if glitch_id in glitch_ids:
+            raise ValueError("Completed Gravity Spy manifest has duplicate glitch IDs")
+        glitch_ids.add(glitch_id)
+        sample = Path(str(record["path"]))
+        if not sample.is_file() or record.get("sha256") != file_sha256(sample):
+            raise ValueError(f"Completed Gravity Spy sample changed: {glitch_id}")
+    partial = json.loads(partial_path.read_text(encoding="utf-8"))
+    if partial.get("run_identity") != run_identity:
+        raise ValueError("Completed Gravity Spy partial state belongs to another run")
+    partial_records = list(partial.get("records", []))
+    rejected = list(partial.get("rejected", []))
+    partial_ids = {str(record["glitch_id"]) for record in partial_records}
+    rejected_ids = {str(record["glitch_id"]) for record in rejected}
+    if (
+        len(partial_ids) != len(partial_records)
+        or len(rejected_ids) != len(rejected)
+        or partial_ids != glitch_ids
+        or partial_ids & rejected_ids
+    ):
+        raise ValueError("Completed Gravity Spy partial inventory changed")
+    expected_counts = {
+        "completed_rows": len(records),
+        "rejected_rows": len(rejected),
+        "requested_rows": len(records) + len(rejected),
+    }
+    if any(int(state.get(key, -1)) != value for key, value in expected_counts.items()):
+        raise ValueError("Completed Gravity Spy state counts are inconsistent")
+    if int(report.get("rejected_rows", -1)) != len(rejected):
+        raise ValueError("Completed Gravity Spy report rejection count changed")
+    if int(report.get("requested_rows", -1)) != len(records) + len(rejected):
+        raise ValueError("Completed Gravity Spy report request count changed")
     return report
 
 
@@ -1150,6 +1223,7 @@ def materialize_gravityspy_strain_shard(
     }
     state_path = output / "materialization_state.json"
     partial_path = output / "materialization_partial.json"
+    report_path = output / "gravityspy_numeric_report.json"
     completed: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     verified_sources: dict[str, dict[str, Any]] = {}
@@ -1157,6 +1231,14 @@ def materialize_gravityspy_strain_shard(
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state.get("run_identity") != run_identity:
             raise ValueError("Existing Gravity Spy shard state belongs to a different run")
+        if state.get("status") == "complete":
+            return _load_completed_gravityspy_materialization(
+                state=state,
+                report_path=report_path,
+                partial_path=partial_path,
+                run_identity=run_identity,
+                expected_status="verified_gravityspy_numeric_weak_masks",
+            )
         if partial_path.is_file():
             partial = json.loads(partial_path.read_text(encoding="utf-8"))
             completed = list(partial.get("records", []))
@@ -1365,7 +1447,6 @@ def materialize_gravityspy_strain_shard(
         "human_pixel_masks": 0,
         "source_cache_evicted": False,
     }
-    report_path = output / "gravityspy_numeric_report.json"
     atomic_write_json(report_path, report)
     atomic_write_json(
         state_path,
