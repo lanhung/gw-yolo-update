@@ -370,6 +370,8 @@ def test_streamed_background_merge_checks_global_groups_and_pair_ranges(
                     "gps_block": f"block-{index}",
                     "gps_start": 100.0 + 8 * index,
                     "gps_end": 108.0 + 8 * index,
+                    "observing_run": "O4a",
+                    "ifos": ["H1", "L1"],
                 }
             ],
         )
@@ -433,6 +435,16 @@ def test_streamed_background_merge_checks_global_groups_and_pair_ranges(
     assert result["complete_parent_plan"] is True
     assert result["cross_split_gps_block_overlap"] is False
     assert result["split_counts"] == {"train": 0, "val": 1, "test": 1}
+    assert result["observing_runs"] == {"O4a": 2}
+    assert result["available_ifos"] == {"H1": 2, "L1": 2}
+    assert result["detector_subset_counts"] == {"H1L1": 2}
+    assert result["zero_lag_live_time_seconds"] == 16
+    assert result["detector_time_seconds"] == 32
+    assert result["split_live_time_seconds"] == {
+        "train": 0,
+        "val": 8,
+        "test": 8,
+    }
     assert result["candidate_manifests"]["val"]["candidates"] == 1
     assert result["candidate_manifests"]["test"]["candidates"] == 1
     with pytest.raises(FileExistsError, match="immutable"):
@@ -458,6 +470,8 @@ def test_streamed_morphology_merge_retains_uncalibrated_validation_candidates(
                     "gps_block": f"block-{index}",
                     "gps_start": 200.0 + 8 * index,
                     "gps_end": 208.0 + 8 * index,
+                    "observing_run": "O4a",
+                    "ifos": ["H1", "L1"],
                 }
             ],
         )

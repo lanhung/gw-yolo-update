@@ -600,6 +600,8 @@ def merge_streamed_background_shards(
 ) -> dict[str, Any]:
     """Merge stable-split background/candidate shards with global overlap checks."""
 
+    from .background import _union_duration
+
     report_paths = [Path(path) for path in shard_reports]
     if not report_paths:
         raise ValueError("at least one streamed background shard is required")
@@ -699,6 +701,11 @@ def merge_streamed_background_shards(
         raise ValueError("streamed background shards repeat GPS windows")
     block_splits: dict[str, str] = {}
     for row in background_rows:
+        if not str(row.get("observing_run", "")):
+            raise ValueError("streamed background window lacks observing-run identity")
+        ifos = row.get("ifos")
+        if not isinstance(ifos, list) or not ifos or len(set(ifos)) != len(ifos):
+            raise ValueError("streamed background window lacks explicit detector availability")
         block = str(row["gps_block"])
         split = str(row["split"])
         prior = block_splits.setdefault(block, split)
@@ -759,6 +766,22 @@ def merge_streamed_background_shards(
         split: sum(str(row["split"]) == split for row in background_rows)
         for split in ("train", "val", "test")
     }
+    split_live_time_seconds = {}
+    split_detector_time_seconds = {}
+    for split in ("train", "val", "test"):
+        selected = [row for row in background_rows if str(row["split"]) == split]
+        split_live_time_seconds[split] = _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+        )
+        intervals_by_ifo: dict[str, list[tuple[float, float]]] = {}
+        for row in selected:
+            for ifo in row["ifos"]:
+                intervals_by_ifo.setdefault(str(ifo), []).append(
+                    (float(row["gps_start"]), float(row["gps_end"]))
+                )
+        split_detector_time_seconds[split] = sum(
+            _union_duration(intervals) for intervals in intervals_by_ifo.values()
+        )
     result = {
         "status": (
             "verified_merged_streamed_morphology_background"
@@ -787,6 +810,30 @@ def merge_streamed_background_shards(
         "complete_parent_plan": complete_parent,
         "background_windows": len(background_rows),
         "gps_blocks": len(block_splits),
+        "observing_runs": dict(
+            sorted(
+                Counter(str(row["observing_run"]) for row in background_rows).items()
+            )
+        ),
+        "available_ifos": dict(
+            sorted(
+                Counter(
+                    str(ifo) for row in background_rows for ifo in row["ifos"]
+                ).items()
+            )
+        ),
+        "detector_subset_counts": dict(
+            sorted(
+                Counter(
+                    "".join(str(ifo) for ifo in row["ifos"])
+                    for row in background_rows
+                ).items()
+            )
+        ),
+        "zero_lag_live_time_seconds": _union_duration(window_intervals),
+        "detector_time_seconds": sum(split_detector_time_seconds.values()),
+        "split_live_time_seconds": split_live_time_seconds,
+        "split_detector_time_seconds": split_detector_time_seconds,
         "cross_split_gps_block_overlap": False,
         "split_counts": split_counts,
         "background_manifest_path": str(background_path),
