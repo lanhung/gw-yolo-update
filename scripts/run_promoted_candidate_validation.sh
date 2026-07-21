@@ -34,14 +34,22 @@ for input in \
   fi
 done
 
-readarray -t selection < <("$TASK_PYTHON" -c '
+if ! selection_output=$("$TASK_PYTHON" -c '
 import json, sys
 report = json.load(open(sys.argv[1], encoding="utf-8"))
 if report.get("status") != "completed_five_seed_source_safe_overlap_validation":
     raise SystemExit("five-seed summary has the wrong status")
 print(report["promoted_arm"])
 print(report["selected_checkpoint_path"])
-' "$FIVE_SEED_SUMMARY")
+' "$FIVE_SEED_SUMMARY"); then
+  echo "failed to resolve checkpoint/config from five-seed summary" >&2
+  exit 2
+fi
+readarray -t selection <<<"$selection_output"
+if (( ${#selection[@]} != 2 )) || [[ -z "${selection[0]}" || -z "${selection[1]}" ]]; then
+  echo "five-seed summary did not return exactly one arm and checkpoint" >&2
+  exit 2
+fi
 arm=${selection[0]}
 checkpoint=${selection[1]}
 if [[ "$arm" == uniform ]]; then

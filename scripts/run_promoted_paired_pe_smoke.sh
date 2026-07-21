@@ -35,7 +35,7 @@ if [[ ! -d "$TASK_CODE_DIR/src/gwyolo" ]]; then
   exit 2
 fi
 
-readarray -t selection < <(
+if ! selection_output=$(
   "$TASK_PYTHON" - \
     "$FIVE_SEED_SUMMARY" \
     "$UNIFORM_CONFIG" \
@@ -98,8 +98,12 @@ if report.get("status") != "validation_selected_real_glitch_overlap_finetune":
 print(report_path)
 print(config)
 PY
-)
-if [[ "${#selection[@]}" -ne 2 ]]; then
+); then
+  echo "promoted paired PE model selection failed" >&2
+  exit 2
+fi
+readarray -t selection <<<"$selection_output"
+if (( ${#selection[@]} != 2 )) || [[ -z "${selection[0]}" || -z "${selection[1]}" ]]; then
   echo "promoted paired PE selection returned an invalid result" >&2
   exit 2
 fi

@@ -55,7 +55,7 @@ if [[ "$observed_commit" != "$GWYOLO_CODE_COMMIT" ]]; then
   exit 3
 fi
 
-readarray -t native_manifests < <(
+if ! native_manifest_output=$(
   "$TASK_PYTHON" - "$smoke_summary" "$dingo_native_report" "$amplfi_native_report" <<'PY'
 import hashlib
 import json
@@ -87,8 +87,13 @@ for backend, path in (("dingo_native", dingo_path), ("amplfi_native", amplfi_pat
         raise SystemExit(f"{backend} is not validation-only")
     print(manifest)
 PY
-)
-if [[ "${#native_manifests[@]}" -ne 2 ]]; then
+); then
+  echo "joint PE native manifest resolution failed" >&2
+  exit 4
+fi
+readarray -t native_manifests <<<"$native_manifest_output"
+if (( ${#native_manifests[@]} != 2 )) \
+  || [[ -z "${native_manifests[0]}" || -z "${native_manifests[1]}" ]]; then
   echo "joint PE native manifest resolution failed" >&2
   exit 4
 fi
