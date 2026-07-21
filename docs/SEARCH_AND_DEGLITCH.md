@@ -651,8 +651,9 @@ backend comparison has run.
 
 `scripts/setup_pe_backends.sh` is the reproducible environment bootstrap. It requires explicit
 source, commit, tag, interpreter and output variables; refuses a shared DINGO/AMPLFI environment;
-refuses to run beside another active package installer; and writes sorted package plus CUDA runtime
-snapshots. Hermetic virtual environments are the default. A system-site-package overlay is available
+holds a nonblocking atomic installation lock before inspecting package-manager state; refuses to run
+beside another active package installer; and writes sorted package plus CUDA runtime snapshots.
+Hermetic virtual environments are the default. A system-site-package overlay is available
 only as an explicit engineering option and its full observed package-set hash must still be frozen
 before publication.
 
