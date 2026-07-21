@@ -1184,6 +1184,21 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_batch.add_argument("--device", default="cuda")
     dingo_batch.add_argument("--seed", type=int, default=20260721)
 
+    amplfi_batch = subparsers.add_parser("amplfi-common-batch")
+    amplfi_batch.add_argument("--native-manifest", required=True)
+    amplfi_batch.add_argument("--model-metadata", required=True)
+    amplfi_batch.add_argument("--native-prior", required=True)
+    amplfi_batch.add_argument("--python-executable", required=True)
+    amplfi_batch.add_argument(
+        "--runner-script", default="scripts/run_amplfi_common_event.py"
+    )
+    amplfi_batch.add_argument("--output-dir", required=True)
+    amplfi_batch.add_argument("--required-split", choices=["val", "test"], required=True)
+    amplfi_batch.add_argument("--num-samples", type=int, default=10000)
+    amplfi_batch.add_argument("--sample-batch-size", type=int, default=1000)
+    amplfi_batch.add_argument("--device", default="cuda")
+    amplfi_batch.add_argument("--seed", type=int, default=20260721)
+
     pe_backend = subparsers.add_parser("pe-backend-lock-audit")
     pe_backend.add_argument("--config", required=True)
     pe_backend.add_argument("--output", required=True)
@@ -2740,6 +2755,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.num_samples,
                 args.batch_size,
                 args.num_gnpe_iterations,
+                args.device,
+                args.seed,
+            )
+        )
+    elif args.command == "amplfi-common-batch":
+        from .amplfi_adapter import run_amplfi_common_batch
+
+        _print(
+            run_amplfi_common_batch(
+                args.native_manifest,
+                args.model_metadata,
+                args.native_prior,
+                args.python_executable,
+                args.runner_script,
+                args.output_dir,
+                args.required_split,
+                args.num_samples,
+                args.sample_batch_size,
                 args.device,
                 args.seed,
             )

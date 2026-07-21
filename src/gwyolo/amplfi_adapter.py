@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
@@ -395,3 +396,307 @@ class GroupSafeFlowDataset(_FlowDataset):  # type: ignore[misc,valid-type]
                 "group-safe AMPLFI validation duration is below min_valid_duration"
             )
         return [str(path) for path in train], [str(path) for path in validation]
+
+
+AMPLFI_PE_CONDITIONS = ("clean", "contaminated", "mask_conditioned")
+
+
+def _load_amplfi_native_rows(
+    path: str | Path, required_split: str
+) -> list[dict[str, Any]]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("AMPLFI native conditioning manifest is empty")
+    if any(row.get("backend") != "AMPLFI" for row in rows):
+        raise ValueError("AMPLFI batch received a non-AMPLFI conditioning row")
+    if any(str(row.get("split")) != required_split for row in rows):
+        raise ValueError("AMPLFI batch native manifest contains another split")
+    by_injection: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        by_injection[str(row["injection_id"])].add(str(row["condition"]))
+    if any(values != set(AMPLFI_PE_CONDITIONS) for values in by_injection.values()):
+        raise ValueError("AMPLFI batch requires three conditions for every injection")
+    if len(rows) != len(AMPLFI_PE_CONDITIONS) * len(by_injection):
+        raise ValueError("AMPLFI batch native manifest repeats an injection condition")
+    return rows
+
+
+def _validated_amplfi_report(
+    path: Path,
+    event_sha256: str,
+    model_sha256: str,
+    model_config_sha256: str,
+    native_prior_sha256: str,
+) -> dict[str, Any]:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "status": "real_amplfi_flow_posterior_complete",
+        "backend": "AMPLFI",
+        "event_sha256": event_sha256,
+        "model_sha256": model_sha256,
+        "model_config_sha256": model_config_sha256,
+        "native_prior_sha256": native_prior_sha256,
+    }
+    if any(report.get(key) != value for key, value in expected.items()):
+        raise ValueError("Existing AMPLFI posterior report belongs to another run")
+    for prefix in ("posterior", "native_result"):
+        artifact = Path(report[f"{prefix}_path"])
+        if not artifact.is_file() or file_sha256(artifact) != report[f"{prefix}_sha256"]:
+            raise ValueError(f"Existing AMPLFI {prefix} artifact hash mismatch")
+    return report
+
+
+def run_amplfi_common_batch(
+    native_manifest: str | Path,
+    model_metadata_path: str | Path,
+    native_prior_path: str | Path,
+    python_executable: str | Path,
+    runner_script: str | Path,
+    output_dir: str | Path,
+    required_split: str,
+    num_samples: int = 10000,
+    sample_batch_size: int = 1000,
+    device: str = "cuda",
+    seed: int = 20260721,
+) -> dict[str, Any]:
+    """Run a validation-selected AMPLFI checkpoint on matched PE conditions."""
+
+    if required_split not in {"val", "test"}:
+        raise ValueError("AMPLFI batch is restricted to val or test")
+    if num_samples <= 0 or sample_batch_size <= 0:
+        raise ValueError("AMPLFI batch sampling settings must be positive")
+    metadata_path = Path(model_metadata_path).resolve()
+    metadata = load_yaml(metadata_path)
+    if metadata.get("backend") != "AMPLFI" or metadata.get(
+        "selection_split"
+    ) != "validation":
+        raise ValueError("AMPLFI batch requires validation-selected model metadata")
+    model = Path(metadata["model_path"]).resolve()
+    if file_sha256(model) != str(metadata["model_sha256"]):
+        raise ValueError("AMPLFI model hash differs from standardized metadata")
+    artifacts = metadata.get("artifacts", {})
+    training_identity = artifacts.get("training_config", {})
+    conditioning_identity = artifacts.get("native_conditioning_config", {})
+    model_config = Path(str(training_identity.get("path", ""))).resolve()
+    if (
+        not model_config.is_file()
+        or file_sha256(model_config) != training_identity.get("sha256")
+    ):
+        raise ValueError("AMPLFI training configuration hash differs from metadata")
+    native_prior = Path(native_prior_path).resolve()
+    native_prior_sha = file_sha256(native_prior)
+    python = Path(python_executable).resolve()
+    runner = Path(runner_script).resolve()
+    if not python.is_file() or not runner.is_file():
+        raise FileNotFoundError("AMPLFI pinned interpreter or runner script is absent")
+    source_input = metadata.get("source_input", {})
+    if (
+        source_input.get("ifos") != ["H1", "L1"]
+        or not source_input.get("common_asd_required")
+        or float(source_input.get("sample_rate_hz", 0)) <= 0
+        or float(source_input.get("duration_seconds", 0)) <= 0
+        or float(source_input.get("post_trigger_seconds", 0)) <= 0
+    ):
+        raise ValueError("AMPLFI model metadata lacks the common H1/L1 ASD contract")
+    rows = _load_amplfi_native_rows(native_manifest, required_split)
+    if any(
+        row.get("input_ifos") != source_input["ifos"]
+        or not np.isclose(
+            float(row.get("input_sample_rate_hz", 0)),
+            float(source_input["sample_rate_hz"]),
+        )
+        or not np.isclose(
+            float(row.get("input_duration_seconds", 0)),
+            float(source_input["duration_seconds"]),
+        )
+        or not np.isclose(
+            float(row.get("input_post_trigger_seconds", 0)),
+            float(source_input["post_trigger_seconds"]),
+        )
+        for row in rows
+    ):
+        raise ValueError("AMPLFI native rows differ from the model common-source contract")
+    expected_conditioning_sha = str(conditioning_identity.get("sha256", ""))
+    if any(
+        str(row.get("native_conditioning_config_sha256"))
+        != expected_conditioning_sha
+        for row in rows
+    ):
+        raise ValueError("AMPLFI native rows use a conditioning config outside model metadata")
+
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    run_identity = {
+        "schema": "amplfi_common_batch_v1",
+        "native_manifest_sha256": file_sha256(native_manifest),
+        "model_metadata_sha256": file_sha256(metadata_path),
+        "model_sha256": metadata["model_sha256"],
+        "model_config_sha256": training_identity["sha256"],
+        "native_prior_sha256": native_prior_sha,
+        "python_executable": str(python),
+        "runner_sha256": file_sha256(runner),
+        "required_split": required_split,
+        "num_samples": num_samples,
+        "sample_batch_size": sample_batch_size,
+        "device": device,
+        "seed": seed,
+    }
+    state_path = output / "amplfi_batch_state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing AMPLFI batch output belongs to another run")
+    else:
+        atomic_write_json(
+            state_path, {"status": "in_progress", "run_identity": run_identity, "completed": 0}
+        )
+
+    result_rows = []
+    for index, row in enumerate(rows, start=1):
+        event = Path(row["native_conditioning_path"]).resolve()
+        if file_sha256(event) != str(row["native_conditioning_sha256"]):
+            raise ValueError("AMPLFI native conditioning artifact hash mismatch")
+        event_output = output / "events" / str(row["injection_id"]) / str(
+            row["condition"]
+        )
+        posterior = event_output / "posterior.npz"
+        native_result = event_output / "amplfi_result.hdf5"
+        report_path = event_output / "amplfi_inference_report.json"
+        log_path = event_output / "amplfi_inference.log"
+        if report_path.is_file():
+            report = _validated_amplfi_report(
+                report_path,
+                row["native_conditioning_sha256"],
+                metadata["model_sha256"],
+                training_identity["sha256"],
+                native_prior_sha,
+            )
+        else:
+            event_output.mkdir(parents=True, exist_ok=True)
+            command = [
+                str(python),
+                str(runner),
+                "--event",
+                str(event),
+                "--model",
+                str(model),
+                "--model-config",
+                str(model_config),
+                "--native-prior",
+                str(native_prior),
+                "--posterior-output",
+                str(posterior),
+                "--result-output",
+                str(native_result),
+                "--report-output",
+                str(report_path),
+                "--expected-event-sha256",
+                row["native_conditioning_sha256"],
+                "--expected-model-sha256",
+                metadata["model_sha256"],
+                "--expected-model-config-sha256",
+                training_identity["sha256"],
+                "--expected-native-prior-sha256",
+                native_prior_sha,
+                "--num-samples",
+                str(num_samples),
+                "--sample-batch-size",
+                str(sample_batch_size),
+                "--device",
+                device,
+                "--seed",
+                str(seed + index - 1),
+            ]
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            atomic_write_text(
+                log_path,
+                "command: "
+                + json.dumps(command)
+                + "\nstdout:\n"
+                + completed.stdout
+                + "\nstderr:\n"
+                + completed.stderr,
+            )
+            if completed.returncode != 0:
+                atomic_write_json(
+                    event_output / "amplfi_inference_failure.json",
+                    {
+                        "status": "failed",
+                        "returncode": completed.returncode,
+                        "log_path": str(log_path),
+                        "log_sha256": file_sha256(log_path),
+                        "event_sha256": row["native_conditioning_sha256"],
+                        "model_sha256": metadata["model_sha256"],
+                        "model_config_sha256": training_identity["sha256"],
+                        "native_prior_sha256": native_prior_sha,
+                    },
+                )
+                raise RuntimeError(f"AMPLFI inference failed; inspect {log_path}")
+            report = _validated_amplfi_report(
+                report_path,
+                row["native_conditioning_sha256"],
+                metadata["model_sha256"],
+                training_identity["sha256"],
+                native_prior_sha,
+            )
+        result_rows.append(
+            {
+                **row,
+                "backend": "AMPLFI",
+                "posterior_path": report["posterior_path"],
+                "posterior_sha256": report["posterior_sha256"],
+                "latency_seconds": report["latency_seconds"],
+                "effective_sample_size": report["effective_sample_size"],
+                "backend_version": report["backend_version"],
+                "backend_model_hash": report["model_sha256"],
+                "prior_hash": row["common_prior_sha256"],
+                "native_prior_path": report["native_prior_path"],
+                "native_prior_sha256": report["native_prior_sha256"],
+                "waveform_approximant": metadata["analysis_waveform_approximant"],
+                "detector_set": row["input_ifos"],
+                "calibration_version": "none_software_injection_o4a_strain",
+                "source_event_hash": row["source_event_hash"],
+                "hardware": {
+                    "hostname": report["environment"]["hostname"],
+                    "gpu": report["environment"]["gpu"],
+                },
+                "latency_scope": (
+                    "verified-source-and-model-load-through-posterior-write_"
+                    "excludes-mask-generation"
+                ),
+                "backend_native_latency_scope": report["latency_scope"],
+            }
+        )
+        atomic_write_json(
+            state_path,
+            {"status": "in_progress", "run_identity": run_identity, "completed": index},
+        )
+    manifest = output / "amplfi_posterior_manifest.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in result_rows)
+    )
+    report = {
+        "status": "real_amplfi_common_batch_complete",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "matched DINGO results and paired robustness evaluation are still required"
+        ),
+        "rows": len(result_rows),
+        "paired_injections": len({row["injection_id"] for row in result_rows}),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "run_identity": run_identity,
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "amplfi_batch_report.json", report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed": len(result_rows),
+            "manifest_sha256": report["manifest_sha256"],
+        },
+    )
+    return report

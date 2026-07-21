@@ -6,6 +6,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
 from .runtime import execution_provenance
 
@@ -87,11 +89,32 @@ def run_dingo_common_batch(
     if not python.is_file() or not runner.is_file():
         raise FileNotFoundError("DINGO pinned interpreter or runner script is absent")
     source_input = metadata.get("source_input", {})
-    if source_input.get("ifos") != ["H1", "L1"] or not source_input.get(
-        "common_asd_required"
+    if (
+        source_input.get("ifos") != ["H1", "L1"]
+        or not source_input.get("common_asd_required")
+        or float(source_input.get("sample_rate_hz", 0)) <= 0
+        or float(source_input.get("duration_seconds", 0)) <= 0
+        or float(source_input.get("post_trigger_seconds", 0)) <= 0
     ):
         raise ValueError("DINGO model metadata lacks the common H1/L1 ASD contract")
     rows = _load_native_rows(native_manifest, required_split)
+    if any(
+        row.get("input_ifos") != source_input["ifos"]
+        or not np.isclose(
+            float(row.get("input_sample_rate_hz", 0)),
+            float(source_input["sample_rate_hz"]),
+        )
+        or not np.isclose(
+            float(row.get("input_duration_seconds", 0)),
+            float(source_input["duration_seconds"]),
+        )
+        or not np.isclose(
+            float(row.get("input_post_trigger_seconds", 0)),
+            float(source_input["post_trigger_seconds"]),
+        )
+        for row in rows
+    ):
+        raise ValueError("DINGO native rows differ from the model common-source contract")
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {

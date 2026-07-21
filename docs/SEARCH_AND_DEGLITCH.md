@@ -632,6 +632,34 @@ model and time-initialization model hashes, loads upstream `EventDataset`, `GWSa
 latency. Backend import or model compatibility failures are explicit and non-zero; no synthetic
 posterior fallback exists. A resumed batch revalidates every posterior and native-result hash.
 
+Real AMPLFI sampling follows the same fail-closed contract through `amplfi-common-batch` and
+`scripts/run_amplfi_common_event.py`. The pinned interpreter reconstructs the exact v0.6 NSF and
+`MultiModalPsd` architecture from the hashed training config, strictly loads a validation-selected
+Lightning checkpoint and its fitted parameter scaler, crops the common 16-second source so that the
+event is 0.5 seconds from the right edge of the final three-second model input, and applies the
+upstream `ml4gw.transforms.Whiten` implementation with the shared ASD. It does not invoke AMPLFI's
+runtime PSD estimator. Samples outside the hashed native training-prior support are removed before
+`phi` is converted to physical right ascension. Both native and canonical posterior fields are
+retained, together with model-load, preprocessing, sampling and end-to-end latency. AMPLFI v0.6's
+`MultiModalPsd` scales its ASD argument in place, so the runner supplies a fresh clone to every
+embedding call; otherwise the sampling context would be multiplied again during log-probability
+evaluation and subsequent sample chunks.
+
+```bash
+python -m gwyolo.cli amplfi-common-batch \
+  --native-manifest artifacts/pe/amplfi_native_val/amplfi_native_conditioning.jsonl \
+  --model-metadata artifacts/pe/amplfi/model_metadata.json \
+  --native-prior configs/amplfi_common_bbh_training_prior.yaml \
+  --python-executable artifacts/pe/envs/amplfi/bin/python \
+  --runner-script scripts/run_amplfi_common_event.py \
+  --output-dir artifacts/pe/amplfi_posteriors_val \
+  --required-split val
+```
+
+The AMPLFI runner is now unit-tested at the orchestration, hash, resume, architecture and prior
+contract boundaries. A real checkpoint-load smoke remains mandatory; a fake subprocess used by the
+CPU orchestration test is not posterior evidence and cannot enable a scientific claim.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time

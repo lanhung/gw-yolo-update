@@ -220,12 +220,23 @@ def _condition_amplfi(
     native_rate = int(config["native_sample_rate_hz"])
     duration = float(config["source_duration_seconds"])
     post_trigger = float(config["source_post_trigger_seconds"])
+    kernel = float(config["native_kernel_seconds"])
+    whitening_duration = float(config["native_whitening_duration_seconds"])
+    highpass = float(config["native_highpass_hz"])
+    right_pad = float(config["native_right_pad_seconds"])
     if source["ifos"] != ifos or source["sample_rate"] != source_rate:
         raise ValueError("AMPLFI source detector/sample-rate contract mismatch")
     if not np.isclose(source["post_trigger_seconds"], post_trigger, atol=1e-12):
         raise ValueError("AMPLFI source post-trigger contract mismatch")
     if source_rate % native_rate:
         raise ValueError("AMPLFI source-to-native sample rates require integer decimation")
+    if (
+        kernel <= 0
+        or whitening_duration <= 0
+        or not 0 <= right_pad < kernel
+        or not 0 < highpass < native_rate / 2
+    ):
+        raise ValueError("AMPLFI native window/whitening settings are invalid")
     window_config = config["resampling"]["window"]
     if list(window_config) != ["kaiser", 8.6]:
         raise ValueError("AMPLFI native conditioning resampling window is unsupported")
@@ -251,6 +262,10 @@ def _condition_amplfi(
         handle.attrs["geocent_time"] = source["geocent_time"]
         handle.attrs["post_trigger_seconds"] = post_trigger
         handle.attrs["sample_rate_hz"] = native_rate
+        handle.attrs["kernel_seconds"] = kernel
+        handle.attrs["whitening_duration_seconds"] = whitening_duration
+        handle.attrs["highpass_hz"] = highpass
+        handle.attrs["right_pad_seconds"] = right_pad
         handle.create_dataset("strain", data=strain.astype(np.float32), compression="gzip")
         handle.create_dataset("ifos", data=np.asarray(ifos, dtype="S2"))
         handle.create_dataset("asd", data=source["asd"].astype(np.float64))
@@ -264,11 +279,10 @@ def _condition_amplfi(
         "native_duration_seconds": duration,
         "native_post_trigger_seconds": post_trigger,
         "native_samples_per_ifo": expected_samples,
-        "native_kernel_seconds": float(config["native_kernel_seconds"]),
-        "native_whitening_duration_seconds": float(
-            config["native_whitening_duration_seconds"]
-        ),
-        "native_highpass_hz": float(config["native_highpass_hz"]),
+        "native_kernel_seconds": kernel,
+        "native_whitening_duration_seconds": whitening_duration,
+        "native_highpass_hz": highpass,
+        "native_right_pad_seconds": right_pad,
         "runtime_whitening_must_not_reestimate_psd": bool(
             config["asd"]["runtime_whitening_must_not_reestimate_psd"]
         ),

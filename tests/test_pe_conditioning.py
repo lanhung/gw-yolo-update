@@ -107,6 +107,7 @@ def test_amplfi_native_conditioning_downsamples_and_retains_common_asd(tmp_path:
                 "native_kernel_seconds": 1,
                 "native_whitening_duration_seconds": 1,
                 "native_highpass_hz": 1,
+                "native_right_pad_seconds": 0.25,
                 "resampling": {
                     "method": "scipy_signal_resample_poly",
                     "window": ["kaiser", 8.6],
@@ -132,6 +133,7 @@ def test_amplfi_native_conditioning_downsamples_and_retains_common_asd(tmp_path:
             assert handle["asd"].shape == (2, 17)
             assert handle.attrs["common_asd_sha256"] == row["common_asd_sha256"]
         assert row["runtime_whitening_must_not_reestimate_psd"] is True
+        assert row["native_right_pad_seconds"] == 0.25
 
 
 def test_amplfi_native_conditioning_rejects_changed_event_position(tmp_path: Path) -> None:
@@ -152,6 +154,7 @@ def test_amplfi_native_conditioning_rejects_changed_event_position(tmp_path: Pat
                 "native_kernel_seconds": 1,
                 "native_whitening_duration_seconds": 1,
                 "native_highpass_hz": 1,
+                "native_right_pad_seconds": 0.25,
                 "resampling": {
                     "method": "scipy_signal_resample_poly",
                     "window": ["kaiser", 8.6],

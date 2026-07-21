@@ -8,6 +8,7 @@ native_sample_rate_hz: 2048
 native_kernel_seconds: 3
 native_whitening_duration_seconds: 2
 native_highpass_hz: 25
+native_right_pad_seconds: 0.5
 resampling:
   method: scipy_signal_resample_poly
   window: [kaiser, 8.6]

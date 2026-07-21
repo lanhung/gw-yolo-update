@@ -80,6 +80,9 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
                 "source_input": {
                     "ifos": ["H1", "L1"],
                     "common_asd_required": True,
+                    "sample_rate_hz": 16,
+                    "duration_seconds": 4,
+                    "post_trigger_seconds": 1,
                 },
                 "analysis_waveform_approximant": "IMRPhenomXPHM",
             }

@@ -748,3 +748,12 @@ context, and all three conditions share its exact hash. DINGO and AMPLFI conditi
 generate resumable native HDF5 artifacts with source/ASD/config lineage. The DINGO runner calls the
 real upstream `EventDataset`, `GWSampler` and `GWSamplerGNPE` APIs and has no mock-posterior fallback;
 an actual model-load smoke remains pending the queued pinned environment and official weights.
+
+The AMPLFI execution boundary is now equally explicit. The pinned runner reconstructs the frozen
+NSF plus `MultiModalPsd` architecture, strictly loads the validation-selected Lightning checkpoint
+and fitted scaler, uses upstream ML4GW whitening with the condition-invariant ASD, and converts the
+native `phi` posterior to physical right ascension at the event GPS. The batch adapter hash-locks
+the checkpoint, training config, native prior, conditioning artifact and runner and is resumable at
+the event/condition level. CPU tests exercise a fake subprocess only to validate orchestration and
+failure semantics; no AMPLFI scientific result exists until the queued common-domain training and
+real checkpoint-load smoke complete.
