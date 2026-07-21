@@ -746,6 +746,14 @@ SHA256 is `21750fc7b32c660f751273eba9aab80b0625590848fa172fc79160648bdbc342`. Th
 schedule semantics and execution equivalence only: it is a subset of old exposure, not new FAR
 evidence.
 
+The next execution revision can construct that sparse schedule automatically. A predeclared
+absolute-index range is scanned using only the frozen background GPS grid and detector validity;
+zero-exposure offsets are removed and the shortest ordered nonzero prefix meeting the requested
+Poisson zero-count exposure is frozen. Schema-v2 binds the full scanned range and available versus
+required exposure into the schedule ID. If the range cannot reach the target, all available
+nonzero offsets are retained with an explicit blocker. This prevents either model-score-guided
+offset selection or a misleading claim that a finite schedule attained its requested FAR.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed

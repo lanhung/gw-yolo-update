@@ -8,9 +8,12 @@ import pytest
 
 from gwyolo.background import SECONDS_PER_YEAR
 from gwyolo.exposure import (
+    candidate_slide_schedule_identity,
     freeze_candidate_time_slide_schedule,
+    freeze_candidate_time_slide_range_schedule,
     plan_candidate_background_exposure,
 )
+from gwyolo.io import canonical_hash
 
 
 def test_candidate_exposure_plan_counts_every_valid_noncyclic_pair_once() -> None:
@@ -131,3 +134,50 @@ def test_candidate_time_slide_schedule_freezes_only_nonzero_offsets(
         freeze_candidate_time_slide_schedule(
             manifest, tmp_path / "zero.json", "val", "H1", "L1", 8, [9], 1.0
         )
+
+
+def test_range_schedule_selects_shortest_nonzero_prefix_for_target(
+    tmp_path: Path,
+) -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "val",
+            "gps_start": index * 8,
+            "gps_end": (index + 1) * 8,
+            "gps_block": "g",
+            "ifos": ["H1", "L1"],
+        }
+        for index in range(5)
+    ]
+    manifest = tmp_path / "background.jsonl"
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows), encoding="utf-8"
+    )
+    required_seconds = 40.0
+    target_far = -math.log(0.1) * SECONDS_PER_YEAR / required_seconds
+    output = tmp_path / "range-schedule.json"
+    report = freeze_candidate_time_slide_range_schedule(
+        manifest,
+        output,
+        "val",
+        "H1",
+        "L1",
+        8.0,
+        1,
+        8,
+        target_far,
+        0.90,
+    )
+    assert report["schema_version"] == 2
+    assert report["slide_indices"] == [1, 2]
+    assert report["exposure_plan"]["equivalent_live_time_seconds"] == 56
+    assert report["schedule_exposure_target_reached"] is True
+    metadata = report["selection_metadata"]
+    assert metadata["evaluated_offsets"] == 7
+    assert metadata["nonzero_offsets_available"] == 4
+    assert metadata["available_equivalent_live_time_seconds"] == 80
+    assert metadata["selected_equivalent_live_time_seconds"] == 56
+    assert report["schedule_id"] == canonical_hash(
+        candidate_slide_schedule_identity(report), 32
+    )

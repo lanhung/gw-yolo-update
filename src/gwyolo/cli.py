@@ -903,6 +903,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--zero-count-confidence", type=float, default=0.90
     )
 
+    candidate_slide_range_schedule = subparsers.add_parser(
+        "candidate-time-slide-range-schedule-freeze"
+    )
+    candidate_slide_range_schedule.add_argument("--background-manifest", required=True)
+    candidate_slide_range_schedule.add_argument("--output", required=True)
+    candidate_slide_range_schedule.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    candidate_slide_range_schedule.add_argument("--reference-ifo", default="H1")
+    candidate_slide_range_schedule.add_argument("--shifted-ifo", default="L1")
+    candidate_slide_range_schedule.add_argument("--step-seconds", type=float, required=True)
+    candidate_slide_range_schedule.add_argument(
+        "--slide-start-index", type=int, default=1
+    )
+    candidate_slide_range_schedule.add_argument(
+        "--slide-stop-index-exclusive", type=int, required=True
+    )
+    candidate_slide_range_schedule.add_argument(
+        "--target-far-per-year", type=float, required=True
+    )
+    candidate_slide_range_schedule.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
     candidate_pipeline.add_argument("--injection-manifest", required=True)
@@ -2393,6 +2417,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.shifted_ifo,
                 args.step_seconds,
                 args.slide_index,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+            )
+        )
+    elif args.command == "candidate-time-slide-range-schedule-freeze":
+        from .exposure import freeze_candidate_time_slide_range_schedule
+
+        _print(
+            freeze_candidate_time_slide_range_schedule(
+                args.background_manifest,
+                args.output,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.step_seconds,
+                args.slide_start_index,
+                args.slide_stop_index_exclusive,
                 args.target_far_per_year,
                 args.zero_count_confidence,
             )

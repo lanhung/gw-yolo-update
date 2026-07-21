@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .exposure import normalize_candidate_slide_indices
+from .exposure import candidate_slide_schedule_identity, normalize_candidate_slide_indices
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -1656,21 +1656,7 @@ def run_candidate_time_slides(
         ):
             raise ValueError("candidate time-slide schedule background hash differs")
         all_indices = [int(value) for value in schedule.get("slide_indices", [])]
-        schedule_identity = {
-            field: schedule.get(field)
-            for field in (
-                "schema_version",
-                "selection_rule",
-                "split",
-                "reference_ifo",
-                "shifted_ifo",
-                "step_seconds",
-                "slide_indices",
-                "background_manifest_sha256",
-                "target_far_per_year",
-                "zero_count_confidence",
-            )
-        }
+        schedule_identity = candidate_slide_schedule_identity(schedule)
         if (
             schedule.get("candidate_scores_inspected") is not False
             or schedule.get("selection_data")
@@ -1864,21 +1850,7 @@ def merge_candidate_time_slide_shards(
         with schedule_path.open("r", encoding="utf-8") as handle:
             schedule = json.load(handle)
         schedule_indices = [int(value) for value in schedule.get("slide_indices", [])]
-        schedule_identity = {
-            field: schedule.get(field)
-            for field in (
-                "schema_version",
-                "selection_rule",
-                "split",
-                "reference_ifo",
-                "shifted_ifo",
-                "step_seconds",
-                "slide_indices",
-                "background_manifest_sha256",
-                "target_far_per_year",
-                "zero_count_confidence",
-            )
-        }
+        schedule_identity = candidate_slide_schedule_identity(schedule)
         if (
             schedule.get("status") != "frozen_candidate_time_slide_schedule"
             or schedule.get("schedule_id") != first.get("slide_schedule_id")

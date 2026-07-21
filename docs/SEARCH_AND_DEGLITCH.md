@@ -232,6 +232,14 @@ read. Scheduled runner shards select by `--schedule-offset`; the merge passes it
 gate only when the union of shard indices exactly equals the frozen schedule. Thus a deliberately
 sparse schedule is distinct from an accidentally missing contiguous shard.
 
+For a large newly merged background, `candidate-time-slide-range-schedule-freeze` removes the
+manual offset-selection step. Within one predeclared positive half-open range it evaluates detector
+availability only, discards zero-exposure offsets and freezes the shortest absolute-index prefix
+whose summed exposure reaches the requested zero-count FAR upper limit. If the entire range is
+insufficient it freezes every nonzero offset and records the shortfall rather than silently changing
+the FAR target. The scanned range, available exposure, required exposure, selection rule and the
+fact that candidate scores were not inspected are covered by the schema-v2 schedule ID.
+
 ```bash
 python -m gwyolo.cli candidate-time-slides \
   --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
@@ -259,6 +267,15 @@ python -m gwyolo.cli candidate-time-slides \
   --slide-schedule val-slide-schedule.json --schedule-offset 0 --slide-count 4 \
   --output-dir val-scheduled-slides --split val --step-seconds 8 \
   --coincidence-window-seconds 0.012
+```
+
+Or derive the nonzero prefix automatically from a frozen range:
+
+```bash
+python -m gwyolo.cli candidate-time-slide-range-schedule-freeze \
+  --background-manifest val-background.jsonl --output val-slide-schedule.json \
+  --split val --step-seconds 8 --slide-start-index 1 \
+  --slide-stop-index-exclusive 100001 --target-far-per-year 0.1
 ```
 
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent

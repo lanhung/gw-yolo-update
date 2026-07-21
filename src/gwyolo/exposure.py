@@ -43,6 +43,29 @@ def normalize_candidate_slide_indices(
     return indices
 
 
+def candidate_slide_schedule_identity(schedule: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable fields covered by a frozen slide schedule ID."""
+
+    identity = {
+        field: schedule.get(field)
+        for field in (
+            "schema_version",
+            "selection_rule",
+            "split",
+            "reference_ifo",
+            "shifted_ifo",
+            "step_seconds",
+            "slide_indices",
+            "background_manifest_sha256",
+            "target_far_per_year",
+            "zero_count_confidence",
+        )
+    }
+    if int(schedule.get("schema_version", 1)) >= 2:
+        identity["selection_metadata"] = schedule.get("selection_metadata")
+    return identity
+
+
 def plan_candidate_background_exposure(
     background_windows: Iterable[dict[str, Any]],
     split: str,
@@ -239,6 +262,10 @@ def freeze_candidate_time_slide_schedule(
     slide_indices: Iterable[int],
     target_far_per_year: float,
     zero_count_confidence: float = 0.90,
+    *,
+    selection_rule: str = "explicit_nonzero_absolute_indices_v1",
+    selection_metadata: dict[str, Any] | None = None,
+    schema_version: int = 1,
 ) -> dict[str, Any]:
     target = Path(output).resolve()
     if target.exists():
@@ -269,9 +296,9 @@ def freeze_candidate_time_slide_schedule(
             f"candidate time-slide schedule contains zero-exposure indices: {zero_exposure}"
         )
     background_hash = file_sha256(background_manifest)
-    identity = {
-        "schema_version": 1,
-        "selection_rule": "explicit_nonzero_absolute_indices_v1",
+    schedule_fields = {
+        "schema_version": schema_version,
+        "selection_rule": selection_rule,
         "split": split,
         "reference_ifo": reference_ifo,
         "shifted_ifo": shifted_ifo,
@@ -281,8 +308,13 @@ def freeze_candidate_time_slide_schedule(
         "target_far_per_year": target_far_per_year,
         "zero_count_confidence": zero_count_confidence,
     }
+    if schema_version >= 2:
+        if not isinstance(selection_metadata, dict) or not selection_metadata:
+            raise ValueError("schema-v2 slide schedule requires selection metadata")
+        schedule_fields["selection_metadata"] = selection_metadata
+    identity = candidate_slide_schedule_identity(schedule_fields)
     result = {
-        **identity,
+        **schedule_fields,
         "status": "frozen_candidate_time_slide_schedule",
         "scientific_claim_allowed": False,
         "selection_data": "background_gps_and_detector_availability_only",
@@ -292,7 +324,96 @@ def freeze_candidate_time_slide_schedule(
         "slide_indices_sha256": canonical_hash(indices, 64),
         "background_manifest_path": str(Path(background_manifest).resolve()),
         "exposure_plan": exposure,
+        "schedule_exposure_target_reached": exposure[
+            "target_zero_count_upper_reached"
+        ],
+        "scientific_blocker": (
+            "frozen validation-background execution schedule only; locked-test search claims "
+            "remain unavailable"
+            if exposure["target_zero_count_upper_reached"]
+            else "the frozen schedule does not reach the predeclared zero-count FAR exposure"
+        ),
         **execution_provenance(),
     }
     atomic_write_json(target, result)
     return result
+
+
+def freeze_candidate_time_slide_range_schedule(
+    background_manifest: str | Path,
+    output: str | Path,
+    split: str,
+    reference_ifo: str,
+    shifted_ifo: str,
+    step_seconds: float,
+    slide_start_index: int,
+    slide_stop_index_exclusive: int,
+    target_far_per_year: float,
+    zero_count_confidence: float = 0.90,
+) -> dict[str, Any]:
+    """Freeze the shortest nonzero-offset prefix meeting a predeclared FAR exposure."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("candidate time-slide schedules are immutable")
+    if slide_start_index <= 0 or slide_stop_index_exclusive <= slide_start_index:
+        raise ValueError("slide range must be a non-empty positive half-open interval")
+    indices = list(range(slide_start_index, slide_stop_index_exclusive))
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    scanned = plan_candidate_background_exposure(
+        rows,
+        split,
+        reference_ifo,
+        shifted_ifo,
+        len(indices),
+        step_seconds,
+        target_far_per_year,
+        zero_count_confidence,
+        slide_start_index,
+        indices,
+    )
+    nonzero = list(scanned["nonzero_slide_exposure"])
+    if not nonzero:
+        raise ValueError("slide range contains no nonzero detector-coincident exposure")
+    required_seconds = (
+        float(scanned["required_equivalent_years_for_zero_count_upper"])
+        * SECONDS_PER_YEAR
+    )
+    selected: list[int] = []
+    selected_seconds = 0.0
+    for row in nonzero:
+        selected.append(int(row["slide_index"]))
+        selected_seconds += float(row["live_time_seconds"])
+        if selected_seconds >= required_seconds:
+            break
+    selection_metadata = {
+        "slide_start_index": slide_start_index,
+        "slide_stop_index_exclusive": slide_stop_index_exclusive,
+        "evaluated_offsets": len(indices),
+        "nonzero_offsets_available": len(nonzero),
+        "available_equivalent_live_time_seconds": float(
+            scanned["equivalent_live_time_seconds"]
+        ),
+        "required_equivalent_live_time_seconds": required_seconds,
+        "available_range_reaches_target": bool(
+            scanned["target_zero_count_upper_reached"]
+        ),
+        "selected_nonzero_prefix_count": len(selected),
+        "selected_equivalent_live_time_seconds": selected_seconds,
+        "candidate_scores_inspected": False,
+    }
+    return freeze_candidate_time_slide_schedule(
+        background_manifest,
+        target,
+        split,
+        reference_ifo,
+        shifted_ifo,
+        step_seconds,
+        selected,
+        target_far_per_year,
+        zero_count_confidence,
+        selection_rule="nonzero_prefix_to_zero_count_target_within_range_v1",
+        selection_metadata=selection_metadata,
+        schema_version=2,
+    )
