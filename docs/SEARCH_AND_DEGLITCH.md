@@ -705,6 +705,13 @@ Hermetic virtual environments are the default. A system-site-package overlay is 
 only as an explicit engineering option and its full observed package-set hash must still be frozen
 before publication.
 
+Before AMPLFI export or training, `amplfi-background-capacity-audit` evaluates physical contiguous
+strain duration and unique GPS blocks rather than window or rendered-image counts. The committed
+publication policy requires at least 200,000 seconds across 50 training blocks and 50,000 seconds
+across 13 validation blocks, with H1/L1 availability and zero block overlap. Test metadata is
+counted only to prove exclusion; no test strain array is opened. An insufficient audit is retained
+as machine-readable negative evidence and exits nonzero.
+
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
 `validation_selected_checkpoint`, says `selection_split: validation`, is explicitly

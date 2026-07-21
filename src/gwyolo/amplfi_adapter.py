@@ -244,6 +244,127 @@ def run_amplfi_group_safe_background_export(
     return report
 
 
+def audit_amplfi_background_capacity(
+    manifest_path: str | Path,
+    policy_path: str | Path,
+) -> dict[str, Any]:
+    """Audit group-safe train/validation noise capacity without opening strain arrays."""
+
+    policy = load_yaml(policy_path)
+    if policy.get("schema_version") != 1:
+        raise ValueError("AMPLFI background capacity policy schema_version must be 1")
+    required_ifos = tuple(str(value) for value in policy.get("required_ifos", []))
+    if not required_ifos:
+        raise ValueError("AMPLFI background capacity policy requires detector identities")
+    minimum_segment = int(policy.get("minimum_contiguous_segment_seconds", 0))
+    minimum_duration = policy.get("minimum_duration_seconds", {})
+    minimum_blocks = policy.get("minimum_gps_blocks", {})
+    if (
+        minimum_segment <= 0
+        or not isinstance(minimum_duration, dict)
+        or not isinstance(minimum_blocks, dict)
+        or any(int(minimum_duration.get(split, 0)) <= 0 for split in ("train", "val"))
+        or any(int(minimum_blocks.get(split, 0)) <= 0 for split in ("train", "val"))
+    ):
+        raise ValueError("AMPLFI background capacity thresholds must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("AMPLFI background capacity manifest is empty")
+
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    block_splits: dict[str, set[str]] = defaultdict(set)
+    rows_by_split: dict[str, int] = defaultdict(int)
+    excluded_detector_rows = 0
+    for row in rows:
+        split = str(row.get("split"))
+        if split not in {"train", "val", "test"}:
+            raise ValueError(f"unsupported AMPLFI background split: {split}")
+        block = str(row.get("gps_block"))
+        _parse_block(block)
+        block_splits[block].add(split)
+        rows_by_split[split] += 1
+        if tuple(row.get("ifos", [])) != required_ifos:
+            excluded_detector_rows += 1
+            continue
+        pair_id = str(row.get("pair_id", ""))
+        if not pair_id:
+            raise ValueError("AMPLFI background capacity row lacks pair_id")
+        if split in {"train", "val"}:
+            groups[(split, block, pair_id)].append(row)
+    leaked = sorted(block for block, splits in block_splits.items() if len(splits) > 1)
+    if leaked:
+        raise ValueError(f"GPS blocks cross AMPLFI capacity splits: {leaked[:5]}")
+
+    durations: dict[str, float] = defaultdict(float)
+    eligible_runs: dict[str, int] = defaultdict(int)
+    blocks: dict[str, set[str]] = defaultdict(set)
+    pairs: dict[str, set[str]] = defaultdict(set)
+    for (split, block, pair_id), group_rows in sorted(groups.items()):
+        for start, end in _contiguous_runs(group_rows):
+            duration = end - start
+            if duration < minimum_segment:
+                continue
+            durations[split] += duration
+            eligible_runs[split] += 1
+            blocks[split].add(block)
+            pairs[split].add(pair_id)
+    checks = {}
+    for split in ("train", "val"):
+        checks[split] = {
+            "duration_seconds": durations.get(split, 0.0),
+            "minimum_duration_seconds": int(minimum_duration[split]),
+            "duration_passed": durations.get(split, 0.0) >= int(minimum_duration[split]),
+            "gps_blocks": len(blocks[split]),
+            "minimum_gps_blocks": int(minimum_blocks[split]),
+            "gps_blocks_passed": len(blocks[split]) >= int(minimum_blocks[split]),
+            "source_pairs": len(pairs[split]),
+            "eligible_contiguous_runs": eligible_runs.get(split, 0),
+        }
+    passed = all(
+        value["duration_passed"] and value["gps_blocks_passed"]
+        for value in checks.values()
+    )
+    return {
+        "status": (
+            "amplfi_background_capacity_ready"
+            if passed
+            else "amplfi_background_capacity_insufficient"
+        ),
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": "capacity audit is not AMPLFI training or posterior evidence",
+        "strain_arrays_read": 0,
+        "test_strain_rows_read": 0,
+        "test_metadata_rows_excluded": rows_by_split.get("test", 0),
+        "manifest_path": str(Path(manifest_path).resolve()),
+        "manifest_sha256": file_sha256(manifest_path),
+        "policy_path": str(Path(policy_path).resolve()),
+        "policy_sha256": file_sha256(policy_path),
+        "required_ifos": list(required_ifos),
+        "minimum_contiguous_segment_seconds": minimum_segment,
+        "input_rows_by_split": {
+            split: rows_by_split.get(split, 0) for split in ("train", "val", "test")
+        },
+        "excluded_detector_rows": excluded_detector_rows,
+        "cross_split_gps_block_overlap": 0,
+        "checks": checks,
+        **execution_provenance(),
+    }
+
+
+def run_amplfi_background_capacity_audit(
+    manifest_path: str | Path,
+    policy_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    report = audit_amplfi_background_capacity(manifest_path, policy_path)
+    atomic_write_json(output_path, report)
+    if not report["passed"]:
+        raise RuntimeError(f"AMPLFI background capacity is insufficient; inspect {output_path}")
+    return report
+
+
 def audit_amplfi_common_prior_projection(
     canonical_prior_path: str | Path,
     amplfi_prior_path: str | Path,

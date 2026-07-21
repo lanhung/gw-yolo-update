@@ -10,8 +10,10 @@ import pytest
 import yaml
 
 from gwyolo.amplfi_adapter import (
+    audit_amplfi_background_capacity,
     audit_amplfi_common_prior_projection,
     export_amplfi_group_safe_background,
+    run_amplfi_background_capacity_audit,
     run_amplfi_common_batch,
 )
 from gwyolo.io import file_sha256
@@ -83,6 +85,68 @@ def test_amplfi_background_export_rejects_cross_split_gps_block(
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     with pytest.raises(ValueError, match="cross AMPLFI export splits"):
         export_amplfi_group_safe_background(manifest, tmp_path / "amplfi", target_sample_rate=4)
+
+
+def _capacity_policy(tmp_path: Path, duration: int = 32) -> Path:
+    policy = tmp_path / "capacity.yaml"
+    policy.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "required_ifos": ["H1", "L1"],
+                "minimum_contiguous_segment_seconds": 16,
+                "minimum_duration_seconds": {"train": duration, "val": duration},
+                "minimum_gps_blocks": {"train": 1, "val": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return policy
+
+
+def test_amplfi_background_capacity_uses_physical_duration_and_excludes_test(
+    tmp_path: Path,
+) -> None:
+    manifest, _ = _rows(tmp_path)
+    rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+    test_row = {**rows[0]}
+    test_row.update(
+        {
+            "split": "test",
+            "gps_block": "gps:1064:32",
+            "pair_id": "pair-1064",
+            "gps_start": 1064,
+            "gps_end": 1096,
+        }
+    )
+    rows.append(test_row)
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    report = audit_amplfi_background_capacity(
+        manifest, _capacity_policy(tmp_path)
+    )
+    assert report["passed"] is True
+    assert report["checks"]["train"]["duration_seconds"] == 32
+    assert report["checks"]["val"]["duration_seconds"] == 32
+    assert report["test_metadata_rows_excluded"] == 1
+    assert report["test_strain_rows_read"] == 0
+    assert report["strain_arrays_read"] == 0
+
+
+def test_amplfi_background_capacity_writes_failure_report_before_nonzero(
+    tmp_path: Path,
+) -> None:
+    manifest, _ = _rows(tmp_path)
+    output = tmp_path / "capacity-report.json"
+    with pytest.raises(RuntimeError, match="capacity is insufficient"):
+        run_amplfi_background_capacity_audit(
+            manifest,
+            _capacity_policy(tmp_path, duration=33),
+            output,
+        )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == "amplfi_background_capacity_insufficient"
+    assert report["checks"]["train"]["duration_passed"] is False
+    assert report["checks"]["val"]["duration_passed"] is False
 
 
 def test_amplfi_common_prior_projection_matches_every_native_distribution() -> None:

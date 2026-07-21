@@ -1529,6 +1529,11 @@ def build_parser() -> argparse.ArgumentParser:
     amplfi_background.add_argument("--target-sample-rate", type=int, default=2048)
     amplfi_background.add_argument("--minimum-segment-seconds", type=int, default=16)
 
+    amplfi_capacity = subparsers.add_parser("amplfi-background-capacity-audit")
+    amplfi_capacity.add_argument("--manifest", required=True)
+    amplfi_capacity.add_argument("--policy", required=True)
+    amplfi_capacity.add_argument("--output", required=True)
+
     amplfi_prior = subparsers.add_parser("amplfi-common-prior-audit")
     amplfi_prior.add_argument("--canonical-prior", required=True)
     amplfi_prior.add_argument("--amplfi-prior", required=True)
@@ -3473,6 +3478,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 target_sample_rate=args.target_sample_rate,
                 minimum_segment_seconds=args.minimum_segment_seconds,
+            )
+        )
+    elif args.command == "amplfi-background-capacity-audit":
+        from .amplfi_adapter import run_amplfi_background_capacity_audit
+
+        _print(
+            run_amplfi_background_capacity_audit(
+                args.manifest,
+                args.policy,
+                args.output,
             )
         )
     elif args.command == "amplfi-common-prior-audit":
