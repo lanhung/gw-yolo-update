@@ -76,6 +76,64 @@ def ood_auc(rows: list[dict[str, Any]], score_field: str = "ood_score") -> float
     return wins / (len(known) * len(unknown))
 
 
+def fit_class_conditional_mahalanobis(
+    embeddings: np.ndarray,
+    targets: np.ndarray,
+    class_count: int,
+    shrinkage: float = 0.1,
+    epsilon: float = 1e-4,
+) -> dict[str, np.ndarray | float | int]:
+    """Fit known-train class centers and one regularized within-class precision matrix."""
+    values = np.asarray(embeddings, dtype=np.float64)
+    labels = np.asarray(targets, dtype=np.int64)
+    if values.ndim != 2 or labels.shape != (values.shape[0],):
+        raise ValueError("Mahalanobis fit requires [rows, features] and one target per row")
+    if values.shape[0] <= class_count or values.shape[1] < 1:
+        raise ValueError("Mahalanobis fit requires more rows than known classes")
+    if not np.isfinite(values).all() or not np.isfinite(labels).all():
+        raise ValueError("Mahalanobis fit inputs must be finite")
+    if not 0 <= shrinkage <= 1 or epsilon <= 0:
+        raise ValueError("Mahalanobis shrinkage/epsilon are invalid")
+    if set(labels.tolist()) != set(range(class_count)):
+        raise ValueError("Mahalanobis fit requires every contiguous known class")
+    centers = np.stack([values[labels == index].mean(axis=0) for index in range(class_count)])
+    residuals = values - centers[labels]
+    covariance = residuals.T @ residuals / max(values.shape[0] - class_count, 1)
+    diagonal = np.diag(np.diag(covariance))
+    regularized = (1.0 - shrinkage) * covariance + shrinkage * diagonal
+    regularized += epsilon * np.eye(values.shape[1], dtype=np.float64)
+    precision = np.linalg.pinv(regularized, hermitian=True)
+    if not np.isfinite(precision).all():
+        raise ValueError("Mahalanobis precision is non-finite")
+    return {
+        "centers": centers,
+        "precision": precision,
+        "shrinkage": float(shrinkage),
+        "epsilon": float(epsilon),
+        "known_train_rows": int(values.shape[0]),
+    }
+
+
+def class_conditional_mahalanobis_scores(
+    embeddings: np.ndarray,
+    fit: dict[str, np.ndarray | float | int],
+) -> np.ndarray:
+    """Return the minimum squared distance to any known-train class center."""
+    values = np.asarray(embeddings, dtype=np.float64)
+    centers = np.asarray(fit["centers"], dtype=np.float64)
+    precision = np.asarray(fit["precision"], dtype=np.float64)
+    if values.ndim != 2 or centers.ndim != 2 or values.shape[1] != centers.shape[1]:
+        raise ValueError("Mahalanobis score dimensions do not agree")
+    if precision.shape != (values.shape[1], values.shape[1]):
+        raise ValueError("Mahalanobis precision has the wrong shape")
+    differences = values[:, None, :] - centers[None, :, :]
+    distances = np.einsum("ncd,df,ncf->nc", differences, precision, differences)
+    scores = distances.min(axis=1)
+    if not np.isfinite(scores).all():
+        raise ValueError("Mahalanobis scores are non-finite")
+    return np.maximum(scores, 0.0)
+
+
 def _rate(successes: int, total: int) -> dict[str, Any]:
     if total <= 0 or not 0 <= successes <= total:
         raise ValueError("OOD rate requires a valid non-empty binomial count")
@@ -630,22 +688,52 @@ def run_glitch_ood_embedding(
         [train_embeddings[train_targets == index].mean(axis=0) for index in range(len(labels))]
     )
     prototypes /= np.maximum(np.linalg.norm(prototypes, axis=1, keepdims=True), 1e-12)
+    mahalanobis_fit = fit_class_conditional_mahalanobis(
+        train_embeddings,
+        train_targets,
+        len(labels),
+        float(settings.get("mahalanobis_shrinkage", 0.1)),
+        float(settings.get("mahalanobis_epsilon", 1e-4)),
+    )
+    score_method = str(settings.get("ood_score_method", "prototype_cosine"))
+    supported_score_methods = {
+        "prototype_cosine": "prototype_cosine_ood_score",
+        "class_conditional_mahalanobis": "class_conditional_mahalanobis_ood_score",
+        "logit_energy": "logit_energy_ood_score",
+    }
+    if score_method not in supported_score_methods:
+        raise ValueError(f"unsupported OOD score method: {score_method}")
 
     def score(rows: list[dict[str, Any]], loader: Any) -> list[dict[str, Any]]:
         embeddings, logits, _ = embed(loader)
         similarities = embeddings @ prototypes.T
+        mahalanobis_scores = class_conditional_mahalanobis_scores(
+            embeddings, mahalanobis_fit
+        )
+        logit_energy_scores = -np.logaddexp.reduce(logits, axis=1)
         probabilities = np.exp(logits - logits.max(axis=1, keepdims=True))
         probabilities /= probabilities.sum(axis=1, keepdims=True)
-        return [
-            {
+        scored = []
+        for index, row in enumerate(rows):
+            diagnostics = {
                 **row,
-                "ood_score": float(1.0 - similarities[index].max()),
+                "prototype_cosine_ood_score": float(1.0 - similarities[index].max()),
+                "class_conditional_mahalanobis_ood_score": float(
+                    mahalanobis_scores[index]
+                ),
+                "logit_energy_ood_score": float(logit_energy_scores[index]),
                 "predicted_known_family": labels[int(similarities[index].argmax())],
                 "known_classifier_confidence": float(probabilities[index].max()),
                 "embedding_checkpoint_sha256": file_sha256(checkpoint_path),
             }
-            for index, row in enumerate(rows)
-        ]
+            scored.append(
+                {
+                    **diagnostics,
+                    "ood_score": diagnostics[supported_score_methods[score_method]],
+                    "ood_score_method": score_method,
+                }
+            )
+        return scored
 
     scored_calibration = score(calibration_rows, loaders["calibration"])
     scored_evaluation = score(evaluation_rows, loaders["evaluation"])
@@ -681,6 +769,15 @@ def run_glitch_ood_embedding(
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "labels": labels,
         "label_counts": dict(sorted(counts.items())),
+        "ood_score_method": score_method,
+        "ood_score_fit": {
+            "selection_data": "known_train_only",
+            "known_train_rows": mahalanobis_fit["known_train_rows"],
+            "mahalanobis_shrinkage": mahalanobis_fit["shrinkage"],
+            "mahalanobis_epsilon": mahalanobis_fit["epsilon"],
+            "diagnostic_score_fields": list(supported_score_methods.values()),
+            "heldout_scores_used_for_method_or_fit_selection": False,
+        },
         "best_epoch": best_epoch,
         "best_known_calibration_accuracy": best_accuracy,
         "history": history,

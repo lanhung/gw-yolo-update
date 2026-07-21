@@ -5,7 +5,9 @@ import pytest
 from gwyolo.ood import (
     build_leave_one_family_out_split,
     calibrate_known_only_abstention,
+    class_conditional_mahalanobis_scores,
     evaluate_frozen_ood_threshold,
+    fit_class_conditional_mahalanobis,
     ood_auc,
 )
 
@@ -46,6 +48,32 @@ def test_ood_auc_pair_count_handles_ties_by_hand() -> None:
     ]
     # Pair wins: 1 + 0.5 + 1 + 1 = 3.5 of four.
     assert ood_auc(rows) == 0.875
+
+
+def test_class_conditional_mahalanobis_scores_by_hand() -> None:
+    import numpy as np
+
+    train = np.asarray([[0.0], [2.0], [8.0], [10.0]])
+    targets = np.asarray([0, 0, 1, 1])
+    fit = fit_class_conditional_mahalanobis(
+        train, targets, class_count=2, shrinkage=0.0, epsilon=1.0
+    )
+    # Centers are 1 and 9; pooled within-class variance is 2 and epsilon makes it 3.
+    scores = class_conditional_mahalanobis_scores(
+        np.asarray([[1.0], [4.0], [9.0]]), fit
+    )
+    assert scores.tolist() == pytest.approx([0.0, 3.0, 0.0])
+
+
+def test_class_conditional_mahalanobis_rejects_missing_class() -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="every contiguous known class"):
+        fit_class_conditional_mahalanobis(
+            np.asarray([[0.0], [1.0], [2.0]]),
+            np.asarray([0, 0, 0]),
+            class_count=2,
+        )
 
 
 def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
