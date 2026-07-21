@@ -597,6 +597,53 @@ for BNS and 1.00004 for NSBH. The learned-deglitch manifest SHA256 is
 `c6ae9475332699d13f7d5249b8bde5e7cea4c57a572d96bd0d9ccf3beba85976`.
 This proves signal preservation on these injections, not glitch removal or fixed-FAR improvement.
 
+## Candidate content and physical-parent scaling — 2026-07-21
+
+The nested 10,000-parent training corpus now has geometric H1/L1 detector-arrival annotations for
+every row. The annotated manifest contains 10,000 unique injections and waveforms and preserves the
+train-only SNR scaling fields; its SHA256 is
+`67cd81b48c91488afacf0af7ee393e6bb4a24f763008b4c520f42f55ea816ba9`, and the annotation-report
+SHA256 is `46f26886093f828dad3a941de7e995b63c22bb4179af6080502a0dc19f13864f`.
+
+Commit `69696e8` made frozen endpoint application resumable in immutable 256-parent shards. Applying
+the unchanged endpoint checkpoint `b683b444...` and validation-selected threshold 0.39 completed
+40/40 shards and produced 367,749 candidates: 177,909 H1 and 189,840 L1. All connected components
+are retained and `top_k_pruning` is null. The final candidate-manifest SHA256 is
+`dbed7554f2fbb9664bf710c7bf4da1c1785d00e354a63637b707c9d361af9914`; the application-report
+SHA256 is `4985bfc853b44e19fdd0c094c589b7e5bc552869d701e73792ad10136278aeca`.
+A same-identity rerun returned the existing result in about three seconds and reproduced the same
+manifest hash.
+
+Commit `866abd6` then created strict nested 2k/5k/10k physical-parent views containing
+74,126/184,187/367,749 candidates. The 2k parent manifest exactly reproduces the earlier group-safe
+training manifest (`e4e8d6...`), while every view keeps all candidates and counts physical samples
+as unique waveform/injection parents. The scaling-plan report SHA256 is
+`f738faa33d8cce8da84999b64b90a38aa2e0d64877c57d2d8d3a025220f9f196`.
+
+The bounded v3 ranker replaces the failed 16--23 scalar MLPs with a trainable log-STFT CNN shared
+between H1 and L1. Each compatible pair receives two whitened 1.5-second crops on one common GPS
+axis plus proposal geometry; no truth time is used to center the crop. The fixed-update and
+fixed-epoch curves use the identical 596-parent validation-selection set:
+
+| Budget | Physical parents | Updates | Top-1 padded pair | Peak p90 | SNR 8--15 top-1 |
+|---|---:|---:|---:|---:|---:|
+| fixed updates | 2,000 | 900 | 0.3322 | 4.477 s | 0.6849 |
+| fixed updates | 5,000 | 900 | 0.3238 | 4.364 s | 0.7534 |
+| fixed updates | 10,000 | 900 | 0.3322 | 4.342 s | 0.7534 |
+| fixed epochs | 2,000 | 1,104 | 0.3339 | 4.342 s | 0.7260 |
+| fixed epochs | 5,000 | 2,736 | 0.3289 | 4.368 s | 0.7397 |
+| fixed epochs | 10,000 | 5,472 | 0.3389 | 4.342 s | 0.7260 |
+
+The predeclared scale evaluator fails the required overall top-1 gain, reproducible SNR 8--15 gain,
+and p90 reduction checks; only the tolerance-aware monotonicity check passes. Its machine diagnosis
+is `waveform_scale_plateau_with_fixed_gps_support`, and its report SHA256 is
+`e860b99b4603429f3c18fb3fabecb0b769b536264975ddde4f3868fac9c42470`. This wording is important:
+all three scales still use the same 76 training GPS blocks, so the result rejects further waveform
+multiplication on fixed noise support, not additional independent detector-noise or glitch data.
+Scaling to 25k/50k remains disallowed. The promoted data axis is independent GPS/run/glitch
+diversity; the next representation must expose actual multi-Q candidate structure rather than add
+epochs or scalar summaries.
+
 ## Decision
 
 Training data are far below publication needs, but the required increase is not a blind multiplication

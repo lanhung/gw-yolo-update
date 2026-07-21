@@ -279,6 +279,15 @@ the frozen proposal model to the existing group-safe 10k corpus, then compare 2k
 embedding/set rankers under identical fixed-update and fixed-epoch controls. Do not interpret the
 result as support for duplicated rendered images or an immediate 50k promotion.
 
+That prescribed 2k/5k/10k experiment is complete. A shared-IFO trainable STFT-CNN improves the
+matched 2k overall padded top-1 only from 31.71% to 33.22%. Under exactly 900 updates, 5k/10k reach
+32.38%/33.22%; under four fixed epochs they reach 32.89%/33.89%, compared with 33.39% at 2k.
+Peak p90 remains about 4.34 seconds. The precommitted scale gate fails 3/4 checks and labels this a
+waveform-count plateau on fixed GPS support. All three corpora reuse 76 training GPS blocks, so this
+does not argue against more independent detector noise. Stop 25k/50k waveform expansion, complete
+the hash-stable O4a background and aligned real-glitch acquisition, and require the next candidate
+arm to consume multi-Q content. Do not promote this v3 arm to five seeds.
+
 The continuous-search item is now a hard ordered chain: geometric detector-arrival annotation;
 validation-only calibration of the exact per-cluster strain timing method; calibration-hash
 application to all candidates; detector-duty-cycle-correct non-cyclic time slides; physical zero-lag
