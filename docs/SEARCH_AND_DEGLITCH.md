@@ -216,6 +216,29 @@ checkpoint/config/commit/timing identities, or a calibrated-candidate hash misma
 distinguishes a complete parent plan from a partial exposure tranche before any time-slide command
 is allowed to consume the combined manifests.
 
+`scripts/run_background_morphology_range.sh` is the resumable range orchestrator for a large frozen
+acquisition plan. All machine paths and the half-open shard range are explicit environment inputs.
+For each shard it checks free cache space and GPU occupancy, runs the validation-only morphology
+stream, requires the immutable completion report and relies on the stream command to remove source
+HDF5 files only after score/candidate hashes have been verified. Re-running the same range verifies
+and reuses completed shards. Merge and validation candidate-rate calibration run only after every
+requested shard succeeds; merely freezing an 800-pair parent plan is never reported as processed
+live time.
+
+```bash
+export TASK_PYTHON=/path/to/python
+export PARENT_PLAN=artifacts/o4a/gwosc_run_plan.json
+export EVENT_EXCLUSIONS=artifacts/o4a/event_exclusions.json
+export CHECKPOINT=artifacts/model/best.pt
+export CONFIG=configs/physical_finetune_scale_fixed_updates.yaml
+export COHERENCE_CONFIG=configs/physics_coherent_yolo_pilot.yaml
+export CACHE_ROOT=/large-cache/o4a-morphology
+export OUTPUT_ROOT=artifacts/o4a/morphology-shards
+export SHARD_START=0 SHARD_STOP_EXCLUSIVE=200 PAIRS_PER_SHARD=4
+export GWYOLO_CODE_COMMIT=$(git rev-parse HEAD)
+bash scripts/run_background_morphology_range.sh
+```
+
 Large time-slide schedules are also resumable. `candidate-time-slides --slide-start-index S
 --slide-count N` evaluates the absolute half-open offset range `[S, S+N)`; candidate IDs and offsets
 retain those absolute indices. `candidate-time-slide-merge` verifies identical candidate/background
