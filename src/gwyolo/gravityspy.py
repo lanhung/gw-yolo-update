@@ -684,7 +684,6 @@ def materialize_gravityspy_network_strain(
         raw = np.zeros((len(model_ifos), output_samples), dtype=np.float64)
         whitened = np.zeros_like(raw)
         data_quality: dict[str, Any] = {}
-        rejection_reason = None
         for ifo, source in row["network_strain_sources"].items():
             verification = verified_sources[str(source["hdf5_url"])]
             segment = read_hdf5_segment(
@@ -694,34 +693,77 @@ def materialize_gravityspy_network_strain(
             )
             context = np.asarray(segment["strain"], dtype=np.float64)
             dqmask = np.asarray(segment["quality"].get("DQmask", []), dtype=np.int64)
-            if not np.isfinite(context).all():
-                rejection_reason = f"nonfinite_strain_context_{ifo}"
-                break
-            if dqmask.size == 0 or not np.all(dqmask & 1):
-                rejection_reason = f"data_quality_bit_missing_{ifo}"
-                break
-            context = _fft_downsample(context, int(segment["sample_rate"]), target_rate)
-            whitened_context = _whiten(context)
-            center = context.size // 2
-            start = center - output_samples // 2
-            stop = start + output_samples
-            if start < 0 or stop > context.size:
-                rejection_reason = f"short_context_{ifo}"
-                break
-            index = model_ifos.index(str(ifo))
-            raw[index] = context[start:stop]
-            whitened[index] = whitened_context[start:stop]
-            data_quality[str(ifo)] = {
+            quality_summary = {
                 "seconds": int(dqmask.size),
-                "dqmask_min": int(dqmask.min()),
-                "dqmask_max": int(dqmask.max()),
+                "dqmask_min": int(dqmask.min()) if dqmask.size else None,
+                "dqmask_max": int(dqmask.max()) if dqmask.size else None,
                 "injmask_values": sorted(
                     int(value)
                     for value in np.unique(segment["quality"].get("Injmask", []))
                 ),
             }
+            if not np.isfinite(context).all():
+                data_quality[str(ifo)] = {
+                    **quality_summary,
+                    "usable": False,
+                    "reason": "nonfinite_strain_context",
+                }
+                continue
+            if dqmask.size == 0 or not np.all(dqmask & 1):
+                data_quality[str(ifo)] = {
+                    **quality_summary,
+                    "usable": False,
+                    "reason": "data_quality_bit_missing",
+                }
+                continue
+            context = _fft_downsample(context, int(segment["sample_rate"]), target_rate)
+            whitened_context = _whiten(context)
+            if not np.isfinite(whitened_context).all():
+                data_quality[str(ifo)] = {
+                    **quality_summary,
+                    "usable": False,
+                    "reason": "nonfinite_whitened_context",
+                }
+                continue
+            center = context.size // 2
+            start = center - output_samples // 2
+            stop = start + output_samples
+            if start < 0 or stop > context.size:
+                data_quality[str(ifo)] = {
+                    **quality_summary,
+                    "usable": False,
+                    "reason": "short_context",
+                }
+                continue
+            index = model_ifos.index(str(ifo))
+            raw[index] = context[start:stop]
+            whitened[index] = whitened_context[start:stop]
+            data_quality[str(ifo)] = {
+                **quality_summary,
+                "usable": True,
+                "reason": None,
+            }
+        event_ifo = str(row["ifo"])
+        availability, rejection_reason = _effective_network_detector_availability(
+            data_quality, model_ifos, event_ifo
+        )
+        usable_ifos = {
+            ifo for ifo, value in zip(model_ifos, availability) if value
+        }
         if rejection_reason is not None:
-            rejected.append({"glitch_id": glitch_id, "reason": rejection_reason})
+            rejected.append(
+                {
+                    "glitch_id": glitch_id,
+                    "reason": rejection_reason,
+                    "event_ifo": event_ifo,
+                    "usable_ifos": sorted(usable_ifos),
+                    "unusable_detectors": {
+                        ifo: values["reason"]
+                        for ifo, values in data_quality.items()
+                        if not bool(values.get("usable"))
+                    },
+                }
+            )
             rejected_ids.add(glitch_id)
             atomic_write_json(
                 partial_path,
@@ -743,7 +785,9 @@ def materialize_gravityspy_network_strain(
             float(tensor["fmax"]),
         )
         features = _normalize_power(power)
-        availability = np.asarray(row["detector_availability"], dtype=np.uint8)
+        planned_availability = np.asarray(
+            row["detector_availability"], dtype=np.uint8
+        )
         features[availability == 0] = 0
         glitch_mask = gravityspy_weak_mask(
             str(row["ifo"]),
@@ -776,6 +820,12 @@ def materialize_gravityspy_network_strain(
         )
         record = {
             **row,
+            "planned_available_ifos": list(row["available_ifos"]),
+            "planned_detector_availability": planned_availability.tolist(),
+            "available_ifos": [
+                ifo for ifo, value in zip(model_ifos, availability) if value
+            ],
+            "detector_availability": availability.tolist(),
             "single_ifo_numeric_path": row.get("path"),
             "single_ifo_numeric_sha256": row.get("sha256"),
             "path": str(sample_path),
@@ -843,6 +893,27 @@ def materialize_gravityspy_network_strain(
                 Counter("".join(row["available_ifos"]) for row in completed).items()
             )
         ),
+        "planned_detector_subset_counts": dict(
+            sorted(
+                Counter(
+                    "".join(row["planned_available_ifos"]) for row in completed
+                ).items()
+            )
+        ),
+        "runtime_detector_downgraded_rows": sum(
+            row["available_ifos"] != row["planned_available_ifos"]
+            for row in completed
+        ),
+        "unusable_detector_reason_counts": dict(
+            sorted(
+                Counter(
+                    str(values["reason"])
+                    for row in completed
+                    for values in row["data_quality"].values()
+                    if not bool(values.get("usable"))
+                ).items()
+            )
+        ),
         "model_ifos": list(model_ifos),
         "q_values": list(q_values),
         "tensor_shape": [
@@ -869,6 +940,24 @@ def materialize_gravityspy_network_strain(
         },
     )
     return report
+
+
+def _effective_network_detector_availability(
+    data_quality: dict[str, dict[str, Any]],
+    model_ifos: tuple[str, ...],
+    event_ifo: str,
+) -> tuple[np.ndarray, str | None]:
+    """Downgrade invalid companions while retaining a valid two-detector event set."""
+
+    availability = np.asarray(
+        [int(bool(data_quality.get(ifo, {}).get("usable"))) for ifo in model_ifos],
+        dtype=np.uint8,
+    )
+    if event_ifo not in model_ifos or not availability[model_ifos.index(event_ifo)]:
+        return availability, "event_ifo_unusable"
+    if int(availability.sum()) < 2:
+        return availability, "fewer_than_two_usable_detectors"
+    return availability, None
 
 
 def _load_completed_gravityspy_materialization(

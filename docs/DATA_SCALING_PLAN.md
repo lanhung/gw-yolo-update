@@ -532,6 +532,15 @@ are not boosted. The report explicitly records that replacement sampling adds ze
 physical examples. Compare this arm with uniform sampling at the same updates/seeds; it cannot
 authorize a data-scale or paper claim by itself.
 
+The rejection audit also identifies a lossless detector-set correction before reacquiring more
+catalog rows. Of the 223 rejected records, no catalog event IFO is the invalid detector; 200 come
+from planned three-IFO contexts where one companion is non-finite, while 23 planned two-IFO rows
+would fall below the two-detector minimum. The revised materializer retains the former as H1L1 or
+H1V1 examples, zeros only the unusable plane, writes the effective validity mask and preserves the
+planned subset separately. It still rejects an unusable event IFO or fewer than two usable IFOs.
+Thus the upper-bound salvage is 200 genuinely existing aligned events—not 200 augmented examples—
+and must be confirmed by a fresh hash-verified materialization before entering any count table.
+
 The next GPS-domain experiment is now explicitly paired rather than merely equal-sized.
 `injection-background-remap` preserves every training injection/waveform identity and all intrinsic
 and extrinsic source parameters, distance and `<VT>` weight while deterministically moving the

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from gwyolo.gravityspy import (
+    _effective_network_detector_availability,
     evict_gravityspy_verified_sources,
     gravityspy_weak_mask,
     index_gravityspy_csv,
@@ -44,6 +45,30 @@ def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
     assert int(mask[0].sum()) == 0
     assert int(mask[1].sum()) == 18
     assert int(mask[2].sum()) == 0
+
+
+def test_network_detector_availability_downgrades_only_valid_companions() -> None:
+    quality = {
+        "H1": {"usable": True},
+        "L1": {"usable": False, "reason": "nonfinite_strain_context"},
+        "V1": {"usable": True},
+    }
+    availability, reason = _effective_network_detector_availability(
+        quality, ("H1", "L1", "V1"), "H1"
+    )
+    assert availability.tolist() == [1, 0, 1]
+    assert reason is None
+    availability, reason = _effective_network_detector_availability(
+        {"H1": {"usable": True}, "L1": {"usable": False}},
+        ("H1", "L1", "V1"),
+        "H1",
+    )
+    assert availability.tolist() == [1, 0, 0]
+    assert reason == "fewer_than_two_usable_detectors"
+    _, reason = _effective_network_detector_availability(
+        quality, ("H1", "L1", "V1"), "L1"
+    )
+    assert reason == "event_ifo_unusable"
 
 
 def test_gravityspy_network_plan_preserves_real_detector_availability(
@@ -149,7 +174,7 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
             "hdf5_url": f"https://example/{ifo}-1000-4096.hdf5",
             "detail_url": f"https://example/{ifo}/detail",
         }
-        for ifo in ("H1", "L1")
+        for ifo in ("H1", "L1", "V1")
     }
     plan = tmp_path / "plan.jsonl"
     plan.write_text(
@@ -165,8 +190,8 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
                 "peak_frequency": 20.0,
                 "q_value": 4.0,
                 "context_duration": 4.0,
-                "available_ifos": ["H1", "L1"],
-                "detector_availability": [1, 1, 0],
+                "available_ifos": ["H1", "L1", "V1"],
+                "detector_availability": [1, 1, 1],
                 "network_strain_sources": sources,
             }
         )
@@ -189,6 +214,15 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         }
 
     def fake_segment(path, event_time, context_duration):
+        if "/V1/" in str(path):
+            return {
+                "strain": np.full(256, np.nan),
+                "sample_rate": 64,
+                "quality": {
+                    "DQmask": np.ones(4, dtype=np.int64),
+                    "Injmask": np.zeros(4, dtype=np.int64),
+                },
+            }
         phase = 0.0 if "/H1/" in str(path) else 0.5
         return {
             "strain": np.sin(np.linspace(phase, phase + 20, 256)) * 1e-21,
@@ -207,8 +241,13 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
     )
     assert report["rows"] == 1
-    assert report["verified_files"] == 2
+    assert report["verified_files"] == 3
     assert report["detector_subset_counts"] == {"H1L1": 1}
+    assert report["planned_detector_subset_counts"] == {"H1L1V1": 1}
+    assert report["runtime_detector_downgraded_rows"] == 1
+    assert report["unusable_detector_reason_counts"] == {
+        "nonfinite_strain_context": 1
+    }
     row = json.loads(Path(report["manifest_path"]).read_text().strip())
     with np.load(row["path"], allow_pickle=False) as arrays:
         assert arrays["features"].shape == (3, 1, 8, 8)
