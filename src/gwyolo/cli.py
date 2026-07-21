@@ -634,6 +634,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gravityspy_network_recovery.add_argument("--output-dir", required=True)
 
+    gravityspy_network_select = subparsers.add_parser(
+        "gravityspy-network-strain-select"
+    )
+    gravityspy_network_select.add_argument("--manifest", required=True)
+    gravityspy_network_select.add_argument("--output-dir", required=True)
+    gravityspy_network_select.add_argument("--per-label", type=int, required=True)
+    gravityspy_network_select.add_argument(
+        "--maximum-source-files", type=int, required=True
+    )
+    gravityspy_network_select.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_select.add_argument("--existing-manifest")
+
     gravityspy_network_shard = subparsers.add_parser("gravityspy-network-strain-shard")
     gravityspy_network_shard.add_argument("--manifest", required=True)
     gravityspy_network_shard.add_argument("--output-dir", required=True)
@@ -2100,6 +2112,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.source_manifest,
                 args.materialization_report,
                 args.output_dir,
+            )
+        )
+    elif args.command == "gravityspy-network-strain-select":
+        from .gravityspy import select_gravityspy_network_source_components
+
+        _print(
+            select_gravityspy_network_source_components(
+                args.manifest,
+                args.output_dir,
+                args.per_label,
+                args.maximum_source_files,
+                args.seed,
+                args.existing_manifest,
             )
         )
     elif args.command == "gravityspy-strain-shard":

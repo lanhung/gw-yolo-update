@@ -458,55 +458,13 @@ def shard_gravityspy_network_strain_plan(
     if len(glitch_ids) != len(set(glitch_ids)):
         raise ValueError("Network Gravity Spy sharding found duplicate glitch IDs")
 
-    parents = list(range(len(rows)))
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parents[right_root] = left_root
-
-    source_owner: dict[str, int] = {}
-    row_sources: list[set[str]] = []
-    for index, row in enumerate(rows):
-        sources = {
-            str(source["hdf5_url"])
-            for source in row["network_strain_sources"].values()
-        }
-        if len(sources) < 2:
-            raise ValueError("A network Gravity Spy row has fewer than two source files")
-        row_sources.append(sources)
-        for url in sources:
-            if url in source_owner:
-                union(index, source_owner[url])
-            else:
-                source_owner[url] = index
-    components: dict[int, list[int]] = defaultdict(list)
-    for index in range(len(rows)):
-        components[find(index)].append(index)
-    component_records = []
-    for indices in components.values():
-        sources = set().union(*(row_sources[index] for index in indices))
-        if len(sources) > files_per_shard:
+    component_records = _gravityspy_network_source_components(rows, seed)
+    for component in component_records:
+        if len(component["sources"]) > files_per_shard:
             raise ValueError(
-                f"Connected network source component has {len(sources)} files, "
+                f"Connected network source component has {len(component['sources'])} files, "
                 f"exceeding files_per_shard={files_per_shard}"
             )
-        component_records.append(
-            {
-                "indices": indices,
-                "sources": sources,
-                "tie_break": canonical_hash(
-                    {"seed": seed, "source_files": sorted(sources)}, 64
-                ),
-            }
-        )
-    component_records.sort(key=lambda item: str(item["tie_break"]))
     shards: list[dict[str, Any]] = []
     for component in component_records:
         if not shards or len(shards[-1]["sources"] | component["sources"]) > files_per_shard:
@@ -565,6 +523,245 @@ def shard_gravityspy_network_strain_plan(
         **_execution_provenance(),
     }
     atomic_write_json(output / "gravityspy_network_strain_shard_report.json", report)
+    return report
+
+
+def _gravityspy_network_source_components(
+    rows: list[dict[str, Any]], seed: int
+) -> list[dict[str, Any]]:
+    """Group rows whose aligned detector sources cannot be acquired independently."""
+
+    parents = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    source_owner: dict[str, int] = {}
+    row_sources: list[set[str]] = []
+    for index, row in enumerate(rows):
+        sources = {
+            str(source["hdf5_url"])
+            for source in row["network_strain_sources"].values()
+        }
+        if len(sources) < 2:
+            raise ValueError("A network Gravity Spy row has fewer than two source files")
+        row_sources.append(sources)
+        for url in sources:
+            if url in source_owner:
+                union(index, source_owner[url])
+            else:
+                source_owner[url] = index
+    components: dict[int, list[int]] = defaultdict(list)
+    for index in range(len(rows)):
+        components[find(index)].append(index)
+    component_records = []
+    for indices in components.values():
+        sources = set().union(*(row_sources[index] for index in indices))
+        component_records.append(
+            {
+                "indices": indices,
+                "sources": sources,
+                "tie_break": canonical_hash(
+                    {"seed": seed, "source_files": sorted(sources)}, 64
+                ),
+            }
+        )
+    component_records.sort(key=lambda item: str(item["tie_break"]))
+    return component_records
+
+
+def select_gravityspy_network_source_components(
+    manifest_path: str | Path,
+    output_dir: str | Path,
+    per_label: int,
+    maximum_source_files: int,
+    seed: int = 20260720,
+    existing_manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Select new aligned source components against label deficits and GPS diversity."""
+
+    if per_label <= 0 or maximum_source_files < 2:
+        raise ValueError("Network source selection target and file budget must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("Network source selection requires a non-empty plan")
+    splits = {str(row["split"]) for row in rows}
+    if len(splits) != 1:
+        raise ValueError("Network source selection cannot mix data splits")
+    split = next(iter(splits))
+    ids = [str(row["glitch_id"]) for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Network source selection plan repeats glitch IDs")
+
+    existing_rows: list[dict[str, Any]] = []
+    existing_hash = None
+    if existing_manifest_path is not None:
+        existing_path = Path(existing_manifest_path)
+        with existing_path.open("r", encoding="utf-8") as handle:
+            existing_rows = [json.loads(line) for line in handle if line.strip()]
+        if any(str(row.get("split")) != split for row in existing_rows):
+            raise ValueError("Existing network Gravity Spy rows belong to another split")
+        existing_hash = file_sha256(existing_path)
+    existing_ids = {str(row["glitch_id"]) for row in existing_rows}
+    existing_blocks = {str(row["network_gps_block"]) for row in existing_rows}
+    existing_sources = {
+        str(source["hdf5_url"])
+        for row in existing_rows
+        for source in row.get("network_strain_sources", {}).values()
+    }
+    existing_counts = Counter(str(row["ml_label"]) for row in existing_rows)
+    labels = sorted({str(row["ml_label"]) for row in rows} | set(existing_counts))
+    deficits = {label: max(0, per_label - existing_counts[label]) for label in labels}
+    candidate_rows = [
+        row
+        for row in rows
+        if str(row["glitch_id"]) not in existing_ids
+        and str(row["network_gps_block"]) not in existing_blocks
+        and not (
+            {
+                str(source["hdf5_url"])
+                for source in row["network_strain_sources"].values()
+            }
+            & existing_sources
+        )
+    ]
+    components = _gravityspy_network_source_components(candidate_rows, seed)
+    component_statistics = []
+    for component in components:
+        component_rows = [candidate_rows[index] for index in component["indices"]]
+        counts = Counter(str(row["ml_label"]) for row in component_rows)
+        component_statistics.append(
+            {
+                **component,
+                "rows": component_rows,
+                "counts": counts,
+                "gps_blocks": {
+                    str(row["network_gps_block"]) for row in component_rows
+                },
+                "runs": {str(row["observing_run"]) for row in component_rows},
+            }
+        )
+
+    selected_components = []
+    selected_source_files: set[str] = set()
+    remaining = list(component_statistics)
+    while any(deficits.values()) and remaining:
+        scored = []
+        for component in remaining:
+            added_sources = component["sources"] - selected_source_files
+            cost = len(added_sources)
+            if cost == 0 or len(selected_source_files) + cost > maximum_source_files:
+                continue
+            covered = sum(
+                min(component["counts"][label], deficits[label]) for label in labels
+            )
+            distinct = sum(
+                component["counts"][label] > 0 and deficits[label] > 0
+                for label in labels
+            )
+            scored.append(
+                (
+                    covered / cost,
+                    covered,
+                    distinct,
+                    len(component["gps_blocks"]) / cost,
+                    len(component["runs"]),
+                    str(component["tie_break"]),
+                    component,
+                )
+            )
+        if not scored:
+            break
+        *score_values, chosen = max(scored, key=lambda item: item[:-1])
+        if score_values[1] <= 0:
+            break
+        selected_components.append(chosen)
+        selected_source_files.update(chosen["sources"])
+        remaining.remove(chosen)
+        for label in labels:
+            deficits[label] = max(0, deficits[label] - chosen["counts"][label])
+
+    selected_rows = [
+        row for component in selected_components for row in component["rows"]
+    ]
+    selected_rows.sort(key=lambda row: str(row["glitch_id"]))
+    selected_ids = [str(row["glitch_id"]) for row in selected_rows]
+    if len(selected_ids) != len(set(selected_ids)):
+        raise RuntimeError("Network source selection repeated a glitch ID")
+    selected_counts = Counter(str(row["ml_label"]) for row in selected_rows)
+    combined_counts = {
+        label: existing_counts[label] + selected_counts[label] for label in labels
+    }
+    underfilled = {
+        label: per_label - combined_counts[label]
+        for label in labels
+        if combined_counts[label] < per_label
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / f"gravityspy_network_{split}_selected_sources.jsonl"
+    atomic_write_text(
+        target, "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_rows)
+    )
+    report = {
+        "status": "bounded_label_deficit_gravityspy_network_source_selection",
+        "scientific_claim_allowed": False,
+        "split": split,
+        "seed": seed,
+        "per_label_target": per_label,
+        "maximum_source_files": maximum_source_files,
+        "target_met": not underfilled,
+        "underfilled_label_deficits": dict(sorted(underfilled.items())),
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_sha256": file_sha256(manifest_path),
+        "existing_manifest_path": str(existing_manifest_path)
+        if existing_manifest_path is not None
+        else None,
+        "existing_manifest_sha256": existing_hash,
+        "existing_rows": len(existing_rows),
+        "existing_label_counts": dict(sorted(existing_counts.items())),
+        "excluded_existing_glitch_ids": len(existing_ids),
+        "excluded_existing_gps_blocks": len(existing_blocks),
+        "excluded_existing_source_files": len(existing_sources),
+        "candidate_rows_after_independence_filter": len(candidate_rows),
+        "candidate_connected_components": len(components),
+        "selected_components": len(selected_components),
+        "selected_rows": len(selected_rows),
+        "selected_unique_glitches": len(selected_ids),
+        "selected_unique_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in selected_rows}
+        ),
+        "selected_source_files": len(selected_source_files),
+        "selected_label_counts": dict(sorted(selected_counts.items())),
+        "combined_label_counts": dict(sorted(combined_counts.items())),
+        "selected_runs": dict(
+            sorted(Counter(str(row["observing_run"]) for row in selected_rows).items())
+        ),
+        "selected_event_ifos": dict(
+            sorted(Counter(str(row["ifo"]) for row in selected_rows).items())
+        ),
+        "selected_detector_subsets": dict(
+            sorted(
+                Counter("".join(row["available_ifos"]) for row in selected_rows).items()
+            )
+        ),
+        "selected_sources_hash": canonical_hash(sorted(selected_source_files), 64),
+        "manifest_path": str(target),
+        "manifest_sha256": file_sha256(target),
+        **_execution_provenance(),
+    }
+    atomic_write_json(
+        output / "gravityspy_network_source_selection_report.json", report
+    )
     return report
 
 

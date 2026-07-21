@@ -19,6 +19,7 @@ from gwyolo.gravityspy import (
     plan_gravityspy_network_strain,
     plan_gravityspy_network_recovery,
     select_gravityspy_source_files,
+    select_gravityspy_network_source_components,
     shard_gravityspy_network_strain_plan,
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
@@ -465,6 +466,57 @@ def test_gravityspy_network_shards_keep_shared_sources_together(tmp_path) -> Non
     by_glitch = {row["glitch_id"]: row["network_strain_shard"] for row in sharded}
     assert by_glitch["g-0"] == by_glitch["g-1"]
     assert by_glitch["g-2"] != by_glitch["g-0"]
+
+
+def test_network_source_selection_adds_new_gps_components_by_label_deficit(
+    tmp_path,
+) -> None:
+    def row(glitch_id, label, block, first, second):
+        return {
+            "glitch_id": glitch_id,
+            "split": "train",
+            "ml_label": label,
+            "network_gps_block": block,
+            "observing_run": "O3a",
+            "ifo": "H1",
+            "available_ifos": ["H1", "L1"],
+            "network_strain_sources": {
+                "H1": {"hdf5_url": first},
+                "L1": {"hdf5_url": second},
+            },
+        }
+
+    existing = tmp_path / "existing.jsonl"
+    existing.write_text(
+        json.dumps(row("old-a", "A", "old-block", "old-h", "old-l")) + "\n"
+    )
+    candidates = [
+        row("new-a", "A", "block-a", "a-h", "a-l"),
+        row("new-b1", "B", "block-b1", "b-h", "b-l"),
+        row("new-b2", "B", "block-b2", "b-h", "b-l"),
+        row("same-old-block", "B", "old-block", "c-h", "c-l"),
+        row("same-old-source", "B", "block-c", "old-h", "d-l"),
+    ]
+    manifest = tmp_path / "network.jsonl"
+    manifest.write_text("".join(json.dumps(value) + "\n" for value in candidates))
+    report = select_gravityspy_network_source_components(
+        manifest,
+        tmp_path / "selected",
+        per_label=2,
+        maximum_source_files=4,
+        seed=4,
+        existing_manifest_path=existing,
+    )
+    assert report["target_met"]
+    assert report["selected_source_files"] == 4
+    assert report["selected_unique_glitches"] == 3
+    assert report["selected_unique_network_gps_blocks"] == 3
+    assert report["combined_label_counts"] == {"A": 2, "B": 2}
+    selected = {
+        json.loads(line)["glitch_id"]
+        for line in Path(report["manifest_path"]).read_text().splitlines()
+    }
+    assert selected == {"new-a", "new-b1", "new-b2"}
 
 
 def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> None:

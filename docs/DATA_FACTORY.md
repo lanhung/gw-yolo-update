@@ -133,6 +133,14 @@ source eviction → old-plus-recovered merge for train and validation. The separ
 leakage audit and trains equal-budget uniform/family-balanced arms. Both scripts are resumable at
 immutable report boundaries and require explicit paths; neither contains a machine-specific default.
 
+For the next independent scale, run `gravityspy-network-strain-plan` on the full group-safe train or
+validation anchor manifest, then use `gravityspy-network-strain-select`. The selector treats every
+connected H1/L1/V1 source-file component as one acquisition unit, excludes existing glitch IDs,
+GPS blocks and source files, and greedily fills per-family deficits under an explicit source-file
+budget. Its report separates label, run, event-IFO, detector-subset and new-GPS coverage. It does
+not claim that a balanced draw creates new physical examples; every selected row remains one
+original Gravity Spy ID in one frozen split.
+
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9
 ML-confidence threshold after excluding Chirp/No_Glitch/None_of_the_Above. Stratifying at up to 100
