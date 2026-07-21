@@ -873,6 +873,14 @@ The AMPLFI runner is now unit-tested at the orchestration, hash, resume, archite
 contract boundaries. A real checkpoint-load smoke remains mandatory; a fake subprocess used by the
 CPU orchestration test is not posterior evidence and cannot enable a scientific claim.
 
+After both batch reports exist, `pe-robustness-joint-evaluate` is the only supported publication
+join path. It verifies the two batch-report and manifest hashes, requires identical injection and
+condition sets with complete clean/contaminated/mask-conditioned triplets, then executes the full
+cross-backend input-lineage, prior, waveform, detector, hardware, sky-area and latency-scope gates
+before atomically writing a combined manifest. `scripts/run_joint_paired_pe_validation.sh` wires the
+validation-only native-input smoke to both pinned backend interpreters and this strict joint gate;
+it remains fail-closed until validation-selected model sidecars for both backends are present.
+
 `scripts/run_paired_pe_smoke.sh` closes the preceding validation-data gap without touching a locked
 test corpus. After a detector-set overlap run writes its validation-selected checkpoint, the script
 builds paired clean and real-glitch-contaminated overrides, scores every contaminated instance with
