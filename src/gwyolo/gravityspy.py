@@ -131,10 +131,25 @@ def match_glitch_to_strain_file(
         return None
     ordered = sorted(records, key=lambda row: int(row["gps_start"]))
     starts = [int(row["gps_start"]) for row in ordered]
-    index = bisect_right(starts, event_time) - 1
+    return _match_glitch_to_sorted_strain_file(
+        event_time, ordered, starts, context_duration
+    )
+
+
+def _match_glitch_to_sorted_strain_file(
+    event_time: float,
+    ordered_records: list[dict[str, Any]],
+    ordered_starts: list[int],
+    context_duration: float,
+) -> dict[str, Any] | None:
+    if context_duration <= 0:
+        raise ValueError("glitch context duration must be positive")
+    if len(ordered_records) != len(ordered_starts):
+        raise ValueError("Sorted strain records and starts differ in length")
+    index = bisect_right(ordered_starts, event_time) - 1
     if index < 0:
         return None
-    record = ordered[index]
+    record = ordered_records[index]
     margin = context_duration / 2.0
     if event_time - margin < float(record["gps_start"]):
         return None
@@ -179,7 +194,11 @@ def plan_gravityspy_strain(
                     "detail_url": str(item["detail_url"]),
                 }
             )
-        records_by_key[(observing_run, ifo)] = records
+        ordered = sorted(records, key=lambda row: int(row["gps_start"]))
+        records_by_key[(observing_run, ifo)] = (
+            ordered,
+            [int(row["gps_start"]) for row in ordered],
+        )
         api_summaries.append(
             {
                 "observing_run": observing_run,
@@ -193,8 +212,9 @@ def plan_gravityspy_strain(
     rejected = []
     for row in rows:
         key = (str(row["observing_run"]), str(row["ifo"]))
-        record = match_glitch_to_strain_file(
-            float(row["event_time"]), records_by_key[key], context_duration
+        ordered, starts = records_by_key[key]
+        record = _match_glitch_to_sorted_strain_file(
+            float(row["event_time"]), ordered, starts, context_duration
         )
         if record is None:
             rejected.append(
@@ -272,7 +292,9 @@ def plan_gravityspy_network_strain(
         raise ValueError("Network Gravity Spy source manifest contains duplicate glitch IDs")
 
     runs = sorted({str(row["observing_run"]) for row in rows})
-    records_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    records_by_key: dict[
+        tuple[str, str], tuple[list[dict[str, Any]], list[int]]
+    ] = {}
     api_queries = []
     for observing_run in runs:
         for ifo in wanted:
@@ -302,7 +324,11 @@ def plan_gravityspy_network_strain(
                         "detail_url": str(item["detail_url"]),
                     }
                 )
-            records_by_key[(observing_run, ifo)] = records
+            ordered = sorted(records, key=lambda row: int(row["gps_start"]))
+            records_by_key[(observing_run, ifo)] = (
+                ordered,
+                [int(row["gps_start"]) for row in ordered],
+            )
             api_queries.append(
                 {
                     "observing_run": observing_run,
@@ -320,9 +346,11 @@ def plan_gravityspy_network_strain(
         observing_run = str(row["observing_run"])
         sources = {}
         for ifo in wanted:
-            match = match_glitch_to_strain_file(
+            ordered, starts = records_by_key[(observing_run, ifo)]
+            match = _match_glitch_to_sorted_strain_file(
                 float(row["event_time"]),
-                records_by_key[(observing_run, ifo)],
+                ordered,
+                starts,
                 context_duration,
             )
             if match is not None:
