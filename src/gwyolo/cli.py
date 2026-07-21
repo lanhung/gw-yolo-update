@@ -1149,6 +1149,23 @@ def build_parser() -> argparse.ArgumentParser:
     pe_backend.add_argument("--output", required=True)
     pe_backend.add_argument("--allow-incomplete", action="store_true")
 
+    pe_model = subparsers.add_parser("pe-backend-model-freeze")
+    pe_model.add_argument("--backend", required=True, choices=["DINGO", "AMPLFI"])
+    pe_model.add_argument("--model", required=True)
+    pe_model.add_argument("--training-config", required=True)
+    pe_model.add_argument("--training-data-manifest", required=True)
+    pe_model.add_argument("--analysis-prior", required=True)
+    pe_model.add_argument("--selection-report", required=True)
+    pe_model.add_argument("--native-conditioning-config", required=True)
+    pe_model.add_argument("--output", required=True)
+    pe_model.add_argument("--population", default="BBH", choices=["BBH"])
+    pe_model.add_argument("--source-ifos", nargs="+", default=["H1", "L1"])
+    pe_model.add_argument("--source-sample-rate-hz", type=float, default=2048)
+    pe_model.add_argument("--source-duration-seconds", type=float, default=8)
+    pe_model.add_argument("--analysis-waveform-approximant", required=True)
+    pe_model.add_argument("--native-model-waveform-approximant", required=True)
+    pe_model.add_argument("--inference-parameters", nargs="+", required=True)
+
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
     ood.add_argument("--evaluation-manifest", required=True)
@@ -2607,6 +2624,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.output,
                 args.allow_incomplete,
+            )
+        )
+    elif args.command == "pe-backend-model-freeze":
+        from .pe_backend import freeze_pe_backend_model_metadata
+
+        _print(
+            freeze_pe_backend_model_metadata(
+                backend=args.backend,
+                model_path=args.model,
+                training_config_path=args.training_config,
+                training_data_manifest_path=args.training_data_manifest,
+                analysis_prior_path=args.analysis_prior,
+                selection_report_path=args.selection_report,
+                native_conditioning_config_path=args.native_conditioning_config,
+                output_path=args.output,
+                population=args.population,
+                source_ifos=args.source_ifos,
+                source_sample_rate_hz=args.source_sample_rate_hz,
+                source_duration_seconds=args.source_duration_seconds,
+                analysis_waveform_approximant=args.analysis_waveform_approximant,
+                native_model_waveform_approximant=args.native_model_waveform_approximant,
+                inference_parameters=args.inference_parameters,
             )
         )
     elif args.command == "ood-abstention-evaluate":

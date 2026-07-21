@@ -7,7 +7,11 @@ import pytest
 import yaml
 
 from gwyolo.io import file_sha256
-from gwyolo.pe_backend import audit_pe_backend_lock, run_pe_backend_lock_audit
+from gwyolo.pe_backend import (
+    audit_pe_backend_lock,
+    freeze_pe_backend_model_metadata,
+    run_pe_backend_lock_audit,
+)
 
 
 def _write_executable(path: Path, version: str) -> None:
@@ -54,6 +58,8 @@ def _git(tmp_path: Path, name: str, tag: str) -> tuple[Path, str]:
 
 def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     backends = {}
+    analysis_prior = tmp_path / "analysis-prior.yaml"
+    analysis_prior.write_text("prior: common\n", encoding="utf-8")
     for backend, version in (("DINGO", "0.9.8"), ("AMPLFI", "0.6.0")):
         source, commit = _git(tmp_path, backend.lower(), f"v{version}")
         python = tmp_path / f"{backend.lower()}-python"
@@ -61,7 +67,52 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         model = tmp_path / f"{backend.lower()}.pt"
         metadata = tmp_path / f"{backend.lower()}.yaml"
         model.write_bytes(backend.encode())
-        metadata.write_text(f"backend: {backend}\n", encoding="utf-8")
+        artifacts = {
+            "training_config": tmp_path / f"{backend.lower()}-training.yaml",
+            "training_data_manifest": tmp_path / f"{backend.lower()}-training.jsonl",
+            "analysis_prior": analysis_prior,
+            "selection_report": tmp_path / f"{backend.lower()}-selection.json",
+            "native_conditioning_config": tmp_path / f"{backend.lower()}-conditioning.yaml",
+        }
+        for label, artifact in artifacts.items():
+            if label == "selection_report":
+                artifact.write_text(
+                    json.dumps(
+                        {
+                            "selection_split": "validation",
+                            "selection_metric": "validation_loss",
+                            "selected_checkpoint_sha256": file_sha256(model),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            elif artifact != analysis_prior:
+                artifact.write_text(f"backend: {backend}\nartifact: {label}\n", encoding="utf-8")
+        metadata.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "backend": backend,
+                    "model_sha256": file_sha256(model),
+                    "population": "BBH",
+                    "source_input": {
+                        "ifos": ["H1", "L1"],
+                        "sample_rate_hz": 2048,
+                        "duration_seconds": 8,
+                    },
+                    "analysis_waveform_approximant": "IMRPhenomXPHM",
+                    "native_model_waveform_approximant": "IMRPhenomPv2",
+                    "inference_parameters": ["chirp_mass", "mass_ratio", "distance"],
+                    "selection_split": "validation",
+                    "selection_metric": "validation_loss",
+                    "artifacts": {
+                        label: {"path": str(artifact), "sha256": file_sha256(artifact)}
+                        for label, artifact in artifacts.items()
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         for suffix, value in (
             ("SOURCE", source),
             ("PYTHON", python),
@@ -136,3 +187,74 @@ def test_pe_backend_lock_rejects_abbreviated_or_malformed_source_sha(
     report = audit_pe_backend_lock(path)
     assert report["publication_ready"] is False
     assert any("full 40-character" in failure for failure in report["failures"])
+
+
+def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
+    tmp_path: Path,
+) -> None:
+    model = tmp_path / "model.pt"
+    model.write_bytes(b"weights")
+    artifacts = {}
+    for label in (
+        "training_config",
+        "training_data_manifest",
+        "analysis_prior",
+        "native_conditioning_config",
+    ):
+        path = tmp_path / f"{label}.yaml"
+        path.write_text(f"artifact: {label}\n", encoding="utf-8")
+        artifacts[label] = path
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "selection_split": "validation",
+                "selection_metric": "validation_loss",
+                "selected_checkpoint_sha256": file_sha256(model),
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "model-metadata.json"
+    report = freeze_pe_backend_model_metadata(
+        backend="DINGO",
+        model_path=model,
+        training_config_path=artifacts["training_config"],
+        training_data_manifest_path=artifacts["training_data_manifest"],
+        analysis_prior_path=artifacts["analysis_prior"],
+        selection_report_path=selection,
+        native_conditioning_config_path=artifacts["native_conditioning_config"],
+        output_path=output,
+        population="BBH",
+        source_ifos=["H1", "L1"],
+        source_sample_rate_hz=2048,
+        source_duration_seconds=8,
+        analysis_waveform_approximant="IMRPhenomXPHM",
+        native_model_waveform_approximant="IMRPhenomPv2",
+        inference_parameters=["chirp_mass", "mass_ratio"],
+    )
+    assert report["model_sha256"] == file_sha256(model)
+    assert report["selection_split"] == "validation"
+    assert json.loads(output.read_text(encoding="utf-8"))["backend"] == "DINGO"
+
+    bad_selection = json.loads(selection.read_text(encoding="utf-8"))
+    bad_selection["selection_split"] = "test"
+    selection.write_text(json.dumps(bad_selection), encoding="utf-8")
+    with pytest.raises(ValueError, match="validation split"):
+        freeze_pe_backend_model_metadata(
+            backend="DINGO",
+            model_path=model,
+            training_config_path=artifacts["training_config"],
+            training_data_manifest_path=artifacts["training_data_manifest"],
+            analysis_prior_path=artifacts["analysis_prior"],
+            selection_report_path=selection,
+            native_conditioning_config_path=artifacts["native_conditioning_config"],
+            output_path=output,
+            population="BBH",
+            source_ifos=["H1", "L1"],
+            source_sample_rate_hz=2048,
+            source_duration_seconds=8,
+            analysis_waveform_approximant="IMRPhenomXPHM",
+            native_model_waveform_approximant="IMRPhenomPv2",
+            inference_parameters=["chirp_mass", "mass_ratio"],
+        )

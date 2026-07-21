@@ -524,6 +524,31 @@ snapshots. Hermetic virtual environments are the default. A system-site-package 
 only as an explicit engineering option and its full observed package-set hash must still be frozen
 before publication.
 
+Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
+will only freeze a checkpoint when a separate selection report says `selection_split: validation`,
+names the selection metric and contains the checkpoint's exact SHA-256. It also hashes the training
+configuration, training-data manifest, common analysis prior, selection report and backend-native
+conditioning configuration. The sidecar records the native and common analysis waveform
+approximants, common source contract and inference parameters. The environment audit reloads and
+verifies every referenced artifact, then requires DINGO and AMPLFI to use the same analysis prior,
+analysis waveform and inferred parameter set. This prevents an arbitrary downloaded checkpoint or
+a test-selected model from entering the paper table.
+
+```bash
+python -m gwyolo.cli pe-backend-model-freeze \
+  --backend DINGO \
+  --model artifacts/pe/dingo/model.pt \
+  --training-config artifacts/pe/dingo/train.yaml \
+  --training-data-manifest artifacts/pe/dingo/train.jsonl \
+  --analysis-prior artifacts/pe/common/analysis_prior.yaml \
+  --selection-report artifacts/pe/dingo/selection.json \
+  --native-conditioning-config artifacts/pe/dingo/conditioning.yaml \
+  --analysis-waveform-approximant IMRPhenomXPHM \
+  --native-model-waveform-approximant IMRPhenomXPHM \
+  --inference-parameters chirp_mass mass_ratio luminosity_distance \
+  --output artifacts/pe/dingo/model_metadata.json
+```
+
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
 numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible

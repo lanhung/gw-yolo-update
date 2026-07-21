@@ -14,6 +14,13 @@ from .runtime import execution_provenance
 REQUIRED_BACKENDS = ("DINGO", "AMPLFI")
 REQUIRED_CONDITIONS = ("clean", "contaminated", "mask_conditioned")
 UNRESOLVED_VALUES = {"", "UNRESOLVED", "TO_BE_FROZEN"}
+MODEL_METADATA_ARTIFACTS = (
+    "training_config",
+    "training_data_manifest",
+    "analysis_prior",
+    "selection_report",
+    "native_conditioning_config",
+)
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
@@ -185,6 +192,105 @@ def _audit_file_lock(
     return result, [f"{name}: {failure}" for failure in failures]
 
 
+def _valid_sha256(value: Any) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
+
+
+def _verified_metadata_artifact(
+    name: str, label: str, value: Any, failures: list[str]
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        failures.append(f"{label} metadata artifact is missing")
+        return {}
+    path_value = value.get("path")
+    expected = value.get("sha256")
+    result = {"path": path_value, "sha256": expected}
+    if not _valid_sha256(expected):
+        failures.append(f"{label} metadata SHA256 is invalid")
+    path = Path(str(path_value or "")).expanduser().resolve()
+    if not path.is_file():
+        failures.append(f"{label} metadata artifact does not exist: {path}")
+    else:
+        observed = file_sha256(path)
+        result["observed_sha256"] = observed
+        if observed != expected:
+            failures.append(f"{label} metadata artifact SHA256 does not match")
+    return result
+
+
+def _audit_model_metadata_semantics(
+    name: str,
+    metadata_path: str | None,
+    model_sha256: str | None,
+    contract: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    failures: list[str] = []
+    if not metadata_path or not Path(metadata_path).is_file():
+        return {}, []
+    try:
+        metadata = load_yaml(metadata_path)
+    except (OSError, ValueError) as error:
+        return {}, [f"{name}: cannot load standardized model metadata: {error}"]
+    if metadata.get("schema_version") != 1:
+        failures.append("model metadata schema_version must be 1")
+    if metadata.get("backend") != name:
+        failures.append("model metadata backend does not match")
+    if metadata.get("model_sha256") != model_sha256:
+        failures.append("model metadata model_sha256 does not match checkpoint")
+    if metadata.get("population") != contract.get("population"):
+        failures.append("model metadata population does not match comparison contract")
+    source_input = metadata.get("source_input")
+    expected_source = {
+        "ifos": contract.get("source_ifos"),
+        "sample_rate_hz": contract.get("source_sample_rate_hz"),
+        "duration_seconds": contract.get("source_duration_seconds"),
+    }
+    if source_input != expected_source:
+        failures.append("model metadata source_input does not match comparison contract")
+    for field in (
+        "analysis_waveform_approximant",
+        "native_model_waveform_approximant",
+        "selection_metric",
+    ):
+        if metadata.get(field) in (None, ""):
+            failures.append(f"model metadata {field} is required")
+    parameters = metadata.get("inference_parameters")
+    if (
+        not isinstance(parameters, list)
+        or not parameters
+        or any(not isinstance(value, str) or not value for value in parameters)
+        or len(set(parameters)) != len(parameters)
+    ):
+        failures.append("model metadata inference_parameters must be non-empty and unique")
+    if metadata.get("selection_split") != "validation":
+        failures.append("model checkpoint must be selected only on validation")
+    artifacts = metadata.get("artifacts")
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        failures.append("model metadata artifacts must be a mapping")
+    verified_artifacts = {
+        label: _verified_metadata_artifact(name, label, artifacts.get(label), failures)
+        for label in MODEL_METADATA_ARTIFACTS
+    }
+    selection = verified_artifacts.get("selection_report", {})
+    selection_path = selection.get("path")
+    if selection_path and Path(selection_path).is_file():
+        try:
+            selection_report = load_yaml(selection_path)
+        except (OSError, ValueError) as error:
+            failures.append(f"cannot load selection report: {error}")
+        else:
+            if selection_report.get("selection_split") != "validation":
+                failures.append("selection report is not validation-only")
+            if selection_report.get("selected_checkpoint_sha256") != model_sha256:
+                failures.append("selection report selected checkpoint does not match model")
+            if selection_report.get("selection_metric") != metadata.get("selection_metric"):
+                failures.append("selection metric differs between report and model metadata")
+    normalized = dict(metadata)
+    normalized["verified_artifacts"] = verified_artifacts
+    return normalized, [f"{name}: {failure}" for failure in failures]
+
+
 def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
     config = load_yaml(config_path)
     failures: list[str] = []
@@ -235,7 +341,19 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
             settings.get("model_metadata_path_env"),
             settings.get("model_metadata_sha256"),
         )
-        failures.extend(source_failures + environment_failures + model_failures + metadata_failures)
+        model_metadata, semantic_failures = _audit_model_metadata_semantics(
+            name,
+            metadata.get("path"),
+            model.get("observed_sha256"),
+            contract,
+        )
+        failures.extend(
+            source_failures
+            + environment_failures
+            + model_failures
+            + metadata_failures
+            + semantic_failures
+        )
         if environment.get("executable"):
             interpreter_paths.append(environment["executable"])
         backends[name] = {
@@ -243,9 +361,25 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
             "environment": environment,
             "model": model,
             "model_metadata": metadata,
+            "model_metadata_semantics": model_metadata,
         }
     if len(interpreter_paths) == len(REQUIRED_BACKENDS) and len(set(interpreter_paths)) != 2:
         failures.append("DINGO and AMPLFI must use separate Python interpreters")
+    if all(name in backends for name in REQUIRED_BACKENDS):
+        semantics = [backends[name]["model_metadata_semantics"] for name in REQUIRED_BACKENDS]
+        if all(semantics):
+            shared_fields = ("analysis_waveform_approximant", "inference_parameters")
+            for field in shared_fields:
+                if semantics[0].get(field) != semantics[1].get(field):
+                    failures.append(f"DINGO/AMPLFI model metadata differ in {field}")
+            prior_hashes = [
+                value.get("verified_artifacts", {})
+                .get("analysis_prior", {})
+                .get("observed_sha256")
+                for value in semantics
+            ]
+            if prior_hashes[0] != prior_hashes[1]:
+                failures.append("DINGO/AMPLFI analysis prior artifacts differ")
 
     return {
         "status": "ready" if not failures else "incomplete",
@@ -272,3 +406,78 @@ def run_pe_backend_lock_audit(
             f"PE backend lock is incomplete; inspect the atomic report at {output_path}"
         )
     return report
+
+
+def freeze_pe_backend_model_metadata(
+    *,
+    backend: str,
+    model_path: str | Path,
+    training_config_path: str | Path,
+    training_data_manifest_path: str | Path,
+    analysis_prior_path: str | Path,
+    selection_report_path: str | Path,
+    native_conditioning_config_path: str | Path,
+    output_path: str | Path,
+    population: str,
+    source_ifos: list[str],
+    source_sample_rate_hz: float,
+    source_duration_seconds: float,
+    analysis_waveform_approximant: str,
+    native_model_waveform_approximant: str,
+    inference_parameters: list[str],
+) -> dict[str, Any]:
+    normalized_backend = backend.upper()
+    if normalized_backend not in REQUIRED_BACKENDS:
+        raise ValueError(f"backend must be one of {list(REQUIRED_BACKENDS)}")
+    if population != "BBH":
+        raise ValueError("initial shared PE model metadata supports BBH only")
+    if source_ifos != ["H1", "L1"]:
+        raise ValueError("initial shared PE source IFOs must be H1/L1")
+    if source_sample_rate_hz <= 0 or source_duration_seconds <= 0:
+        raise ValueError("source sample rate and duration must be positive")
+    if not inference_parameters or len(set(inference_parameters)) != len(inference_parameters):
+        raise ValueError("inference parameters must be non-empty and unique")
+    paths = {
+        "training_config": Path(training_config_path).resolve(),
+        "training_data_manifest": Path(training_data_manifest_path).resolve(),
+        "analysis_prior": Path(analysis_prior_path).resolve(),
+        "selection_report": Path(selection_report_path).resolve(),
+        "native_conditioning_config": Path(native_conditioning_config_path).resolve(),
+    }
+    model = Path(model_path).resolve()
+    for label, path in {"model": model, **paths}.items():
+        if not path.is_file():
+            raise FileNotFoundError(f"{label} artifact does not exist: {path}")
+    model_hash = file_sha256(model)
+    selection_report = load_yaml(paths["selection_report"])
+    if selection_report.get("selection_split") != "validation":
+        raise ValueError("selection report must use validation split")
+    if selection_report.get("selected_checkpoint_sha256") != model_hash:
+        raise ValueError("selection report checkpoint hash does not match model")
+    selection_metric = selection_report.get("selection_metric")
+    if not isinstance(selection_metric, str) or not selection_metric:
+        raise ValueError("selection report requires selection_metric")
+    metadata = {
+        "schema_version": 1,
+        "backend": normalized_backend,
+        "model_path": str(model),
+        "model_sha256": model_hash,
+        "population": population,
+        "source_input": {
+            "ifos": source_ifos,
+            "sample_rate_hz": source_sample_rate_hz,
+            "duration_seconds": source_duration_seconds,
+        },
+        "analysis_waveform_approximant": analysis_waveform_approximant,
+        "native_model_waveform_approximant": native_model_waveform_approximant,
+        "inference_parameters": inference_parameters,
+        "selection_split": "validation",
+        "selection_metric": selection_metric,
+        "artifacts": {
+            label: {"path": str(path), "sha256": file_sha256(path)}
+            for label, path in paths.items()
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, metadata)
+    return metadata
