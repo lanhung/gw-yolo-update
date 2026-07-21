@@ -483,7 +483,13 @@ that either external inference run has already been completed.
 
 The publication gate requires matching `backend_version`, `backend_model_hash`, `prior_hash`,
 `waveform_approximant`, `detector_set`, `calibration_version`, `source_event_hash`, `hardware`, and
-`latency_scope` on each publication triplet (or each legacy raw/cleaned pair). The report adds
+`latency_scope` on each backend triplet (or each legacy raw/cleaned pair). It additionally requires
+both actual DINGO and AMPLFI results on the identical injection set. For every condition, the two
+backends must consume byte-identical strain/input artifacts and share the same prior, waveform,
+detector, calibration, hardware and latency scope. The evaluator verifies the input, base-injection,
+contamination, mask, mask-model and mask-policy files against their declared SHA-256 values. A
+cleaned-strain arm must differ from the contaminated strain; an auxiliary-mask arm must preserve
+the contaminated strain hash and identify the separate mask artifact. The report adds
 deterministic paired-bootstrap intervals
 for absolute-bias changes, credible-width ratios and cleaning latency, plus paired coverage
 transitions. Development manifests may omit the gate, but no paper comparison may do so.

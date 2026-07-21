@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from gwyolo.io import file_sha256
 from gwyolo.pe import (
     PUBLICATION_PROVENANCE_FIELDS,
     evaluate_pe_rows,
@@ -166,3 +167,106 @@ def test_pe_robustness_triplet_recovers_hand_calculated_contamination(tmp_path) 
     assert comparison["sky_area_mask_over_contaminated"] == 0.4
     assert comparison["ess_rate_mask_over_contaminated"] == pytest.approx(1.2)
     assert comparison["latency_mask_minus_contaminated_seconds"] == 0.5
+
+
+def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_path) -> None:
+    files = {}
+    for name, payload in (
+        ("base", b"base manifest"),
+        ("contamination", b"contamination manifest"),
+        ("clean", b"clean strain"),
+        ("contaminated", b"contaminated strain"),
+        ("masked", b"mask cleaned strain"),
+        ("mask", b"mask artifact"),
+        ("model", b"model weights"),
+        ("policy", b"mask policy"),
+        ("other", b"different contaminated strain"),
+    ):
+        path = tmp_path / f"{name}.bin"
+        path.write_bytes(payload)
+        files[name] = path
+
+    rows = []
+    for backend in ("DINGO", "AMPLFI"):
+        provenance = {
+            "backend_version": f"{backend}-version",
+            "backend_model_hash": f"{backend}-model",
+            "prior_hash": "common-prior",
+            "waveform_approximant": "IMRPhenomXPHM",
+            "detector_set": ["H1", "L1"],
+            "calibration_version": "C01",
+            "source_event_hash": "event-hash",
+            "hardware": "same-gpu",
+            "latency_scope": "load-through-posterior",
+        }
+        for condition in ("clean", "contaminated", "mask_conditioned"):
+            posterior = tmp_path / f"{backend}-{condition}.npz"
+            np.savez(posterior, mass=np.asarray([1.0, 2.0, 3.0]))
+            input_name = "masked" if condition == "mask_conditioned" else condition
+            row = {
+                "backend": backend,
+                "injection_id": "i-1",
+                "condition": condition,
+                "posterior_path": str(posterior),
+                "latency_seconds": 2.0,
+                "effective_sample_size": 3.0,
+                "sky_area_90_deg2": 10.0,
+                "truth": {"mass": 2.0},
+                "analysis_input_path": str(files[input_name]),
+                "analysis_input_sha256": file_sha256(files[input_name]),
+                "input_sample_rate_hz": 2048,
+                "input_duration_seconds": 8.0,
+                "input_ifos": ["H1", "L1"],
+                "base_injection_manifest_path": str(files["base"]),
+                "base_injection_manifest_sha256": file_sha256(files["base"]),
+                **provenance,
+            }
+            if condition in {"contaminated", "mask_conditioned"}:
+                row.update(
+                    {
+                        "glitch_id": "glitch-1",
+                        "contamination_manifest_path": str(files["contamination"]),
+                        "contamination_manifest_sha256": file_sha256(
+                            files["contamination"]
+                        ),
+                    }
+                )
+            if condition == "mask_conditioned":
+                row.update(
+                    {
+                        "mask_conditioning_mode": "cleaned_strain",
+                        "mask_artifact_path": str(files["mask"]),
+                        "mask_artifact_sha256": file_sha256(files["mask"]),
+                        "mask_model_path": str(files["model"]),
+                        "mask_model_sha256": file_sha256(files["model"]),
+                        "mask_policy_path": str(files["policy"]),
+                        "mask_policy_sha256": file_sha256(files["policy"]),
+                    }
+                )
+            rows.append(row)
+
+    report = evaluate_pe_robustness_rows(
+        rows,
+        credible_level=0.8,
+        bootstrap_replicates=20,
+        require_publication_provenance=True,
+    )
+    assert report["dingo_amplfi_joint_gate"] is True
+    assert report["cross_backend_matched_input_gate"] is True
+    assert report["common_injection_ids"] == ["i-1"]
+
+    mismatched = [dict(row) for row in rows]
+    target = next(
+        row
+        for row in mismatched
+        if row["backend"] == "AMPLFI" and row["condition"] == "contaminated"
+    )
+    target["analysis_input_path"] = str(files["other"])
+    target["analysis_input_sha256"] = file_sha256(files["other"])
+    with pytest.raises(ValueError, match="inputs differ across backends"):
+        evaluate_pe_robustness_rows(
+            mismatched,
+            credible_level=0.8,
+            bootstrap_replicates=20,
+            require_publication_provenance=True,
+        )

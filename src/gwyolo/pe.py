@@ -9,11 +9,32 @@ import numpy as np
 
 from .io import atomic_write_json, file_sha256
 from .metrics import wilson_interval
+from .runtime import execution_provenance
 
 
 PUBLICATION_PROVENANCE_FIELDS = (
     "backend_version",
     "backend_model_hash",
+    "prior_hash",
+    "waveform_approximant",
+    "detector_set",
+    "calibration_version",
+    "source_event_hash",
+    "hardware",
+    "latency_scope",
+)
+
+PUBLICATION_INPUT_FIELDS = (
+    "analysis_input_path",
+    "analysis_input_sha256",
+    "input_sample_rate_hz",
+    "input_duration_seconds",
+    "input_ifos",
+    "base_injection_manifest_path",
+    "base_injection_manifest_sha256",
+)
+
+PUBLICATION_SHARED_BACKEND_FIELDS = (
     "prior_hash",
     "waveform_approximant",
     "detector_set",
@@ -61,6 +82,124 @@ def _validate_publication_provenance(row: dict[str, Any]) -> None:
     empty = [field for field in PUBLICATION_PROVENANCE_FIELDS if row[field] in (None, "", [])]
     if empty:
         raise ValueError(f"PE row has empty publication provenance: {empty}")
+
+
+def _verified_file_identity(
+    row: dict[str, Any], path_field: str, hash_field: str
+) -> dict[str, str]:
+    path = Path(row[path_field]).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"PE provenance file does not exist: {path}")
+    observed = file_sha256(path)
+    if str(row[hash_field]) != observed:
+        raise ValueError(f"PE {hash_field} does not match {path_field}")
+    return {"path": str(path), "sha256": observed}
+
+
+def _validate_publication_input_provenance(
+    row: dict[str, Any], condition: str
+) -> dict[str, Any]:
+    missing = [field for field in PUBLICATION_INPUT_FIELDS if field not in row]
+    if missing:
+        raise ValueError(f"PE row is missing publication input provenance: {missing}")
+    empty = [field for field in PUBLICATION_INPUT_FIELDS if row[field] in (None, "", [])]
+    if empty:
+        raise ValueError(f"PE row has empty publication input provenance: {empty}")
+    sample_rate = float(row["input_sample_rate_hz"])
+    duration = float(row["input_duration_seconds"])
+    if not np.isfinite(sample_rate) or sample_rate <= 0:
+        raise ValueError("PE input sample rate must be finite and positive")
+    if not np.isfinite(duration) or duration <= 0:
+        raise ValueError("PE input duration must be finite and positive")
+    input_ifos = tuple(str(value) for value in row["input_ifos"])
+    detector_set = tuple(str(value) for value in row["detector_set"])
+    if not input_ifos or len(set(input_ifos)) != len(input_ifos):
+        raise ValueError("PE input IFOs must be non-empty and unique")
+    if input_ifos != detector_set:
+        raise ValueError("PE input IFOs differ from the declared detector set")
+    identity: dict[str, Any] = {
+        "condition": condition,
+        "analysis_input": _verified_file_identity(
+            row, "analysis_input_path", "analysis_input_sha256"
+        ),
+        "input_sample_rate_hz": sample_rate,
+        "input_duration_seconds": duration,
+        "input_ifos": list(input_ifos),
+        "base_injection_manifest": _verified_file_identity(
+            row,
+            "base_injection_manifest_path",
+            "base_injection_manifest_sha256",
+        ),
+    }
+    if condition in {"contaminated", "mask_conditioned"}:
+        fields = (
+            "glitch_id",
+            "contamination_manifest_path",
+            "contamination_manifest_sha256",
+        )
+        missing = [field for field in fields if row.get(field) in (None, "", [])]
+        if missing:
+            raise ValueError(f"PE contaminated input lacks lineage: {missing}")
+        identity.update(
+            {
+                "glitch_id": str(row["glitch_id"]),
+                "contamination_manifest": _verified_file_identity(
+                    row,
+                    "contamination_manifest_path",
+                    "contamination_manifest_sha256",
+                ),
+            }
+        )
+    if condition == "mask_conditioned":
+        fields = (
+            "mask_conditioning_mode",
+            "mask_artifact_path",
+            "mask_artifact_sha256",
+            "mask_model_path",
+            "mask_model_sha256",
+            "mask_policy_path",
+            "mask_policy_sha256",
+        )
+        missing = [field for field in fields if row.get(field) in (None, "", [])]
+        if missing:
+            raise ValueError(f"PE mask-conditioned input lacks lineage: {missing}")
+        mode = str(row["mask_conditioning_mode"])
+        if mode not in {"cleaned_strain", "auxiliary_mask"}:
+            raise ValueError("PE mask conditioning mode is unsupported")
+        identity.update(
+            {
+                "mask_conditioning_mode": mode,
+                "mask_artifact": _verified_file_identity(
+                    row, "mask_artifact_path", "mask_artifact_sha256"
+                ),
+                "mask_model": _verified_file_identity(
+                    row, "mask_model_path", "mask_model_sha256"
+                ),
+                "mask_policy": _verified_file_identity(
+                    row, "mask_policy_path", "mask_policy_sha256"
+                ),
+            }
+        )
+    return identity
+
+
+def _publication_input_semantics(identity: dict[str, Any]) -> dict[str, Any]:
+    """Discard machine-local paths while retaining every content identity."""
+    result = {
+        "condition": identity["condition"],
+        "analysis_input_sha256": identity["analysis_input"]["sha256"],
+        "input_sample_rate_hz": identity["input_sample_rate_hz"],
+        "input_duration_seconds": identity["input_duration_seconds"],
+        "input_ifos": identity["input_ifos"],
+        "base_injection_manifest_sha256": identity["base_injection_manifest"]["sha256"],
+    }
+    for field in ("glitch_id", "mask_conditioning_mode"):
+        if field in identity:
+            result[field] = identity[field]
+    for field in ("contamination_manifest", "mask_artifact", "mask_model", "mask_policy"):
+        if field in identity:
+            result[f"{field}_sha256"] = identity[field]["sha256"]
+    return result
 
 
 def _load_posterior(path: str | Path) -> dict[str, np.ndarray]:
@@ -333,6 +472,11 @@ def evaluate_pe_robustness_rows(
         if not np.isfinite(latency) or latency <= 0:
             raise ValueError("PE robustness latency_seconds must be finite and positive")
         truth = {str(name): float(value) for name, value in row["truth"].items()}
+        verified_input = (
+            _validate_publication_input_provenance(row, condition)
+            if require_publication_provenance
+            else None
+        )
         record = {
             **row,
             "truth": truth,
@@ -347,6 +491,7 @@ def evaluate_pe_robustness_rows(
             ),
             "sky_area_90_deg2": sky_area,
             "parameters": posterior_truth_metrics(posterior, truth, credible_level),
+            "verified_publication_input": verified_input,
         }
         groups[key][condition] = record
         evaluated.append(record)
@@ -376,6 +521,53 @@ def evaluate_pe_robustness_rows(
                 raise ValueError(
                     f"PE robustness provenance mismatch for {backend}/{injection_id}: "
                     f"{inconsistent}"
+                )
+            input_semantics = {
+                condition: _publication_input_semantics(
+                    triplet[condition]["verified_publication_input"]
+                )
+                for condition in ROBUSTNESS_CONDITIONS
+            }
+            shared_fields = (
+                "input_sample_rate_hz",
+                "input_duration_seconds",
+                "input_ifos",
+                "base_injection_manifest_sha256",
+            )
+            inconsistent_inputs = [
+                field
+                for field in shared_fields
+                if len(
+                    {
+                        json.dumps(input_semantics[condition][field], sort_keys=True)
+                        for condition in ROBUSTNESS_CONDITIONS
+                    }
+                )
+                != 1
+            ]
+            contaminated_input_semantics = input_semantics["contaminated"]
+            masked_input_semantics = input_semantics["mask_conditioned"]
+            if (
+                contaminated_input_semantics["glitch_id"]
+                != masked_input_semantics["glitch_id"]
+                or contaminated_input_semantics["contamination_manifest_sha256"]
+                != masked_input_semantics["contamination_manifest_sha256"]
+            ):
+                inconsistent_inputs.append("contamination_lineage")
+            clean_input = input_semantics["clean"]["analysis_input_sha256"]
+            contaminated_input = contaminated_input_semantics["analysis_input_sha256"]
+            masked_input = masked_input_semantics["analysis_input_sha256"]
+            if clean_input == contaminated_input:
+                inconsistent_inputs.append("clean_vs_contaminated_input")
+            if masked_input_semantics["mask_conditioning_mode"] == "cleaned_strain":
+                if masked_input == contaminated_input:
+                    inconsistent_inputs.append("cleaned_strain_vs_contaminated_input")
+            elif masked_input != contaminated_input:
+                inconsistent_inputs.append("auxiliary_mask_strain_input")
+            if inconsistent_inputs:
+                raise ValueError(
+                    f"PE robustness input lineage mismatch for {backend}/{injection_id}: "
+                    f"{sorted(set(inconsistent_inputs))}"
                 )
         parameters = {}
         for parameter in sorted(clean["truth"]):
@@ -440,6 +632,68 @@ def evaluate_pe_robustness_rows(
                 ),
             }
         )
+
+    cross_backend_input_gate = False
+    common_injection_ids: list[str] = []
+    if require_publication_provenance:
+        normalized_backends: dict[str, str] = {}
+        for backend, _ in groups:
+            normalized = backend.upper()
+            prior = normalized_backends.setdefault(normalized, backend)
+            if prior != backend:
+                raise ValueError("PE robustness backend names collide after normalization")
+        missing_backends = sorted({"DINGO", "AMPLFI"} - set(normalized_backends))
+        if missing_backends:
+            raise ValueError(
+                f"Publication PE robustness requires actual DINGO and AMPLFI: {missing_backends}"
+            )
+        ids_by_backend = {
+            normalized: {
+                injection_id
+                for (backend, injection_id) in groups
+                if backend == original
+            }
+            for normalized, original in normalized_backends.items()
+        }
+        reference_ids = ids_by_backend["DINGO"]
+        if any(ids != reference_ids for ids in ids_by_backend.values()):
+            raise ValueError("Publication PE backends use different injection sets")
+        common_injection_ids = sorted(reference_ids)
+        for injection_id in common_injection_ids:
+            for condition in ROBUSTNESS_CONDITIONS:
+                backend_rows = [
+                    groups[(original, injection_id)][condition]
+                    for original in normalized_backends.values()
+                ]
+                if any(row["truth"] != backend_rows[0]["truth"] for row in backend_rows[1:]):
+                    raise ValueError(
+                        f"Publication PE truth differs across backends: {injection_id}"
+                    )
+                inconsistent = [
+                    field
+                    for field in PUBLICATION_SHARED_BACKEND_FIELDS
+                    if any(
+                        row[field] != backend_rows[0][field] for row in backend_rows[1:]
+                    )
+                ]
+                if inconsistent:
+                    raise ValueError(
+                        f"Publication PE assumptions differ across backends for "
+                        f"{injection_id}/{condition}: {inconsistent}"
+                    )
+                semantic = _publication_input_semantics(
+                    backend_rows[0]["verified_publication_input"]
+                )
+                if any(
+                    _publication_input_semantics(row["verified_publication_input"])
+                    != semantic
+                    for row in backend_rows[1:]
+                ):
+                    raise ValueError(
+                        f"Publication PE inputs differ across backends: "
+                        f"{injection_id}/{condition}"
+                    )
+        cross_backend_input_gate = True
 
     coverage = {}
     paired_summaries = {}
@@ -528,12 +782,17 @@ def evaluate_pe_robustness_rows(
         "dingo_amplfi_joint_gate": {"DINGO", "AMPLFI"}.issubset(
             {name.upper() for name in backend_names}
         ),
+        "cross_backend_matched_input_gate": cross_backend_input_gate,
+        "common_injection_ids": common_injection_ids,
+        "common_injection_count": len(common_injection_ids),
         "triplets": len(comparisons),
         "coverage": coverage,
         "paired_summaries": paired_summaries,
         "comparisons": comparisons,
         "publication_provenance_required": require_publication_provenance,
         "publication_provenance_fields": list(PUBLICATION_PROVENANCE_FIELDS),
+        "publication_input_fields": list(PUBLICATION_INPUT_FIELDS),
+        "publication_shared_backend_fields": list(PUBLICATION_SHARED_BACKEND_FIELDS),
         "bootstrap_replicates": bootstrap_replicates,
         "bootstrap_seed": bootstrap_seed,
     }
@@ -558,6 +817,7 @@ def run_pe_robustness_evaluation(
     )
     report["manifest_path"] = str(manifest_path)
     report["manifest_sha256"] = file_sha256(manifest_path)
+    report.update(execution_provenance())
     atomic_write_json(output_path, report)
     return report
 
@@ -581,5 +841,6 @@ def run_pe_evaluation(
     )
     report["manifest_path"] = str(manifest_path)
     report["manifest_sha256"] = file_sha256(manifest_path)
+    report.update(execution_provenance())
     atomic_write_json(output_path, report)
     return report
