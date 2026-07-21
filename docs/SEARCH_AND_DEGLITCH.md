@@ -1035,7 +1035,13 @@ version must equal the published training version; loading a 0.5.8 model under 0
 because DINGO itself reports a backward-incompatible window-factor change. The separate
 `setup_dingo_native_overlay.sh` installs exact tag/commit v0.5.8 in an isolated package overlay,
 hashes both the read-only dependency base and overlay package inventories, and requires CUDA before
-any native model-load retry. It explicitly records
+any native model-load retry. The native model freeze additionally requires that overlay receipt and
+a passing synthetic EventDataset-to-GNPE smoke summary. It replays the smoke inference report,
+posterior and native-result hashes, both official model hashes, exact 0.5.8 loader API and the
+declared SciPy Tukey-symbol compatibility alias. Those receipts become required artifacts of every
+official-native batch identity, so an outer queue-file check alone cannot authorize inference. The
+synthetic event remains runtime evidence only and reads zero validation or test rows. The metadata
+explicitly records
 `common_prior_equivalent=false` and `cross_backend_absolute_comparison_allowed=false`.
 `scripts/run_dingo_official_native_paired_smoke.sh` can therefore measure only the validation-set
 clean/contaminated/mask-conditioned change within this one backend. It cannot enter
