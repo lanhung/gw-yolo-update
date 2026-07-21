@@ -17,6 +17,7 @@ from gwyolo.gravityspy import (
     merge_gravityspy_numeric_manifests,
     merge_gravityspy_network_numeric_manifests,
     plan_gravityspy_network_strain,
+    plan_gravityspy_network_recovery,
     select_gravityspy_source_files,
     shard_gravityspy_network_strain_plan,
     shard_gravityspy_strain_plan,
@@ -349,6 +350,86 @@ def test_completed_gravityspy_network_materialization_rejects_changed_sample(
         materialize_gravityspy_network_strain(
             plan, config, tmp_path / "cache", tmp_path / "output", output_duration=2.0
         )
+
+
+def test_gravityspy_network_recovery_plan_selects_only_verified_rejections(
+    tmp_path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    source_rows = [
+        {"glitch_id": "accepted", "network_strain_shard": 0, "split": "train"},
+        {"glitch_id": "retry", "network_strain_shard": 0, "split": "train"},
+    ]
+    source.write_text("".join(json.dumps(row) + "\n" for row in source_rows))
+    output = tmp_path / "completed"
+    output.mkdir()
+    sample = output / "accepted.npz"
+    np.savez(sample, features=np.asarray([1], dtype=np.float32))
+    record = {
+        **source_rows[0],
+        "path": str(sample),
+        "sha256": file_sha256(sample),
+    }
+    manifest = output / "gravityspy_network_numeric_manifest.jsonl"
+    manifest.write_text(json.dumps(record) + "\n")
+    identity = {
+        "source_manifest_sha256": file_sha256(source),
+        "config_hash": "config",
+        "shard": 0,
+    }
+    partial = output / "materialization_partial.json"
+    partial.write_text(
+        json.dumps(
+            {
+                "run_identity": identity,
+                "verified_sources": {},
+                "records": [record],
+                "rejected": [
+                    {
+                        "glitch_id": "retry",
+                        "reason": "fewer_than_two_usable_detectors",
+                    }
+                ],
+            }
+        )
+    )
+    report = output / "gravityspy_network_numeric_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+                "run_identity": identity,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": 1,
+                "shard": 0,
+                "requested_rows": 2,
+                "rejected_rows": 1,
+            }
+        )
+    )
+    state = output / "materialization_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "run_identity": identity,
+                "completed_rows": 1,
+                "rejected_rows": 1,
+                "requested_rows": 2,
+                "report_sha256": file_sha256(report),
+            }
+        )
+    )
+    recovery = plan_gravityspy_network_recovery(
+        source, [report], tmp_path / "recovery"
+    )
+    assert recovery["source_rows_accounted"] == 2
+    assert recovery["recovery_rows"] == recovery["unique_recovery_glitches"] == 1
+    assert recovery["adds_independent_physical_examples"] is False
+    recovered = json.loads(Path(recovery["manifest_path"]).read_text().strip())
+    assert recovered["glitch_id"] == "retry"
+    assert recovered["recovery_parent_shard"] == 0
 
 
 def test_gravityspy_network_shards_keep_shared_sources_together(tmp_path) -> None:

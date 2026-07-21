@@ -1023,6 +1023,126 @@ def _load_completed_gravityspy_materialization(
     return report
 
 
+def plan_gravityspy_network_recovery(
+    source_manifest_path: str | Path,
+    materialization_report_paths: Iterable[str | Path],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Freeze only rejected aligned-network rows for detector-set-aware recovery."""
+
+    report_paths = [Path(path).resolve() for path in materialization_report_paths]
+    if not report_paths:
+        raise ValueError("Gravity Spy network recovery requires completed shard reports")
+    source_path = Path(source_manifest_path).resolve()
+    source_hash = file_sha256(source_path)
+    with source_path.open("r", encoding="utf-8") as handle:
+        source_rows = [json.loads(line) for line in handle if line.strip()]
+    source_by_id = {str(row["glitch_id"]): row for row in source_rows}
+    if len(source_by_id) != len(source_rows):
+        raise ValueError("Gravity Spy recovery source repeats glitch IDs")
+    selected: list[dict[str, Any]] = []
+    seen_accounted: set[str] = set()
+    source_reports = []
+    rejection_reasons: Counter[str] = Counter()
+    for report_path in report_paths:
+        with report_path.open("r", encoding="utf-8") as handle:
+            raw_report = json.load(handle)
+        identity = raw_report.get("run_identity")
+        if not isinstance(identity, dict) or identity.get(
+            "source_manifest_sha256"
+        ) != source_hash:
+            raise ValueError("Gravity Spy recovery report has another source manifest")
+        state_path = report_path.with_name("materialization_state.json")
+        partial_path = report_path.with_name("materialization_partial.json")
+        if not state_path.is_file():
+            raise ValueError("Gravity Spy recovery report is missing its completion state")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        report = _load_completed_gravityspy_materialization(
+            state=state,
+            report_path=report_path,
+            partial_path=partial_path,
+            run_identity=identity,
+            expected_status="verified_gravityspy_aligned_network_numeric_weak_masks",
+        )
+        partial = json.loads(partial_path.read_text(encoding="utf-8"))
+        accepted_ids = {str(row["glitch_id"]) for row in partial["records"]}
+        rejected = list(partial["rejected"])
+        rejected_ids = {str(row["glitch_id"]) for row in rejected}
+        shard = report.get("shard")
+        expected_rows = [
+            row
+            for row in source_rows
+            if shard is None or int(row.get("network_strain_shard", -1)) == int(shard)
+        ]
+        expected_ids = {str(row["glitch_id"]) for row in expected_rows}
+        if accepted_ids | rejected_ids != expected_ids:
+            raise ValueError("Gravity Spy recovery shard accounting differs from source plan")
+        overlap = seen_accounted & expected_ids
+        if overlap:
+            raise ValueError("Gravity Spy recovery reports account the same source rows twice")
+        seen_accounted.update(expected_ids)
+        rejected_by_id = {str(row["glitch_id"]): row for row in rejected}
+        if len(rejected_by_id) != len(rejected):
+            raise ValueError("Gravity Spy recovery report repeats rejected glitch IDs")
+        for glitch_id in sorted(rejected_ids):
+            if glitch_id not in source_by_id:
+                raise ValueError("Gravity Spy recovery rejected an unknown glitch ID")
+            rejected_row = rejected_by_id[glitch_id]
+            reason = str(rejected_row["reason"])
+            rejection_reasons[reason] += 1
+            selected.append(
+                {
+                    **source_by_id[glitch_id],
+                    "recovery_parent_shard": shard,
+                    "recovery_reason": reason,
+                    "recovery_source_report_sha256": file_sha256(report_path),
+                }
+            )
+        source_reports.append(
+            {
+                "path": str(report_path),
+                "sha256": file_sha256(report_path),
+                "shard": shard,
+                "requested_rows": int(report["requested_rows"]),
+                "accepted_rows": int(report["rows"]),
+                "rejected_rows": int(report["rejected_rows"]),
+            }
+        )
+    selected.sort(key=lambda row: str(row["glitch_id"]))
+    output = Path(output_dir).resolve()
+    report_path = output / "gravityspy_network_recovery_plan_report.json"
+    manifest_path = output / "gravityspy_network_recovery_plan.jsonl"
+    if report_path.exists() or manifest_path.exists():
+        raise FileExistsError("Gravity Spy recovery plans are immutable")
+    output.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+    )
+    result = {
+        "status": "frozen_gravityspy_network_recovery_plan",
+        "scientific_claim_allowed": False,
+        "source_manifest_path": str(source_path),
+        "source_manifest_sha256": source_hash,
+        "source_rows": len(source_rows),
+        "source_rows_accounted": len(seen_accounted),
+        "recovery_rows": len(selected),
+        "unique_recovery_glitches": len({row["glitch_id"] for row in selected}),
+        "rejection_reason_counts": dict(sorted(rejection_reasons.items())),
+        "adds_independent_physical_examples": False,
+        "recovery_interpretation": (
+            "existing rejected physical glitch identities only; usable rows become additional "
+            "verified detector-set examples, while rejected rows remain explicitly accounted"
+        ),
+        "source_reports": source_reports,
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        **_execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
 def select_gravityspy_source_files(
     manifest_path: str | Path,
     output_dir: str | Path,

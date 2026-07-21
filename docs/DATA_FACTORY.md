@@ -113,6 +113,20 @@ completed report, numeric manifest, every sample hash, source hash and cache-roo
 unlinking an exact HDF5 path. Its atomic tombstone retains URL, SHA256 and byte count so the source
 is reproducible from GWOSC; numeric samples are never evicted by this command.
 
+The aligned-network path additionally treats detector validity as observed data.
+`gravityspy-network-strain-materialize` evaluates every planned H1/L1/V1 context independently. A
+bad companion IFO is zeroed and removed from the effective validity mask only when the event IFO
+and at least one other IFO remain usable; the planned subset is retained separately for audit. An
+invalid event IFO or a resulting one-detector row is rejected. This is detector-set downgrade, not
+silent zero-filling, and the report counts every downgrade and unusable-detector reason.
+
+After a stricter detector-set implementation is introduced,
+`gravityspy-network-recovery-plan` can freeze only rows rejected by earlier completed shards. It
+re-hashes every source report/state/partial/manifest/sample, proves full shard accounting and emits
+the original rejected glitch IDs with their prior reasons. Running the normal network materializer
+on this immutable plan avoids reacquiring already accepted rows. Recovery rows are existing
+physical identities and are never counted as newly generated glitches.
+
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9
 ML-confidence threshold after excluding Chirp/No_Glitch/None_of_the_Above. Stratifying at up to 100

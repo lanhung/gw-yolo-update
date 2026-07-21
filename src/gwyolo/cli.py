@@ -625,6 +625,15 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
     gravityspy_network_materialize.add_argument("--shard", type=int)
 
+    gravityspy_network_recovery = subparsers.add_parser(
+        "gravityspy-network-recovery-plan"
+    )
+    gravityspy_network_recovery.add_argument("--source-manifest", required=True)
+    gravityspy_network_recovery.add_argument(
+        "--materialization-report", action="append", required=True
+    )
+    gravityspy_network_recovery.add_argument("--output-dir", required=True)
+
     gravityspy_network_shard = subparsers.add_parser("gravityspy-network-strain-shard")
     gravityspy_network_shard.add_argument("--manifest", required=True)
     gravityspy_network_shard.add_argument("--output-dir", required=True)
@@ -2081,6 +2090,16 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             shard_gravityspy_network_strain_plan(
                 args.manifest, args.output_dir, args.files_per_shard, args.seed
+            )
+        )
+    elif args.command == "gravityspy-network-recovery-plan":
+        from .gravityspy import plan_gravityspy_network_recovery
+
+        _print(
+            plan_gravityspy_network_recovery(
+                args.source_manifest,
+                args.materialization_report,
+                args.output_dir,
             )
         )
     elif args.command == "gravityspy-strain-shard":
