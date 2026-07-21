@@ -8,6 +8,7 @@ import numpy as np
 
 from .candidates import (
     run_apply_candidate_timing_calibration,
+    run_candidate_block_permutations,
     run_candidate_extraction,
     run_candidate_time_slides,
     run_candidate_timing_calibration,
@@ -15,6 +16,10 @@ from .candidates import (
     run_injection_candidate_rankings,
 )
 from .coherence import _pair_limit
+from .exposure import (
+    CANDIDATE_BLOCK_PERMUTATION_METHOD,
+    freeze_candidate_block_permutation_schedule,
+)
 from .injection_score import score_materialized_injections
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
@@ -137,6 +142,13 @@ def compare_candidate_validation_pipelines(
         raise ValueError(f"Candidate validation pipelines are not paired: {mismatches}")
     if reports["promoted"].get("model_selection") is None:
         raise ValueError("Promoted candidate pipeline lacks five-seed model selection")
+    resampling_methods = {
+        report.get("background_resampling_method") for report in reports.values()
+    }
+    if resampling_methods != {None} and resampling_methods != {
+        CANDIDATE_BLOCK_PERMUTATION_METHOD
+    }:
+        raise ValueError("Candidate pipelines use different background resampling methods")
 
     ranking_rows = {}
     for name, report in reports.items():
@@ -292,6 +304,179 @@ def compare_candidate_validation_pipelines(
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)
+    return result
+
+
+def recalibrate_candidate_validation_pipeline_with_block_permutations(
+    pipeline_report_path: str | Path,
+    background_manifest: str | Path,
+    calibrated_candidate_manifest: str | Path,
+    injection_ranking_report: str | Path,
+    output_dir: str | Path,
+    zero_count_confidence: float = 0.90,
+) -> dict[str, Any]:
+    """Replace an engineering absolute-slide calibration with a frozen block schedule."""
+
+    source_path = Path(pipeline_report_path)
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    if (
+        source.get("status") != "validation_only_clustered_candidate_search_pipeline"
+        or source.get("test_evaluation") is not None
+    ):
+        raise ValueError("block recalibration requires a validation-only candidate pipeline")
+    identity = source.get("run_identity", {})
+    if file_sha256(background_manifest) != str(
+        identity.get("background_manifest_sha256")
+    ):
+        raise ValueError("block recalibration background differs from the pipeline")
+    if file_sha256(calibrated_candidate_manifest) != str(
+        source.get("time_slides", {}).get("candidate_manifest_sha256")
+    ):
+        raise ValueError("block recalibration candidates differ from the pipeline")
+    if file_sha256(injection_ranking_report) != str(
+        source.get("injection_ranking_report_sha256")
+    ):
+        raise ValueError("block recalibration injection rankings differ from the pipeline")
+    target_far = float(identity["target_far_per_year"])
+    reference_ifo = str(identity["reference_ifo"])
+    shifted_ifo = str(identity["second_ifo"])
+    physical_delay = float(source["physical_delay_limit_seconds"])
+    timing_uncertainty = float(source["empirical_timing_uncertainty_seconds"])
+    coincidence_window = float(source["coincidence_window_seconds"])
+    cluster_window = float(identity["cluster_window_seconds"])
+    if not np.isclose(
+        coincidence_window,
+        physical_delay + 2 * timing_uncertainty,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("block recalibration timing contract differs from physics")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    result_path = output / "candidate_validation_block_pipeline_report.json"
+    if result_path.is_file():
+        prior = json.loads(result_path.read_text(encoding="utf-8"))
+        metadata = prior.get("block_permutation_recalibration", {})
+        if (
+            metadata.get("source_pipeline_report_sha256")
+            != file_sha256(source_path)
+            or metadata.get("background_manifest_sha256")
+            != file_sha256(background_manifest)
+            or metadata.get("candidate_manifest_sha256")
+            != file_sha256(calibrated_candidate_manifest)
+            or metadata.get("injection_ranking_report_sha256")
+            != file_sha256(injection_ranking_report)
+            or not np.isclose(
+                float(metadata.get("zero_count_confidence", -1)),
+                zero_count_confidence,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        ):
+            raise ValueError("completed block-recalibrated pipeline has another identity")
+        return prior
+
+    schedule_path = output / "candidate_block_permutation_schedule.json"
+    if not schedule_path.is_file():
+        freeze_candidate_block_permutation_schedule(
+            background_manifest,
+            schedule_path,
+            "val",
+            reference_ifo,
+            shifted_ifo,
+            target_far,
+            zero_count_confidence,
+        )
+    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    if (
+        not np.isclose(
+            float(schedule.get("target_far_per_year", -1)),
+            target_far,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(schedule.get("zero_count_confidence", -1)),
+            zero_count_confidence,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    ):
+        raise ValueError("existing block schedule has another FAR target")
+    block_dir = output / "candidate_block_background"
+    block = run_candidate_block_permutations(
+        calibrated_candidate_manifest,
+        background_manifest,
+        schedule_path,
+        block_dir,
+        "val",
+        reference_ifo,
+        shifted_ifo,
+        coincidence_window,
+        cluster_window,
+        physical_delay,
+        timing_uncertainty,
+    )
+    block_report_path = block_dir / "val_candidate_time_slide_report.json"
+    calibration_path = output / "frozen_candidate_search_calibration.json"
+    if calibration_path.is_file():
+        frozen = json.loads(calibration_path.read_text(encoding="utf-8"))
+        if (
+            frozen.get("validation_time_slide_report_sha256")
+            != file_sha256(block_report_path)
+            or frozen.get("validation_injection_ranking_report_sha256")
+            != file_sha256(injection_ranking_report)
+            or not np.isclose(
+                float(frozen.get("target_far_per_year", -1)),
+                target_far,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        ):
+            raise ValueError("existing block calibration has another identity")
+    else:
+        frozen = run_candidate_search_calibration(
+            block_report_path,
+            injection_ranking_report,
+            target_far,
+            calibration_path,
+            int(identity["bootstrap_replicates"]),
+            int(identity["seed"]),
+        )
+    result = {
+        **source,
+        "scientific_blocker": (
+            "block-permutation validation calibration is frozen; paired model promotion, "
+            "independent locked-test background and injections remain required"
+        ),
+        "time_slides": block,
+        "frozen_search": frozen,
+        "time_slide_report_sha256": file_sha256(block_report_path),
+        "frozen_calibration_report_sha256": file_sha256(calibration_path),
+        "background_resampling_method": block["background_pairing_method"],
+        "block_permutation_recalibration": {
+            "source_pipeline_report_path": str(source_path),
+            "source_pipeline_report_sha256": file_sha256(source_path),
+            "background_manifest_path": str(background_manifest),
+            "background_manifest_sha256": file_sha256(background_manifest),
+            "candidate_manifest_path": str(calibrated_candidate_manifest),
+            "candidate_manifest_sha256": file_sha256(calibrated_candidate_manifest),
+            "injection_ranking_report_path": str(injection_ranking_report),
+            "injection_ranking_report_sha256": file_sha256(
+                injection_ranking_report
+            ),
+            "schedule_path": str(schedule_path),
+            "schedule_sha256": file_sha256(schedule_path),
+            "block_report_path": str(block_report_path),
+            "block_report_sha256": file_sha256(block_report_path),
+            "calibration_path": str(calibration_path),
+            "calibration_sha256": file_sha256(calibration_path),
+            "zero_count_confidence": zero_count_confidence,
+            **execution_provenance(),
+        },
+    }
+    atomic_write_json(result_path, result)
     return result
 
 

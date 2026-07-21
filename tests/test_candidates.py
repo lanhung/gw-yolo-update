@@ -403,6 +403,34 @@ def test_candidate_block_permutations_execute_frozen_relative_slots(
     assert {row["background_pairing_method"] for row in rows} == {
         "circular_gps_block_relative_window_permutation_v1"
     }
+    resumed = run_candidate_block_permutations(
+        candidate_path,
+        background_path,
+        schedule_path,
+        tmp_path / "block-background",
+        "val",
+        "H1",
+        "L1",
+        coincidence_window_seconds=0.012,
+        cluster_window_seconds=0.1,
+        physical_delay_limit_seconds=0.010,
+        empirical_timing_uncertainty_seconds=0.001,
+    )
+    assert resumed == report
+    with pytest.raises(ValueError, match="timing differs"):
+        run_candidate_block_permutations(
+            candidate_path,
+            background_path,
+            schedule_path,
+            tmp_path / "block-background",
+            "val",
+            "H1",
+            "L1",
+            coincidence_window_seconds=0.012,
+            cluster_window_seconds=0.2,
+            physical_delay_limit_seconds=0.010,
+            empirical_timing_uncertainty_seconds=0.001,
+        )
 
 
 def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(

@@ -225,6 +225,16 @@ and reuses completed shards. Merge and validation candidate-rate calibration run
 requested shard succeeds; merely freezing an 800-pair parent plan is never reported as processed
 live time.
 
+`scripts/run_candidate_background_range.sh` is the stricter calibrated successor. It refuses to
+start unless the hash-bound paired validation comparison explicitly sets
+`scale_continuous_background=true`, reuses the promoted scorer commit and timing calibration, and
+requires a complete zero-based parent-plan range. It streams validation blocks only
+(`test_fraction=0`), merges calibrated all-instance candidates, freezes and executes the score-blind
+GPS-block permutation schedule, and freezes the 0.1/year validation threshold. A restart reuses
+identity-matched shard and block-background reports; any scorer, schedule, input or timing drift is
+a hard failure. The wrapper exits nonzero if the full corpus still cannot reach the predeclared FAR
+exposure, preserving that negative result without opening locked test data.
+
 ```bash
 export TASK_PYTHON=/path/to/python
 export PARENT_PLAN=artifacts/o4a/gwosc_run_plan.json
@@ -939,6 +949,14 @@ scorer commit, slide schedule and target FAR. Each model freezes its own validat
 promotion gate uses paired injection outcomes and VT weights, requires a positive paired-bootstrap
 lower bound, bounds timing degradation and limits source-family/SNR-stratum regressions. Only a
 report with `scale_continuous_background=true` can authorize the expensive background run.
+The original 40-pair pipelines used an unscheduled absolute-slide diagnostic, so they cannot satisfy
+the frozen-exposure component merely by having zero surviving events.
+`candidate-search-validation-block-recalibrate` reuses each pipeline's exact calibrated candidates
+and injection rankings, freezes the same score-blind GPS-block schedule, and replaces only its
+background calibration. `scripts/run_candidate_validation_block_comparison.sh` applies that
+operation to both arms before repeating the paired promotion gate. Thus the 800-pair decision can
+become eligible from measured 40-pair block exposure without relaxing the FAR contract or rerunning
+the candidate scorer.
 
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every

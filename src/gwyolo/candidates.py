@@ -1799,6 +1799,55 @@ def run_candidate_block_permutations(
     ):
         raise ValueError("candidate block schedule exposure rows differ from shifts")
 
+    output = Path(output_dir)
+    report_path = output / f"{split}_candidate_time_slide_report.json"
+    if report_path.is_file():
+        with report_path.open("r", encoding="utf-8") as handle:
+            prior = json.load(handle)
+        manifest_value = prior.get("manifest_path")
+        immutable_fields = {
+            "status": "subwindow_clustered_time_slide_integration_only",
+            "background_pairing_method": schedule["method"],
+            "split": split,
+            "reference_ifo": reference_ifo,
+            "shifted_ifo": shifted_ifo,
+            "candidate_manifest_sha256": file_sha256(candidates_path),
+            "background_manifest_sha256": file_sha256(background_manifest),
+            "slide_schedule_sha256": file_sha256(schedule_path),
+            "slide_schedule_id": schedule["schedule_id"],
+            "slide_schedule_count": len(shifts),
+            "execution_schedule_complete": True,
+        }
+        if any(
+            prior.get(field) != value for field, value in immutable_fields.items()
+        ):
+            raise ValueError("completed candidate block background has another identity")
+        float_fields = {
+            "coincidence_window_seconds": coincidence_window_seconds,
+            "cluster_window_seconds": cluster_window_seconds,
+            "physical_delay_limit_seconds": physical_delay_limit_seconds,
+            "empirical_timing_uncertainty_seconds": (
+                empirical_timing_uncertainty_seconds
+            ),
+        }
+        if any(
+            not np.isclose(
+                float(prior.get(field, float("nan"))),
+                value,
+                rtol=0.0,
+                atol=1e-12,
+            )
+            for field, value in float_fields.items()
+        ):
+            raise ValueError("completed candidate block background timing differs")
+        if (
+            not manifest_value
+            or not Path(str(manifest_value)).is_file()
+            or file_sha256(manifest_value) != str(prior.get("manifest_sha256"))
+        ):
+            raise ValueError("completed candidate block background manifest is invalid")
+        return prior
+
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         windows = [json.loads(line) for line in handle if line.strip()]
     windows = [row for row in windows if str(row.get("split")) == split]
@@ -2009,7 +2058,6 @@ def run_candidate_block_permutations(
     ):
         raise ValueError("executed block exposure differs from frozen total")
 
-    output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     manifest = output / f"{split}_candidate_block_permutation_background.jsonl"
     atomic_write_text(
@@ -2076,7 +2124,7 @@ def run_candidate_block_permutations(
         ),
         **execution_provenance(),
     }
-    atomic_write_json(output / f"{split}_candidate_time_slide_report.json", result)
+    atomic_write_json(report_path, result)
     return result
 
 

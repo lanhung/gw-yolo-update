@@ -1065,6 +1065,20 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline_compare.add_argument("--config", required=True)
     candidate_pipeline_compare.add_argument("--output", required=True)
 
+    candidate_pipeline_block = subparsers.add_parser(
+        "candidate-search-validation-block-recalibrate"
+    )
+    candidate_pipeline_block.add_argument("--pipeline-report", required=True)
+    candidate_pipeline_block.add_argument("--background-manifest", required=True)
+    candidate_pipeline_block.add_argument(
+        "--calibrated-candidate-manifest", required=True
+    )
+    candidate_pipeline_block.add_argument("--injection-ranking-report", required=True)
+    candidate_pipeline_block.add_argument("--output-dir", required=True)
+    candidate_pipeline_block.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
     exposure_plan.add_argument("--output", required=True)
@@ -2680,6 +2694,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.promoted_report,
                 args.config,
                 args.output,
+            )
+        )
+    elif args.command == "candidate-search-validation-block-recalibrate":
+        from .candidate_pipeline import (
+            recalibrate_candidate_validation_pipeline_with_block_permutations,
+        )
+
+        _print(
+            recalibrate_candidate_validation_pipeline_with_block_permutations(
+                args.pipeline_report,
+                args.background_manifest,
+                args.calibrated_candidate_manifest,
+                args.injection_ranking_report,
+                args.output_dir,
+                args.zero_count_confidence,
             )
         )
     elif args.command == "candidate-time-slide-merge":
