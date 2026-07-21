@@ -520,6 +520,22 @@ A qualitative gain is plausible only after real overlap, new GPS/run, detector-s
 grow together and pass frozen hard-subset endpoints. Scale promotion remains an empirical decision,
 not a calendar milestone.
 
+The next GPS-domain experiment is now explicitly paired rather than merely equal-sized.
+`injection-background-remap` preserves every training injection/waveform identity and all intrinsic
+and extrinsic source parameters, distance and `<VT>` weight while deterministically moving the
+population onto new train-only GPS blocks and detector sets. It excludes every GPS block present
+in the baseline arm or shared validation manifest. `injection-domain-pair-audit` then verifies the
+materialized arms have identical source populations, identical row and identity counts, zero
+cross-arm GPS overlap and zero train/validation identity or GPS overlap.
+
+The predeclared gate is `configs/physical_data_domain_promotion.yaml`, executed with
+`physical-data-domain-compare`. Both a 3,750-update final-update control and a 30-epoch
+validation-selected control must pass on the same validation manifest with at least three paired
+seeds. Independent GPS coverage must increase by at least 1.5x, overall chirp IoU must improve by
+at least 0.005 with its paired seed-bootstrap lower bound above zero, and no BBH/BNS/NSBH family
+may regress by more than 0.005. Passing permits a larger independent-domain experiment; it remains
+a validation-only promotion decision and cannot support a FAR, sensitivity or paper claim.
+
 The historical 2k pilot cannot be reused as the 2k point of this curve. Its 2,000 waveform and
 injection IDs are contained in the new 10k core, but four of its older GPS blocks overlap the new
 frozen 3k validation split. `physical-scale-subsets` therefore constructs fresh, strictly nested

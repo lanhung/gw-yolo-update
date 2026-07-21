@@ -1454,6 +1454,14 @@ def audit_physical_checkpoint(
     loader = DataLoader(dataset, batch_size=int(settings["batch_size"]), shuffle=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    validation_hash = file_sha256(validation_manifest)
+    config_hash = canonical_hash(config)
+    if str(checkpoint.get("validation_manifest_sha256")) != validation_hash:
+        raise ValueError("Checkpoint was selected on another validation manifest")
+    if str(checkpoint.get("config_hash")) != config_hash:
+        raise ValueError("Physical audit config hash differs from checkpoint")
+    if checkpoint.get("seed") is None:
+        raise ValueError("Physical audit checkpoint lacks its training seed")
     channels = len(model_ifos) * len(q_values)
     if int(checkpoint["input_channels"]) != channels:
         raise ValueError("Checkpoint channel count differs from physical audit configuration")
@@ -1583,12 +1591,14 @@ def audit_physical_checkpoint(
         "protocol": "frozen threshold applied to validation-only physical injections",
         "chirp_threshold": chirp_threshold,
         "validation_manifest_path": str(validation_manifest),
-        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "validation_manifest_sha256": validation_hash,
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": file_sha256(checkpoint_path),
+        "seed": int(checkpoint["seed"]),
+        "training_code_commit": checkpoint.get("code_commit"),
         "architecture": architecture,
         "config_path": str(config_path),
-        "config_hash": canonical_hash(config),
+        "config_hash": config_hash,
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "device": str(device),

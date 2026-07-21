@@ -269,6 +269,23 @@ def build_parser() -> argparse.ArgumentParser:
     physical_scale_epoch_series.add_argument("--seed", action="append", type=int, required=True)
     physical_scale_epoch_series.add_argument("--validation-feature-cache-dir")
 
+    physical_domain_compare = subparsers.add_parser("physical-data-domain-compare")
+    physical_domain_compare.add_argument("--config", required=True)
+    physical_domain_compare.add_argument("--data-domain-audit", required=True)
+    physical_domain_compare.add_argument(
+        "--fixed-update-training", action="append", required=True
+    )
+    physical_domain_compare.add_argument(
+        "--fixed-update-audit", action="append", required=True
+    )
+    physical_domain_compare.add_argument(
+        "--fixed-epoch-training", action="append", required=True
+    )
+    physical_domain_compare.add_argument(
+        "--fixed-epoch-audit", action="append", required=True
+    )
+    physical_domain_compare.add_argument("--output", required=True)
+
     factory = subparsers.add_parser("data-factory")
     factory.add_argument("--config", required=True)
     factory.add_argument("--output-dir", required=True)
@@ -994,6 +1011,20 @@ def build_parser() -> argparse.ArgumentParser:
     injection_scale.add_argument("--scale", action="append", type=int)
     injection_scale.add_argument("--supplement-seed", type=int, default=20260722)
 
+    injection_remap = subparsers.add_parser("injection-background-remap")
+    injection_remap.add_argument("--source-recipes", required=True)
+    injection_remap.add_argument("--target-background-manifest", required=True)
+    injection_remap.add_argument("--validation-manifest", required=True)
+    injection_remap.add_argument("--output-dir", required=True)
+    injection_remap.add_argument("--split", choices=("train", "val"), default="train")
+    injection_remap.add_argument("--seed", type=int, default=20260724)
+
+    injection_domain_audit = subparsers.add_parser("injection-domain-pair-audit")
+    injection_domain_audit.add_argument("--baseline-manifest", required=True)
+    injection_domain_audit.add_argument("--independent-gps-manifest", required=True)
+    injection_domain_audit.add_argument("--validation-manifest", required=True)
+    injection_domain_audit.add_argument("--output", required=True)
+
     evaluation_freeze = subparsers.add_parser("evaluation-corpus-freeze")
     evaluation_freeze.add_argument("--manifest", required=True)
     evaluation_freeze.add_argument("--output", required=True)
@@ -1409,6 +1440,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.seed,
                 args.validation_feature_cache_dir,
+            )
+        )
+    elif args.command == "physical-data-domain-compare":
+        from .data_domain import summarize_physical_data_domain_comparison
+
+        _print(
+            summarize_physical_data_domain_comparison(
+                args.config,
+                args.data_domain_audit,
+                args.fixed_update_training,
+                args.fixed_update_audit,
+                args.fixed_epoch_training,
+                args.fixed_epoch_audit,
+                args.output,
             )
         )
     elif args.command == "data-factory":
@@ -2350,6 +2395,30 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 tuple(args.scale) if args.scale else (10_000, 25_000, 50_000),
                 args.supplement_seed,
+            )
+        )
+    elif args.command == "injection-background-remap":
+        from .injections import run_paired_background_remap
+
+        _print(
+            run_paired_background_remap(
+                args.source_recipes,
+                args.target_background_manifest,
+                args.validation_manifest,
+                args.output_dir,
+                args.split,
+                args.seed,
+            )
+        )
+    elif args.command == "injection-domain-pair-audit":
+        from .injections import audit_paired_data_domain_manifests
+
+        _print(
+            audit_paired_data_domain_manifests(
+                args.baseline_manifest,
+                args.independent_gps_manifest,
+                args.validation_manifest,
+                args.output,
             )
         )
     elif args.command == "evaluation-corpus-freeze":

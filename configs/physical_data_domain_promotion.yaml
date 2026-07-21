@@ -1,0 +1,13 @@
+physical_data_domain_promotion:
+  expected_arms: [baseline_fixed_gps, independent_gps]
+  minimum_seeds: 3
+  required_training_rows: 10000
+  required_optimizer_updates: 3750
+  required_optimizer_examples: 60000
+  required_epochs: 30
+  required_source_families: [BBH, BNS, NSBH]
+  minimum_gps_diversity_factor: 1.5
+  minimum_overall_iou_gain: 0.005
+  maximum_family_iou_regression: 0.005
+  bootstrap_replicates: 10000
+  seed: 20260724

@@ -10,6 +10,7 @@ import numpy as np
 
 from .cosmology import FlatLambdaCDMGrid
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .runtime import execution_provenance
 
 
 DEFAULT_POPULATION = {
@@ -273,6 +274,384 @@ def run_injection_plan(
     }
     atomic_write_json(output / "injection_plan_report.json", result)
     return result
+
+
+def run_paired_background_remap(
+    source_recipe_manifest: str | Path,
+    target_background_manifest: str | Path,
+    validation_manifest: str | Path,
+    output_dir: str | Path,
+    split: str = "train",
+    seed: int = 20260724,
+) -> dict[str, Any]:
+    """Move a fixed astrophysical population onto disjoint GPS-domain backgrounds.
+
+    Source/injection identities and all source parameters are held fixed. Only the
+    background window, absolute injection time and available detector set change. This
+    creates a paired data-domain arm rather than confounding GPS diversity with a newly
+    sampled waveform population.
+    """
+    if split not in {"train", "val"}:
+        raise ValueError("paired background remap supports train or val only")
+    source_path = Path(source_recipe_manifest)
+    with source_path.open("r", encoding="utf-8") as handle:
+        all_source_rows = [json.loads(line) for line in handle if line.strip()]
+    if any(str(row.get("split")) == "test" for row in all_source_rows):
+        raise ValueError("paired background remap refuses source manifests containing test rows")
+    source_rows = [row for row in all_source_rows if str(row.get("split")) == split]
+    if not source_rows:
+        raise ValueError(f"source recipe manifest contains no {split} rows")
+
+    validation_path = Path(validation_manifest)
+    with validation_path.open("r", encoding="utf-8") as handle:
+        all_validation_rows = [json.loads(line) for line in handle if line.strip()]
+    if any(str(row.get("split")) == "test" for row in all_validation_rows):
+        raise ValueError("paired background remap refuses validation manifests with test rows")
+    validation_rows = [
+        row for row in all_validation_rows if str(row.get("split")) == "val"
+    ]
+    if not validation_rows:
+        raise ValueError("paired background remap requires a non-empty validation split")
+
+    source_ids = [str(row["injection_id"]) for row in source_rows]
+    source_waveforms = [str(row["waveform_id"]) for row in source_rows]
+    if len(set(source_ids)) != len(source_ids) or len(set(source_waveforms)) != len(
+        source_waveforms
+    ):
+        raise ValueError("source recipes repeat injection or waveform identities")
+    validation_ids = {str(row["injection_id"]) for row in validation_rows}
+    validation_waveforms = {str(row["waveform_id"]) for row in validation_rows}
+    validation_blocks = {str(row["gps_block"]) for row in validation_rows}
+    if set(source_ids) & validation_ids or set(source_waveforms) & validation_waveforms:
+        raise ValueError("source recipe identities overlap the comparison validation split")
+
+    source_blocks = {str(row["gps_block"]) for row in source_rows}
+    background_path = Path(target_background_manifest)
+    target_rows = []
+    with background_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            block = str(row.get("gps_block"))
+            if (
+                str(row.get("split")) == split
+                and block not in source_blocks
+                and block not in validation_blocks
+            ):
+                target_rows.append(row)
+    if not target_rows:
+        raise ValueError("target background has no new split-safe GPS windows")
+    target_window_ids = [str(row["window_id"]) for row in target_rows]
+    if len(set(target_window_ids)) != len(target_window_ids):
+        raise ValueError("target background repeats window identities")
+
+    windows_by_block: dict[str, list[dict[str, Any]]] = {}
+    for row in target_rows:
+        block = str(row["gps_block"])
+        windows_by_block.setdefault(block, []).append(row)
+    blocks = sorted(
+        windows_by_block,
+        key=lambda block: canonical_hash(
+            {"seed": seed, "gps_block": block, "purpose": "paired_background_remap"},
+            64,
+        ),
+    )
+    for block, rows in windows_by_block.items():
+        rows.sort(
+            key=lambda row: canonical_hash(
+                {"seed": seed, "gps_block": block, "window_id": row["window_id"]},
+                64,
+            )
+        )
+
+    remapped = []
+    allowed_changes = {
+        "background_window_id",
+        "gps_block",
+        "gps_time",
+        "ifos",
+        "background_remap",
+    }
+    for index, source in enumerate(source_rows):
+        block = blocks[index % len(blocks)]
+        block_cycle = index // len(blocks)
+        candidates = windows_by_block[block]
+        window = candidates[block_cycle % len(candidates)]
+        start = float(window["gps_start"])
+        end = float(window["gps_end"])
+        if end - start <= 2.0:
+            raise ValueError(f"target window is too short for an injection margin: {window}")
+        fraction = int(
+            canonical_hash(
+                {
+                    "seed": seed,
+                    "injection_id": source["injection_id"],
+                    "window_id": window["window_id"],
+                },
+                16,
+            ),
+            16,
+        ) / float(16**16 - 1)
+        updated = {
+            **source,
+            "background_window_id": str(window["window_id"]),
+            "gps_block": block,
+            "gps_time": start + 1.0 + fraction * (end - start - 2.0),
+            "ifos": list(window["ifos"]),
+            "background_remap": {
+                "protocol": "paired_source_population_new_disjoint_gps_v1",
+                "seed": seed,
+                "source_background_window_id": str(source["background_window_id"]),
+                "source_gps_block": str(source["gps_block"]),
+                "source_gps_time": float(source["gps_time"]),
+                "source_ifos": list(source["ifos"]),
+            },
+        }
+        changed = {
+            key
+            for key in set(source) | set(updated)
+            if source.get(key) != updated.get(key)
+        }
+        if not changed <= allowed_changes:
+            raise RuntimeError(
+                f"paired background remap changed source physics fields: {sorted(changed)}"
+            )
+        remapped.append(updated)
+
+    remapped_blocks = {str(row["gps_block"]) for row in remapped}
+    if remapped_blocks & source_blocks or remapped_blocks & validation_blocks:
+        raise RuntimeError("paired background remap produced a GPS group overlap")
+    physics_fields = sorted(
+        set().union(*(set(row) for row in source_rows)) - allowed_changes
+    )
+    source_physics = [
+        {field: row.get(field) for field in physics_fields} for row in source_rows
+    ]
+    remapped_physics = [
+        {field: row.get(field) for field in physics_fields} for row in remapped
+    ]
+    source_physics_hash = canonical_hash(source_physics, 64)
+    remapped_physics_hash = canonical_hash(remapped_physics, 64)
+    if source_physics_hash != remapped_physics_hash:
+        raise RuntimeError("paired background remap did not preserve source parameters")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / f"paired_background_remap_{split}.jsonl"
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in remapped),
+    )
+    report = {
+        "status": "paired_source_population_remapped_to_disjoint_gps_domain",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "requires waveform materialization and fixed-update plus fixed-epoch model controls "
+            "on one shared validation manifest"
+        ),
+        "test_recipe_rows_read": 0,
+        "test_evaluation": None,
+        "split": split,
+        "seed": seed,
+        "rows": len(remapped),
+        "unique_injection_ids": len(set(source_ids)),
+        "unique_waveform_ids": len(set(source_waveforms)),
+        "source_unique_gps_blocks": len(source_blocks),
+        "source_family_counts": dict(
+            sorted(Counter(str(row["source_family"]) for row in source_rows).items())
+        ),
+        "target_available_windows": len(target_rows),
+        "target_available_unique_gps_blocks": len(blocks),
+        "remapped_unique_gps_blocks": len(remapped_blocks),
+        "remapped_detector_subset_counts": dict(
+            sorted(Counter("".join(row["ifos"]) for row in remapped).items())
+        ),
+        "source_target_gps_overlap": 0,
+        "target_validation_gps_overlap": 0,
+        "source_validation_injection_overlap": 0,
+        "source_validation_waveform_overlap": 0,
+        "source_parameters_preserved": True,
+        "source_physics_hash": source_physics_hash,
+        "remapped_physics_hash": remapped_physics_hash,
+        "source_recipe_manifest_path": str(source_path.resolve()),
+        "source_recipe_manifest_sha256": file_sha256(source_path),
+        "target_background_manifest_path": str(background_path.resolve()),
+        "target_background_manifest_sha256": file_sha256(background_path),
+        "validation_manifest_path": str(validation_path.resolve()),
+        "validation_manifest_sha256": file_sha256(validation_path),
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": file_sha256(manifest_path),
+        "protocol": (
+            "same injection and waveform identities, intrinsic/extrinsic source parameters, "
+            "distance and VT weights; new disjoint GPS blocks, absolute times and detector sets"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "paired_background_remap_report.json", report)
+    return report
+
+
+def audit_paired_data_domain_manifests(
+    baseline_manifest: str | Path,
+    independent_gps_manifest: str | Path,
+    validation_manifest: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Prove that two materialized train arms differ by data domain, not population."""
+    paths = {
+        "baseline_fixed_gps": Path(baseline_manifest),
+        "independent_gps": Path(independent_gps_manifest),
+        "shared_validation": Path(validation_manifest),
+    }
+    loaded = {}
+    for label, path in paths.items():
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows:
+            raise ValueError(f"paired data-domain audit received an empty {label} manifest")
+        if any(str(row.get("split")) == "test" for row in rows):
+            raise ValueError("paired data-domain audit refuses manifests containing test rows")
+        expected = "val" if label == "shared_validation" else "train"
+        selected = [row for row in rows if str(row.get("split")) == expected]
+        if len(selected) != len(rows):
+            raise ValueError(f"{label} manifest must be {expected}-only")
+        loaded[label] = selected
+
+    baseline = loaded["baseline_fixed_gps"]
+    diverse = loaded["independent_gps"]
+    baseline_by_id = {str(row["injection_id"]): row for row in baseline}
+    diverse_by_id = {str(row["injection_id"]): row for row in diverse}
+    if len(baseline_by_id) != len(baseline) or len(diverse_by_id) != len(diverse):
+        raise ValueError("paired data-domain train manifests repeat injection identities")
+    if set(baseline_by_id) != set(diverse_by_id):
+        raise ValueError("paired data-domain arms do not share injection identities")
+
+    source_fields = (
+        "waveform_id",
+        "source_family",
+        "waveform_backend",
+        "waveform_approximant",
+        "f_lower_hz",
+        "mass_1_msun",
+        "mass_2_msun",
+        "mass_1_detector_msun",
+        "mass_2_detector_msun",
+        "spin_1z",
+        "spin_2z",
+        "lambda_1",
+        "lambda_2",
+        "inclination",
+        "right_ascension",
+        "declination",
+        "polarization",
+        "coalescence_phase",
+        "luminosity_distance_mpc",
+        "comoving_distance_mpc",
+        "redshift",
+        "maximum_distance_mpc",
+        "vt_weight",
+        "vt_weight_unit",
+        "vt_measure",
+    )
+    missing = {
+        label: sorted(
+            field
+            for field in source_fields
+            if any(field not in row for row in loaded[label])
+        )
+        for label in ("baseline_fixed_gps", "independent_gps")
+    }
+    missing = {label: fields for label, fields in missing.items() if fields}
+    if missing:
+        raise ValueError(f"paired data-domain manifests lack source fields: {missing}")
+    mismatches = []
+    paired_population = []
+    for injection_id in sorted(baseline_by_id):
+        left = baseline_by_id[injection_id]
+        right = diverse_by_id[injection_id]
+        changed = [field for field in source_fields if left[field] != right[field]]
+        if changed:
+            mismatches.append({"injection_id": injection_id, "fields": changed})
+            if len(mismatches) >= 20:
+                break
+        paired_population.append(
+            {
+                "injection_id": injection_id,
+                **{field: left[field] for field in source_fields},
+            }
+        )
+    if mismatches:
+        raise ValueError(f"paired data-domain source population changed: {mismatches}")
+
+    identities = {
+        label: {
+            "injection_id": {str(row["injection_id"]) for row in rows},
+            "waveform_id": {str(row["waveform_id"]) for row in rows},
+            "gps_block": {str(row["gps_block"]) for row in rows},
+        }
+        for label, rows in loaded.items()
+    }
+    validation_overlaps = {}
+    for label in ("baseline_fixed_gps", "independent_gps"):
+        validation_overlaps[label] = {
+            field: len(identities[label][field] & identities["shared_validation"][field])
+            for field in identities[label]
+        }
+    if any(value for fields in validation_overlaps.values() for value in fields.values()):
+        raise ValueError(
+            f"paired data-domain train/validation group overlap: {validation_overlaps}"
+        )
+    train_gps_overlap = len(
+        identities["baseline_fixed_gps"]["gps_block"]
+        & identities["independent_gps"]["gps_block"]
+    )
+    if train_gps_overlap:
+        raise ValueError("paired data-domain train arms are not GPS independent")
+
+    baseline_blocks = len(identities["baseline_fixed_gps"]["gps_block"])
+    diverse_blocks = len(identities["independent_gps"]["gps_block"])
+    report = {
+        "status": "paired_materialized_data_domain_audit_passed",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "requires controlled fixed-update and fixed-epoch validation comparisons"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "rows_per_train_arm": len(baseline),
+        "unique_injections_per_train_arm": len(baseline_by_id),
+        "unique_waveforms_per_train_arm": len(
+            identities["baseline_fixed_gps"]["waveform_id"]
+        ),
+        "paired_population_hash": canonical_hash(paired_population, 64),
+        "source_parameters_identical": True,
+        "baseline_unique_gps_blocks": baseline_blocks,
+        "independent_unique_gps_blocks": diverse_blocks,
+        "independent_gps_diversity_factor": diverse_blocks / baseline_blocks,
+        "cross_arm_gps_block_overlap": train_gps_overlap,
+        "validation_group_overlaps": validation_overlaps,
+        "manifests": {
+            label: {
+                "path": str(paths[label].resolve()),
+                "sha256": file_sha256(paths[label]),
+                "rows": len(loaded[label]),
+                "unique_gps_blocks": len(identities[label]["gps_block"]),
+                "source_family_counts": dict(
+                    sorted(
+                        Counter(str(row["source_family"]) for row in loaded[label]).items()
+                    )
+                ),
+                "detector_subset_counts": dict(
+                    sorted(Counter("".join(row["ifos"]) for row in loaded[label]).items())
+                ),
+            }
+            for label in paths
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, report)
+    return report
 
 
 def run_nested_injection_scale_plan(
