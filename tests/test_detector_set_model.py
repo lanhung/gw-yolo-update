@@ -5,6 +5,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from gwyolo.numeric import (  # noqa: E402
+    DetectorSetGlitchEmbeddingNet,
     DetectorSetQNet,
     GlitchEmbeddingNet,
     MultiIFOQNet,
@@ -95,3 +96,36 @@ def test_glitch_embedding_is_normalized_and_classifies_known_families() -> None:
     assert logits.shape == (5, 4)
     assert embedding.shape == (5, 6)
     assert torch.allclose(torch.linalg.norm(embedding, dim=1), torch.ones(5), atol=1e-6)
+
+
+def test_detector_set_glitch_embedding_masks_missing_ifos_and_keeps_identity() -> None:
+    torch.manual_seed(7)
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=3, q_count=2, class_count=4, base_channels=8, embedding_dim=6
+    ).eval()
+    features = torch.randn(2, 3, 2, 12, 10)
+    availability = torch.tensor([[1, 1, 0], [1, 0, 1]], dtype=torch.float32)
+    logits, embedding = model(features, availability)
+    changed = features.clone()
+    changed[0, 2] = 1_000.0
+    changed[1, 1] = -1_000.0
+    changed_logits, changed_embedding = model(changed, availability)
+    assert logits.shape == (2, 4)
+    assert embedding.shape == (2, 6)
+    assert torch.allclose(torch.linalg.norm(embedding, dim=1), torch.ones(2), atol=1e-6)
+    # Unavailable planes are mathematically excluded, even if a caller supplies garbage.
+    assert torch.allclose(changed_logits, logits, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(changed_embedding, embedding, atol=1e-6, rtol=1e-6)
+    # Fixed one-hot detector identities are part of the projection input.
+    assert model.network_channels == 2 * model.base_channels + model.ifo_count
+
+
+def test_detector_set_glitch_embedding_rejects_implicit_availability() -> None:
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=3, q_count=1, class_count=2, base_channels=8, embedding_dim=4
+    )
+    features = torch.zeros(1, 3, 1, 8, 8)
+    with pytest.raises(ValueError, match="at least one available"):
+        model(features, torch.zeros(1, 3))
+    with pytest.raises(ValueError, match="shape"):
+        model(features, torch.ones(1, 2))

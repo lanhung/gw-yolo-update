@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 
 from gwyolo.ood import (
+    DetectorSetGlitchOODDataset,
     build_leave_one_family_out_split,
     calibrate_known_only_abstention,
     class_conditional_mahalanobis_scores,
     evaluate_frozen_ood_threshold,
     fit_class_conditional_mahalanobis,
+    freeze_ood_held_family_protocol,
     ood_auc,
     supervised_contrastive_loss,
 )
@@ -157,3 +159,88 @@ def test_leave_one_family_out_split_excludes_whole_gps_blocks(tmp_path) -> None:
     assert any(row["is_unknown"] for row in evaluation)
     assert any(not row["is_unknown"] for row in evaluation)
     assert result["split_audit"]["passed"] is True
+
+
+def test_detector_set_ood_dataset_requires_matching_explicit_availability(
+    tmp_path,
+) -> None:
+    import numpy as np
+
+    from gwyolo.io import file_sha256
+
+    sample = tmp_path / "network.npz"
+    np.savez_compressed(
+        sample,
+        features=np.zeros((3, 2, 5, 4), dtype=np.float32),
+        detector_availability=np.asarray([1, 0, 1], dtype=np.uint8),
+        ifos=np.asarray(["H1", "L1", "V1"]),
+        q_values=np.asarray([4.0, 8.0], dtype=np.float32),
+    )
+    row = {
+        "glitch_id": "g0",
+        "path": str(sample),
+        "sha256": file_sha256(sample),
+        "aligned_network_context": True,
+        "detector_availability": [1, 0, 1],
+        "available_ifos": ["H1", "V1"],
+        "ifo": "H1",
+        "glitch_family": "Known",
+    }
+    dataset = DetectorSetGlitchOODDataset(
+        [row], ("H1", "L1", "V1"), (4.0, 8.0), {"Known": 0}
+    )
+    features, availability, target = dataset[0]
+    assert features.shape == (3, 2, 5, 4)
+    assert availability.tolist() == [1.0, 0.0, 1.0]
+    assert target == 0
+    dataset.rows[0] = {**row, "detector_availability": [1, 1, 0]}
+    dataset.cache = [None]
+    with pytest.raises(ValueError, match="row/array detector availability differs"):
+        dataset[0]
+
+
+def test_held_family_freeze_is_score_blind_and_excludes_opened_families(
+    tmp_path,
+) -> None:
+    import json
+
+    def rows(split: str, family: str, count: int, block_prefix: str) -> list[dict]:
+        return [
+            {
+                "glitch_id": f"{split}-{family}-{index}",
+                "network_gps_block": f"{block_prefix}-{index // 2}",
+                "ml_label": family,
+                "observing_run": "O3b",
+                "split": split,
+                # This deliberately adversarial field must not enter selection.
+                "ood_score": 1_000.0 if family == "Smaller" else -1_000.0,
+            }
+            for index in range(count)
+        ]
+
+    train = rows("train", "Opened", 8, "to")
+    train += rows("train", "Larger", 9, "tl")
+    train += rows("train", "Smaller", 10, "ts")
+    validation = rows("val", "Opened", 8, "vo")
+    validation += rows("val", "Larger", 7, "vl")
+    validation += rows("val", "Smaller", 6, "vs")
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "val.jsonl"
+    train_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in train), encoding="utf-8"
+    )
+    validation_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in validation), encoding="utf-8"
+    )
+    result = freeze_ood_held_family_protocol(
+        train_path,
+        validation_path,
+        tmp_path / "protocol.json",
+        excluded_families=["Opened"],
+        minimum_train_rows=5,
+        minimum_validation_rows=5,
+        minimum_validation_gps_blocks=3,
+    )
+    assert result["selected"]["glitch_family"] == "Larger"
+    assert result["model_scores_used_for_selection"] is False
+    assert result["identity"]["excluded_families"] == ["Opened"]

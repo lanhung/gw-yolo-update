@@ -1445,6 +1445,15 @@ def build_parser() -> argparse.ArgumentParser:
     ood_split.add_argument("--output-dir", required=True)
     ood_split.add_argument("--seed", type=int, default=20260720)
 
+    ood_family = subparsers.add_parser("gravityspy-ood-family-freeze")
+    ood_family.add_argument("--train-manifest", required=True)
+    ood_family.add_argument("--validation-manifest", required=True)
+    ood_family.add_argument("--output", required=True)
+    ood_family.add_argument("--exclude-family", action="append", default=[])
+    ood_family.add_argument("--minimum-train-rows", type=int, default=20)
+    ood_family.add_argument("--minimum-validation-rows", type=int, default=20)
+    ood_family.add_argument("--minimum-validation-gps-blocks", type=int, default=5)
+
     ood_train = subparsers.add_parser("glitch-ood-train")
     ood_train.add_argument("--config", required=True)
     ood_train.add_argument("--known-train-manifest", required=True)
@@ -3234,6 +3243,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.held_out_family,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "gravityspy-ood-family-freeze":
+        from .ood import freeze_ood_held_family_protocol
+
+        _print(
+            freeze_ood_held_family_protocol(
+                args.train_manifest,
+                args.validation_manifest,
+                args.output,
+                args.exclude_family,
+                args.minimum_train_rows,
+                args.minimum_validation_rows,
+                args.minimum_validation_gps_blocks,
             )
         )
     elif args.command == "glitch-ood-train":

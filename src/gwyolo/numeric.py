@@ -214,6 +214,89 @@ if nn is not None:
             return self.classifier(embedding), embedding
 
 
+    class DetectorSetGlitchEmbeddingNet(nn.Module):
+        """Known-family/OOD encoder using aligned, explicitly identified IFO sets."""
+
+        def __init__(
+            self,
+            ifo_count: int,
+            q_count: int,
+            class_count: int,
+            base_channels: int = 24,
+            embedding_dim: int = 32,
+        ):
+            super().__init__()
+            if ifo_count < 2 or q_count < 1 or class_count < 2 or embedding_dim < 2:
+                raise ValueError("detector-set glitch embedding dimensions are invalid")
+            self.ifo_count = int(ifo_count)
+            self.q_count = int(q_count)
+            self.class_count = int(class_count)
+            self.embedding_dim = int(embedding_dim)
+            self.base_channels = int(base_channels)
+            self.shared_encoder = _ConvBlock(self.q_count, self.base_channels)
+            pooled_channels = 2 * self.base_channels
+            # Appending a fixed one-hot slot identity keeps H1/L1/V1 distinguishable while
+            # the shared strain encoder supports every declared detector subset.
+            self.network_channels = pooled_channels + self.ifo_count
+            self.attention_score = nn.Linear(self.network_channels, 1, bias=False)
+            self.projection = nn.Linear(self.network_channels, self.embedding_dim)
+            self.classifier = nn.Linear(self.embedding_dim, self.class_count)
+
+        def forward(
+            self, value: Any, detector_availability: Any
+        ) -> tuple[Any, Any]:
+            if value.ndim != 5 or tuple(value.shape[1:3]) != (
+                self.ifo_count,
+                self.q_count,
+            ):
+                raise ValueError(
+                    "detector-set glitch embedding input must have shape "
+                    "[batch, IFO, Q, F, T]"
+                )
+            if detector_availability.ndim != 2 or tuple(
+                detector_availability.shape
+            ) != (value.shape[0], self.ifo_count):
+                raise ValueError("detector availability must have shape [batch, IFO]")
+            availability = detector_availability.to(
+                device=value.device, dtype=value.dtype
+            )
+            if not torch.all((availability == 0) | (availability == 1)):
+                raise ValueError("detector availability must be binary")
+            if torch.any(availability.sum(dim=1) < 1):
+                raise ValueError("every OOD sample requires at least one available detector")
+            batch, _, _, frequency, time_bins = value.shape
+            encoded = self.shared_encoder(
+                value.reshape(
+                    batch * self.ifo_count,
+                    self.q_count,
+                    frequency,
+                    time_bins,
+                )
+            ).reshape(
+                batch,
+                self.ifo_count,
+                self.base_channels,
+                frequency,
+                time_bins,
+            )
+            pooled = torch.cat(
+                [encoded.mean(dim=(3, 4)), encoded.amax(dim=(3, 4))], dim=2
+            )
+            identity = torch.eye(
+                self.ifo_count, device=value.device, dtype=value.dtype
+            )[None].expand(batch, -1, -1)
+            identified = torch.cat([pooled, identity], dim=2)
+            attention_logits = self.attention_score(identified)[:, :, 0]
+            attention = torch.softmax(
+                attention_logits.masked_fill(availability == 0, -torch.inf), dim=1
+            )
+            fused = torch.sum(identified * attention[:, :, None], dim=1)
+            embedding = torch_functional.normalize(
+                self.projection(fused), p=2, dim=1
+            )
+            return self.classifier(embedding), embedding
+
+
     class CoalescenceTimingNet(nn.Module):
         """Candidate timing refiner with a mask-compatible convolutional backbone."""
 
@@ -711,6 +794,10 @@ else:
             _require_torch()
 
     class GlitchEmbeddingNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
+    class DetectorSetGlitchEmbeddingNet:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 

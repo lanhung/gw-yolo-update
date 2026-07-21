@@ -967,6 +967,28 @@ Threshold calibration happens only after checkpoint selection on Gravity Spy val
 metadata-derived weak masks, so the command always withholds a segmentation claim until an
 independent human pixel-mask audit and mixture/search experiment exist.
 
+## Detector-set OOD abstention
+
+The original `glitch-ood-train` baseline consumed only the event detector even when the numeric
+sample contained aligned H1/L1/V1 context. `architecture: detector_set` now requires the aligned
+network tensor, verifies its fixed detector order and Q values, matches the row and array validity
+masks, and rejects nonzero unavailable planes. A shared per-IFO encoder pools the declared detector
+set with masked attention. Fixed H1/L1/V1 one-hot identities enter the fusion, so an unavailable
+detector cannot be confused with a valid zero tensor and detector identity is not discarded.
+
+`gravityspy-ood-family-freeze` selects the next held family using only family labels, row counts and
+independent GPS-block counts. Previously opened families must be listed with `--exclude-family`.
+The command rejects train/validation overlap in glitch, GPS block and, when available, official
+network strain source. It records that no model or unknown score existed at selection time. The
+result then feeds the existing group-safe `gravityspy-ood-split`; checkpoint selection and the
+abstention threshold still use known-family validation rows only. The held-family scores remain an
+evaluation, never a tuning set.
+
+The precommitted detector-set arm is
+`configs/glitch_ood_network_contrastive_energy.yaml`. It uses supervised contrastive training and
+logit energy because those choices predate the new held-family result. A positive OOD result remains
+auxiliary attribution/abstention evidence and may not silently veto a strain-coherent candidate.
+
 ## Oracle mask-deglitch upper bound
 
 The invertible cleaning baseline applies a Hamming-window complex STFT, suppresses
