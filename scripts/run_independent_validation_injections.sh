@@ -27,6 +27,7 @@ SAMPLE_RATE=${SAMPLE_RATE:-2048}
 CONTEXT_DURATION=${CONTEXT_DURATION:-64}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-3}
 RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-60}
+WAVEFORM_PYTHON=${WAVEFORM_PYTHON:-$TASK_PYTHON}
 
 if ! [[ "$VALIDATION_COUNT" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$MINIMUM_UNIQUE_GPS_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
@@ -46,6 +47,7 @@ background_manifest="$ACQUISITION_ROOT/merged-background/background_windows.json
 background_report="$ACQUISITION_ROOT/merged-background/background_plan_report.json"
 for input in \
   "$TASK_PYTHON" \
+  "$WAVEFORM_PYTHON" \
   "$background_manifest" \
   "$background_report" \
   "$BASELINE_TRAIN_MANIFEST" \
@@ -55,6 +57,18 @@ for input in \
     exit 2
   fi
 done
+
+waveform_runtime_checked=0
+require_waveform_runtime() {
+  if (( waveform_runtime_checked == 1 )); then
+    return
+  fi
+  if ! "$WAVEFORM_PYTHON" -c 'import lal; import lalsimulation; import pycbc'; then
+    echo "WAVEFORM_PYTHON requires LALSuite and PyCBC" >&2
+    exit 2
+  fi
+  waveform_runtime_checked=1
+}
 
 mkdir -p "$OUTPUT_ROOT"
 disjoint_dir="$OUTPUT_ROOT/disjoint-background"
@@ -201,10 +215,11 @@ PY
 
 waveform_report="$recipes_dir/waveform_validation_report.json"
 if [[ ! -s "$waveform_report" ]]; then
+  require_waveform_runtime
   (
     cd "$TASK_CODE_DIR"
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
-    "$TASK_PYTHON" -m gwyolo.cli waveform-validate \
+    "$WAVEFORM_PYTHON" -m gwyolo.cli waveform-validate \
       --recipes "$recipes" \
       --output "$waveform_report" \
       --sample-rate "$SAMPLE_RATE" \
@@ -237,6 +252,7 @@ materialized_dir="$OUTPUT_ROOT/materialized"
 materialized_manifest="$materialized_dir/materialized_injections.jsonl"
 materialization_report="$materialized_dir/materialization_report.json"
 if [[ ! -s "$materialization_report" ]]; then
+  require_waveform_runtime
   completed=0
   for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
     printf '%s independent-validation-materialization attempt=%s\n' \
@@ -244,7 +260,7 @@ if [[ ! -s "$materialization_report" ]]; then
     if (
       cd "$TASK_CODE_DIR"
       export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
-      "$TASK_PYTHON" -m gwyolo.cli injection-materialize \
+      "$WAVEFORM_PYTHON" -m gwyolo.cli injection-materialize \
         --recipes "$recipes" \
         --background-manifest "$injection_background_manifest" \
         --output-dir "$materialized_dir" \
@@ -297,10 +313,11 @@ snr_dir="$OUTPUT_ROOT/snr"
 snr_manifest="$snr_dir/materialized_injections_snr.jsonl"
 snr_report="$snr_dir/snr_annotation_report.json"
 if [[ ! -s "$snr_report" ]]; then
+  require_waveform_runtime
   (
     cd "$TASK_CODE_DIR"
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
-    "$TASK_PYTHON" -m gwyolo.cli injection-snr-annotate \
+    "$WAVEFORM_PYTHON" -m gwyolo.cli injection-snr-annotate \
       --manifest "$materialized_manifest" \
       --output-dir "$snr_dir" \
       --low-frequency 20 \
@@ -314,10 +331,11 @@ arrival_dir="$OUTPUT_ROOT/arrivals"
 arrival_manifest="$arrival_dir/materialized_injections_arrivals.jsonl"
 arrival_report="$arrival_dir/detector_arrival_annotation_report.json"
 if [[ ! -s "$arrival_report" ]]; then
+  require_waveform_runtime
   (
     cd "$TASK_CODE_DIR"
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
-    "$TASK_PYTHON" -m gwyolo.cli injection-arrival-annotate \
+    "$WAVEFORM_PYTHON" -m gwyolo.cli injection-arrival-annotate \
       --manifest "$snr_manifest" \
       --output-dir "$arrival_dir"
   )

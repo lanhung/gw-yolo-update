@@ -21,6 +21,12 @@ def test_independent_validation_runner_is_group_disjoint_and_test_blind() -> Non
     assert "purpose_gps_block_overlap" in source
     assert "MINIMUM_PURPOSE_GPS_BLOCKS" in source
     assert "waveform-validate" in source
+    assert 'WAVEFORM_PYTHON=${WAVEFORM_PYTHON:-$TASK_PYTHON}' in source
+    assert "import lal; import lalsimulation; import pycbc" in source
+    assert '"$WAVEFORM_PYTHON" -m gwyolo.cli waveform-validate' in source
+    assert '"$WAVEFORM_PYTHON" -m gwyolo.cli injection-materialize' in source
+    assert '"$WAVEFORM_PYTHON" -m gwyolo.cli injection-snr-annotate' in source
+    assert '"$WAVEFORM_PYTHON" -m gwyolo.cli injection-arrival-annotate' in source
     assert "signal_scaled_float16" in source
     assert "injection-snr-annotate" in source
     assert "injection-arrival-annotate" in source

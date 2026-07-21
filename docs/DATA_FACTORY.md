@@ -66,6 +66,14 @@ O4a is development/calibration data. O4b is rejected by default and can only be 
 explicit `--allow-locked-evaluation-data` flag after thresholds and architecture are frozen. This
 matches the project rule that GWTC-5/O4b cannot influence model selection.
 
+Independent validation generation may use a dedicated `WAVEFORM_PYTHON` interpreter while the
+orchestration CLI continues to use `TASK_PYTHON`. The runner imports LALSuite, LALSimulation and
+PyCBC through that interpreter before the first missing waveform-dependent stage, then uses the
+same interpreter for external waveform equivalence, injection materialization, empirical SNR and
+detector-arrival annotation. This prevents a long background/recipe job from failing late because
+the orchestration environment lacks the physical waveform backend; completed hash-bound stages are
+still replayed without requiring unnecessary regeneration.
+
 The initial real-data target is `GW231123_135430`, because official O4a data include aligned H1 and L1
 4 kHz files. The acquisition is resumable because each 4096-second file is about 129 MB and the current
 remote route to GWOSC is bandwidth-limited.
