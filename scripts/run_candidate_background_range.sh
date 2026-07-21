@@ -46,6 +46,8 @@ REFERENCE_IFO=${REFERENCE_IFO:-H1}
 SHIFTED_IFO=${SHIFTED_IFO:-L1}
 CHECKPOINT=${CHECKPOINT:-}
 CONFIG=${CONFIG:-}
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
+RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-120}
 
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[1-9][0-9]*$ ]] \
@@ -68,6 +70,14 @@ if (( SHARD_START > 0 )) && [[ -z "$CAPACITY_EXTENSION_DECISION" ]]; then
 fi
 if [[ "$TEST_FRACTION" != "0" && "$TEST_FRACTION" != "0.0" ]]; then
   echo "validation-scale background must keep test_fraction=0" >&2
+  exit 2
+fi
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "RETRY_DELAY_SECONDS must be a non-negative integer" >&2
   exit 2
 fi
 
@@ -309,31 +319,46 @@ for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
     sleep 30
   done
   shard_output="$OUTPUT_ROOT/shard-$shard"
-  (
-    cd "$SCORING_CODE_DIR"
-    export PYTHONPATH=src GWYOLO_CODE_COMMIT="$SCORING_CODE_COMMIT"
-    "$TASK_PYTHON" -m gwyolo.cli background-stream-shard \
-      --parent-plan "$PARENT_PLAN" \
-      --event-exclusions "$EVENT_EXCLUSIONS" \
-      --timing-calibration-report "$TIMING_CALIBRATION_REPORT" \
-      --checkpoint "$CHECKPOINT" \
-      --config "$CONFIG" \
-      --coherence-config "$COHERENCE_CONFIG" \
-      --cache-root "$CACHE_ROOT" \
-      --output-dir "$shard_output" \
-      --shard-index "$shard" \
-      --pairs-per-shard "$PAIRS_PER_SHARD" \
-      --validation-fraction "$VALIDATION_FRACTION" \
-      --test-fraction "$TEST_FRACTION" \
-      --seed "$BACKGROUND_SEED" \
-      --model-ifos "${model_ifos[@]}" \
-      --q-values "${q_values[@]}" \
-      --target-sample-rate "$TARGET_SAMPLE_RATE" \
-      --context-duration "$CONTEXT_DURATION" \
-      --chirp-threshold "$CHIRP_THRESHOLD" \
-      --minimum-bins "$MINIMUM_BINS" \
-      --download-workers "$DOWNLOAD_WORKERS"
-  )
+  completed=0
+  for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+    printf '%s background-shard=%s attempt=%s\n' \
+      "$(date -u +%FT%TZ)" "$shard" "$attempt"
+    if (
+      cd "$SCORING_CODE_DIR"
+      export PYTHONPATH=src GWYOLO_CODE_COMMIT="$SCORING_CODE_COMMIT"
+      "$TASK_PYTHON" -m gwyolo.cli background-stream-shard \
+        --parent-plan "$PARENT_PLAN" \
+        --event-exclusions "$EVENT_EXCLUSIONS" \
+        --timing-calibration-report "$TIMING_CALIBRATION_REPORT" \
+        --checkpoint "$CHECKPOINT" \
+        --config "$CONFIG" \
+        --coherence-config "$COHERENCE_CONFIG" \
+        --cache-root "$CACHE_ROOT" \
+        --output-dir "$shard_output" \
+        --shard-index "$shard" \
+        --pairs-per-shard "$PAIRS_PER_SHARD" \
+        --validation-fraction "$VALIDATION_FRACTION" \
+        --test-fraction "$TEST_FRACTION" \
+        --seed "$BACKGROUND_SEED" \
+        --model-ifos "${model_ifos[@]}" \
+        --q-values "${q_values[@]}" \
+        --target-sample-rate "$TARGET_SAMPLE_RATE" \
+        --context-duration "$CONTEXT_DURATION" \
+        --chirp-threshold "$CHIRP_THRESHOLD" \
+        --minimum-bins "$MINIMUM_BINS" \
+        --download-workers "$DOWNLOAD_WORKERS"
+    ); then
+      completed=1
+      break
+    fi
+    if (( attempt < MAX_ATTEMPTS )); then
+      sleep "$RETRY_DELAY_SECONDS"
+    fi
+  done
+  if (( completed != 1 )); then
+    echo "background shard $shard exhausted bounded retries" >&2
+    exit 1
+  fi
   report="$shard_output/streamed_background_shard_report.json"
   if [[ ! -s "$report" ]]; then
     echo "streaming shard completed without its immutable report: $shard" >&2

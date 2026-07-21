@@ -78,6 +78,8 @@ def test_candidate_background_extension_binds_authoritative_parent() -> None:
     assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source
+    assert "background shard $shard exhausted bounded retries" in source
+    assert "MAX_ATTEMPTS" in source
 
 
 def test_candidate_background_embedded_python_compiles() -> None:
