@@ -26,6 +26,7 @@ for variable in "${required_variables[@]}"; do
 done
 
 SHARD_START=${SHARD_START:-0}
+BASE_OUTPUT_ROOT=${BASE_OUTPUT_ROOT:-}
 PAIRS_PER_SHARD=${PAIRS_PER_SHARD:-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.2}
 TEST_FRACTION=${TEST_FRACTION:-0}
@@ -48,8 +49,16 @@ CONFIG=${CONFIG:-}
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$PAIRS_PER_SHARD" =~ ^[1-9][0-9]*$ ]] \
-  || (( SHARD_START != 0 || SHARD_STOP_EXCLUSIVE <= SHARD_START )); then
-  echo "publication candidate background requires a full zero-based shard range" >&2
+  || (( SHARD_STOP_EXCLUSIVE <= SHARD_START )); then
+  echo "publication candidate background requires a valid bounded shard range" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ -z "$BASE_OUTPUT_ROOT" ]]; then
+  echo "a nonzero extension range requires BASE_OUTPUT_ROOT" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ "$BASE_OUTPUT_ROOT" == "$OUTPUT_ROOT" ]]; then
+  echo "extension output must be separate from the immutable base output" >&2
   exit 2
 fi
 if [[ "$TEST_FRACTION" != "0" && "$TEST_FRACTION" != "0.0" ]]; then
@@ -233,6 +242,14 @@ read -r -a model_ifos <<<"$MODEL_IFOS"
 read -r -a q_values <<<"$Q_VALUES"
 mkdir -p "$CACHE_ROOT" "$OUTPUT_ROOT"
 reports=()
+for ((shard = 0; shard < SHARD_START; shard++)); do
+  report="$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"
+  if [[ ! -s "$report" ]]; then
+    echo "base streaming shard report is absent: $shard" >&2
+    exit 1
+  fi
+  reports+=(--shard-report "$report")
+done
 for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
   available_kb=$(df -Pk "$CACHE_ROOT" | awk 'NR == 2 {print $4}')
   if (( available_kb < MINIMUM_FREE_KB )); then
@@ -287,6 +304,7 @@ if [[ ! -s "$merge_report" ]]; then
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
     "$TASK_PYTHON" -m gwyolo.cli background-stream-merge \
       "${reports[@]}" \
+      --parent-plan "$PARENT_PLAN" \
       --output-dir "$merge_dir"
   )
 fi
@@ -298,19 +316,24 @@ block_dir="$OUTPUT_ROOT/val_candidate_block_background"
 block_report="$block_dir/val_candidate_time_slide_report.json"
 calibration="$OUTPUT_ROOT/frozen_validation_candidate_search_calibration.json"
 
-"$TASK_PYTHON" - "$merge_report" "$SHARD_STOP_EXCLUSIVE" <<'PY'
+"$TASK_PYTHON" - "$merge_report" "$SHARD_STOP_EXCLUSIVE" "$PARENT_PLAN" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
 
 report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+digest = hashlib.sha256(pathlib.Path(sys.argv[3]).read_bytes()).hexdigest()
 if (
     report.get("status") != "verified_merged_streamed_candidate_background"
     or not report.get("complete_parent_plan")
     or int(report.get("shard_count_merged", -1)) != int(sys.argv[2])
     or int(report.get("split_counts", {}).get("test", -1)) != 0
+    or report.get("common_run_identity", {}).get("parent_plan_sha256") != digest
 ):
-    raise SystemExit("merged validation background is incomplete or exposes test data")
+    raise SystemExit(
+        "merged validation background is incomplete, has another parent, or exposes test data"
+    )
 PY
 
 if [[ ! -s "$schedule" ]]; then

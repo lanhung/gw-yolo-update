@@ -596,7 +596,9 @@ def run_streamed_morphology_background_shard(
 
 
 def merge_streamed_background_shards(
-    shard_reports: Iterable[str | Path], output_dir: str | Path
+    shard_reports: Iterable[str | Path],
+    output_dir: str | Path,
+    parent_plan: str | Path | None = None,
 ) -> dict[str, Any]:
     """Merge stable-split background/candidate shards with global overlap checks."""
 
@@ -620,7 +622,6 @@ def merge_streamed_background_shards(
         if report.get("split_strategy") != "hash_threshold_v1":
             raise ValueError("only stable hash-threshold shards can be merged")
     common_fields = (
-        "parent_plan_sha256",
         "event_exclusions_sha256",
         "timing_calibration_report_sha256",
         "checkpoint_sha256",
@@ -635,6 +636,7 @@ def merge_streamed_background_shards(
         "context_duration",
         "chirp_threshold",
         "minimum_bins",
+        "pairs_per_shard",
         "streaming_mode",
         "code_commit",
     )
@@ -644,12 +646,71 @@ def merge_streamed_background_shards(
         for report in reports[1:]
     ):
         raise ValueError("streamed shards do not share one scoring/split identity")
+    reported_parent_hashes = {
+        str(report["run_identity"]["parent_plan_sha256"]) for report in reports
+    }
+    authoritative_plan = None
+    authoritative_plan_path = None
+    authoritative_plan_sha256 = None
+    parent_pair_ids = None
+    base_parent_sha256 = None
+    base_parent_count = None
+    if parent_plan is not None:
+        authoritative_plan_path = Path(parent_plan).resolve()
+        authoritative_plan = _load_json(authoritative_plan_path)
+        parent_pairs = list(authoritative_plan.get("pairs", []))
+        parent_pair_ids = [str(row.get("pair_id", "")) for row in parent_pairs]
+        if (
+            authoritative_plan.get("status") != "development_acquisition_plan"
+            or authoritative_plan.get("locked_evaluation_data") is not False
+            or not parent_pairs
+            or any(not pair_id for pair_id in parent_pair_ids)
+            or len(set(parent_pair_ids)) != len(parent_pair_ids)
+            or int(authoritative_plan.get("selected_pairs", -1)) != len(parent_pairs)
+        ):
+            raise ValueError("stream merge parent is not a complete development plan")
+        authoritative_plan_sha256 = file_sha256(authoritative_plan_path)
+        base_value = authoritative_plan.get("base_parent_plan_sha256")
+        allowed_parent_hashes = {authoritative_plan_sha256}
+        if base_value is not None:
+            base_parent_sha256 = str(base_value)
+            base_parent_count = int(authoritative_plan.get("base_selected_pairs", 0))
+            if (
+                authoritative_plan.get("selection_rule")
+                != "frozen_prefix_stratified_complement_v1"
+                or authoritative_plan.get("candidate_scores_inspected") is not False
+                or not 0 < base_parent_count < len(parent_pair_ids)
+            ):
+                raise ValueError("extended stream parent has an invalid frozen-prefix count")
+            if canonical_hash(parent_pair_ids[:base_parent_count], 64) != str(
+                authoritative_plan.get("base_pair_ids_hash", "")
+            ):
+                raise ValueError("extended stream parent frozen-prefix hash mismatch")
+            base_path = Path(
+                str(authoritative_plan.get("base_parent_plan_path", ""))
+            ).resolve()
+            if not base_path.is_file() or file_sha256(base_path) != base_parent_sha256:
+                raise ValueError("extended stream parent base artifact hash mismatch")
+            base_plan = _load_json(base_path)
+            base_ids = [str(row.get("pair_id", "")) for row in base_plan.get("pairs", [])]
+            if (
+                base_plan.get("status") != "development_acquisition_plan"
+                or base_plan.get("locked_evaluation_data") is not False
+                or int(base_plan.get("selected_pairs", -1)) != base_parent_count
+                or base_ids != parent_pair_ids[:base_parent_count]
+            ):
+                raise ValueError("extended stream parent is not an exact base-plan prefix")
+            allowed_parent_hashes.add(base_parent_sha256)
+        if not reported_parent_hashes <= allowed_parent_hashes:
+            raise ValueError("streamed shard parent is outside the declared plan lineage")
+    elif len(reported_parent_hashes) != 1:
+        raise ValueError("streamed shards do not share one parent plan")
     indices = [int(report["run_identity"]["shard_index"]) for report in reports]
     if len(indices) != len(set(indices)):
         raise ValueError("streamed shard indices repeat")
     parent_counts = {int(report["parent_selected_pairs"]) for report in reports}
     shard_counts = {int(report["shard_count"]) for report in reports}
-    if len(parent_counts) != 1 or len(shard_counts) != 1:
+    if authoritative_plan is None and (len(parent_counts) != 1 or len(shard_counts) != 1):
         raise ValueError("streamed shards disagree on parent plan size")
     ranges = sorted(
         (
@@ -663,6 +724,37 @@ def merge_streamed_background_shards(
         for (_, left_stop), (right_start, _) in zip(ranges, ranges[1:])
     ):
         raise ValueError("streamed acquisition pair ranges overlap or are empty")
+    if authoritative_plan is not None:
+        if parent_pair_ids is None:
+            raise RuntimeError("authoritative stream parent pair inventory is missing")
+        for report in reports:
+            parent_hash = str(report["run_identity"]["parent_plan_sha256"])
+            start = int(report["pair_index_start_inclusive"])
+            stop = int(report["pair_index_stop_exclusive"])
+            declared_count = int(report["parent_selected_pairs"])
+            expected_count = (
+                base_parent_count
+                if parent_hash == base_parent_sha256
+                else len(parent_pair_ids)
+            )
+            pairs_per_shard = int(report["run_identity"].get("pairs_per_shard", 0))
+            shard_index = int(report["run_identity"].get("shard_index", -1))
+            expected_shards = (
+                math.ceil(expected_count / pairs_per_shard)
+                if expected_count is not None and pairs_per_shard > 0
+                else -1
+            )
+            if (
+                declared_count != expected_count
+                or stop > expected_count
+                or int(report["shard_count"]) != expected_shards
+                or start != shard_index * pairs_per_shard
+            ):
+                raise ValueError("streamed shard range exceeds its declared lineage parent")
+            if canonical_hash(parent_pair_ids[start:stop], 64) != str(
+                report.get("selected_pair_ids_hash", "")
+            ):
+                raise ValueError("streamed shard pair IDs differ from the authoritative plan")
 
     background_rows = []
     candidates_by_split: dict[str, list[dict[str, Any]]] = {"val": [], "test": []}
@@ -759,7 +851,11 @@ def merge_streamed_background_shards(
             "sha256": file_sha256(path),
             "candidates": len(ordered),
         }
-    parent_count = next(iter(parent_counts))
+    parent_count = (
+        len(parent_pair_ids)
+        if parent_pair_ids is not None
+        else next(iter(parent_counts))
+    )
     covered_indices = {index for start, stop in ranges for index in range(start, stop)}
     complete_parent = covered_indices == set(range(parent_count))
     split_counts = {
@@ -782,6 +878,18 @@ def merge_streamed_background_shards(
         split_detector_time_seconds[split] = sum(
             _union_duration(intervals) for intervals in intervals_by_ifo.values()
         )
+    common_run_identity = {field: reference.get(field) for field in common_fields}
+    common_run_identity["parent_plan_sha256"] = (
+        authoritative_plan_sha256
+        if authoritative_plan_sha256 is not None
+        else next(iter(reported_parent_hashes))
+    )
+    pairs_per_shard = int(reference.get("pairs_per_shard") or 1)
+    parent_shard_count = (
+        math.ceil(parent_count / pairs_per_shard)
+        if authoritative_plan is not None
+        else next(iter(shard_counts))
+    )
     result = {
         "status": (
             "verified_merged_streamed_morphology_background"
@@ -798,12 +906,23 @@ def merge_streamed_background_shards(
             else "adequate time-slide exposure, validation-only threshold freeze and an independent "
             "locked test evaluation remain required"
         ),
-        "common_run_identity": {field: reference.get(field) for field in common_fields},
+        "common_run_identity": common_run_identity,
+        "parent_plan_lineage": (
+            {
+                "authoritative_parent_plan_path": str(authoritative_plan_path),
+                "authoritative_parent_plan_sha256": authoritative_plan_sha256,
+                "base_parent_plan_sha256": base_parent_sha256,
+                "base_selected_pairs": base_parent_count,
+                "reported_parent_plan_sha256s": sorted(reported_parent_hashes),
+            }
+            if authoritative_plan is not None
+            else None
+        ),
         "shard_reports": [
             {"path": str(path), "sha256": file_sha256(path)} for path in report_paths
         ],
         "shard_count_merged": len(reports),
-        "parent_shard_count": next(iter(shard_counts)),
+        "parent_shard_count": parent_shard_count,
         "parent_selected_pairs": parent_count,
         "covered_pair_ranges": [list(value) for value in ranges],
         "covered_parent_pair_indices": len(covered_indices),

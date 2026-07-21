@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from gwyolo.io import atomic_write_json, atomic_write_text, file_sha256
+from gwyolo.io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 from gwyolo.streaming import (
     calibrate_streamed_morphology_candidate_rate,
     evict_candidate_probability_artifacts,
@@ -449,6 +449,128 @@ def test_streamed_background_merge_checks_global_groups_and_pair_ranges(
     assert result["candidate_manifests"]["test"]["candidates"] == 1
     with pytest.raises(FileExistsError, match="immutable"):
         merge_streamed_background_shards(reports, tmp_path / "merged")
+
+
+def test_streamed_background_merge_accepts_verified_parent_extension_lineage(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base-plan.json"
+    base_pairs = [{"pair_id": "pair-0"}]
+    atomic_write_json(
+        base,
+        {
+            "status": "development_acquisition_plan",
+            "locked_evaluation_data": False,
+            "selected_pairs": 1,
+            "pairs": base_pairs,
+        },
+    )
+    extended = tmp_path / "extended-plan.json"
+    extended_pairs = [*base_pairs, {"pair_id": "pair-1"}]
+    atomic_write_json(
+        extended,
+        {
+            "status": "development_acquisition_plan",
+            "locked_evaluation_data": False,
+            "selected_pairs": 2,
+            "pairs": extended_pairs,
+            "selection_rule": "frozen_prefix_stratified_complement_v1",
+            "candidate_scores_inspected": False,
+            "base_parent_plan_path": str(base),
+            "base_parent_plan_sha256": file_sha256(base),
+            "base_selected_pairs": 1,
+            "base_pair_ids_hash": canonical_hash(["pair-0"], 64),
+        },
+    )
+
+    reports = []
+    for index, parent in enumerate((base, extended)):
+        shard = tmp_path / f"lineage-shard-{index}"
+        shard.mkdir()
+        background = shard / "background.jsonl"
+        _jsonl(
+            background,
+            [
+                {
+                    "window_id": f"lineage-window-{index}",
+                    "split": "val",
+                    "gps_block": f"gps:{100 + 256 * index}:256",
+                    "gps_start": 100.0 + 256 * index,
+                    "gps_end": 108.0 + 256 * index,
+                    "observing_run": "O4a",
+                    "ifos": ["H1", "L1"],
+                }
+            ],
+        )
+        candidates = shard / "candidates.jsonl"
+        _jsonl(candidates, [])
+        report = shard / "report.json"
+        atomic_write_json(
+            report,
+            {
+                "status": "verified_streamed_morphology_background_shard",
+                "split_strategy": "hash_threshold_v1",
+                "run_identity": {
+                    "parent_plan_sha256": file_sha256(parent),
+                    "event_exclusions_sha256": "events",
+                    "timing_calibration_report_sha256": None,
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "coherence_config_sha256": "coherence",
+                    "validation_fraction": 0.2,
+                    "test_fraction": 0.0,
+                    "seed": 7,
+                    "model_ifos": ["H1", "L1", "V1"],
+                    "q_values": [4.0, 8.0, 16.0],
+                    "target_sample_rate": 1024,
+                    "context_duration": 64.0,
+                    "chirp_threshold": 0.3,
+                    "minimum_bins": 1,
+                    "pairs_per_shard": 1,
+                    "streaming_mode": "morphology_only_validation",
+                    "code_commit": "commit",
+                    "shard_index": index,
+                },
+                "parent_selected_pairs": 1 + index,
+                "shard_count": 1 + index,
+                "pair_index_start_inclusive": index,
+                "pair_index_stop_exclusive": index + 1,
+                "selected_pair_ids_hash": canonical_hash([f"pair-{index}"], 64),
+                "background_manifest_path": str(background),
+                "background_manifest_sha256": file_sha256(background),
+                "split_artifacts": {
+                    "val": {
+                        "candidate_manifest_path": str(candidates),
+                        "candidate_manifest_sha256": file_sha256(candidates),
+                    }
+                },
+            },
+        )
+        reports.append(report)
+
+    with pytest.raises(ValueError, match="one parent plan"):
+        merge_streamed_background_shards(reports, tmp_path / "no-lineage")
+    merged = merge_streamed_background_shards(
+        reports, tmp_path / "lineage-merged", extended
+    )
+    assert merged["complete_parent_plan"] is True
+    assert merged["parent_selected_pairs"] == 2
+    assert merged["parent_shard_count"] == 2
+    assert merged["parent_plan_lineage"]["base_parent_plan_sha256"] == file_sha256(
+        base
+    )
+    assert merged["common_run_identity"]["parent_plan_sha256"] == file_sha256(
+        extended
+    )
+
+    bad = json.loads(reports[1].read_text())
+    bad["selected_pair_ids_hash"] = "wrong"
+    bad_report = tmp_path / "bad-lineage-report.json"
+    atomic_write_json(bad_report, bad)
+    with pytest.raises(ValueError, match="pair IDs differ"):
+        merge_streamed_background_shards(
+            [reports[0], bad_report], tmp_path / "bad-lineage", extended
+        )
 
 
 def test_streamed_morphology_merge_retains_uncalibrated_validation_candidates(

@@ -199,6 +199,97 @@ def run_gwosc_run_plan(
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
 
 
+def extend_gwosc_run_plan(
+    base_plan_path: str | Path,
+    output: str | Path,
+    target_pairs: int,
+    extension_seed: int | None = None,
+) -> dict[str, Any]:
+    """Append score-blind pairs while preserving a frozen parent as an exact prefix."""
+
+    base_path = Path(base_plan_path).resolve()
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("extended GWOSC acquisition plans are immutable")
+    with base_path.open("r", encoding="utf-8") as handle:
+        base = json.load(handle)
+    base_pairs = list(base.get("pairs", []))
+    base_ids = [str(row.get("pair_id", "")) for row in base_pairs]
+    if (
+        base.get("status") != "development_acquisition_plan"
+        or base.get("locked_evaluation_data") is not False
+        or str(base.get("run", "")).lower().startswith("o4b")
+        or not base_pairs
+        or any(not pair_id for pair_id in base_ids)
+        or len(set(base_ids)) != len(base_ids)
+        or int(base.get("selected_pairs", -1)) != len(base_pairs)
+    ):
+        raise ValueError("GWOSC extension requires a complete unlocked development parent")
+    if base.get("base_parent_plan_sha256") is not None:
+        raise ValueError("GWOSC extension currently requires a root parent plan")
+    if target_pairs <= len(base_pairs):
+        raise ValueError("GWOSC extension target must exceed the frozen parent size")
+
+    run = str(base["run"])
+    detectors = tuple(str(value) for value in base["detectors"])
+    sample_rate_khz = int(base["sample_rate_khz"])
+    base_seed = int(base["seed"])
+    full = plan_run_strain_pairs(
+        run,
+        detectors,
+        sample_rate_khz,
+        maximum_pairs=None,
+        seed=base_seed,
+    )
+    identity_fields = ("run", "detectors", "sample_rate_khz", "source_endpoint")
+    if any(full.get(field) != base.get(field) for field in identity_fields):
+        raise ValueError("current GWOSC inventory does not match the frozen parent identity")
+    full_pairs = list(full["pairs"])
+    if target_pairs > len(full_pairs):
+        raise ValueError("GWOSC extension target exceeds aligned source-pair availability")
+    full_by_id = {str(row["pair_id"]): row for row in full_pairs}
+    if len(full_by_id) != len(full_pairs):
+        raise ValueError("current GWOSC inventory repeats source-pair IDs")
+    for row in base_pairs:
+        pair_id = str(row["pair_id"])
+        if full_by_id.get(pair_id) != row:
+            raise ValueError(
+                f"frozen parent pair {pair_id} is absent or changed in the current inventory"
+            )
+
+    seed = base_seed if extension_seed is None else extension_seed
+    base_id_set = set(base_ids)
+    complement = [row for row in full_pairs if str(row["pair_id"]) not in base_id_set]
+    additional = _stratified_records(complement, target_pairs - len(base_pairs), seed)
+    extended_pairs = [*base_pairs, *additional]
+    extended_ids = [str(row["pair_id"]) for row in extended_pairs]
+    if len(extended_pairs) != target_pairs or len(set(extended_ids)) != target_pairs:
+        raise RuntimeError("GWOSC extension did not produce the requested unique pair count")
+    gps_values = [int(row["gps_start"]) for row in extended_pairs]
+    result = {
+        **{key: value for key, value in full.items() if key != "pairs"},
+        "selected_pairs": len(extended_pairs),
+        "selected_gps_span": [min(gps_values), max(gps_values)],
+        "pairs": extended_pairs,
+        "selection_rule": "frozen_prefix_stratified_complement_v1",
+        "selection_data": "GWOSC strain-file metadata only",
+        "candidate_scores_inspected": False,
+        "base_parent_plan_path": str(base_path),
+        "base_parent_plan_sha256": file_sha256(base_path),
+        "base_selected_pairs": len(base_pairs),
+        "base_pair_ids_hash": canonical_hash(base_ids, 64),
+        "extension_seed": seed,
+        "extension_target_pairs": target_pairs,
+        "extension_pairs": len(additional),
+        "extension_pair_ids_hash": canonical_hash(
+            [str(row["pair_id"]) for row in additional], 64
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
+
+
 def run_gwosc_plan_shard(
     plan_path: str | Path,
     output: str | Path,

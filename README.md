@@ -80,6 +80,7 @@ gwyolo candidate-extract retain every per-IFO temporal cluster from saved probab
 gwyolo candidate-time-slides form and cluster exact-time nonzero-shift network candidates
 gwyolo candidate-block-permutation-schedule-freeze plan score-blind fragmented-background exposure
 gwyolo candidate-block-permutation-capacity-forecast size the parent bank before scoring
+gwyolo gwosc-plan-extend append a score-blind reserve while preserving a frozen parent prefix
 gwyolo candidate-block-permutations execute frozen relative-slot GPS-block background pairings
 gwyolo gravityspy-ood-family-freeze freeze the next score-blind held-family protocol
 gwyolo glitch-ood-train train single-IFO or aligned detector-set OOD embeddings

@@ -10,11 +10,13 @@ import h5py
 import numpy as np
 import pytest
 
+from gwyolo.io import file_sha256
 from gwyolo.gwosc import (
     _fft_downsample,
     _whiten,
     _whiten_with_reference,
     download_resumable,
+    extend_gwosc_run_plan,
     event_strain_files,
     plan_run_strain_pairs,
     read_hdf5_segment,
@@ -77,6 +79,66 @@ def test_gwosc_plan_shards_are_disjoint_and_parent_bound(tmp_path: Path) -> None
     assert selected == {row["pair_id"] for row in pairs}
     with pytest.raises(ValueError, match="beyond"):
         run_gwosc_plan_shard(plan, tmp_path / "shard-3.json", 3, 2)
+
+
+def test_gwosc_plan_extension_preserves_parent_prefix_and_is_score_blind(
+    tmp_path: Path,
+) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://example/{ifo}-{gps}.json",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    parent = tmp_path / "parent.json"
+    base_pairs = [pair(100), pair(400)]
+    base = {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": "O4a",
+        "detectors": ["H1", "L1"],
+        "sample_rate_khz": 4,
+        "seed": 7,
+        "source_endpoint": "https://gwosc.org/api/v2/runs/O4a/strain-files",
+        "aligned_pairs_available": 5,
+        "selected_pairs": 2,
+        "pairs": base_pairs,
+    }
+    parent.write_text(json.dumps(base), encoding="utf-8")
+    full = {
+        **base,
+        "api_results_count": 10,
+        "api_pages": 1,
+        "aligned_pairs_available": 5,
+        "selected_pairs": 5,
+        "selected_gps_span": [100, 500],
+        "pairs": [pair(gps) for gps in (100, 200, 300, 400, 500)],
+    }
+    output = tmp_path / "extended.json"
+    with patch("gwyolo.gwosc.plan_run_strain_pairs", return_value=full):
+        extended = extend_gwosc_run_plan(parent, output, 4, extension_seed=9)
+
+    assert extended["pairs"][:2] == base_pairs
+    assert extended["selected_pairs"] == 4
+    assert len({row["pair_id"] for row in extended["pairs"]}) == 4
+    assert extended["base_parent_plan_sha256"] == file_sha256(parent)
+    assert extended["base_selected_pairs"] == 2
+    assert extended["extension_pairs"] == 2
+    assert extended["candidate_scores_inspected"] is False
+    assert extended["selection_data"] == "GWOSC strain-file metadata only"
+    with pytest.raises(FileExistsError, match="immutable"):
+        extend_gwosc_run_plan(parent, output, 5)
 
 
 def test_reference_whitening_is_linear_for_signal_component() -> None:

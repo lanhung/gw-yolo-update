@@ -318,6 +318,12 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_run_plan.add_argument("--seed", type=int, default=20260719)
     gwosc_run_plan.add_argument("--output", required=True)
 
+    gwosc_plan_extend = subparsers.add_parser("gwosc-plan-extend")
+    gwosc_plan_extend.add_argument("--base-plan", required=True)
+    gwosc_plan_extend.add_argument("--target-pairs", type=int, required=True)
+    gwosc_plan_extend.add_argument("--extension-seed", type=int)
+    gwosc_plan_extend.add_argument("--output", required=True)
+
     gwosc_plan_shard = subparsers.add_parser("gwosc-plan-shard")
     gwosc_plan_shard.add_argument("--plan", required=True)
     gwosc_plan_shard.add_argument("--shard-index", type=int, required=True)
@@ -1165,6 +1171,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stream_merge = subparsers.add_parser("background-stream-merge")
     stream_merge.add_argument("--shard-report", action="append", required=True)
+    stream_merge.add_argument("--parent-plan")
     stream_merge.add_argument("--output-dir", required=True)
 
     morphology_calibrate = subparsers.add_parser("background-morphology-calibrate")
@@ -1838,6 +1845,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.shard_index,
                 args.pairs_per_shard,
+            )
+        )
+    elif args.command == "gwosc-plan-extend":
+        from .gwosc import extend_gwosc_run_plan
+
+        _print(
+            extend_gwosc_run_plan(
+                args.base_plan,
+                args.output,
+                args.target_pairs,
+                args.extension_seed,
             )
         )
     elif args.command == "gwosc-batch-download":
@@ -2870,7 +2888,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "background-stream-merge":
         from .streaming import merge_streamed_background_shards
 
-        _print(merge_streamed_background_shards(args.shard_report, args.output_dir))
+        _print(
+            merge_streamed_background_shards(
+                args.shard_report, args.output_dir, args.parent_plan
+            )
+        )
     elif args.command == "background-morphology-calibrate":
         from .streaming import calibrate_streamed_morphology_candidate_rate
 

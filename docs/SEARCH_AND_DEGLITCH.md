@@ -228,12 +228,32 @@ live time.
 `scripts/run_candidate_background_range.sh` is the stricter calibrated successor. It refuses to
 start unless the hash-bound paired validation comparison explicitly sets
 `scale_continuous_background=true`, reuses the promoted scorer commit and timing calibration, and
-requires a complete zero-based parent-plan range. It streams validation blocks only
+requires either a complete zero-based parent-plan range or a verified immutable-prefix extension.
+It streams validation blocks only
 (`test_fraction=0`), merges calibrated all-instance candidates, freezes and executes the score-blind
 GPS-block permutation schedule, and freezes the 0.1/year validation threshold. A restart reuses
 identity-matched shard and block-background reports; any scorer, schedule, input or timing drift is
 a hard failure. The wrapper exits nonzero if the full corpus still cannot reach the predeclared FAR
 exposure, preserving that negative result without opening locked test data.
+
+If the score-blind capacity forecast requires an extension, freeze it before candidate scoring and
+reuse the completed prefix rather than independently resampling or downloading it again:
+
+```bash
+python -m gwyolo.cli gwosc-plan-extend \
+  --base-plan gwosc-o4a-plan800.json --target-pairs 880 \
+  --output gwosc-o4a-plan880.json
+export PARENT_PLAN=gwosc-o4a-plan880.json
+export BASE_OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-full-800
+export OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-extension-880
+export SHARD_START=200 SHARD_STOP_EXCLUSIVE=220 PAIRS_PER_SHARD=4
+bash scripts/run_candidate_background_range.sh
+```
+
+The extension merge re-hashes the root plan, verifies its exact prefix inside the extended plan,
+checks every shard's pair-ID hash against the authoritative 880-pair order and rejects parent hashes
+outside that two-level lineage. The scoring commit and all model/split/timing fields must remain
+identical across base and reserve shards.
 
 ```bash
 export TASK_PYTHON=/path/to/python
@@ -292,6 +312,12 @@ factor (1.5 by default). It reads no candidates or scores and is explicitly a pl
 not achieved live time. A failed safety margin is nonzero by default but still writes an atomic
 report with the recommended minimum source-pair count; `--allow-insufficient` is only for retaining
 diagnostics and cannot make the later exact schedule pass.
+When the forecast recommends a larger bank, `gwosc-plan-extend` refreshes the public development
+inventory, verifies that every frozen base pair is still byte-for-byte identical, retains the base
+pair order as an exact prefix and chooses only the additional complement through deterministic
+strain-file-metadata stratification. Candidate scores are never inspected. The resulting lineage
+fields make the original acquisition reusable while preventing a nominally larger, independently
+resampled plan from being treated as a compatible extension.
 
 `candidate-block-permutations` re-hashes that immutable schedule and the background manifest,
 requires validation-calibrated candidate timing at <=10 ms resolution, applies the predeclared
