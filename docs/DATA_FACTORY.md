@@ -127,6 +127,12 @@ the original rejected glitch IDs with their prior reasons. Running the normal ne
 on this immutable plan avoids reacquiring already accepted rows. Recovery rows are existing
 physical identities and are never counted as newly generated glitches.
 
+`scripts/run_gravityspy_network_recovery.sh` performs plan → selective materialization → verified
+source eviction → old-plus-recovered merge for train and validation. The separate
+`scripts/run_recovered_overlap_ablation.sh` then rebuilds the paired overlap bank, re-runs the joint
+leakage audit and trains equal-budget uniform/family-balanced arms. Both scripts are resumable at
+immutable report boundaries and require explicit paths; neither contains a machine-specific default.
+
 The official H1 O1 metadata CSV from Zenodo record 5649212 has also been downloaded and verified
 against the publisher MD5 `91963313b1574e083bc58915e0aa8ca1`. Of 15,305 rows, 10,988 pass a 0.9
 ML-confidence threshold after excluding Chirp/No_Glitch/None_of_the_Above. Stratifying at up to 100
