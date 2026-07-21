@@ -717,6 +717,16 @@ cannot pass the merged publication timing gate. This is scalability infrastructu
 observed exposure—the 0.01145-year measurement above remains the current scientific evidence until
 new background shards actually finish.
 
+The sharded runner was then checked against an existing real-O4a engineering result rather than
+only synthetic unit fixtures. The same 404 validation windows and 842 single-IFO candidates used by
+the earlier 127-slide monolithic run were evaluated as absolute ranges 1--64 and 65--127, then
+merged. The result retained 379 clustered background candidates and 98,800 seconds of exposure.
+Its manifest SHA256 is
+`bce15c3fc6ae5d383a35f202599d9dc02f9899ec1c41100187150b3c86072dd3`, byte-identical to the
+monolithic manifest; the merged report SHA256 is
+`fea5111c2d4d4306c86b8f25f646130e9e4b1b707c5e2d1c397025dc3edd6309`. This proves execution
+equivalence and resumability, not adequate FAR exposure.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed
@@ -772,3 +782,10 @@ prior-projection report. The environment audit reloads that report and requires 
 native-prior and training-configuration hashes to match the independently verified model artifacts.
 DINGO remains on the shared base contract because its native prior is embedded in the official model
 settings. This is an evidence-integrity gate only; it creates no posterior or performance claim.
+
+The same prior gate was executed remotely from commit `c3d8570`. All fourteen projection checks
+passed; the canonical prior, AMPLFI native prior and training-config hashes are respectively
+`ef22d9ee8e017d9fabf7e850705ae919c007f9feceab9db7d911abf628dcaec2`,
+`ff5f70d6f8859e0be5c2388cac6374dcf1e2229b3b863f872311be59e9dfd18e` and
+`ce18d1a334faa4b50e7adc1beef6a0340e49292b3b50ef832476826c00044f7d`; the report SHA256 is
+`e003e687199e1fef9b56ca4420e6c6091b311fa755ae8d22ba5b22602d333669`.
