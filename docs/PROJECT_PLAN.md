@@ -330,3 +330,11 @@ after independent GPS support and aligned real-glitch/network contexts are avail
 explicit temporal/coherence objective rather than another pooled spectral embedding.
 
 6. reproducibility lead: CI, containers, artifact registry, paper tables.
+
+The real-glitch data-size decision is now executable rather than inferred from rendered counts.
+After source-component-safe aligned overlap materialization, run nested 250/500/1,000/full physical
+mixture prefixes with five paired seeds under both 20 fixed epochs and 4,000 fixed optimizer
+updates. Promote more same-distribution data only when the paired bootstrap and clean non-inferiority
+gates pass under both controls; otherwise prioritize independent GPS/run/family coverage or a new
+representation. This validation-only curve precedes any claim from the 800/880-pair continuous
+background and does not alter the locked O4b/GWTC-5 boundary.

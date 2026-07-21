@@ -656,3 +656,35 @@ checkpoints both from row metadata and from populated test fields in either sele
 produce macro and pooled precision, recall, IoU and Dice; paired task bootstrap intervals and an
 IoU>=0.5 Wilson interval are reported overall and by glitch family. These remain validation promotion
 evidence only. Search, deglitch and locked-test claims require their separate predeclared endpoints.
+
+## Group-safe chirp+glitch overlap scaling curve
+
+The aligned detector-set corpus now has its own scaling experiment; the earlier 2k/5k/10k clean
+waveform curve cannot answer whether real-glitch mixture diversity is limiting mask learning.
+`physical-overlap-scale-subsets` re-hashes every numeric overlap artifact and the source-component-
+safe Gravity Spy corpus audit, then assigns one stable rank using mixture, injection, waveform,
+glitch, injection-GPS and network-GPS identities. Declared prefixes are therefore strictly nested
+without ever splitting or duplicating an underlying physical group. The frozen validation manifest
+is not subsampled and test rows remain unopened.
+
+The initial declared train sizes are 250, 500 and 1,000 physical mixtures plus the complete endpoint.
+Every point runs the same five paired seeds under both controls:
+
+- `configs/physical_overlap_scale_fixed_epochs.yaml`: 20 epochs, allowing optimizer updates to grow
+  with physical data;
+- `configs/physical_overlap_scale_fixed_updates.yaml`: exactly 4,000 optimizer updates, with a
+  fail-closed epoch safety cap.
+
+`physical-overlap-scale-summarize` requires the same validation, clean train/validation and
+pretrained-checkpoint hashes in every cell. It reports per-scale means and sample standard
+deviations and paired-seed bootstrap intervals for adjacent glitch-IoU gains. More same-distribution
+data is promoted only if the most recent approximately doubled step improves glitch IoU by at least
+0.01 with a positive paired-bootstrap lower bound under both fixed-epoch and fixed-update controls,
+while mean clean-chirp IoU retention remains at least 0.95. An epoch-only gain is diagnosed as
+budget coupling or optimization limitation; failure under both controls redirects work toward new
+GPS/run/glitch-family coverage or representation. The curve remains validation-only and cannot
+replace continuous-background FAR/IFAR/`<VT>` evidence.
+
+`scripts/run_physical_overlap_data_scaling.sh` freezes the subsets and executes the complete
+two-control, five-seed matrix resumably. It is artifact-gated behind the completed source-safe
+overlap bank and must not open O4b/GWTC-5.

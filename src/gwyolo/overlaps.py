@@ -515,6 +515,174 @@ def audit_physical_overlap_manifests(
     return report
 
 
+def freeze_physical_overlap_scaling_subsets(
+    train_manifest: str | Path,
+    validation_manifest: str | Path,
+    gravityspy_corpus_audit: str | Path,
+    scales: list[int],
+    output_dir: str | Path,
+    seed: int = 20260728,
+    include_full: bool = False,
+) -> dict[str, Any]:
+    """Freeze nested physical-group subsets for overlap data-scaling controls."""
+
+    train_rows = _read_jsonl(train_manifest)
+    validation_rows = _read_jsonl(validation_manifest)
+    corpus_audit_path = Path(gravityspy_corpus_audit)
+    corpus_audit = json.loads(corpus_audit_path.read_text(encoding="utf-8"))
+    corpus_audit_sha256 = file_sha256(corpus_audit_path)
+    if (
+        corpus_audit.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or corpus_audit.get("passed") is not True
+    ):
+        raise ValueError("Gravity Spy corpus audit did not pass")
+    split_audit = audit_physical_overlap_manifests(
+        [train_manifest, validation_manifest],
+        Path(output_dir) / "train_validation_group_audit.json",
+    )
+    if set(split_audit["rows_by_split"]) != {"train", "val"}:
+        raise ValueError("Overlap scaling requires exactly train and validation manifests")
+    if not scales:
+        raise ValueError("Overlap scaling requires at least one declared scale")
+    requested = [int(value) for value in scales]
+    if any(value <= 0 for value in requested) or requested != sorted(set(requested)):
+        raise ValueError("Overlap scales must be unique, positive and strictly increasing")
+    if include_full and len(train_rows) not in requested:
+        requested.append(len(train_rows))
+        requested.sort()
+    if requested[-1] > len(train_rows):
+        raise ValueError("Overlap scale exceeds the available unique physical groups")
+
+    required_fields = (
+        "mixture_id",
+        "injection_id",
+        "waveform_id",
+        "glitch_id",
+        "injection_gps_block",
+        "network_gps_block",
+        "path",
+        "sha256",
+    )
+    for label, rows in (("train", train_rows), ("validation", validation_rows)):
+        for row in rows:
+            missing = [field for field in required_fields if field not in row]
+            if missing:
+                raise ValueError(f"{label} overlap row is missing fields: {missing}")
+            artifact = Path(str(row["path"]))
+            if not artifact.is_file() or file_sha256(artifact) != row["sha256"]:
+                raise ValueError(f"{label} overlap artifact hash mismatch")
+            if row.get("gravityspy_corpus_audit_sha256") != corpus_audit_sha256:
+                raise ValueError(f"{label} overlap row differs from the corpus audit")
+
+    def rank(row: dict[str, Any]) -> str:
+        return canonical_hash(
+            {
+                "schema": "physical_overlap_scale_rank_v1",
+                "seed": seed,
+                "mixture_id": row["mixture_id"],
+                "injection_id": row["injection_id"],
+                "waveform_id": row["waveform_id"],
+                "glitch_id": row["glitch_id"],
+                "injection_gps_block": row["injection_gps_block"],
+                "network_gps_block": row["network_gps_block"],
+            }
+        )
+
+    ranked = sorted(train_rows, key=lambda row: (rank(row), str(row["mixture_id"])))
+    output = Path(output_dir)
+    subsets = []
+    previous_ids: set[str] = set()
+    for scale in requested:
+        rows = ranked[:scale]
+        mixture_ids = {str(row["mixture_id"]) for row in rows}
+        if not previous_ids <= mixture_ids:
+            raise RuntimeError("Overlap scaling subsets are not nested")
+        manifest = output / f"scale-{scale}" / "physical_overlap_train_manifest.jsonl"
+        atomic_write_text(
+            manifest,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        )
+        counts = {
+            field: len({str(row[field]) for row in rows})
+            for field in (
+                "mixture_id",
+                "injection_id",
+                "waveform_id",
+                "glitch_id",
+                "injection_gps_block",
+                "network_gps_block",
+            )
+        }
+        if any(value != scale for value in counts.values()):
+            raise ValueError("Overlap scaling subset reuses a physical group")
+        subsets.append(
+            {
+                "scale": scale,
+                "manifest_path": str(manifest.resolve()),
+                "manifest_sha256": file_sha256(manifest),
+                "unique_physical_counts": counts,
+                "glitch_family_counts": dict(
+                    sorted(Counter(str(row.get("ml_label", "unknown")) for row in rows).items())
+                ),
+                "source_family_counts": dict(
+                    sorted(
+                        Counter(
+                            str(row.get("source_family", "unknown")) for row in rows
+                        ).items()
+                    )
+                ),
+                "detector_subset_counts": dict(
+                    sorted(
+                        Counter(
+                            "".join(str(value) for value in row.get("available_ifos", []))
+                            for row in rows
+                        ).items()
+                    )
+                ),
+                "parent_prefix_mixture_id_hash": canonical_hash(
+                    [str(row["mixture_id"]) for row in rows]
+                ),
+            }
+        )
+        previous_ids = mixture_ids
+
+    report = {
+        "status": "frozen_group_safe_physical_overlap_scaling_subsets",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "subsets alone are not a scaling result; run fixed-epoch and fixed-update "
+            "controls on the same frozen validation endpoint"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "rank_schema": "physical_overlap_scale_rank_v1",
+        "seed": seed,
+        "available_train_rows": len(train_rows),
+        "validation_rows": len(validation_rows),
+        "include_full": include_full,
+        "scales": requested,
+        "subsets": subsets,
+        "train_manifest_path": str(Path(train_manifest).resolve()),
+        "train_manifest_sha256": file_sha256(train_manifest),
+        "validation_manifest_path": str(Path(validation_manifest).resolve()),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "gravityspy_corpus_audit": {
+            "path": str(corpus_audit_path.resolve()),
+            "sha256": corpus_audit_sha256,
+        },
+        "train_validation_group_audit": {
+            "path": str((output / "train_validation_group_audit.json").resolve()),
+            "sha256": file_sha256(output / "train_validation_group_audit.json"),
+        },
+        "required_training_controls": ["fixed_epochs", "fixed_optimizer_updates"],
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "physical_overlap_scaling_subsets.json", report)
+    return report
+
+
 def _fft_upsample(values: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
     signal = np.asarray(values, dtype=np.float64)
     if signal.ndim != 1 or not np.isfinite(signal).all():

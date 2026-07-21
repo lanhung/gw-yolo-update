@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import time
 from collections import Counter
@@ -610,6 +611,295 @@ def summarize_overlap_five_seed_promotion(
     return result
 
 
+def summarize_physical_overlap_data_scaling(
+    subset_report_path: str | Path,
+    finetune_report_paths: list[str | Path],
+    output_path: str | Path,
+    minimum_seeds: int = 5,
+    minimum_material_glitch_iou_gain: float = 0.01,
+    minimum_clean_chirp_iou_retention: float = 0.95,
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 20260728,
+) -> dict[str, Any]:
+    """Summarize paired-seed fixed-epoch/fixed-update overlap scaling curves."""
+
+    if minimum_seeds < 5:
+        raise ValueError("Publication overlap scaling requires at least five seeds")
+    if minimum_material_glitch_iou_gain <= 0:
+        raise ValueError("Material overlap-scaling gain must be positive")
+    if not 0 < minimum_clean_chirp_iou_retention <= 1:
+        raise ValueError("Clean chirp retention threshold must lie in (0, 1]")
+    if bootstrap_replicates < 100:
+        raise ValueError("Overlap scaling requires at least 100 bootstrap replicates")
+    subset_path = Path(subset_report_path)
+    subset_report = json.loads(subset_path.read_text(encoding="utf-8"))
+    if (
+        subset_report.get("status")
+        != "frozen_group_safe_physical_overlap_scaling_subsets"
+        or subset_report.get("passed") is not True
+        or subset_report.get("test_rows_read") != 0
+        or subset_report.get("required_training_controls")
+        != ["fixed_epochs", "fixed_optimizer_updates"]
+    ):
+        raise ValueError("Physical overlap scaling subset report did not pass")
+    audit_identity = subset_report.get("train_validation_group_audit", {})
+    audit_path = Path(str(audit_identity.get("path", "")))
+    if not audit_path.is_file() or file_sha256(audit_path) != audit_identity.get(
+        "sha256"
+    ):
+        raise ValueError("Physical overlap scaling group audit hash mismatch")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    if audit.get("status") != "passed_physical_overlap_group_audit" or not audit.get(
+        "passed"
+    ):
+        raise ValueError("Physical overlap scaling group audit did not pass")
+    corpus_identity = subset_report.get("gravityspy_corpus_audit", {})
+    corpus_path = Path(str(corpus_identity.get("path", "")))
+    if not corpus_path.is_file() or file_sha256(corpus_path) != corpus_identity.get(
+        "sha256"
+    ):
+        raise ValueError("Physical overlap scaling corpus audit hash mismatch")
+    corpus_audit = json.loads(corpus_path.read_text(encoding="utf-8"))
+    if (
+        corpus_audit.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or corpus_audit.get("passed") is not True
+    ):
+        raise ValueError("Physical overlap scaling corpus audit did not pass")
+
+    subset_by_hash = {}
+    for identity in subset_report.get("subsets", []):
+        manifest = Path(str(identity.get("manifest_path", "")))
+        if not manifest.is_file() or file_sha256(manifest) != identity.get(
+            "manifest_sha256"
+        ):
+            raise ValueError("Physical overlap scaling subset hash mismatch")
+        subset_by_hash[str(identity["manifest_sha256"])] = int(identity["scale"])
+    declared_scales = [int(value) for value in subset_report.get("scales", [])]
+    if sorted(set(subset_by_hash.values())) != declared_scales:
+        raise ValueError("Physical overlap scaling subset identities are incomplete")
+
+    controls = ("fixed_epochs", "fixed_optimizer_updates")
+    cells: dict[str, dict[int, dict[int, dict[str, Any]]]] = {
+        control: {scale: {} for scale in declared_scales} for control in controls
+    }
+    paths = [Path(path) for path in finetune_report_paths]
+    for path in paths:
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") != "validation_selected_real_glitch_overlap_finetune":
+            raise ValueError("Overlap scaling input is not validation-selected")
+        control = str(report.get("training_control", {}).get("control"))
+        if control not in cells:
+            raise ValueError("Overlap scaling input lacks a declared training control")
+        scale = subset_by_hash.get(str(report.get("overlap_train_manifest_sha256")))
+        if scale is None:
+            raise ValueError("Overlap scaling input uses an undeclared training subset")
+        if (
+            report.get("overlap_validation_manifest_sha256")
+            != subset_report.get("validation_manifest_sha256")
+            or report.get("split_audit", {}).get("passed") is not True
+            or any(
+                report.get("split_audit", {})
+                .get("cross_split_overlaps", {})
+                .get(field, [])
+                for field in report.get("split_audit", {}).get(
+                    "cross_split_overlaps", {}
+                )
+            )
+        ):
+            raise ValueError("Overlap scaling input differs from the frozen validation endpoint")
+        seed = int(report["seed"])
+        if seed in cells[control][scale]:
+            raise ValueError("Overlap scaling cell repeats a seed")
+        checkpoint = Path(str(report.get("checkpoint_path", "")))
+        if not checkpoint.is_file() or file_sha256(checkpoint) != report.get(
+            "checkpoint_sha256"
+        ):
+            raise ValueError("Overlap scaling checkpoint hash mismatch")
+        if control == "fixed_optimizer_updates" and (
+            int(report.get("completed_optimizer_updates", -1))
+            != int(report["training_control"].get("target_optimizer_updates", -2))
+        ):
+            raise ValueError("Fixed-update overlap scaling run missed its update target")
+        cells[control][scale][seed] = report
+
+    seed_sets = []
+    for control in controls:
+        config_hashes = set()
+        for scale in declared_scales:
+            reports = cells[control][scale]
+            if len(reports) < minimum_seeds:
+                raise ValueError("Overlap scaling cell has too few independent seeds")
+            seed_sets.append(set(reports))
+            config_hashes.update(str(row.get("config_file_sha256")) for row in reports.values())
+        if len(config_hashes) != 1:
+            raise ValueError("Overlap scaling control changes configuration across scales")
+    if any(seeds != seed_sets[0] for seeds in seed_sets[1:]):
+        raise ValueError("Overlap scaling cells do not use paired seed identities")
+    paired_seeds = sorted(seed_sets[0])
+
+    common_fields = (
+        "overlap_validation_manifest_sha256",
+        "clean_train_manifest_sha256",
+        "clean_validation_manifest_sha256",
+        "pretrained_checkpoint_sha256",
+    )
+    all_reports = [
+        report
+        for control in controls
+        for scale in declared_scales
+        for report in cells[control][scale].values()
+    ]
+    for field in common_fields:
+        if len({str(report.get(field)) for report in all_reports}) != 1:
+            raise ValueError(f"Overlap scaling inputs differ in {field}")
+
+    def selected_retention(report: dict[str, Any]) -> float:
+        selected = [
+            row
+            for row in report.get("history", [])
+            if int(row.get("epoch", -1)) == int(report.get("best_epoch", -2))
+        ]
+        if len(selected) != 1 or selected[0].get("checkpoint_eligible") is not True:
+            raise ValueError("Overlap scaling checkpoint is not clean-retention eligible")
+        return float(selected[0]["clean_chirp_iou_retention"])
+
+    def metrics(report: dict[str, Any]) -> dict[str, float]:
+        overlap = report["calibrated_overlap_validation"]
+        return {
+            "overlap_mean_iou": float(overlap["mean_iou"]),
+            "overlap_chirp_iou": float(overlap["chirp"]["iou"]),
+            "overlap_glitch_iou": float(overlap["glitch"]["iou"]),
+            "clean_chirp_iou_retention": selected_retention(report),
+        }
+
+    def scalar_summary(values: list[float]) -> dict[str, float]:
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            "mean": float(array.mean()),
+            "sample_standard_deviation": float(array.std(ddof=1)),
+            "minimum": float(array.min()),
+            "maximum": float(array.max()),
+        }
+
+    summaries = {}
+    for control in controls:
+        summaries[control] = {}
+        for scale in declared_scales:
+            by_seed = {
+                seed: metrics(cells[control][scale][seed]) for seed in paired_seeds
+            }
+            summaries[control][str(scale)] = {
+                key: scalar_summary([by_seed[seed][key] for seed in paired_seeds])
+                for key in next(iter(by_seed.values()))
+            }
+
+    rng = np.random.default_rng(bootstrap_seed)
+    comparisons: dict[str, list[dict[str, Any]]] = {control: [] for control in controls}
+    for control in controls:
+        for lower, upper in zip(declared_scales, declared_scales[1:]):
+            deltas = np.asarray(
+                [
+                    metrics(cells[control][upper][seed])["overlap_glitch_iou"]
+                    - metrics(cells[control][lower][seed])["overlap_glitch_iou"]
+                    for seed in paired_seeds
+                ],
+                dtype=np.float64,
+            )
+            sampled = deltas[
+                rng.integers(0, deltas.size, size=(bootstrap_replicates, deltas.size))
+            ].mean(axis=1)
+            lower_ci, upper_ci = np.quantile(sampled, [0.025, 0.975])
+            comparisons[control].append(
+                {
+                    "lower_scale": lower,
+                    "upper_scale": upper,
+                    "scale_ratio": upper / lower,
+                    "paired_seed_deltas": {
+                        str(seed): float(delta)
+                        for seed, delta in zip(paired_seeds, deltas)
+                    },
+                    "mean_glitch_iou_delta": float(deltas.mean()),
+                    "paired_bootstrap_95_interval": [
+                        float(lower_ci),
+                        float(upper_ci),
+                    ],
+                    "material_positive_gain": bool(
+                        deltas.mean() >= minimum_material_glitch_iou_gain
+                        and lower_ci > 0
+                    ),
+                }
+            )
+
+    doubling_pairs = [
+        (lower, upper)
+        for lower, upper in zip(declared_scales, declared_scales[1:])
+        if upper / lower >= 1.8
+    ]
+    if not doubling_pairs:
+        raise ValueError("Overlap scaling curve lacks an approximately doubled data step")
+    promotion_pair = doubling_pairs[-1]
+    control_checks = {}
+    for control in controls:
+        comparison = next(
+            row
+            for row in comparisons[control]
+            if (row["lower_scale"], row["upper_scale"]) == promotion_pair
+        )
+        retention = summaries[control][str(promotion_pair[1])][
+            "clean_chirp_iou_retention"
+        ]["mean"]
+        control_checks[control] = {
+            "material_positive_gain": comparison["material_positive_gain"],
+            "clean_non_inferiority": retention
+            >= minimum_clean_chirp_iou_retention,
+        }
+    promote = all(all(checks.values()) for checks in control_checks.values())
+    if promote:
+        diagnosis = "data_limited_at_frozen_overlap_endpoint"
+    elif control_checks["fixed_epochs"]["material_positive_gain"] and not control_checks[
+        "fixed_optimizer_updates"
+    ]["material_positive_gain"]:
+        diagnosis = "epoch_budget_coupling_or_optimization_limited"
+    else:
+        diagnosis = "no_joint_control_evidence_for_more_same_distribution_data"
+    result = {
+        "status": "completed_group_safe_physical_overlap_data_scaling_curve",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation mask curve; continuous-background FAR/IFAR/<VT> and locked transfer "
+            "remain required"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "scales": declared_scales,
+        "paired_seeds": paired_seeds,
+        "minimum_seeds": minimum_seeds,
+        "summaries": summaries,
+        "adjacent_scale_comparisons": comparisons,
+        "promotion_data_doubling": list(promotion_pair),
+        "promotion_checks": control_checks,
+        "promote_more_same_distribution_data": promote,
+        "diagnosis": diagnosis,
+        "minimum_material_glitch_iou_gain": minimum_material_glitch_iou_gain,
+        "minimum_clean_chirp_iou_retention": minimum_clean_chirp_iou_retention,
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": bootstrap_seed,
+        "subset_report_path": str(subset_path.resolve()),
+        "subset_report_sha256": file_sha256(subset_path),
+        "finetune_reports": [
+            {"path": str(path.resolve()), "sha256": file_sha256(path)} for path in paths
+        ],
+        "common_artifact_hashes": {
+            field: all_reports[0].get(field) for field in common_fields
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def _overlap_epoch(
     model: Any,
     loader: Any,
@@ -699,12 +989,15 @@ def _train_epoch(
     optimizer: Any,
     q_count: int,
     settings: dict[str, Any],
+    maximum_optimizer_updates: int | None = None,
 ) -> dict[str, float]:
     model.train()
     teacher.eval()
     clean_batches = iter(clean_loader)
     losses = []
     for overlap_features, overlap_targets, overlap_availability in overlap_loader:
+        if maximum_optimizer_updates is not None and len(losses) >= maximum_optimizer_updates:
+            break
         try:
             clean_features, clean_chirp, clean_availability = next(clean_batches)
         except StopIteration:
@@ -762,6 +1055,43 @@ def _train_epoch(
         optimizer.step()
         losses.append(float(loss.detach().cpu()))
     return {"loss": float(np.mean(losses)), "optimizer_updates": len(losses)}
+
+
+def resolve_overlap_training_control(
+    settings: dict[str, Any], batches_per_epoch: int
+) -> dict[str, Any]:
+    """Resolve the predeclared fixed-epoch or fixed-update scaling control."""
+
+    if batches_per_epoch <= 0:
+        raise ValueError("Overlap training requires at least one optimizer batch per epoch")
+    control = str(settings.get("training_control", "fixed_epochs"))
+    epochs = int(settings.get("epochs", 0))
+    if epochs <= 0:
+        raise ValueError("Overlap training epochs must be positive")
+    if control == "fixed_epochs":
+        if settings.get("max_optimizer_updates") is not None:
+            raise ValueError("Fixed-epoch overlap training cannot set max_optimizer_updates")
+        return {
+            "control": control,
+            "maximum_epochs": epochs,
+            "target_optimizer_updates": None,
+        }
+    if control != "fixed_optimizer_updates":
+        raise ValueError("Overlap training_control must be fixed_epochs or fixed_optimizer_updates")
+    target = int(settings.get("max_optimizer_updates", 0))
+    if target <= 0:
+        raise ValueError("Fixed-update overlap training requires max_optimizer_updates > 0")
+    required_epochs = int(math.ceil(target / batches_per_epoch))
+    if epochs < required_epochs:
+        raise ValueError(
+            "Overlap training epoch safety cap cannot reach max_optimizer_updates"
+        )
+    return {
+        "control": control,
+        "maximum_epochs": epochs,
+        "target_optimizer_updates": target,
+        "minimum_epochs_required": required_epochs,
+    }
 
 
 def _calibrate_overlap_thresholds(
@@ -904,6 +1234,9 @@ def run_physical_overlap_finetune(
             overlap_datasets["val"], batch_size=batch_size, shuffle=False, num_workers=0
         ),
     }
+    training_control = resolve_overlap_training_control(
+        settings, len(overlap_loaders["train"])
+    )
     clean_loaders = {
         key: DataLoader(value, batch_size=batch_size, shuffle=key == "train", num_workers=0, generator=generator if key == "train" else None)
         for key, value in clean_datasets.items()
@@ -942,12 +1275,33 @@ def run_physical_overlap_finetune(
         best_metric = float(resume["best_validation_overlap_mean_iou"])
         best_epoch = resume["best_epoch"]
         start_epoch = int(resume["epoch"]) + 1
+    completed_optimizer_updates = sum(
+        int(row.get("train", {}).get("optimizer_updates", 0)) for row in history
+    )
     retention_fraction = float(settings.get("minimum_clean_chirp_iou_retention", 0.95))
     started = time.time()
-    for epoch in range(start_epoch, int(settings["epochs"]) + 1):
-        train_metrics = _train_epoch(
-            student, teacher, teacher_architecture, overlap_loaders["train"], clean_loaders["train"], device, optimizer, q_count, settings
+    for epoch in range(start_epoch, training_control["maximum_epochs"] + 1):
+        target_updates = training_control["target_optimizer_updates"]
+        if target_updates is not None and completed_optimizer_updates >= target_updates:
+            break
+        remaining_updates = (
+            None
+            if target_updates is None
+            else target_updates - completed_optimizer_updates
         )
+        train_metrics = _train_epoch(
+            student,
+            teacher,
+            teacher_architecture,
+            overlap_loaders["train"],
+            clean_loaders["train"],
+            device,
+            optimizer,
+            q_count,
+            settings,
+            remaining_updates,
+        )
+        completed_optimizer_updates += int(train_metrics["optimizer_updates"])
         overlap_validation = _overlap_epoch(
             student,
             overlap_loaders["val"],
@@ -966,6 +1320,7 @@ def run_physical_overlap_finetune(
             {
                 "epoch": epoch,
                 "train": train_metrics,
+                "cumulative_optimizer_updates": completed_optimizer_updates,
                 "overlap_validation": overlap_validation,
                 "clean_validation": clean_validation,
                 "clean_chirp_iou_retention": retention,
@@ -1007,6 +1362,12 @@ def run_physical_overlap_finetune(
             },
         )
         atomic_write_json(output / "history.json", history)
+    if (
+        training_control["target_optimizer_updates"] is not None
+        and completed_optimizer_updates
+        != training_control["target_optimizer_updates"]
+    ):
+        raise RuntimeError("Overlap training did not reach the fixed optimizer-update target")
     if best_epoch is None:
         raise RuntimeError("No overlap checkpoint passed the clean-chirp retention gate")
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -1044,6 +1405,8 @@ def run_physical_overlap_finetune(
         "split_audit": split_audit,
         "clean_split_audit": clean_split_audit,
         "glitch_family_sampling": sampling_report,
+        "training_control": training_control,
+        "completed_optimizer_updates": completed_optimizer_updates,
         "warm_start": warm_start,
         "teacher_architecture": teacher_architecture,
         "teacher_clean_validation": teacher_clean,

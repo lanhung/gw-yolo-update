@@ -743,6 +743,19 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_audit.add_argument("--manifest", action="append", required=True)
     physical_overlap_audit.add_argument("--output", required=True)
 
+    physical_overlap_scaling = subparsers.add_parser(
+        "physical-overlap-scale-subsets"
+    )
+    physical_overlap_scaling.add_argument("--train-manifest", required=True)
+    physical_overlap_scaling.add_argument("--validation-manifest", required=True)
+    physical_overlap_scaling.add_argument("--gravityspy-corpus-audit", required=True)
+    physical_overlap_scaling.add_argument(
+        "--scale", action="append", required=True, type=int
+    )
+    physical_overlap_scaling.add_argument("--output-dir", required=True)
+    physical_overlap_scaling.add_argument("--seed", type=int, default=20260728)
+    physical_overlap_scaling.add_argument("--include-full", action="store_true")
+
     physical_overlap_contamination = subparsers.add_parser(
         "physical-overlap-contamination"
     )
@@ -781,6 +794,22 @@ def build_parser() -> argparse.ArgumentParser:
     overlap_five_seed_summary.add_argument("--promotion-report", required=True)
     overlap_five_seed_summary.add_argument("--report", action="append", required=True)
     overlap_five_seed_summary.add_argument("--output", required=True)
+
+    overlap_scaling_summary = subparsers.add_parser(
+        "physical-overlap-scale-summarize"
+    )
+    overlap_scaling_summary.add_argument("--subset-report", required=True)
+    overlap_scaling_summary.add_argument("--report", action="append", required=True)
+    overlap_scaling_summary.add_argument("--output", required=True)
+    overlap_scaling_summary.add_argument("--minimum-seeds", type=int, default=5)
+    overlap_scaling_summary.add_argument(
+        "--minimum-material-glitch-iou-gain", type=float, default=0.01
+    )
+    overlap_scaling_summary.add_argument(
+        "--minimum-clean-chirp-iou-retention", type=float, default=0.95
+    )
+    overlap_scaling_summary.add_argument("--bootstrap-replicates", type=int, default=2000)
+    overlap_scaling_summary.add_argument("--bootstrap-seed", type=int, default=20260728)
 
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
@@ -2510,6 +2539,20 @@ def main(argv: list[str] | None = None) -> int:
         from .overlaps import audit_physical_overlap_manifests
 
         _print(audit_physical_overlap_manifests(args.manifest, args.output))
+    elif args.command == "physical-overlap-scale-subsets":
+        from .overlaps import freeze_physical_overlap_scaling_subsets
+
+        _print(
+            freeze_physical_overlap_scaling_subsets(
+                args.train_manifest,
+                args.validation_manifest,
+                args.gravityspy_corpus_audit,
+                args.scale,
+                args.output_dir,
+                args.seed,
+                args.include_full,
+            )
+        )
     elif args.command == "physical-overlap-sampling-promote":
         from .overlap_training import promote_overlap_sampling_arm
 
@@ -2530,6 +2573,21 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             summarize_overlap_five_seed_promotion(
                 args.promotion_report, args.report, args.output
+            )
+        )
+    elif args.command == "physical-overlap-scale-summarize":
+        from .overlap_training import summarize_physical_overlap_data_scaling
+
+        _print(
+            summarize_physical_overlap_data_scaling(
+                args.subset_report,
+                args.report,
+                args.output,
+                args.minimum_seeds,
+                args.minimum_material_glitch_iou_gain,
+                args.minimum_clean_chirp_iou_retention,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
             )
         )
     elif args.command == "physical-overlap-contamination":
