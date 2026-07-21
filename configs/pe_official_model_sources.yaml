@@ -1,0 +1,45 @@
+schema_version: 1
+
+# Official O4a DINGO release. AMPLFI v0.6 does not currently have a selected,
+# domain-compatible public checkpoint; it is intentionally absent rather than
+# represented by a paper posterior archive or an unverified file.
+sources:
+  - backend: DINGO
+    role: model_manifest
+    record_url: https://zenodo.org/records/21221337
+    filename: MODEL_MANIFEST.md
+    url: https://zenodo.org/api/records/21221337/files/MODEL_MANIFEST.md/content
+    size_bytes: 1948
+    checksum:
+      algorithm: md5
+      value: 97506cda1cfd2467e5b6d3323c0778d8
+
+  - backend: DINGO
+    role: training_settings
+    record_url: https://zenodo.org/records/21221337
+    filename: SEOBNRv5PHM_v5PHM_H1L1_train_settings.yaml
+    url: https://zenodo.org/api/records/21221337/files/SEOBNRv5PHM_v5PHM_H1L1_train_settings.yaml/content
+    size_bytes: 4925
+    checksum:
+      algorithm: md5
+      value: 3dbd2867949d671fbfe8b65dde098654
+
+  - backend: DINGO
+    role: posterior_model
+    record_url: https://zenodo.org/records/21221337
+    filename: SEOBNRv5PHM_v5PHM_H1L1_model_latest.pt
+    url: https://zenodo.org/api/records/21221337/files/SEOBNRv5PHM_v5PHM_H1L1_model_latest.pt/content
+    size_bytes: 4823584930
+    checksum:
+      algorithm: md5
+      value: b3b667724728fea6779c9fcdd348919a
+
+  - backend: DINGO
+    role: time_initialization_model
+    record_url: https://zenodo.org/records/21221337
+    filename: SEOBNRv5PHM_v5PHM_H1L1_time_model_latest.pt
+    url: https://zenodo.org/api/records/21221337/files/SEOBNRv5PHM_v5PHM_H1L1_time_model_latest.pt/content
+    size_bytes: 1070177454
+    checksum:
+      algorithm: md5
+      value: 0cdde4ef4ed7b195234816f2fd956f3c

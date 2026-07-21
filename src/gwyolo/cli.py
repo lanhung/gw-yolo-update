@@ -1168,6 +1168,13 @@ def build_parser() -> argparse.ArgumentParser:
     pe_model.add_argument("--native-inference-parameters", nargs="+", required=True)
     pe_model.add_argument("--reported-parameter-mapping", nargs="+", required=True)
 
+    pe_sources = subparsers.add_parser("pe-model-sources-acquire")
+    pe_sources.add_argument("--config", required=True)
+    pe_sources.add_argument("--output-dir", required=True)
+    pe_sources.add_argument("--report", required=True)
+    pe_sources.add_argument("--download", action="store_true")
+    pe_sources.add_argument("--minimum-free-bytes", type=int, default=0)
+
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
     ood.add_argument("--evaluation-manifest", required=True)
@@ -2650,6 +2657,18 @@ def main(argv: list[str] | None = None) -> int:
                 model_training_backend_version=args.model_training_backend_version,
                 native_inference_parameters=args.native_inference_parameters,
                 reported_parameter_mapping=args.reported_parameter_mapping,
+            )
+        )
+    elif args.command == "pe-model-sources-acquire":
+        from .external_models import run_external_model_source_acquisition
+
+        _print(
+            run_external_model_source_acquisition(
+                args.config,
+                args.output_dir,
+                args.report,
+                download=args.download,
+                minimum_free_bytes=args.minimum_free_bytes,
             )
         )
     elif args.command == "ood-abstention-evaluate":

@@ -561,6 +561,26 @@ configuration must also be hashed. Native parameter names are mapped to a common
 example AMPLFI `distance`, `inclination` and `phi` map to canonical `luminosity_distance`, `theta_jn`
 and `ra`, respectively.
 
+Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
+download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
+sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time
+initialization model. The command defaults to verify-only. `--download` enables resumable `.part`
+downloads, verifies size and MD5 before atomic promotion, records a local SHA-256, enforces a free
+space reserve and refuses to overwrite a corrupt existing target.
+
+```bash
+python -m gwyolo.cli pe-model-sources-acquire \
+  --config configs/pe_official_model_sources.yaml \
+  --output-dir artifacts/pe/official_models/dingo-o4a \
+  --report artifacts/pe/official_models/dingo-o4a-acquisition.json \
+  --minimum-free-bytes 16106127360 \
+  --download
+```
+
+AMPLFI is absent from this source manifest until a real reusable checkpoint is identified or a
+validation-selected common-domain model is trained. A 20 MB paper-figure archive is not silently
+substituted for executable weights.
+
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
 numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible
