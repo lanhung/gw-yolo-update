@@ -1490,6 +1490,19 @@ def merge_gravityspy_network_numeric_manifests(
         if len(source_rows) != int(report["rows"]):
             raise ValueError(f"Network Gravity Spy row count mismatch: {manifest}")
         for row in source_rows:
+            required_metadata = (
+                "network_gps_block",
+                "ml_label",
+                "observing_run",
+                "ifo",
+                "available_ifos",
+                "network_strain_sources",
+            )
+            missing = [field for field in required_metadata if not row.get(field)]
+            if missing:
+                raise ValueError(
+                    f"Network Gravity Spy row lacks physical provenance: {missing}"
+                )
             glitch_id = str(row["glitch_id"])
             if glitch_id in seen_glitches:
                 raise ValueError(f"Duplicate network Gravity Spy glitch: {glitch_id}")
@@ -1497,8 +1510,20 @@ def merge_gravityspy_network_numeric_manifests(
                 raise ValueError("Network Gravity Spy shard mixes frozen splits")
             if not row.get("aligned_network_context"):
                 raise ValueError("Network Gravity Spy row lacks aligned-context certification")
-            if len(row.get("available_ifos", [])) < 2:
+            available_ifos = [str(value) for value in row["available_ifos"]]
+            if len(available_ifos) < 2 or len(set(available_ifos)) != len(
+                available_ifos
+            ):
                 raise ValueError("Network Gravity Spy row lacks a companion detector")
+            sources = row["network_strain_sources"]
+            if not isinstance(sources, dict) or set(sources) != set(available_ifos):
+                raise ValueError(
+                    "Network Gravity Spy source inventory differs from detector availability"
+                )
+            if any(not source.get("hdf5_url") for source in sources.values()):
+                raise ValueError("Network Gravity Spy source lacks its HDF5 URL")
+            if str(row["ifo"]) not in set(available_ifos):
+                raise ValueError("Network Gravity Spy event IFO is unavailable")
             if file_sha256(row["path"]) != str(row["sha256"]):
                 raise ValueError(f"Network Gravity Spy sample hash mismatch: {row['path']}")
             seen_glitches.add(glitch_id)
@@ -1537,8 +1562,31 @@ def merge_gravityspy_network_numeric_manifests(
         "unique_network_gps_blocks": len(
             {str(row["network_gps_block"]) for row in rows}
         ),
+        "labels": dict(
+            sorted(Counter(str(row["ml_label"]) for row in rows).items())
+        ),
+        "runs": dict(
+            sorted(Counter(str(row["observing_run"]) for row in rows).items())
+        ),
+        "event_ifos": dict(
+            sorted(Counter(str(row["ifo"]) for row in rows).items())
+        ),
+        "available_ifos": dict(
+            sorted(
+                Counter(
+                    str(ifo) for row in rows for ifo in row["available_ifos"]
+                ).items()
+            )
+        ),
         "detector_subset_counts": dict(
             sorted(Counter("".join(row["available_ifos"]) for row in rows).items())
+        ),
+        "unique_source_files": len(
+            {
+                str(source["hdf5_url"])
+                for row in rows
+                for source in row.get("network_strain_sources", {}).values()
+            }
         ),
         "human_pixel_masks": sum(bool(row.get("human_pixel_mask")) for row in rows),
         "weak_masks": sum(not bool(row.get("human_pixel_mask")) for row in rows),

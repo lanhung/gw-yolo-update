@@ -267,7 +267,14 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
                     "glitch_id": f"g-{index}",
                     "split": "val",
                     "network_gps_block": f"block-{index}",
+                    "ml_label": "Blip" if index == 0 else "Koi_Fish",
+                    "observing_run": "O2" if index == 0 else "O3a",
+                    "ifo": "H1" if index == 0 else "L1",
                     "available_ifos": ["H1", "L1"],
+                    "network_strain_sources": {
+                        "H1": {"hdf5_url": f"https://example/H1-{index}.hdf5"},
+                        "L1": {"hdf5_url": f"https://example/L1-{index}.hdf5"},
+                    },
                     "aligned_network_context": True,
                     "human_pixel_mask": False,
                     "path": str(sample),
@@ -294,6 +301,11 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
     )
     assert merged["rows"] == merged["unique_glitch_ids"] == 2
     assert merged["detector_subset_counts"] == {"H1L1": 2}
+    assert merged["labels"] == {"Blip": 1, "Koi_Fish": 1}
+    assert merged["runs"] == {"O2": 1, "O3a": 1}
+    assert merged["event_ifos"] == {"H1": 1, "L1": 1}
+    assert merged["available_ifos"] == {"H1": 2, "L1": 2}
+    assert merged["unique_source_files"] == 4
     assert merged["weak_masks"] == 2
     assert merged["network_coherence_claim_allowed"] is False
 
