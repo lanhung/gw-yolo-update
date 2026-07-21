@@ -6,14 +6,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gwyolo.io import file_sha256
+from gwyolo.io import canonical_hash, file_sha256
 from gwyolo.mask_audit import (
+    _resolve_mask_checkpoint_selection,
     binary_mask_iou,
     binary_mask_metrics,
     evaluate_gravityspy_mask_audit,
     evaluate_gravityspy_mask_segmentation,
     materialize_gravityspy_mask_consensus,
     plan_gravityspy_mask_audit,
+    predict_gravityspy_mask_segmentation,
 )
 
 
@@ -256,6 +258,8 @@ def test_human_consensus_segmentation_is_validation_only_and_hash_bound(
             "config_sha256": file_sha256(config),
             "checkpoint_selection_report_path": str(selection),
             "checkpoint_selection_report_sha256": file_sha256(selection),
+            "threshold_selection_report_path": str(selection),
+            "threshold_selection_report_sha256": file_sha256(selection),
         }
         for gold, path in zip(gold_rows, prediction_masks)
     ]
@@ -307,6 +311,7 @@ def test_human_consensus_segmentation_is_validation_only_and_hash_bound(
     selection.write_text('{"test_metrics":{"iou":1.0}}\n', encoding="utf-8")
     for row in prediction_rows:
         row["checkpoint_selection_report_sha256"] = file_sha256(selection)
+        row["threshold_selection_report_sha256"] = file_sha256(selection)
     test_report_selected = tmp_path / "test-report-selected.jsonl"
     test_report_selected.write_text(
         "".join(json.dumps(row) + "\n" for row in prediction_rows),
@@ -318,3 +323,171 @@ def test_human_consensus_segmentation_is_validation_only_and_hash_bound(
             test_report_selected,
             tmp_path / "test-report-selected-output.json",
         )
+
+
+def test_detector_set_champion_exports_gold_task_probabilities(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from gwyolo.numeric import DetectorSetQNet
+
+    config = {
+        "overlap_training": {
+            "model_ifos": ["H1", "L1"],
+            "q_values": [4.0],
+            "tensor": {"frequency_bins": 4, "time_bins": 4},
+        }
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    model = DetectorSetQNet(2, 1, base_channels=2)
+    checkpoint = tmp_path / "checkpoint.pt"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "architecture": "detector_set",
+            "model_ifos": ["H1", "L1"],
+            "q_values": [4.0],
+            "input_channels": 2,
+            "base_channels": 2,
+            "config_hash": canonical_hash(config),
+        },
+        checkpoint,
+    )
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "status": "validation_selected_real_glitch_overlap_finetune",
+                "seed": 7,
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "config_hash": canonical_hash(config),
+                "config_file_sha256": file_sha256(config_path),
+                "validation_selected_thresholds": {"chirp": 0.4, "glitch": 0.5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    numeric = tmp_path / "numeric.npz"
+    features = np.zeros((2, 1, 4, 4), dtype=np.float32)
+    features[0] = 0.25
+    np.savez(
+        numeric,
+        features=features,
+        detector_availability=np.asarray([1, 0], dtype=np.uint8),
+        ifos=np.asarray(["H1", "L1"]),
+        q_values=np.asarray([4.0], dtype=np.float32),
+    )
+    gold_mask = tmp_path / "gold-mask.npz"
+    np.savez(gold_mask, mask=np.zeros((2, 1, 4, 4), dtype=np.uint8))
+    gold_manifest = tmp_path / "gold-manifest.jsonl"
+    gold_manifest.write_text(
+        json.dumps(
+            {
+                "audit_id": "a1",
+                "glitch_id": "g1",
+                "ml_label": "Blip",
+                "split": "val",
+                "training_allowed": False,
+                "human_pixel_mask": True,
+                "mask_key": "mask",
+                "mask_shape": [2, 1, 4, 4],
+                "path": str(gold_mask),
+                "sha256": file_sha256(gold_mask),
+                "numeric_sample_path": str(numeric),
+                "numeric_sample_sha256": file_sha256(numeric),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    gold_report = tmp_path / "gold-report.json"
+    gold_report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_human_consensus_mask_bank",
+                "training_allowed": False,
+                "tasks": 1,
+                "manifest_path": str(gold_manifest),
+                "manifest_sha256": file_sha256(gold_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    prediction = predict_gravityspy_mask_segmentation(
+        gold_report, selection, config_path, tmp_path / "prediction"
+    )
+    assert prediction["tasks"] == 1
+    assert prediction["test_evaluation"] is False
+    row = json.loads(Path(prediction["prediction_manifest_path"]).read_text())
+    with np.load(row["path"], allow_pickle=False) as arrays:
+        probability = arrays["mask_probability"]
+        assert probability.shape == (2, 1, 4, 4)
+        assert np.all(probability[1] < 1e-6)
+    evaluated = evaluate_gravityspy_mask_segmentation(
+        gold_report,
+        prediction["prediction_manifest_path"],
+        tmp_path / "evaluation.json",
+        bootstrap_replicates=100,
+        bootstrap_seed=7,
+    )
+    assert evaluated["tasks"] == 1
+    assert evaluated["model_sha256"] == file_sha256(checkpoint)
+
+
+def test_five_seed_mask_selection_resolves_its_exact_threshold_report(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "selected.pt"
+    checkpoint.write_bytes(b"selected-model")
+    selected_report = tmp_path / "seed-7.json"
+    selected_report.write_text(
+        json.dumps(
+            {
+                "status": "validation_selected_real_glitch_overlap_finetune",
+                "seed": 7,
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "config_hash": "config-hash",
+                "config_file_sha256": "config-file-sha",
+                "validation_selected_thresholds": {"glitch": 0.4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    other_report = tmp_path / "seed-8.json"
+    other_report.write_text(
+        json.dumps(
+            {
+                "status": "validation_selected_real_glitch_overlap_finetune",
+                "seed": 8,
+                "checkpoint_sha256": "another-checkpoint",
+                "validation_selected_thresholds": {"glitch": 0.7},
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = tmp_path / "five-seed.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "completed_five_seed_source_safe_overlap_validation",
+                "passed": True,
+                "test_data_opened": False,
+                "selected_seed": 7,
+                "selected_checkpoint_path": str(checkpoint),
+                "selected_checkpoint_sha256": file_sha256(checkpoint),
+                "finetune_reports": [
+                    {
+                        "path": str(selected_report),
+                        "sha256": file_sha256(selected_report),
+                    },
+                    {"path": str(other_report), "sha256": file_sha256(other_report)},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    resolved = _resolve_mask_checkpoint_selection(summary)
+    assert resolved["checkpoint_sha256"] == file_sha256(checkpoint)
+    assert resolved["threshold"] == 0.4
+    assert resolved["threshold_report_sha256"] == file_sha256(selected_report)

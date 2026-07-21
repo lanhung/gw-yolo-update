@@ -610,10 +610,17 @@ later scoring, but it is not an annotation input. Evaluation re-hashes the blind
 `mask`, `chirp_mask` or `glitch_mask` keys, making blinding an enforced data property rather than an
 instruction to the annotator.
 
-`gravityspy-mask-segmentation-evaluate` is the only model-facing consumer of that gold bank. It
+`gravityspy-mask-segmentation-predict` resolves either a one-seed validation-selected checkpoint or
+the exact champion named by the completed five-seed summary. For five seeds it follows the selected
+seed back to the byte-verified finetune report so the glitch threshold and checkpoint cannot come
+from different runs. It re-hashes the config/checkpoint, verifies detector/Q/shape/availability
+metadata in every original numeric sample, and exports one immutable probability tensor per audit
+task. No weak or human mask is passed through the model.
+
+`gravityspy-mask-segmentation-evaluate` is the only metric consumer of that gold bank. It
 requires exact one-to-one audit/glitch coverage, validation-only rows, immutable model/config/
-checkpoint-selection hashes and one common frozen threshold. It rejects test-selected checkpoints
-both from row metadata and from populated test fields in the selection report. Per-task pixel counts
+checkpoint/threshold-selection hashes and one common frozen threshold. It rejects test-selected
+checkpoints both from row metadata and from populated test fields in either selection report. Per-task pixel counts
 produce macro and pooled precision, recall, IoU and Dice; paired task bootstrap intervals and an
 IoU>=0.5 Wilson interval are reported overall and by glitch family. These remain validation promotion
 evidence only. Search, deglitch and locked-test claims require their separate predeclared endpoints.

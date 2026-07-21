@@ -784,6 +784,12 @@ def build_parser() -> argparse.ArgumentParser:
     mask_consensus.add_argument("--audit-report", required=True)
     mask_consensus.add_argument("--output-dir", required=True)
 
+    mask_predict = subparsers.add_parser("gravityspy-mask-segmentation-predict")
+    mask_predict.add_argument("--gold-report", required=True)
+    mask_predict.add_argument("--selection-report", required=True)
+    mask_predict.add_argument("--config", required=True)
+    mask_predict.add_argument("--output-dir", required=True)
+
     mask_segmentation = subparsers.add_parser("gravityspy-mask-segmentation-evaluate")
     mask_segmentation.add_argument("--gold-report", required=True)
     mask_segmentation.add_argument("--predictions", required=True)
@@ -2468,6 +2474,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.tasks,
                 args.annotations,
                 args.audit_report,
+                args.output_dir,
+            )
+        )
+    elif args.command == "gravityspy-mask-segmentation-predict":
+        from .mask_audit import predict_gravityspy_mask_segmentation
+
+        _print(
+            predict_gravityspy_mask_segmentation(
+                args.gold_report,
+                args.selection_report,
+                args.config,
                 args.output_dir,
             )
         )

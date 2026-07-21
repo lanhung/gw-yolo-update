@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 
 
@@ -473,6 +473,248 @@ def materialize_gravityspy_mask_consensus(
     return result
 
 
+def _resolve_mask_checkpoint_selection(
+    selection_report_path: str | Path,
+) -> dict[str, Any]:
+    selection_path = Path(selection_report_path).resolve()
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    status = str(selection.get("status"))
+    if status == "validation_selected_real_glitch_overlap_finetune":
+        threshold_path = selection_path
+        threshold_report = selection
+        checkpoint_path = Path(str(selection.get("checkpoint_path", "")))
+        checkpoint_sha256 = str(selection.get("checkpoint_sha256", ""))
+    elif status == "completed_five_seed_source_safe_overlap_validation":
+        if not selection.get("passed") or selection.get("test_data_opened") is not False:
+            raise ValueError("five-seed mask checkpoint selection is not validation-only")
+        checkpoint_path = Path(str(selection.get("selected_checkpoint_path", "")))
+        checkpoint_sha256 = str(selection.get("selected_checkpoint_sha256", ""))
+        selected_seed = int(selection["selected_seed"])
+        candidates = []
+        for item in selection.get("finetune_reports", []):
+            path = Path(str(item.get("path", "")))
+            if not path.is_file() or file_sha256(path) != str(item.get("sha256", "")):
+                raise ValueError("five-seed finetune report hash mismatch")
+            report = json.loads(path.read_text(encoding="utf-8"))
+            if int(report.get("seed", -1)) == selected_seed:
+                candidates.append((path.resolve(), report))
+        if len(candidates) != 1:
+            raise ValueError("five-seed selection does not identify one threshold report")
+        threshold_path, threshold_report = candidates[0]
+        if str(threshold_report.get("checkpoint_sha256")) != checkpoint_sha256:
+            raise ValueError("five-seed checkpoint and threshold report differ")
+    else:
+        raise ValueError("unsupported mask checkpoint selection report")
+    if (
+        not checkpoint_path.is_file()
+        or file_sha256(checkpoint_path) != checkpoint_sha256
+        or threshold_report.get("status")
+        != "validation_selected_real_glitch_overlap_finetune"
+        or threshold_report.get("test_evaluation") is True
+        or threshold_report.get("test_metrics") not in (None, {})
+    ):
+        raise ValueError("selected mask checkpoint or validation threshold is invalid")
+    threshold = float(
+        threshold_report.get("validation_selected_thresholds", {}).get("glitch", -1)
+    )
+    if not 0 <= threshold <= 1:
+        raise ValueError("selected glitch-mask threshold lies outside [0,1]")
+    return {
+        "selection_report_path": str(selection_path),
+        "selection_report_sha256": file_sha256(selection_path),
+        "threshold_report_path": str(threshold_path),
+        "threshold_report_sha256": file_sha256(threshold_path),
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": checkpoint_sha256,
+        "config_hash": str(threshold_report.get("config_hash", "")),
+        "config_file_sha256": str(threshold_report.get("config_file_sha256", "")),
+        "threshold": threshold,
+        "selected_seed": int(threshold_report["seed"]),
+    }
+
+
+def predict_gravityspy_mask_segmentation(
+    gold_report_path: str | Path,
+    selection_report_path: str | Path,
+    config_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Export per-task glitch-mask probabilities for a human-consensus validation bank."""
+
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - exercised by optional environments
+        raise RuntimeError("mask segmentation prediction requires torch") from exc
+    from .numeric import model_from_checkpoint
+
+    output = Path(output_dir).resolve()
+    manifest_path = output / "gravityspy_mask_segmentation_predictions.jsonl"
+    report_path = output / "gravityspy_mask_segmentation_prediction_report.json"
+    if manifest_path.exists() or report_path.exists():
+        raise FileExistsError("Gravity Spy mask prediction exports are immutable")
+    gold_report_path = Path(gold_report_path).resolve()
+    gold_report = json.loads(gold_report_path.read_text(encoding="utf-8"))
+    gold_manifest = Path(str(gold_report.get("manifest_path", "")))
+    if (
+        gold_report.get("status") != "verified_gravityspy_human_consensus_mask_bank"
+        or gold_report.get("training_allowed") is not False
+        or not gold_manifest.is_file()
+        or file_sha256(gold_manifest) != str(gold_report.get("manifest_sha256", ""))
+    ):
+        raise ValueError("mask prediction requires an exact validation-only consensus bank")
+    with gold_manifest.open("r", encoding="utf-8") as handle:
+        gold_rows = [json.loads(line) for line in handle if line.strip()]
+    if not gold_rows or int(gold_report.get("tasks", -1)) != len(gold_rows):
+        raise ValueError("human-consensus report and manifest rows differ")
+    if any(
+        row.get("split") != "val"
+        or row.get("training_allowed") is not False
+        or row.get("human_pixel_mask") is not True
+        for row in gold_rows
+    ):
+        raise ValueError("mask prediction gold rows must be validation-only human masks")
+
+    selection = _resolve_mask_checkpoint_selection(selection_report_path)
+    config_path = Path(config_path).resolve()
+    config = load_yaml(config_path)
+    settings = config.get("overlap_training")
+    if (
+        not isinstance(settings, dict)
+        or file_sha256(config_path) != selection["config_file_sha256"]
+        or canonical_hash(config) != selection["config_hash"]
+    ):
+        raise ValueError("mask prediction config differs from checkpoint selection")
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    tensor = settings["tensor"]
+    expected_shape = (
+        len(model_ifos),
+        len(q_values),
+        int(tensor["frequency_bins"]),
+        int(tensor["time_bins"]),
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(
+        selection["checkpoint_path"], map_location=device, weights_only=False
+    )
+    if (
+        str(checkpoint.get("config_hash", "")) != selection["config_hash"]
+        or tuple(str(value) for value in checkpoint.get("model_ifos", [])) != model_ifos
+        or not np.allclose(checkpoint.get("q_values", []), q_values, atol=1e-6)
+    ):
+        raise ValueError("mask checkpoint tensor identity differs from its config")
+    model, architecture = model_from_checkpoint(checkpoint, model_ifos, q_values)
+    if architecture != "detector_set":
+        raise ValueError("human-consensus mask prediction requires detector-set architecture")
+    model = model.to(device).eval()
+
+    rows = []
+    for gold in sorted(gold_rows, key=lambda row: str(row["audit_id"])):
+        numeric_path = Path(str(gold.get("numeric_sample_path", "")))
+        if not numeric_path.is_file() or file_sha256(numeric_path) != str(
+            gold.get("numeric_sample_sha256", "")
+        ):
+            raise ValueError(f"gold numeric sample hash mismatch: {gold['audit_id']}")
+        with np.load(numeric_path, allow_pickle=False) as arrays:
+            required = {"features", "detector_availability", "ifos", "q_values"}
+            if not required.issubset(arrays.files):
+                raise ValueError(f"numeric sample lacks detector-set inputs: {gold['audit_id']}")
+            features = np.asarray(arrays["features"], dtype=np.float32)
+            availability = np.asarray(arrays["detector_availability"], dtype=np.float32)
+            ifos = tuple(str(value) for value in arrays["ifos"].tolist())
+            sample_q_values = tuple(float(value) for value in arrays["q_values"].tolist())
+        if (
+            features.shape != expected_shape
+            or list(features.shape) != list(gold.get("mask_shape", []))
+            or availability.shape != (len(model_ifos),)
+            or np.any((availability != 0) & (availability != 1))
+            or availability.sum() < 1
+            or ifos != model_ifos
+            or not np.allclose(sample_q_values, q_values, atol=1e-6)
+            or not np.isfinite(features).all()
+            or np.any(features[availability == 0] != 0)
+        ):
+            raise ValueError(f"numeric detector-set tensor mismatch: {gold['audit_id']}")
+        feature_tensor = torch.from_numpy(
+            features.reshape(1, len(model_ifos) * len(q_values), *features.shape[-2:])
+        ).to(device)
+        availability_tensor = torch.from_numpy(availability[None]).to(device)
+        with torch.no_grad():
+            logits = model(feature_tensor, availability_tensor)
+            probability = torch.sigmoid(logits)[0, 1].cpu().numpy().reshape(expected_shape)
+        target = output / "probabilities" / f"{gold['audit_id']}.npz"
+        _atomic_save_npz(
+            target,
+            {
+                "mask_probability": probability.astype(np.float16),
+                "detector_availability": availability.astype(np.uint8),
+                "ifos": np.asarray(model_ifos),
+                "q_values": np.asarray(q_values, dtype=np.float32),
+            },
+        )
+        rows.append(
+            {
+                "audit_id": str(gold["audit_id"]),
+                "glitch_id": str(gold["glitch_id"]),
+                "split": "val",
+                "path": str(target),
+                "sha256": file_sha256(target),
+                "mask_key": "mask_probability",
+                "threshold": selection["threshold"],
+                "checkpoint_selection_split": "val",
+                "threshold_selection_split": "val",
+                "model_path": selection["checkpoint_path"],
+                "model_sha256": selection["checkpoint_sha256"],
+                "config_path": str(config_path),
+                "config_sha256": selection["config_file_sha256"],
+                "checkpoint_selection_report_path": selection[
+                    "selection_report_path"
+                ],
+                "checkpoint_selection_report_sha256": selection[
+                    "selection_report_sha256"
+                ],
+                "threshold_selection_report_path": selection["threshold_report_path"],
+                "threshold_selection_report_sha256": selection[
+                    "threshold_report_sha256"
+                ],
+            }
+        )
+    output.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        manifest_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    result = {
+        "status": "verified_validation_human_consensus_mask_predictions",
+        "scientific_claim_allowed": False,
+        "test_evaluation": False,
+        "gold_report_path": str(gold_report_path),
+        "gold_report_sha256": file_sha256(gold_report_path),
+        "gold_manifest_sha256": file_sha256(gold_manifest),
+        "selection": selection,
+        "config_path": str(config_path),
+        "config_sha256": file_sha256(config_path),
+        "architecture": architecture,
+        "model_ifos": list(model_ifos),
+        "q_values": list(q_values),
+        "threshold": selection["threshold"],
+        "tasks": len(rows),
+        "prediction_manifest_path": str(manifest_path),
+        "prediction_manifest_sha256": file_sha256(manifest_path),
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "torch": torch.__version__,
+            "device": str(device),
+        },
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
 def _load_npz_probability(path: str | Path, key: str) -> np.ndarray:
     with np.load(path, allow_pickle=False) as arrays:
         if key not in arrays:
@@ -590,6 +832,7 @@ def evaluate_gravityspy_mask_segmentation(
         ("model_path", "model_sha256"),
         ("config_path", "config_sha256"),
         ("checkpoint_selection_report_path", "checkpoint_selection_report_sha256"),
+        ("threshold_selection_report_path", "threshold_selection_report_sha256"),
     )
     identities = set()
     artifact_digests: dict[Path, str] = {}
@@ -619,7 +862,11 @@ def evaluate_gravityspy_mask_segmentation(
             if artifact_digests[artifact] != str(prediction.get(hash_field, "")):
                 raise ValueError(f"prediction artifact hash mismatch: {path_field}")
             if (
-                path_field == "checkpoint_selection_report_path"
+                path_field
+                in {
+                    "checkpoint_selection_report_path",
+                    "threshold_selection_report_path",
+                }
                 and artifact not in inspected_selection_reports
             ):
                 selection_report = json.loads(artifact.read_text(encoding="utf-8"))
@@ -708,6 +955,9 @@ def evaluate_gravityspy_mask_segmentation(
         "config_sha256": str(first_prediction["config_sha256"]),
         "checkpoint_selection_report_sha256": str(
             first_prediction["checkpoint_selection_report_sha256"]
+        ),
+        "threshold_selection_report_sha256": str(
+            first_prediction["threshold_selection_report_sha256"]
         ),
         "threshold": float(first_prediction["threshold"]),
         "bootstrap_replicates": bootstrap_replicates,
