@@ -101,6 +101,7 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
         "clean_train_manifest_sha256": "clean-train",
         "clean_validation_manifest_sha256": "clean-val",
         "pretrained_checkpoint_sha256": "pretrained",
+        "config_file_sha256": "config-file",
         "seed": 7,
         "best_epoch": 2,
         "history": [

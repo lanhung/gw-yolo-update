@@ -41,6 +41,38 @@ def select_candidate_timing_method(calibration: dict[str, Any]) -> tuple[str, fl
     return name, uncertainty
 
 
+def validate_candidate_model_selection(
+    selection_report_path: str | Path,
+    checkpoint: str | Path,
+    config: str | Path,
+) -> dict[str, str]:
+    """Bind candidate calibration to the validation-selected five-seed checkpoint."""
+
+    path = Path(selection_report_path)
+    selection = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        selection.get("status")
+        != "completed_five_seed_source_safe_overlap_validation"
+        or not selection.get("passed")
+        or selection.get("test_data_opened") is not False
+    ):
+        raise ValueError("Candidate model selection is not a locked five-seed validation report")
+    checkpoint_hash = file_sha256(checkpoint)
+    if checkpoint_hash != str(selection.get("selected_checkpoint_sha256")):
+        raise ValueError("Candidate checkpoint differs from five-seed selection")
+    expected_config = selection.get("common_artifact_hashes", {}).get(
+        "config_file_sha256"
+    )
+    if not expected_config or file_sha256(config) != str(expected_config):
+        raise ValueError("Candidate config differs from five-seed selection")
+    return {
+        "model_selection_report_path": str(path),
+        "model_selection_report_sha256": file_sha256(path),
+        "selected_checkpoint_sha256": checkpoint_hash,
+        "selected_config_file_sha256": str(expected_config),
+    }
+
+
 def run_candidate_validation_pipeline(
     background_manifest: str | Path,
     injection_manifest: str | Path,
@@ -67,9 +99,17 @@ def run_candidate_validation_pipeline(
     target_far_per_year: float = 100.0,
     bootstrap_replicates: int = 10000,
     seed: int = 20260720,
+    model_selection_report: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the complete validation-only clustered candidate search chain."""
 
+    model_selection = (
+        validate_candidate_model_selection(
+            model_selection_report, checkpoint, config
+        )
+        if model_selection_report is not None
+        else None
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -97,6 +137,11 @@ def run_candidate_validation_pipeline(
         "target_far_per_year": target_far_per_year,
         "bootstrap_replicates": bootstrap_replicates,
         "seed": seed,
+        "model_selection_report_sha256": (
+            model_selection["model_selection_report_sha256"]
+            if model_selection is not None
+            else None
+        ),
         "code_commit": execution_provenance()["code_commit"],
     }
     report_path = output / "candidate_validation_pipeline_report.json"
@@ -285,6 +330,7 @@ def run_candidate_validation_pipeline(
         ),
         "test_evaluation": None,
         "run_identity": run_identity,
+        "model_selection": model_selection,
         "timing_method": timing_method,
         "empirical_timing_uncertainty_seconds": timing_uncertainty,
         "physical_delay_limit_seconds": physical_delay,

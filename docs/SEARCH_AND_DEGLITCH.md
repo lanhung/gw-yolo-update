@@ -894,6 +894,13 @@ is true, it retains the promoted seed, runs four additional declared seeds and r
 unique validation-selected reports with identical data, config and pretrained-model hashes.
 `physical-overlap-five-seed-summarize` records mean, sample standard deviation, extrema and
 per-family IoU while continuing to withhold any test or search claim.
+The summary also selects the downstream checkpoint by maximum validation overlap mean IoU with a
+seed tie-break and re-hashes the checkpoint. `scripts/run_promoted_candidate_validation.sh` binds
+that five-seed summary and the exact promoted config before it can score O4a validation data. It
+then creates a validation-only background manifest, annotates independent validation injections
+with PyCBC detector arrivals, and runs timing calibration, calibrated time slides and threshold
+freezing. Its 40-pair `100/year` setting is an engineering gate; it is not the final 0.1/year FAR
+claim or a substitute for the frozen exposure target.
 
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every

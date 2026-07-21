@@ -497,6 +497,7 @@ def summarize_overlap_five_seed_promotion(
         raise ValueError("Five-seed reports omit the one-seed promoted checkpoint report")
     common_fields = (
         "config_hash",
+        "config_file_sha256",
         "overlap_train_manifest_sha256",
         "overlap_validation_manifest_sha256",
         "clean_train_manifest_sha256",

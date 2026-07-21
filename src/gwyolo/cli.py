@@ -1014,6 +1014,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline.add_argument("--target-far-per-year", type=float, default=100.0)
     candidate_pipeline.add_argument("--bootstrap-replicates", type=int, default=10000)
     candidate_pipeline.add_argument("--seed", type=int, default=20260720)
+    candidate_pipeline.add_argument("--model-selection-report")
 
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
@@ -1454,6 +1455,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
+                args.model_selection_report,
             )
         )
     elif args.command == "search-calibrate":
