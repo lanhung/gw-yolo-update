@@ -573,6 +573,16 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
     assert merged["weak_masks"] == 2
     assert merged["network_coherence_claim_allowed"] is False
 
+    # A verified merge report may itself be used as a hash-checked source. This
+    # supports a strict base + independent-source union without re-listing every
+    # historical shard or weakening duplicate-glitch validation.
+    nested_report = tmp_path / "merged-network" / "gravityspy_network_numeric_merge_report.json"
+    nested = merge_gravityspy_network_numeric_manifests(
+        [nested_report], tmp_path / "nested-network", "val"
+    )
+    assert nested["rows"] == 2
+    assert nested["manifest_sha256"] == merged["manifest_sha256"]
+
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:
     reports = []

@@ -1993,9 +1993,13 @@ def merge_gravityspy_network_numeric_manifests(
     rows: list[dict[str, Any]] = []
     seen_glitches: set[str] = set()
     source_reports = []
+    accepted_statuses = {
+        "verified_gravityspy_aligned_network_numeric_weak_masks",
+        "verified_merged_gravityspy_aligned_network_numeric_split",
+    }
     for path in paths:
         report = json.loads(path.read_text(encoding="utf-8"))
-        if report.get("status") != "verified_gravityspy_aligned_network_numeric_weak_masks":
+        if report.get("status") not in accepted_statuses:
             raise ValueError(f"Network Gravity Spy report is incomplete: {path}")
         manifest = Path(report["manifest_path"])
         if file_sha256(manifest) != str(report["manifest_sha256"]):
