@@ -22,6 +22,34 @@ DOWNLOAD_WORKERS=${DOWNLOAD_WORKERS:-8}
 CHUNK_SAMPLES=${CHUNK_SAMPLES:-1048576}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
 REPORT_MODE=${REPORT_MODE:-prefix}
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
+RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-60}
+
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "RETRY_DELAY_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+
+materialize_with_retry() {
+  local label=$1
+  shift
+  local attempt
+  for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+    printf '%s %s attempt=%s\n' "$(date -u +%FT%TZ)" "$label" "$attempt"
+    if "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-strain-materialize "$@"; then
+      return 0
+    fi
+    if (( attempt < MAX_ATTEMPTS )); then
+      sleep "$RETRY_DELAY_SECONDS"
+    fi
+  done
+  echo "$label exhausted bounded materialization retries" >&2
+  return 1
+}
 
 if [[ "$REPORT_MODE" == prefix ]]; then
   for variable in TRAIN_REPORT_PREFIX VAL_REPORT_PREFIX SOURCE_REPORT_SUFFIX SOURCE_SHARD_COUNT; do
@@ -145,7 +173,7 @@ PY
     echo "insufficient cache space before $split recovery" >&2
     exit 1
   fi
-  "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-strain-materialize \
+  materialize_with_retry "$split-recovery" \
     --manifest "$recovery_manifest" \
     --config "$CONFIG" \
     --cache-dir "$CACHE_ROOT/$split" \

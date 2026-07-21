@@ -60,6 +60,9 @@ def test_network_recovery_merged_mode_hash_verifies_source_reports() -> None:
     assert 'digest(source) != item.get("sha256")' in source
     assert 'if ! report_output=$("$TASK_PYTHON"' in source
     assert "failed to resolve completed shard reports" in source
+    assert "materialize_with_retry" in source
+    assert "MAX_ATTEMPTS" in source
+    assert "exhausted bounded materialization retries" in source
 
 
 def test_network_recovery_propagates_merged_source_hash_failure(
