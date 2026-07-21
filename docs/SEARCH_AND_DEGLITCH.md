@@ -668,6 +668,12 @@ subset before posterior results exist, and materializes both DINGO and AMPLFI na
 stage is resumable by its atomic report and all machine paths are explicit environment variables.
 The smoke defaults to three validation injections and remains ineligible for a scientific claim.
 
+Before an event is admitted, `scripts/run_pe_model_load_smoke.py` verifies checkpoint/config hashes
+inside the pinned interpreter and loads both DINGO GNPE networks or the AMPLFI Lightning model,
+architecture and fitted scaler. It records backend version, parameter counts, GPU runtime and load
+latency and refuses to overwrite its report. This distinguishes a real 5.9 GB DINGO or trained
+AMPLFI checkpoint from a source-import smoke, while still withholding all posterior claims.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time
