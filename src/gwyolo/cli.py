@@ -2889,6 +2889,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.bootstrap_replicates,
                 args.seed,
+                args.model_selection_report,
             )
         )
     elif args.command == "candidate-search-validation-compare":
