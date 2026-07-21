@@ -5,6 +5,7 @@ required_variables=(
   TASK_PYTHON
   SCORING_CODE_DIR
   SCORING_CODE_COMMIT
+  INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   BACKGROUND_VAL_MANIFEST
   INJECTION_ARRIVAL_MANIFEST
   BASELINE_CHECKPOINT
@@ -24,6 +25,7 @@ for variable in "${required_variables[@]}"; do
 done
 for input in \
   "$TASK_PYTHON" \
+  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$BACKGROUND_VAL_MANIFEST" \
   "$INJECTION_ARRIVAL_MANIFEST" \
   "$BASELINE_CHECKPOINT" \
@@ -40,6 +42,44 @@ if [[ ! -d "$SCORING_CODE_DIR/src/gwyolo" ]]; then
   echo "scoring code directory is invalid: $SCORING_CODE_DIR" >&2
   exit 2
 fi
+
+"$TASK_PYTHON" - "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+  "$BACKGROUND_VAL_MANIFEST" "$INJECTION_ARRIVAL_MANIFEST" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+endpoint_path, background_path, injection_path = sys.argv[1:]
+endpoint = json.loads(pathlib.Path(endpoint_path).read_text(encoding="utf-8"))
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+components = endpoint.get("component_reports", {})
+expected_components = {
+    "purpose_partition",
+    "injection_plan",
+    "waveform_validation",
+    "materialization",
+    "snr_annotation",
+    "arrival_annotation",
+}
+if (
+    endpoint.get("status") != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+    or not endpoint.get("passed")
+    or endpoint.get("test_rows_read") != 0
+    or endpoint.get("test_evaluation") is not None
+    or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+    or set(components) != expected_components
+    or any(digest(item["path"]) != item["sha256"] for item in components.values())
+    or pathlib.Path(endpoint["candidate_calibration_background_manifest_path"]).resolve()
+    != pathlib.Path(background_path).resolve()
+    or endpoint.get("candidate_calibration_background_manifest_sha256")
+    != digest(background_path)
+    or pathlib.Path(endpoint["injection_arrival_manifest_path"]).resolve()
+    != pathlib.Path(injection_path).resolve()
+    or endpoint.get("injection_arrival_manifest_sha256") != digest(injection_path)
+):
+    raise SystemExit("baseline comparison inputs do not match the frozen independent endpoint")
+PY
 
 while :; do
   gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
@@ -70,8 +110,12 @@ done
     --seed 20260720
 )
 
-"$TASK_PYTHON" -m gwyolo.cli candidate-search-validation-compare \
-  --baseline-report "$BASELINE_OUTPUT_ROOT/candidate_validation_pipeline_report.json" \
-  --promoted-report "$PROMOTED_PIPELINE_REPORT" \
-  --config "$PROMOTION_CONFIG" \
-  --output "$COMPARISON_OUTPUT"
+(
+  cd "$SCORING_CODE_DIR"
+  export PYTHONPATH=src GWYOLO_CODE_COMMIT="$SCORING_CODE_COMMIT"
+  "$TASK_PYTHON" -m gwyolo.cli candidate-search-validation-compare \
+    --baseline-report "$BASELINE_OUTPUT_ROOT/candidate_validation_pipeline_report.json" \
+    --promoted-report "$PROMOTED_PIPELINE_REPORT" \
+    --config "$PROMOTION_CONFIG" \
+    --output "$COMPARISON_OUTPUT"
+)
