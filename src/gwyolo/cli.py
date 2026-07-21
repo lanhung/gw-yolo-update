@@ -778,6 +778,12 @@ def build_parser() -> argparse.ArgumentParser:
     mask_audit_evaluate.add_argument("--annotations", required=True)
     mask_audit_evaluate.add_argument("--output", required=True)
 
+    mask_consensus = subparsers.add_parser("gravityspy-mask-consensus-materialize")
+    mask_consensus.add_argument("--tasks", required=True)
+    mask_consensus.add_argument("--annotations", required=True)
+    mask_consensus.add_argument("--audit-report", required=True)
+    mask_consensus.add_argument("--output-dir", required=True)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -2447,6 +2453,17 @@ def main(argv: list[str] | None = None) -> int:
         from .mask_audit import evaluate_gravityspy_mask_audit
 
         _print(evaluate_gravityspy_mask_audit(args.tasks, args.annotations, args.output))
+    elif args.command == "gravityspy-mask-consensus-materialize":
+        from .mask_audit import materialize_gravityspy_mask_consensus
+
+        _print(
+            materialize_gravityspy_mask_consensus(
+                args.tasks,
+                args.annotations,
+                args.audit_report,
+                args.output_dir,
+            )
+        )
     elif args.command == "fit-curve":
         _print(run_curve_fit(args.points, args.output))
     elif args.command == "background-plan":

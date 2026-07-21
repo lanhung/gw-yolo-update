@@ -598,3 +598,14 @@ pixelwise majority consensus has no ties. `gravityspy-mask-audit-evaluate`
 hash-verifies NPZ masks and reports inter-annotator IoU, weak-versus-consensus IoU, per-label
 agreement and Wilson intervals. Only that narrow weak-mask agreement claim is enabled by a completed
 audit; segmentation, deglitch and search claims remain separate locked evaluations.
+
+`gravityspy-mask-consensus-materialize` converts the completed blinded audit into a hash-bound,
+validation-only gold mask bank. It recomputes every consensus from the original independent
+annotations, re-hashes the numeric sample and human masks, and refuses metric drift from the audit
+report. The resulting rows set `human_pixel_mask=true` but `training_allowed=false`: they may measure
+segmentation against human consensus, never leak validation annotations into weak-mask training.
+The plan now emits a separate annotator-facing manifest and per-task NPZ containing only numeric
+features plus non-target detector/Q metadata. The internal manifest retains weak-mask provenance for
+later scoring, but it is not an annotation input. Evaluation re-hashes the blinded files and rejects
+`mask`, `chirp_mask` or `glitch_mask` keys, making blinding an enforced data property rather than an
+instruction to the annotator.
