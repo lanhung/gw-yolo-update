@@ -563,6 +563,17 @@ def summarize_overlap_five_seed_promotion(
         )
         for label in sorted(family_labels[0])
     }
+    ranked = sorted(
+        reports,
+        key=lambda report: (
+            -float(report["calibrated_overlap_validation"]["mean_iou"]),
+            int(report["seed"]),
+        ),
+    )
+    selected = ranked[0]
+    selected_checkpoint = Path(selected["checkpoint_path"])
+    if file_sha256(selected_checkpoint) != str(selected["checkpoint_sha256"]):
+        raise ValueError("Five-seed selected checkpoint hash differs from its report")
     result = {
         "status": "completed_five_seed_source_safe_overlap_validation",
         "passed": True,
@@ -572,6 +583,13 @@ def summarize_overlap_five_seed_promotion(
         "seeds": sorted(seeds),
         "metrics": metrics,
         "by_glitch_family": by_family,
+        "checkpoint_selection": "maximum_validation_overlap_mean_iou_then_seed",
+        "selected_seed": int(selected["seed"]),
+        "selected_validation_overlap_mean_iou": float(
+            selected["calibrated_overlap_validation"]["mean_iou"]
+        ),
+        "selected_checkpoint_path": str(selected_checkpoint),
+        "selected_checkpoint_sha256": str(selected["checkpoint_sha256"]),
         "promotion_report_path": str(promotion_report_path),
         "promotion_report_sha256": file_sha256(promotion_report_path),
         "finetune_reports": [

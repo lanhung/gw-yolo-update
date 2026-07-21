@@ -117,6 +117,8 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
         ("family", 0.80, 0.19, {"Blip": 0.22, "Tomte": 0.12}),
     ):
         path = tmp_path / f"{name}.json"
+        checkpoint = tmp_path / f"{name}.pt"
+        checkpoint.write_bytes(name.encode())
         path.write_text(
             json.dumps(
                 {
@@ -124,11 +126,14 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
                     "calibrated_overlap_validation": {
                         "chirp": {"iou": chirp},
                         "glitch": {"iou": glitch},
+                        "mean_iou": (chirp + glitch) / 2,
                         "by_glitch_family": {
                             label: {"physical_rows": 5, "iou": iou}
                             for label, iou in family_ious.items()
                         },
                     },
+                    "checkpoint_path": str(checkpoint),
+                    "checkpoint_sha256": file_sha256(checkpoint),
                 }
             )
         )
@@ -168,6 +173,16 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
         path = tmp_path / f"family-seed-{seed}.json"
         payload = dict(family_payload)
         payload["seed"] = seed
+        checkpoint = tmp_path / f"family-seed-{seed}.pt"
+        checkpoint.write_bytes(str(seed).encode())
+        payload["checkpoint_path"] = str(checkpoint)
+        payload["checkpoint_sha256"] = file_sha256(checkpoint)
+        payload["calibrated_overlap_validation"] = dict(
+            family_payload["calibrated_overlap_validation"]
+        )
+        payload["calibrated_overlap_validation"]["mean_iou"] -= (
+            seed - 7
+        ) * 0.001
         path.write_text(json.dumps(payload))
         five_reports.append(path)
     summary = summarize_overlap_five_seed_promotion(
@@ -181,6 +196,10 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
     assert summary["metrics"]["overlap_glitch_iou"][
         "sample_standard_deviation"
     ] == pytest.approx(0.0)
+    assert summary["selected_seed"] == 7
+    assert summary["checkpoint_selection"] == (
+        "maximum_validation_overlap_mean_iou_then_seed"
+    )
 
 
 def test_overlap_dataset_preserves_both_masks_and_availability(tmp_path) -> None:
