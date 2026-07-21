@@ -96,6 +96,12 @@ gwyolo pe-robustness-joint-evaluate join hash-matched DINGO/AMPLFI posterior bat
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 
+Remote aligned-validation acquisition can use
+`scripts/run_gravityspy_validation_fallback.sh` as a conditional, score-blind fallback. It waits for
+an older acquisition process to exit, reuses its completed shard reports, materializes only missing
+shards under the exact current commit in a separate output root, and hash-verifies the combined
+validation manifest without opening test data.
+
 ## Scientific positioning
 
 AMPLFI and DINGO are parameter-estimation systems. The defensible comparison is therefore a joint low-latency workflow:
