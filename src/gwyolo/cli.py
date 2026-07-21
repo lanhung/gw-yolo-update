@@ -968,6 +968,20 @@ def build_parser() -> argparse.ArgumentParser:
     injection_scale.add_argument("--scale", action="append", type=int)
     injection_scale.add_argument("--supplement-seed", type=int, default=20260722)
 
+    evaluation_freeze = subparsers.add_parser("evaluation-corpus-freeze")
+    evaluation_freeze.add_argument("--manifest", required=True)
+    evaluation_freeze.add_argument("--output", required=True)
+    evaluation_freeze.add_argument("--access-log", required=True)
+    evaluation_freeze.add_argument("--corpus-label", required=True)
+    evaluation_freeze.add_argument("--expected-split", default="test")
+    evaluation_freeze.add_argument("--minimum-rows", type=int, default=1)
+    evaluation_freeze.add_argument(
+        "--group-field",
+        action="append",
+        default=[],
+        help="repeat to freeze physical group counts; defaults to injection/waveform/GPS/family",
+    )
+
     background_bank = subparsers.add_parser("background-bank-materialize")
     background_bank.add_argument("--background-manifest", required=True)
     background_bank.add_argument("--output-dir", required=True)
@@ -2266,6 +2280,27 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 tuple(args.scale) if args.scale else (10_000, 25_000, 50_000),
                 args.supplement_seed,
+            )
+        )
+    elif args.command == "evaluation-corpus-freeze":
+        from .evaluation_lock import freeze_evaluation_corpus
+
+        _print(
+            freeze_evaluation_corpus(
+                args.manifest,
+                args.output,
+                args.access_log,
+                args.corpus_label,
+                args.expected_split,
+                args.minimum_rows,
+                tuple(args.group_field)
+                if args.group_field
+                else (
+                    "injection_id",
+                    "waveform_id",
+                    "gps_block",
+                    "source_family",
+                ),
             )
         )
     elif args.command == "injection-materialize":
