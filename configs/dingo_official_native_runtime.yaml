@@ -5,6 +5,7 @@ source_repo_url: https://github.com/dingo-gw/dingo.git
 expected_git_tag: v0.5.8
 expected_git_commit: 04c8ab3ec694410ad85466ea6bfdc6aa2274ac14
 expected_distribution_version: 0.5.8
+setuptools_scm_version: 8.1.0
 dependency_base_distribution_version: 0.9.8
 installation_mode: isolated_package_overlay_on_hash_frozen_dependency_runtime
 model_substitution_allowed: false

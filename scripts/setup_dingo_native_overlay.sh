@@ -25,6 +25,7 @@ EXPECTED_NATIVE_COMMIT=${EXPECTED_NATIVE_COMMIT:-04c8ab3ec694410ad85466ea6bfdc6a
 EXPECTED_NATIVE_TAG=${EXPECTED_NATIVE_TAG:-v0.5.8}
 EXPECTED_NATIVE_VERSION=${EXPECTED_NATIVE_VERSION:-0.5.8}
 EXPECTED_BASE_VERSION=${EXPECTED_BASE_VERSION:-0.9.8}
+SETUPTOOLS_SCM_VERSION=${SETUPTOOLS_SCM_VERSION:-8.1.0}
 INSTALL_LOCK=${INSTALL_LOCK:-/tmp/gwyolo-dingo-native-overlay-install.lock}
 CONFIG_PATH=${CONFIG_PATH:-$TASK_CODE_DIR/configs/dingo_official_native_runtime.yaml}
 
@@ -124,6 +125,9 @@ paths = [str(pathlib.Path(path).resolve()) for path in sys.argv[2:]]
 temporary.write_text("\n".join(paths) + "\n", encoding="utf-8")
 temporary.replace(target)
 PY
+  "$partial/bin/python" -m pip install \
+    --ignore-installed --no-deps --disable-pip-version-check \
+    "setuptools-scm==$SETUPTOOLS_SCM_VERSION"
   SETUPTOOLS_SCM_PRETEND_VERSION="$EXPECTED_NATIVE_VERSION" \
   "$partial/bin/python" -m pip install \
     --ignore-installed --no-deps --no-build-isolation --disable-pip-version-check \
@@ -157,7 +161,7 @@ mv "$native_freeze.part" "$native_freeze"
   "$CONFIG_PATH" "$base_freeze" "$native_freeze" "$NATIVE_SOURCE_DIR" \
   "$NATIVE_VENV" "$EXPECTED_NATIVE_COMMIT" "$EXPECTED_NATIVE_TAG" \
   "$EXPECTED_NATIVE_VERSION" "$EXPECTED_BASE_VERSION" "$GWYOLO_CODE_COMMIT" \
-  "$receipt" <<'PY'
+  "$SETUPTOOLS_SCM_VERSION" "$receipt" <<'PY'
 import hashlib
 import importlib.metadata
 import json
@@ -185,6 +189,7 @@ def digest(path):
     expected_version,
     base_version,
     code_commit,
+    setuptools_scm_version,
     receipt_path,
 ) = sys.argv[1:]
 python = pathlib.Path(venv) / "bin/python"
@@ -224,6 +229,7 @@ result = {
     "backend": "DINGO",
     "backend_version": expected_version,
     "dependency_base_backend_version": base_version,
+    "setuptools_scm_version": setuptools_scm_version,
     "source_path": str(pathlib.Path(source_dir).resolve()),
     "source_commit": expected_commit,
     "source_tag": expected_tag,

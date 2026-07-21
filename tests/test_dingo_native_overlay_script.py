@@ -31,6 +31,8 @@ def test_dingo_native_overlay_freezes_source_runtime_and_no_test_rows() -> None:
     assert "--no-build-isolation" in source
     assert "--ignore-installed" in source
     assert "SETUPTOOLS_SCM_PRETEND_VERSION" in source
+    assert "SETUPTOOLS_SCM_VERSION:-8.1.0" in source
+    assert '"setuptools-scm==$SETUPTOOLS_SCM_VERSION"' in source
     assert '"${base_sites[@]}"' in source
     assert "test_rows_read\": 0" in source
     assert "scientific_claim_allowed\": False" in source
