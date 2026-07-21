@@ -21,7 +21,7 @@ from gwyolo.gravityspy import (
     shard_gravityspy_strain_plan,
     split_gravityspy_anchors,
 )
-from gwyolo.io import file_sha256
+from gwyolo.io import canonical_hash, file_sha256, load_yaml
 
 
 def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:
@@ -218,6 +218,141 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         assert np.count_nonzero(arrays["features"][2]) == 0
         assert np.count_nonzero(arrays["glitch_mask"][0]) > 0
         assert np.count_nonzero(arrays["glitch_mask"][1:]) == 0
+
+
+def test_network_materialization_imports_only_equivalent_verified_source_cache(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """physical_training:
+  model_ifos: [H1, L1, V1]
+  q_values: [4]
+  target_sample_rate: 64
+  tensor: {frequency_bins: 8, time_bins: 8, fmin: 4, fmax: 30}
+"""
+    )
+    sources = {
+        ifo: {
+            "detector": ifo,
+            "observing_run": "O2",
+            "hdf5_url": f"https://example/{ifo}.hdf5",
+            "detail_url": f"https://example/{ifo}/detail",
+        }
+        for ifo in ("H1", "L1")
+    }
+    plan = tmp_path / "plan.jsonl"
+    plan.write_text(
+        json.dumps(
+            {
+                "glitch_id": "imported-cache",
+                "split": "val",
+                "network_gps_block": "O2:block",
+                "observing_run": "O2",
+                "ifo": "H1",
+                "event_time": 1100.0,
+                "duration": 0.2,
+                "peak_frequency": 20.0,
+                "q_value": 4.0,
+                "context_duration": 4.0,
+                "available_ifos": ["H1", "L1"],
+                "detector_availability": [1, 1, 0],
+                "network_strain_sources": sources,
+            }
+        )
+        + "\n"
+    )
+    cache = tmp_path / "cache"
+    verified_sources = {}
+    for ifo, source in sources.items():
+        path = cache / "O2" / ifo / f"{ifo}.hdf5"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"verified-{ifo}".encode())
+        observed = {
+            "filesize_bytes": path.stat().st_size,
+            "mean_strain": 0.0,
+            "stdev_strain": 1.0,
+            "min_strain": -1.0,
+            "max_strain": 1.0,
+            "nans_fraction": 0.0,
+        }
+        verified_sources[source["hdf5_url"]] = {
+            "passed": True,
+            "failures": [],
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": file_sha256(path),
+            "detail_url": source["detail_url"],
+            "expected": observed,
+            "observed": observed,
+            "observed_bitsums": {"0": 4},
+            "strain_samples": 256,
+        }
+    legacy = tmp_path / "legacy_partial.json"
+    legacy_payload = {
+        "run_identity": {
+            "code_commit": "legacy-equivalent-transport-only",
+            "source_manifest_sha256": file_sha256(plan),
+            "config_hash": canonical_hash(load_yaml(config)),
+            "output_duration": 2.0,
+            "download_workers": 8,
+            "chunk_samples": 1_048_576,
+            "shard": None,
+        },
+        "verified_sources": verified_sources,
+        "records": [],
+        "rejected": [],
+    }
+    legacy.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    def no_network(*_args, **_kwargs):
+        raise AssertionError("verified local cache attempted network access")
+
+    monkeypatch.setattr("gwyolo.gravityspy.download_resumable", no_network)
+    monkeypatch.setattr("gwyolo.gravityspy._api_json", no_network)
+    monkeypatch.setattr("gwyolo.gravityspy.verify_hdf5_against_detail", no_network)
+    monkeypatch.setattr(
+        "gwyolo.gravityspy.read_hdf5_segment",
+        lambda *_args: {
+            "strain": np.sin(np.linspace(0, 20, 256)) * 1e-21,
+            "sample_rate": 64,
+            "quality": {
+                "DQmask": np.ones(4, dtype=np.int64),
+                "Injmask": np.zeros(4, dtype=np.int64),
+            },
+        },
+    )
+    report = materialize_gravityspy_network_strain(
+        plan,
+        config,
+        cache,
+        tmp_path / "output",
+        output_duration=2.0,
+        verified_source_inventories=[legacy],
+    )
+    assert report["rows"] == 1
+    assert report["verified_files"] == 2
+    assert report["imported_verified_source_inventories"] == [
+        {
+            "path": str(legacy),
+            "sha256": file_sha256(legacy),
+            "source_code_commit": "legacy-equivalent-transport-only",
+            "imported_urls": sorted(source["hdf5_url"] for source in sources.values()),
+        }
+    ]
+
+    tampered = tmp_path / "tampered_partial.json"
+    legacy_payload["verified_sources"][sources["H1"]["hdf5_url"]]["sha256"] = "0" * 64
+    tampered.write_text(json.dumps(legacy_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="cache hash mismatch"):
+        materialize_gravityspy_network_strain(
+            plan,
+            config,
+            cache,
+            tmp_path / "tampered-output",
+            output_duration=2.0,
+            verified_source_inventories=[tampered],
+        )
 
 
 def test_gravityspy_network_shards_keep_shared_sources_together(tmp_path) -> None:
