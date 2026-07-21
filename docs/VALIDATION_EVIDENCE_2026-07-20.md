@@ -734,6 +734,18 @@ candidate score is consumed. A merged sparse run is complete only when its absol
 equal the frozen schedule; an unscheduled gap still fails closed. This enables efficient future
 cross-segment exposure, but no sparse O4a schedule or added live time is claimed in this entry.
 
+The sparse contract was subsequently exercised on the same real-O4a engineering corpus. Using
+background GPS/detector availability alone, every other nonzero-exposure offset in the existing
+1--127 range was selected, giving a frozen 64-index schedule whose numeric indices are deliberately
+non-contiguous. Two schedule shards merged with `slide_schedule_complete=true`, 189 clustered
+background candidates and 50,272 seconds of exposure. The merged manifest and the old monolithic
+manifest filtered to those exact indices are byte-identical with SHA256
+`a10f8bd7364743afa51ec8ece3b7a2b7e0d01e8f6b3fe6152b3d0e1fae699206`. The frozen schedule
+SHA256 is `0340db3138270f6bece1e48a56643b1002e7266509685770fad6628cdd8f5f9b`; the merged report
+SHA256 is `21750fc7b32c660f751273eba9aab80b0625590848fa172fc79160648bdbc342`. This validates
+schedule semantics and execution equivalence only: it is a subset of old exposure, not new FAR
+evidence.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed
