@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
+from .pe import posterior_sky_area_equal_solid_angle, sky_area_estimator_identity
 from .runtime import execution_provenance
 
 
@@ -261,6 +262,12 @@ def run_dingo_common_batch(
                 metadata["model_sha256"],
                 model_init_sha,
             )
+        with np.load(report["posterior_path"], allow_pickle=False) as posterior:
+            if "ra" not in posterior.files or "dec" not in posterior.files:
+                raise ValueError("DINGO posterior lacks RA/Dec sky samples")
+            sky_area = posterior_sky_area_equal_solid_angle(
+                posterior["ra"], posterior["dec"]
+            )
         result_rows.append(
             {
                 **row,
@@ -269,6 +276,12 @@ def run_dingo_common_batch(
                 "posterior_sha256": report["posterior_sha256"],
                 "latency_seconds": report["latency_seconds"],
                 "effective_sample_size": report["effective_sample_size"],
+                "sky_area_90_deg2": sky_area["area_deg2"],
+                "sky_area_estimator": sky_area_estimator_identity(sky_area),
+                "sky_area_diagnostics": {
+                    field: sky_area[field]
+                    for field in ("sample_count", "occupied_pixels", "credible_pixels")
+                },
                 "backend_version": report["backend_version"],
                 "backend_model_hash": report["model_sha256"],
                 "prior_hash": row["common_prior_sha256"],

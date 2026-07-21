@@ -843,6 +843,15 @@ retained, together with model-load, preprocessing, sampling and end-to-end laten
 embedding call; otherwise the sampling context would be multiplied again during log-probability
 evaluation and subsequent sample chunks.
 
+Both batch adapters compute the required 90% sky-area field directly from the retained RA/Dec
+posterior samples. The dependency-free primary implementation uses a frozen 360 by 180 grid in
+right ascension and `sin(dec)`, so all 64,800 pixels have equal solid angle. It reports the greedy
+credible-pixel count, pixel area, sample count and exact method alongside `sky_area_90_deg2`; that
+estimator record must match across conditions and backends. This fixed-grid statistic is an
+identical paired robustness metric, not a BAYESTAR or adaptive-HEALPix sky map. A future
+waveform-systematics table may add a common `ligo.skymap` estimator as a separately frozen stratum,
+but cannot replace one backend's estimator after posterior results are opened.
+
 The batch boundary independently reopens and hashes the metadata-bound canonical prior, native
 prior and semantic projection report before launching any subprocess. The runtime `--native-prior`
 must match the metadata artifact byte-for-byte, and the passed projection must bind that prior, the

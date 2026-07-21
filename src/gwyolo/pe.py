@@ -22,6 +22,7 @@ PUBLICATION_PROVENANCE_FIELDS = (
     "source_event_hash",
     "hardware",
     "latency_scope",
+    "sky_area_estimator",
 )
 
 PUBLICATION_INPUT_FIELDS = (
@@ -47,7 +48,91 @@ PUBLICATION_SHARED_BACKEND_FIELDS = (
     "source_event_hash",
     "hardware",
     "latency_scope",
+    "sky_area_estimator",
 )
+
+SKY_AREA_ESTIMATOR_IDENTITY_FIELDS = (
+    "method",
+    "credible_level",
+    "ra_bins",
+    "sin_dec_bins",
+    "total_pixels",
+    "pixel_area_deg2",
+    "coordinate_units",
+    "interpretation",
+)
+
+
+def posterior_sky_area_equal_solid_angle(
+    ra: np.ndarray,
+    dec: np.ndarray,
+    credible_level: float = 0.9,
+    ra_bins: int = 360,
+    sin_dec_bins: int = 180,
+) -> dict[str, Any]:
+    """Estimate a greedy sky credible area on a fixed equal-solid-angle grid."""
+
+    right_ascension = np.asarray(ra, dtype=np.float64).reshape(-1)
+    declination = np.asarray(dec, dtype=np.float64).reshape(-1)
+    if right_ascension.shape != declination.shape or right_ascension.size == 0:
+        raise ValueError("sky area requires equally sized non-empty RA/Dec samples")
+    if not np.isfinite(right_ascension).all() or not np.isfinite(declination).all():
+        raise ValueError("sky posterior coordinates must be finite")
+    if np.any(np.abs(declination) > np.pi / 2 + 1e-12):
+        raise ValueError("sky posterior declination lies outside [-pi/2, pi/2]")
+    if not 0 < credible_level <= 1:
+        raise ValueError("sky credible level must lie in (0, 1]")
+    if ra_bins < 1 or sin_dec_bins < 1:
+        raise ValueError("sky-area grid dimensions must be positive")
+    wrapped_ra = np.mod(right_ascension, 2 * np.pi)
+    ra_index = np.minimum(
+        (wrapped_ra / (2 * np.pi) * ra_bins).astype(np.int64), ra_bins - 1
+    )
+    sin_dec = np.clip(np.sin(declination), -1.0, 1.0)
+    dec_index = np.minimum(
+        ((sin_dec + 1.0) / 2.0 * sin_dec_bins).astype(np.int64),
+        sin_dec_bins - 1,
+    )
+    flat = dec_index * ra_bins + ra_index
+    counts = np.bincount(flat, minlength=ra_bins * sin_dec_bins)
+    occupied = counts[counts > 0]
+    descending = np.sort(occupied)[::-1]
+    required_samples = int(np.ceil(credible_level * right_ascension.size))
+    credible_pixels = int(
+        np.searchsorted(np.cumsum(descending), required_samples, side="left") + 1
+    )
+    square_degrees_per_steradian = (180.0 / np.pi) ** 2
+    pixel_area = (
+        4.0
+        * np.pi
+        / (ra_bins * sin_dec_bins)
+        * square_degrees_per_steradian
+    )
+    return {
+        "method": "fixed_equal_solid_angle_histogram_v1",
+        "credible_level": credible_level,
+        "sample_count": int(right_ascension.size),
+        "ra_bins": ra_bins,
+        "sin_dec_bins": sin_dec_bins,
+        "total_pixels": ra_bins * sin_dec_bins,
+        "occupied_pixels": int(occupied.size),
+        "credible_pixels": credible_pixels,
+        "pixel_area_deg2": pixel_area,
+        "area_deg2": credible_pixels * pixel_area,
+        "coordinate_units": "radians",
+        "interpretation": (
+            "fixed-grid posterior credible area; not a BAYESTAR or adaptive HEALPix sky map"
+        ),
+    }
+
+
+def sky_area_estimator_identity(report: dict[str, Any]) -> dict[str, Any]:
+    """Separate frozen estimator settings from posterior-dependent diagnostics."""
+
+    missing = [field for field in SKY_AREA_ESTIMATOR_IDENTITY_FIELDS if field not in report]
+    if missing:
+        raise ValueError(f"sky-area report lacks estimator identity fields: {missing}")
+    return {field: report[field] for field in SKY_AREA_ESTIMATOR_IDENTITY_FIELDS}
 
 
 def _paired_mean_bootstrap(

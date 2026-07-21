@@ -156,6 +156,12 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     rows = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]
     assert len({row["source_event_hash"] for row in rows}) == 1
     assert all(row["backend_version"] == "0.9.8" for row in rows)
+    assert all(row["sky_area_90_deg2"] > 0 for row in rows)
+    assert all(
+        row["sky_area_estimator"]["method"]
+        == "fixed_equal_solid_angle_histogram_v1"
+        for row in rows
+    )
     assert all(row["hardware"] == {"hostname": "gpu-node", "gpu": "RTX 4090"} for row in rows)
     assert all(file_sha256(row["posterior_path"]) == row["posterior_sha256"] for row in rows)
 

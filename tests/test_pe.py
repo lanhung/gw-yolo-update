@@ -8,8 +8,26 @@ from gwyolo.pe import (
     PUBLICATION_PROVENANCE_FIELDS,
     evaluate_pe_rows,
     evaluate_pe_robustness_rows,
+    posterior_sky_area_equal_solid_angle,
     posterior_truth_metrics,
+    sky_area_estimator_identity,
 )
+
+
+def test_equal_solid_angle_sky_area_matches_hand_counted_pixels() -> None:
+    ra = np.asarray([0.1] * 4 + [1.7] * 3 + [3.2] * 2 + [4.8])
+    dec = np.zeros(10)
+    report = posterior_sky_area_equal_solid_angle(
+        ra, dec, credible_level=0.7, ra_bins=4, sin_dec_bins=2
+    )
+    # Counts are 4, 3, 2, 1. Seven of ten samples require the two densest
+    # equal-area pixels; each of the eight pixels covers 4*pi/8 steradians.
+    expected = 2 * (4 * np.pi / 8) * (180 / np.pi) ** 2
+    assert report["credible_pixels"] == 2
+    assert report["area_deg2"] == pytest.approx(expected)
+    identity = sky_area_estimator_identity(report)
+    assert "credible_pixels" not in identity
+    assert identity["method"] == "fixed_equal_solid_angle_histogram_v1"
 
 
 def test_posterior_truth_metrics_match_quantiles_and_bias() -> None:
@@ -198,9 +216,14 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
             "detector_set": ["H1", "L1"],
             "calibration_version": "C01",
             "source_event_hash": "event-hash",
-            "hardware": "same-gpu",
-            "latency_scope": "load-through-posterior",
-        }
+                "hardware": "same-gpu",
+                "latency_scope": "load-through-posterior",
+                "sky_area_estimator": {
+                    "method": "fixed_equal_solid_angle_histogram_v1",
+                    "ra_bins": 360,
+                    "sin_dec_bins": 180,
+                },
+            }
         for condition in ("clean", "contaminated", "mask_conditioned"):
             posterior = tmp_path / f"{backend}-{condition}.npz"
             np.savez(posterior, mass=np.asarray([1.0, 2.0, 3.0]))
