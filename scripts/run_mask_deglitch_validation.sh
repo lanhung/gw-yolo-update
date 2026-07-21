@@ -433,9 +433,10 @@ receipt = {
     "status": "completed_validation_only_mask_deglitch_gate",
     "execution_passed": True,
     "development_gates_passed": pipeline.get("development_gates_passed") is True,
-    "scale_mask_conditioned_background": (
+    "scale_mask_conditioned_morphology_background": (
         pipeline.get("development_gates_passed") is True
     ),
+    "coherent_background_scale_allowed": False,
     "scientific_claim_allowed": False,
     "locked_test_allowed": False,
     "test_rows_read": 0,

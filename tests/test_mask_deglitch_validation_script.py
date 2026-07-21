@@ -28,6 +28,8 @@ def test_mask_deglitch_validation_binds_independent_six_arm_protocol() -> None:
     assert 'model_report.get("code_commit") != selection_commit' in source
     assert 'summary.get("code_commit") != commit' not in source
     assert '"model_selection_code_commit"' in source
+    assert '"scale_mask_conditioned_morphology_background"' in source
+    assert '"coherent_background_scale_allowed": False' in source
     assert "frozen_gps_and_purpose_disjoint_validation_endpoint" in source
     assert "verified_independent_validation_pe_overlap" in source
     assert "passed_physical_overlap_group_audit" in source

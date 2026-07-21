@@ -236,6 +236,12 @@ def build_parser() -> argparse.ArgumentParser:
     mask_search_pipeline.add_argument("--target-sample-rate", type=int, default=1024)
     mask_search_pipeline.add_argument("--context-duration", type=float, default=64.0)
 
+    mask_timing = subparsers.add_parser("mask-timing-validation")
+    mask_timing.add_argument("--mask-validation-receipt", required=True)
+    mask_timing.add_argument("--pipeline-report", required=True)
+    mask_timing.add_argument("--config", required=True)
+    mask_timing.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -1879,6 +1885,17 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(args.q_values),
                 args.target_sample_rate,
                 args.context_duration,
+            )
+        )
+    elif args.command == "mask-timing-validation":
+        from .mask_timing import run_mask_timing_validation
+
+        _print(
+            run_mask_timing_validation(
+                args.mask_validation_receipt,
+                args.pipeline_report,
+                args.config,
+                args.output,
             )
         )
     elif args.command == "manifest-select-split":

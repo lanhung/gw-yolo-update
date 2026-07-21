@@ -645,6 +645,14 @@ configuration, report and manifest SHA-256 identities still have to match exactl
 validation rows only, writes `test_rows_read: 0`, and never authorizes a locked-test or scientific
 claim. A passing receipt only enables scaling the mask-conditioned continuous-background arm.
 
+That first receipt is a ranking/morphology gate, not a coherence authorization.
+`mask-timing-validation` consumes the exact six-arm receipt and independently calibrates the local
+per-mask-cluster arrival estimator on waveform-matched contaminated raw and mask-conditioned
+validation injections. The two arms must contain identical injection, waveform, GPS, detector and
+arrival identities. Both must separately pass the precommitted 99th-percentile 10 ms empirical
+timing limit with at least 30 matches; otherwise `coherent_background_scale_allowed` remains false.
+This prevents mask cleaning from silently inheriting the raw-strain timing uncertainty.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing

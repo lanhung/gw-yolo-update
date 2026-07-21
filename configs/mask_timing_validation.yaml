@@ -1,0 +1,8 @@
+mask_timing_validation:
+  required_method: local_whitened_strain_envelope_per_mask_cluster_v1
+  chirp_threshold: 0.3
+  minimum_bins: 1
+  association_window_seconds: 0.25
+  uncertainty_quantile: 0.99
+  minimum_matches_per_method: 30
+  maximum_empirical_timing_uncertainty_seconds: 0.01
