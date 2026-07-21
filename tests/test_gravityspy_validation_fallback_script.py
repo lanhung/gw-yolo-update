@@ -28,6 +28,8 @@ def test_validation_fallback_waits_and_reuses_completed_legacy_shards() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert 'while kill -0 "$WAIT_PID"' in source
     assert 'if [[ -s "$legacy_report" ]]' in source
+    assert 'if [[ -s "$legacy_partial" ]]' in source
+    assert '--verified-source-inventory "$legacy_partial"' in source
     assert "gravityspy-network-strain-materialize" in source
     assert "gravityspy-network-numeric-merge" in source
     assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source

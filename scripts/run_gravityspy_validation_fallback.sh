@@ -83,6 +83,7 @@ reports=()
 for ((shard = 0; shard < SOURCE_SHARD_COUNT; shard++)); do
   legacy_dir="${LEGACY_OUTPUT_PREFIX}${shard}${LEGACY_OUTPUT_SUFFIX}"
   legacy_report="$legacy_dir/gravityspy_network_numeric_report.json"
+  legacy_partial="$legacy_dir/materialization_partial.json"
   fallback_dir="$OUTPUT_ROOT/shard-$shard"
   fallback_report="$fallback_dir/gravityspy_network_numeric_report.json"
   selected_report=
@@ -96,6 +97,10 @@ for ((shard = 0; shard < SOURCE_SHARD_COUNT; shard++)); do
       exit 1
     fi
     completed=0
+    inventory_args=()
+    if [[ -s "$legacy_partial" ]]; then
+      inventory_args=(--verified-source-inventory "$legacy_partial")
+    fi
     for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
       printf '%s shard=%s attempt=%s\n' \
         "$(date -u +%FT%TZ)" "$shard" "$attempt"
@@ -107,6 +112,7 @@ for ((shard = 0; shard < SOURCE_SHARD_COUNT; shard++)); do
         --output-duration "$OUTPUT_DURATION" \
         --download-workers "$DOWNLOAD_WORKERS" \
         --chunk-samples "$CHUNK_SAMPLES" \
+        "${inventory_args[@]}" \
         --shard "$shard"; then
         completed=1
         break

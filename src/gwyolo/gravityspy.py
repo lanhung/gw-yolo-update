@@ -1022,6 +1022,100 @@ def select_gravityspy_network_source_components(
     return report
 
 
+def _import_verified_network_sources(
+    inventory_paths: Iterable[str | Path],
+    run_identity: dict[str, Any],
+    source_inventory: dict[str, dict[str, Any]],
+    cache: Path,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Import byte-verified source files from an equivalent interrupted run."""
+
+    imported: dict[str, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
+    identity_fields = (
+        "source_manifest_sha256",
+        "config_hash",
+        "output_duration",
+        "download_workers",
+        "chunk_samples",
+        "shard",
+    )
+    for inventory_path in inventory_paths:
+        path = Path(inventory_path)
+        if not path.is_file():
+            raise ValueError(f"Verified source inventory is absent: {path}")
+        inventory = json.loads(path.read_text(encoding="utf-8"))
+        source_identity = inventory.get("run_identity")
+        if not isinstance(source_identity, dict) or any(
+            source_identity.get(field) != run_identity.get(field)
+            for field in identity_fields
+        ):
+            raise ValueError(f"Verified source inventory run identity differs: {path}")
+        sources = inventory.get("verified_sources")
+        if not isinstance(sources, dict) or not sources:
+            raise ValueError(f"Verified source inventory has no sources: {path}")
+        imported_urls = []
+        for url, verification in sorted(sources.items()):
+            source = source_inventory.get(str(url))
+            if source is None:
+                raise ValueError(
+                    f"Verified source inventory contains an out-of-shard URL: {url}"
+                )
+            if (
+                not isinstance(verification, dict)
+                or verification.get("passed") is not True
+                or verification.get("failures") not in ([], None)
+            ):
+                raise ValueError(f"Imported source was not fully verified: {url}")
+            filename = Path(str(url).split("?", 1)[0]).name
+            expected_path = (
+                cache
+                / str(source["observing_run"])
+                / str(source["detector"])
+                / filename
+            )
+            recorded_path = Path(str(verification.get("path", "")))
+            if recorded_path.resolve() != expected_path.resolve():
+                raise ValueError(f"Imported source path is outside the exact cache slot: {url}")
+            if str(verification.get("detail_url")) != str(source["detail_url"]):
+                raise ValueError(f"Imported source detail URL differs: {url}")
+            expected = verification.get("expected")
+            observed = verification.get("observed")
+            if not isinstance(expected, dict) or not isinstance(observed, dict):
+                raise ValueError(f"Imported source lacks full HDF5 statistics: {url}")
+            try:
+                expected_bytes = int(expected["filesize_bytes"])
+                recorded_bytes = int(verification["bytes"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Imported source lacks a valid byte count: {url}") from exc
+            if expected_bytes != recorded_bytes:
+                raise ValueError(f"Imported source byte counts disagree: {url}")
+            if not expected_path.is_file() or expected_path.stat().st_size != recorded_bytes:
+                raise ValueError(f"Imported source cache file is absent or truncated: {url}")
+            if file_sha256(expected_path) != str(verification.get("sha256")):
+                raise ValueError(f"Imported source cache hash mismatch: {url}")
+            if not isinstance(verification.get("observed_bitsums"), dict) or int(
+                verification.get("strain_samples", 0)
+            ) <= 0:
+                raise ValueError(f"Imported source lacks full dataset verification: {url}")
+            existing = imported.get(str(url))
+            if existing is not None and canonical_hash(existing) != canonical_hash(
+                verification
+            ):
+                raise ValueError(f"Conflicting imported source verification: {url}")
+            imported[str(url)] = verification
+            imported_urls.append(str(url))
+        evidence.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "source_code_commit": source_identity.get("code_commit"),
+                "imported_urls": imported_urls,
+            }
+        )
+    return imported, evidence
+
+
 def materialize_gravityspy_network_strain(
     manifest_path: str | Path,
     config_path: str | Path,
@@ -1031,6 +1125,7 @@ def materialize_gravityspy_network_strain(
     download_workers: int = 8,
     chunk_samples: int = 1_048_576,
     shard: int | None = None,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Verify and transform aligned real H1/L1/V1 contexts around catalog glitches."""
 
@@ -1095,6 +1190,7 @@ def materialize_gravityspy_network_strain(
     completed: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     verified_sources: dict[str, dict[str, Any]] = {}
+    imported_source_inventories: list[dict[str, Any]] = []
     if state_path.is_file():
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state.get("run_identity") != run_identity:
@@ -1114,6 +1210,9 @@ def materialize_gravityspy_network_strain(
             completed = list(partial.get("records", []))
             rejected = list(partial.get("rejected", []))
             verified_sources = dict(partial.get("verified_sources", {}))
+            imported_source_inventories = list(
+                partial.get("imported_verified_source_inventories", [])
+            )
     completed_ids = set()
     for record in completed:
         glitch_id = str(record["glitch_id"])
@@ -1131,14 +1230,54 @@ def materialize_gravityspy_network_strain(
             if url in source_inventory and source_inventory[url] != source:
                 raise ValueError("A network source URL has inconsistent metadata")
             source_inventory[url] = source
+    imported_sources, imported_evidence = _import_verified_network_sources(
+        verified_source_inventories, run_identity, source_inventory, cache
+    )
+    for url, verification in imported_sources.items():
+        existing = verified_sources.get(url)
+        if existing is not None and canonical_hash(existing) != canonical_hash(verification):
+            raise ValueError(f"Imported source conflicts with current partial state: {url}")
+        verified_sources[url] = verification
+    evidence_by_hash = {
+        str(item["sha256"]): item for item in imported_source_inventories
+    }
+    evidence_by_hash.update(
+        {str(item["sha256"]): item for item in imported_evidence}
+    )
+    imported_source_inventories = [
+        evidence_by_hash[key] for key in sorted(evidence_by_hash)
+    ]
+    if imported_evidence:
+        atomic_write_json(
+            partial_path,
+            {
+                "run_identity": run_identity,
+                "verified_sources": verified_sources,
+                "imported_verified_source_inventories": imported_source_inventories,
+                "records": completed,
+                "rejected": rejected,
+            },
+        )
     for url, source in sorted(source_inventory.items()):
         filename = Path(url.split("?", 1)[0]).name
-        download = download_resumable(
-            url,
-            cache / str(source["observing_run"]) / str(source["detector"]) / filename,
-            workers=download_workers,
-        )
         verification = verified_sources.get(url)
+        cache_path = (
+            cache / str(source["observing_run"]) / str(source["detector"]) / filename
+        )
+        if verification is not None and Path(str(verification["path"])).resolve() != (
+            cache_path.resolve()
+        ):
+            raise ValueError(f"Verified network source uses another cache slot: {url}")
+        if verification is not None and cache_path.is_file():
+            if cache_path.stat().st_size != int(verification["bytes"]):
+                raise ValueError(f"Cached network source size changed: {url}")
+            if file_sha256(cache_path) != str(verification["sha256"]):
+                raise ValueError(f"Cached network source changed after verification: {url}")
+            download = {"path": str(cache_path), "downloaded": False}
+        else:
+            download = download_resumable(
+                url, cache_path, workers=download_workers
+            )
         if verification is None:
             verification = verify_hdf5_against_detail(
                 download["path"], _api_json(str(source["detail_url"])), chunk_samples
@@ -1151,6 +1290,7 @@ def materialize_gravityspy_network_strain(
                 {
                     "run_identity": run_identity,
                     "verified_sources": verified_sources,
+                    "imported_verified_source_inventories": imported_source_inventories,
                     "records": completed,
                     "rejected": rejected,
                 },
@@ -1252,6 +1392,7 @@ def materialize_gravityspy_network_strain(
                 {
                     "run_identity": run_identity,
                     "verified_sources": verified_sources,
+                    "imported_verified_source_inventories": imported_source_inventories,
                     "records": completed,
                     "rejected": rejected,
                 },
@@ -1324,6 +1465,7 @@ def materialize_gravityspy_network_strain(
             {
                 "run_identity": run_identity,
                 "verified_sources": verified_sources,
+                "imported_verified_source_inventories": imported_source_inventories,
                 "records": completed,
                 "rejected": rejected,
             },
@@ -1370,6 +1512,7 @@ def materialize_gravityspy_network_strain(
             {str(row["network_gps_block"]) for row in completed}
         ),
         "verified_files": len(verified_sources),
+        "imported_verified_source_inventories": imported_source_inventories,
         "detector_subset_counts": dict(
             sorted(
                 Counter("".join(row["available_ifos"]) for row in completed).items()

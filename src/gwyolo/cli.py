@@ -630,6 +630,9 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_materialize.add_argument("--download-workers", type=int, default=8)
     gravityspy_network_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
     gravityspy_network_materialize.add_argument("--shard", type=int)
+    gravityspy_network_materialize.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     gravityspy_network_recovery = subparsers.add_parser(
         "gravityspy-network-recovery-plan"
@@ -2278,6 +2281,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.download_workers,
                 args.chunk_samples,
                 args.shard,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "gravityspy-network-strain-shard":
