@@ -124,3 +124,15 @@ def test_pe_backend_lock_rejects_unresolved_model_hash(
     with pytest.raises(RuntimeError, match="lock is incomplete"):
         run_pe_backend_lock_audit(path, output)
     assert json.loads(output.read_text(encoding="utf-8"))["status"] == "incomplete"
+
+
+def test_pe_backend_lock_rejects_abbreviated_or_malformed_source_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _config(tmp_path, monkeypatch)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["backends"]["DINGO"]["expected_git_commit"] = "abc123"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    report = audit_pe_backend_lock(path)
+    assert report["publication_ready"] is False
+    assert any("full 40-character" in failure for failure in report["failures"])

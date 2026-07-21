@@ -19,7 +19,7 @@ backends:
     source_repo_url: https://github.com/dingo-gw/dingo.git
     source_path_env: DINGO_SOURCE_DIR
     expected_git_tag: v0.9.8
-    expected_git_commit: f07ee8803241cb2fad5a1e59ad087e99ca7e84b9f
+    expected_git_commit: f07ee8803241cb2fad5a1e59ad087e99ca7e84b9
     python_executable_env: DINGO_PYTHON
     python_requires: ">=3.10,<3.14"
     distribution: dingo-gw

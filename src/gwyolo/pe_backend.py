@@ -67,6 +67,12 @@ def _python_satisfies(version: str, specification: str) -> bool:
 
 def _audit_source(name: str, settings: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     failures: list[str] = []
+    expected_commit = str(settings.get("expected_git_commit", ""))
+    expected_tag = str(settings.get("expected_git_tag", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
+        failures.append("expected_git_commit must be a full 40-character lowercase SHA")
+    if not expected_tag:
+        failures.append("expected_git_tag is required")
     source_env = str(settings.get("source_path_env", ""))
     if not source_env:
         return {}, [f"{name}: source_path_env is required"]
@@ -83,9 +89,9 @@ def _audit_source(name: str, settings: dict[str, Any]) -> tuple[dict[str, Any], 
     except (OSError, subprocess.CalledProcessError) as error:
         return result, [f"{name}: cannot inspect source repository: {error}"]
     result.update({"commit": commit, "tag": tag, "dirty": dirty})
-    if commit != str(settings.get("expected_git_commit", "")):
+    if commit != expected_commit:
         failures.append(f"source commit {commit} does not match lock")
-    if tag != str(settings.get("expected_git_tag", "")):
+    if tag != expected_tag:
         failures.append(f"source tag {tag} does not match lock")
     if dirty:
         failures.append("source repository is dirty")
