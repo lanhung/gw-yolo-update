@@ -1,0 +1,11 @@
+mask_deglitch_validation:
+  maximum_validation_false_alarms: 8
+  strength: 0.9
+  clean_noninferiority_margin: 0.01
+  minimum_contaminated_efficiency_gain: 0.05
+  bootstrap_replicates: 10000
+  seed: 20260720
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]
+  target_sample_rate: 1024
+  context_duration: 64

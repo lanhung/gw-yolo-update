@@ -54,10 +54,15 @@ def test_mask_pipeline_runs_six_paired_score_arms(tmp_path: Path, monkeypatch) -
     )
     monkeypatch.setattr("gwyolo.mask_pipeline.run_learned_deglitch", injection_clean)
     monkeypatch.setattr("gwyolo.mask_pipeline.run_mask_search_validation", compare)
+    background = tmp_path / "background.jsonl"
+    clean = tmp_path / "clean.jsonl"
+    contaminated = tmp_path / "contaminated.jsonl"
+    for path in (background, clean, contaminated):
+        path.write_text("{}\n")
     result = run_mask_search_validation_pipeline(
-        "background.jsonl",
-        "clean.jsonl",
-        "contaminated.jsonl",
+        background,
+        clean,
+        contaminated,
         checkpoint,
         config,
         tmp_path / "pipeline",
@@ -68,3 +73,18 @@ def test_mask_pipeline_runs_six_paired_score_arms(tmp_path: Path, monkeypatch) -
     assert calls["clean"] == ["background", "injection", "injection"]
     assert result["development_gates_passed"] is False
     assert result["test_evaluation"] is None
+    assert result["test_rows_read"] == 0
+    assert result["input_manifests"] == {
+        "background": {
+            "path": str(background),
+            "sha256": file_sha256(background),
+        },
+        "clean_injections": {
+            "path": str(clean),
+            "sha256": file_sha256(clean),
+        },
+        "contaminated_injections": {
+            "path": str(contaminated),
+            "sha256": file_sha256(contaminated),
+        },
+    }

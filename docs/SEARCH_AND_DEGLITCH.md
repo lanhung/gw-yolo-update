@@ -635,6 +635,16 @@ A successful five-row engineering pilot is not a sensitivity result. The paper g
 statistically useful, group-independent contaminated corpus, clean non-inferiority, at least five
 learned seeds, clustered continuous background/time slides and the one-time locked evaluation.
 
+`scripts/run_mask_deglitch_validation.sh` is the fail-closed publication-DAG entry point for this
+six-arm development gate. It accepts only a passing source-safe five-seed selection, replays the
+selected checkpoint and finetune-report hashes, verifies the frozen GPS/purpose-disjoint O4a
+endpoint, and independently replays the waveform/GPS/source overlap audit before constructing the
+paired clean and real-glitch-contaminated manifests. The evaluation checkout may be newer than the
+frozen model-selection checkout, so the receipt records both code commits separately; checkpoint,
+configuration, report and manifest SHA-256 identities still have to match exactly. The runner reads
+validation rows only, writes `test_rows_read: 0`, and never authorizes a locked-test or scientific
+claim. A passing receipt only enables scaling the mask-conditioned continuous-background arm.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
