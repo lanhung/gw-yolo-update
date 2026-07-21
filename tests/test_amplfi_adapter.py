@@ -15,6 +15,7 @@ from gwyolo.amplfi_adapter import (
     run_amplfi_common_batch,
 )
 from gwyolo.io import file_sha256
+from gwyolo.pe import PAIRED_PE_LATENCY_SCOPE_V1
 from gwyolo.pe_conditioning import materialize_native_pe_conditioning
 from test_pe_conditioning import _common_sources
 
@@ -143,7 +144,7 @@ def sha(path):
  return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 np.savez(a.posterior_output, chirp_mass=np.array([20.,21.]), mass_ratio=np.array([.5,.6]), luminosity_distance=np.array([900.,1100.]), theta_jn=np.array([.6,.8]), ra=np.array([.9,1.1]), dec=np.array([.1,.3]), psi=np.array([.4,.6]))
 pathlib.Path(a.result_output).write_bytes(b'native-amplfi-result')
-r={'status':'real_amplfi_flow_posterior_complete','backend':'AMPLFI','backend_version':'0.6.0','event_sha256':a.expected_event_sha256,'model_sha256':a.expected_model_sha256,'model_config_sha256':a.expected_model_config_sha256,'native_prior_path':str(pathlib.Path(a.native_prior).resolve()),'native_prior_sha256':a.expected_native_prior_sha256,'posterior_path':str(pathlib.Path(a.posterior_output).resolve()),'posterior_sha256':sha(a.posterior_output),'native_result_path':str(pathlib.Path(a.result_output).resolve()),'native_result_sha256':sha(a.result_output),'latency_seconds':0.7,'latency_scope':'native','effective_sample_size':2.0,'environment':{'hostname':'gpu-node','gpu':'RTX 4090','python':'3.11','torch':'2','cuda':'12'}}
+r={'status':'real_amplfi_flow_posterior_complete','backend':'AMPLFI','backend_version':'0.6.0','event_sha256':a.expected_event_sha256,'model_sha256':a.expected_model_sha256,'model_config_sha256':a.expected_model_config_sha256,'native_prior_path':str(pathlib.Path(a.native_prior).resolve()),'native_prior_sha256':a.expected_native_prior_sha256,'posterior_path':str(pathlib.Path(a.posterior_output).resolve()),'posterior_sha256':sha(a.posterior_output),'native_result_path':str(pathlib.Path(a.result_output).resolve()),'native_result_sha256':sha(a.result_output),'latency_seconds':0.7,'latency_scope':'model-load-and-event-preprocessing-through-posterior-and-native-result-write_v1_excludes-artifact-verification-imports-and-mask-generation','latency_components_seconds':{'model_load':.1,'event_preprocessing':.1,'posterior_sampling':.4,'posterior_postprocessing_and_write':.05},'effective_sample_size':2.0,'environment':{'hostname':'gpu-node','gpu':'RTX 4090','python':'3.11','torch':'2','cuda':'12'}}
 pathlib.Path(a.report_output).write_text(json.dumps(r))
 """,
         encoding="utf-8",
@@ -263,6 +264,17 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
         for line in Path(report["manifest_path"]).read_text().splitlines()
     ]
     assert all(row["sky_area_90_deg2"] > 0 for row in rows)
+    assert all(row["latency_scope"] == PAIRED_PE_LATENCY_SCOPE_V1 for row in rows)
+    assert all(
+        set(row["backend_native_latency_components_seconds"])
+        == {
+            "model_load",
+            "event_preprocessing",
+            "posterior_sampling",
+            "posterior_postprocessing_and_write",
+        }
+        for row in rows
+    )
     assert all(
         row["sky_area_estimator"]["method"]
         == "fixed_equal_solid_angle_histogram_v1"

@@ -20,6 +20,12 @@ from pathlib import Path
 import numpy as np
 
 
+LATENCY_SCOPE = (
+    "model-load-and-event-preprocessing-through-posterior-and-native-result-write_"
+    "v1_excludes-artifact-verification-imports-and-mask-generation"
+)
+
+
 def file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -108,13 +114,23 @@ def main() -> int:
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+
+    total_started = time.perf_counter()
+    event_started = time.perf_counter()
     event = EventDataset(file_name=str(event_path))
+    event_preprocessing_seconds = time.perf_counter() - event_started
+
+    model_load_started = time.perf_counter()
     model = build_model_from_kwargs(
         filename=str(model_path), device=args.device, load_training_info=False
     )
     init_model = build_model_from_kwargs(
         filename=str(init_path), device=args.device, load_training_info=False
     )
+    if args.device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    model_load_seconds = time.perf_counter() - model_load_started
+
     sampler = GWSamplerGNPE(
         model=model,
         init_sampler=GWSampler(model=init_model),
@@ -124,11 +140,13 @@ def main() -> int:
     sampler.event_metadata = event.settings
     if args.device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
-    started = time.perf_counter()
+    sampling_started = time.perf_counter()
     sampler.run_sampler(args.num_samples, batch_size=args.batch_size)
     if args.device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
-    elapsed = time.perf_counter() - started
+    sampling_seconds = time.perf_counter() - sampling_started
+
+    postprocessing_started = time.perf_counter()
     samples = sampler.samples
     if samples is None or len(samples) != args.num_samples:
         raise RuntimeError("DINGO returned an unexpected posterior sample count")
@@ -157,6 +175,10 @@ def main() -> int:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    posterior_postprocessing_and_write_seconds = (
+        time.perf_counter() - postprocessing_started
+    )
+    total_seconds = time.perf_counter() - total_started
 
     report = {
         "status": "real_dingo_gnpe_posterior_complete",
@@ -179,8 +201,16 @@ def main() -> int:
         "num_gnpe_iterations": args.num_gnpe_iterations,
         "batch_size": args.batch_size,
         "seed": args.seed,
-        "latency_seconds": elapsed,
-        "latency_scope": "verified-event-load-through-native-posterior-and-result-write",
+        "latency_seconds": total_seconds,
+        "latency_scope": LATENCY_SCOPE,
+        "latency_components_seconds": {
+            "model_load": model_load_seconds,
+            "event_preprocessing": event_preprocessing_seconds,
+            "posterior_sampling": sampling_seconds,
+            "posterior_postprocessing_and_write": (
+                posterior_postprocessing_and_write_seconds
+            ),
+        },
         "device": args.device,
         "environment": {
             "hostname": platform.node(),

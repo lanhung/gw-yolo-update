@@ -9,7 +9,12 @@ from typing import Any
 import numpy as np
 
 from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
-from .pe import posterior_sky_area_equal_solid_angle, sky_area_estimator_identity
+from .pe import (
+    PAIRED_PE_LATENCY_SCOPE_V1,
+    posterior_sky_area_equal_solid_angle,
+    sky_area_estimator_identity,
+    validate_paired_pe_latency,
+)
 from .runtime import execution_provenance
 
 
@@ -55,6 +60,7 @@ def _validated_completed_report(
         artifact = Path(report[f"{prefix}_path"])
         if not artifact.is_file() or file_sha256(artifact) != report[f"{prefix}_sha256"]:
             raise ValueError(f"Existing DINGO {prefix} artifact hash mismatch")
+    validate_paired_pe_latency(report)
     return report
 
 
@@ -268,6 +274,7 @@ def run_dingo_common_batch(
             sky_area = posterior_sky_area_equal_solid_angle(
                 posterior["ra"], posterior["dec"]
             )
+        latency_components = validate_paired_pe_latency(report)
         result_rows.append(
             {
                 **row,
@@ -293,10 +300,9 @@ def run_dingo_common_batch(
                     "hostname": report["environment"]["hostname"],
                     "gpu": report["environment"]["gpu"],
                 },
-                "latency_scope": (
-                    "verified-source-load-through-posterior-write_excludes-mask-generation"
-                ),
+                "latency_scope": PAIRED_PE_LATENCY_SCOPE_V1,
                 "backend_native_latency_scope": report["latency_scope"],
+                "backend_native_latency_components_seconds": latency_components,
             }
         )
         atomic_write_json(

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import runpy
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from gwyolo.io import file_sha256
 from gwyolo.pe import (
+    PAIRED_PE_LATENCY_SCOPE_V1,
     PUBLICATION_PROVENANCE_FIELDS,
     evaluate_pe_rows,
     evaluate_pe_robustness_rows,
     posterior_sky_area_equal_solid_angle,
     posterior_truth_metrics,
     sky_area_estimator_identity,
+    validate_paired_pe_latency,
 )
 
 
@@ -28,6 +33,39 @@ def test_equal_solid_angle_sky_area_matches_hand_counted_pixels() -> None:
     identity = sky_area_estimator_identity(report)
     assert "credible_pixels" not in identity
     assert identity["method"] == "fixed_equal_solid_angle_histogram_v1"
+
+
+def test_paired_pe_latency_contract_validates_scope_and_component_accounting() -> None:
+    report = {
+        "latency_scope": PAIRED_PE_LATENCY_SCOPE_V1,
+        "latency_seconds": 10.0,
+        "latency_components_seconds": {
+            "model_load": 2.0,
+            "event_preprocessing": 1.0,
+            "posterior_sampling": 5.0,
+            "posterior_postprocessing_and_write": 1.0,
+        },
+    }
+    assert validate_paired_pe_latency(report)["posterior_sampling"] == 5.0
+    with pytest.raises(ValueError, match="scope differs"):
+        validate_paired_pe_latency({**report, "latency_scope": "sampling-only"})
+    with pytest.raises(ValueError, match="components exceed"):
+        validate_paired_pe_latency(
+            {
+                **report,
+                "latency_components_seconds": {
+                    **report["latency_components_seconds"],
+                    "posterior_sampling": 20.0,
+                },
+            }
+        )
+
+
+def test_standalone_pe_runners_export_the_frozen_latency_scope() -> None:
+    scripts = Path(__file__).parents[1] / "scripts"
+    for name in ("run_dingo_common_event.py", "run_amplfi_common_event.py"):
+        namespace = runpy.run_path(str(scripts / name))
+        assert namespace["LATENCY_SCOPE"] == PAIRED_PE_LATENCY_SCOPE_V1
 
 
 def test_posterior_truth_metrics_match_quantiles_and_bias() -> None:

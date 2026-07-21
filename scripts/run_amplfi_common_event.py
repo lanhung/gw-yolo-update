@@ -23,6 +23,12 @@ from pathlib import Path
 import numpy as np
 
 
+LATENCY_SCOPE = (
+    "model-load-and-event-preprocessing-through-posterior-and-native-result-write_"
+    "v1_excludes-artifact-verification-imports-and-mask-generation"
+)
+
+
 INFERENCE_PARAMETERS = (
     "chirp_mass",
     "mass_ratio",
@@ -365,11 +371,15 @@ def main() -> int:
     total_started = time.perf_counter()
     load_started = time.perf_counter()
     model = build_model(training, paths["model"], args.device)
+    if args.device.startswith("cuda"):
+        torch.cuda.synchronize()
     model_load_seconds = time.perf_counter() - load_started
     preprocessing_started = time.perf_counter()
     context, event_attributes, timing = load_and_preprocess_event(
         paths["event"], training, args.device
     )
+    if args.device.startswith("cuda"):
+        torch.cuda.synchronize()
     preprocessing_seconds = time.perf_counter() - preprocessing_started
     if args.device.startswith("cuda"):
         torch.cuda.synchronize()
@@ -398,6 +408,8 @@ def main() -> int:
     if args.device.startswith("cuda"):
         torch.cuda.synchronize()
     sampling_seconds = time.perf_counter() - sampling_started
+
+    postprocessing_started = time.perf_counter()
     finite = torch.isfinite(samples).all(dim=1) & torch.isfinite(log_prob)
     for index, name in enumerate(INFERENCE_PARAMETERS):
         low, high = bounds[name]
@@ -439,6 +451,9 @@ def main() -> int:
             "retained_samples": int(retained.shape[0]),
         },
     )
+    posterior_postprocessing_and_write_seconds = (
+        time.perf_counter() - postprocessing_started
+    )
     total_seconds = time.perf_counter() - total_started
     report = {
         "status": "real_amplfi_flow_posterior_complete",
@@ -472,7 +487,15 @@ def main() -> int:
         "preprocessing_seconds": preprocessing_seconds,
         "sampling_seconds": sampling_seconds,
         "latency_seconds": total_seconds,
-        "latency_scope": "verified-source-and-model-load-through-posterior-write",
+        "latency_scope": LATENCY_SCOPE,
+        "latency_components_seconds": {
+            "model_load": model_load_seconds,
+            "event_preprocessing": preprocessing_seconds,
+            "posterior_sampling": sampling_seconds,
+            "posterior_postprocessing_and_write": (
+                posterior_postprocessing_and_write_seconds
+            ),
+        },
         "device": args.device,
         "environment": {
             "hostname": platform.node(),

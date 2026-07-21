@@ -12,6 +12,19 @@ from .metrics import wilson_interval
 from .runtime import execution_provenance
 
 
+PAIRED_PE_LATENCY_SCOPE_V1 = (
+    "model-load-and-event-preprocessing-through-posterior-and-native-result-write_"
+    "v1_excludes-artifact-verification-imports-and-mask-generation"
+)
+
+PAIRED_PE_LATENCY_COMPONENT_FIELDS = (
+    "model_load",
+    "event_preprocessing",
+    "posterior_sampling",
+    "posterior_postprocessing_and_write",
+)
+
+
 PUBLICATION_PROVENANCE_FIELDS = (
     "backend_version",
     "backend_model_hash",
@@ -61,6 +74,39 @@ SKY_AREA_ESTIMATOR_IDENTITY_FIELDS = (
     "coordinate_units",
     "interpretation",
 )
+
+
+def validate_paired_pe_latency(report: dict[str, Any]) -> dict[str, float]:
+    """Validate a truthful, shared end-to-end PE inference timing contract."""
+
+    if report.get("latency_scope") != PAIRED_PE_LATENCY_SCOPE_V1:
+        raise ValueError("PE backend latency scope differs from the frozen paired contract")
+    try:
+        total = float(report["latency_seconds"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("PE backend latency_seconds is absent or invalid") from error
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError("PE backend latency_seconds must be finite and positive")
+    raw_components = report.get("latency_components_seconds")
+    if not isinstance(raw_components, dict) or set(raw_components) != set(
+        PAIRED_PE_LATENCY_COMPONENT_FIELDS
+    ):
+        raise ValueError("PE backend latency components differ from the frozen contract")
+    components: dict[str, float] = {}
+    for field in PAIRED_PE_LATENCY_COMPONENT_FIELDS:
+        try:
+            value = float(raw_components[field])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"PE backend latency component {field} is invalid") from error
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(
+                f"PE backend latency component {field} must be finite and non-negative"
+            )
+        components[field] = value
+    tolerance = max(1e-6, total * 1e-6)
+    if sum(components.values()) > total + tolerance:
+        raise ValueError("PE backend latency components exceed the measured total")
+    return components
 
 
 def posterior_sky_area_equal_solid_angle(
