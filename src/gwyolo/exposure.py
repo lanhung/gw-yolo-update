@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, canonical_hash, file_sha256
 from .runtime import execution_provenance
 
 
@@ -20,6 +20,29 @@ def _ifos(row: dict[str, Any]) -> set[str]:
     return result
 
 
+def normalize_candidate_slide_indices(
+    slide_count: int,
+    slide_start_index: int = 1,
+    slide_indices: Iterable[int] | None = None,
+) -> list[int]:
+    if slide_count <= 0:
+        raise ValueError("slide count must be positive")
+    if slide_indices is None:
+        if slide_start_index <= 0:
+            raise ValueError("slide start index must be positive")
+        return list(range(slide_start_index, slide_start_index + slide_count))
+    indices = [int(value) for value in slide_indices]
+    if len(indices) != slide_count:
+        raise ValueError("explicit slide-index count differs from slide_count")
+    if any(value <= 0 for value in indices):
+        raise ValueError("slide indices must be positive")
+    if len(set(indices)) != len(indices):
+        raise ValueError("slide indices must be unique")
+    if indices != sorted(indices):
+        raise ValueError("slide indices must be strictly increasing")
+    return indices
+
+
 def plan_candidate_background_exposure(
     background_windows: Iterable[dict[str, Any]],
     split: str,
@@ -30,13 +53,17 @@ def plan_candidate_background_exposure(
     target_far_per_year: float,
     zero_count_confidence: float = 0.90,
     slide_start_index: int = 1,
+    slide_indices: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     """Calculate exact candidate-slide exposure before expensive model scoring."""
 
     if reference_ifo == shifted_ifo:
         raise ValueError("exposure planning requires two different detectors")
-    if slide_count <= 0 or slide_start_index <= 0 or step_seconds <= 0 or target_far_per_year <= 0:
-        raise ValueError("slide count, step and target FAR must be positive")
+    indices = normalize_candidate_slide_indices(
+        slide_count, slide_start_index, slide_indices
+    )
+    if step_seconds <= 0 or target_far_per_year <= 0:
+        raise ValueError("slide step and target FAR must be positive")
     if not 0 < zero_count_confidence < 1:
         raise ValueError("zero-count confidence must be between zero and one")
     rows = [row for row in background_windows if str(row["split"]) == split]
@@ -53,7 +80,7 @@ def plan_candidate_background_exposure(
         raise ValueError("candidate exposure manifest repeats GPS starts")
     availability = {str(row["window_id"]): _ifos(row) for row in rows}
     per_slide = []
-    for index in range(slide_start_index, slide_start_index + slide_count):
+    for index in indices:
         offset = index * step_seconds
         offset_key = int(round(offset * 1e9))
         intervals = []
@@ -112,8 +139,11 @@ def plan_candidate_background_exposure(
         "zero_lag_live_time_seconds": zero_lag_seconds,
         "zero_lag_live_time_days": zero_lag_seconds / 86400.0,
         "slide_count": slide_count,
-        "slide_start_index": slide_start_index,
-        "slide_stop_index_exclusive": slide_start_index + slide_count,
+        "slide_start_index": min(indices),
+        "slide_stop_index_exclusive": max(indices) + 1,
+        "slide_indices_contiguous": indices
+        == list(range(min(indices), max(indices) + 1)),
+        "slide_indices_sha256": canonical_hash(indices, 64),
         "step_seconds": step_seconds,
         "evaluated_offsets": len(per_slide),
         "offsets_with_nonzero_exposure": len(nonzero_slides),
@@ -174,6 +204,7 @@ def run_candidate_background_exposure_plan(
     target_far_per_year: float,
     zero_count_confidence: float = 0.90,
     slide_start_index: int = 1,
+    slide_indices: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -188,10 +219,80 @@ def run_candidate_background_exposure_plan(
             target_far_per_year,
             zero_count_confidence,
             slide_start_index,
+            slide_indices,
         ),
         "background_manifest_path": str(background_manifest),
         "background_manifest_sha256": file_sha256(background_manifest),
         **execution_provenance(),
     }
     atomic_write_json(output, result)
+    return result
+
+
+def freeze_candidate_time_slide_schedule(
+    background_manifest: str | Path,
+    output: str | Path,
+    split: str,
+    reference_ifo: str,
+    shifted_ifo: str,
+    step_seconds: float,
+    slide_indices: Iterable[int],
+    target_far_per_year: float,
+    zero_count_confidence: float = 0.90,
+) -> dict[str, Any]:
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("candidate time-slide schedules are immutable")
+    indices = sorted(int(value) for value in slide_indices)
+    if not indices:
+        raise ValueError("candidate time-slide schedule requires explicit indices")
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    exposure = plan_candidate_background_exposure(
+        rows,
+        split,
+        reference_ifo,
+        shifted_ifo,
+        len(indices),
+        step_seconds,
+        target_far_per_year,
+        zero_count_confidence,
+        min(indices),
+        indices,
+    )
+    observed = {
+        int(row["slide_index"]) for row in exposure["nonzero_slide_exposure"]
+    }
+    zero_exposure = [value for value in indices if value not in observed]
+    if zero_exposure:
+        raise ValueError(
+            f"candidate time-slide schedule contains zero-exposure indices: {zero_exposure}"
+        )
+    background_hash = file_sha256(background_manifest)
+    identity = {
+        "schema_version": 1,
+        "selection_rule": "explicit_nonzero_absolute_indices_v1",
+        "split": split,
+        "reference_ifo": reference_ifo,
+        "shifted_ifo": shifted_ifo,
+        "step_seconds": step_seconds,
+        "slide_indices": indices,
+        "background_manifest_sha256": background_hash,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+    }
+    result = {
+        **identity,
+        "status": "frozen_candidate_time_slide_schedule",
+        "scientific_claim_allowed": False,
+        "selection_data": "background_gps_and_detector_availability_only",
+        "candidate_scores_inspected": False,
+        "schedule_id": canonical_hash(identity, 32),
+        "slide_count": len(indices),
+        "slide_indices_sha256": canonical_hash(indices, 64),
+        "background_manifest_path": str(Path(background_manifest).resolve()),
+        "exposure_plan": exposure,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
     return result

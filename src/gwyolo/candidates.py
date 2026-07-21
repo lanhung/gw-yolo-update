@@ -8,6 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
+from .exposure import normalize_candidate_slide_indices
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -1317,17 +1318,15 @@ def build_candidate_time_slides(
     physical_delay_limit_seconds: float | None = None,
     empirical_timing_uncertainty_seconds: float | None = None,
     slide_start_index: int = 1,
+    slide_indices: Iterable[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if reference_ifo == shifted_ifo:
         raise ValueError("reference and shifted IFOs must differ")
-    if min(
-        slide_count,
-        slide_start_index,
-        step_seconds,
-        coincidence_window_seconds,
-        cluster_window_seconds,
-    ) <= 0:
-        raise ValueError("slide, step, coincidence, and cluster values must be positive")
+    indices = normalize_candidate_slide_indices(
+        slide_count, slide_start_index, slide_indices
+    )
+    if min(step_seconds, coincidence_window_seconds, cluster_window_seconds) <= 0:
+        raise ValueError("slide step, coincidence, and cluster values must be positive")
     windows = [row for row in background_windows if str(row["split"]) == split]
     if not windows:
         raise ValueError(f"No background windows for split {split}")
@@ -1359,7 +1358,7 @@ def build_candidate_time_slides(
         maximum_bin_width = max(maximum_bin_width, float(row["bin_width_seconds"]))
     output = []
     slide_exposure = []
-    for slide_index in range(slide_start_index, slide_start_index + slide_count):
+    for slide_index in indices:
         offset = slide_index * step_seconds
         offset_key = int(round(offset * 1e9))
         intervals = []
@@ -1558,8 +1557,10 @@ def build_candidate_time_slides(
         "reference_ifo": reference_ifo,
         "shifted_ifo": shifted_ifo,
         "slide_count": slide_count,
-        "slide_start_index": slide_start_index,
-        "slide_stop_index_exclusive": slide_start_index + slide_count,
+        "slide_start_index": min(indices),
+        "slide_stop_index_exclusive": max(indices) + 1,
+        "slide_indices": indices,
+        "slide_indices_sha256": canonical_hash(indices, 64),
         "step_seconds": step_seconds,
         "coincidence_window_seconds": coincidence_window_seconds,
         "cluster_window_seconds": cluster_window_seconds,
@@ -1621,11 +1622,71 @@ def run_candidate_time_slides(
     physical_delay_limit_seconds: float | None = None,
     empirical_timing_uncertainty_seconds: float | None = None,
     slide_start_index: int = 1,
+    slide_schedule_path: str | Path | None = None,
+    schedule_offset: int = 0,
 ) -> dict[str, Any]:
     with Path(candidates_path).open("r", encoding="utf-8") as handle:
         candidates = [json.loads(line) for line in handle if line.strip()]
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         windows = [json.loads(line) for line in handle if line.strip()]
+    schedule: dict[str, Any] | None = None
+    selected_indices: list[int] | None = None
+    if slide_schedule_path is not None:
+        schedule_path = Path(slide_schedule_path).resolve()
+        with schedule_path.open("r", encoding="utf-8") as handle:
+            schedule = json.load(handle)
+        if schedule.get("status") != "frozen_candidate_time_slide_schedule":
+            raise ValueError("candidate time-slide schedule has the wrong status")
+        expected_contract = {
+            "split": split,
+            "reference_ifo": reference_ifo,
+            "shifted_ifo": shifted_ifo,
+        }
+        if any(schedule.get(field) != value for field, value in expected_contract.items()):
+            raise ValueError("candidate time-slide schedule contract differs from runner")
+        if not np.isclose(
+            float(schedule.get("step_seconds", -1)),
+            step_seconds,
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise ValueError("candidate time-slide schedule step differs from runner")
+        if schedule.get("background_manifest_sha256") != file_sha256(
+            background_manifest
+        ):
+            raise ValueError("candidate time-slide schedule background hash differs")
+        all_indices = [int(value) for value in schedule.get("slide_indices", [])]
+        schedule_identity = {
+            field: schedule.get(field)
+            for field in (
+                "schema_version",
+                "selection_rule",
+                "split",
+                "reference_ifo",
+                "shifted_ifo",
+                "step_seconds",
+                "slide_indices",
+                "background_manifest_sha256",
+                "target_far_per_year",
+                "zero_count_confidence",
+            )
+        }
+        if (
+            schedule.get("candidate_scores_inspected") is not False
+            or schedule.get("selection_data")
+            != "background_gps_and_detector_availability_only"
+            or int(schedule.get("slide_count", -1)) != len(all_indices)
+            or canonical_hash(all_indices, 64) != schedule.get("slide_indices_sha256")
+            or canonical_hash(schedule_identity, 32) != schedule.get("schedule_id")
+        ):
+            raise ValueError("candidate time-slide schedule index hash differs")
+        if schedule_offset < 0:
+            raise ValueError("candidate time-slide schedule offset must be non-negative")
+        selected_indices = all_indices[schedule_offset : schedule_offset + slide_count]
+        if len(selected_indices) != slide_count:
+            raise ValueError("candidate time-slide schedule shard exceeds frozen schedule")
+    elif schedule_offset != 0:
+        raise ValueError("schedule offset requires a frozen candidate time-slide schedule")
     rows, report = build_candidate_time_slides(
         candidates,
         windows,
@@ -1639,6 +1700,7 @@ def run_candidate_time_slides(
         physical_delay_limit_seconds,
         empirical_timing_uncertainty_seconds,
         slide_start_index,
+        selected_indices,
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1650,6 +1712,18 @@ def run_candidate_time_slides(
         **report,
         "candidate_manifest_sha256": file_sha256(candidates_path),
         "background_manifest_sha256": file_sha256(background_manifest),
+        "slide_schedule_path": str(Path(slide_schedule_path).resolve())
+        if slide_schedule_path is not None
+        else None,
+        "slide_schedule_sha256": file_sha256(slide_schedule_path)
+        if slide_schedule_path is not None
+        else None,
+        "slide_schedule_id": schedule.get("schedule_id") if schedule else None,
+        "slide_schedule_count": schedule.get("slide_count") if schedule else None,
+        "schedule_offset": schedule_offset if schedule else None,
+        "schedule_stop_offset_exclusive": schedule_offset + slide_count
+        if schedule
+        else None,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         **execution_provenance(),
@@ -1699,6 +1773,10 @@ def merge_candidate_time_slide_shards(
         "publication_timing_gate_passed",
         "candidate_manifest_sha256",
         "background_manifest_sha256",
+        "slide_schedule_path",
+        "slide_schedule_sha256",
+        "slide_schedule_id",
+        "slide_schedule_count",
     )
     first = reports[0]
     for field in common_fields:
@@ -1719,6 +1797,13 @@ def merge_candidate_time_slide_shards(
         shard_indices = {int(row["slide_index"]) for row in shard_exposures}
         if len(shard_indices) != len(shard_exposures):
             raise ValueError(f"candidate time-slide shard repeats an offset: {path}")
+        reported_indices = [int(value) for value in report.get("slide_indices", [])]
+        if (
+            reported_indices != sorted(shard_indices)
+            or canonical_hash(reported_indices, 64)
+            != report.get("slide_indices_sha256")
+        ):
+            raise ValueError(f"candidate time-slide shard index hash differs: {path}")
         if (
             int(report.get("slide_start_index", -1)) != min(shard_indices)
             or int(report.get("slide_stop_index_exclusive", -1))
@@ -1768,6 +1853,51 @@ def merge_candidate_time_slide_shards(
     ordered_indices = sorted(seen_slide_indices)
     expected_indices = list(range(ordered_indices[0], ordered_indices[-1] + 1))
     contiguous = ordered_indices == expected_indices
+    schedule_complete: bool | None = None
+    if first.get("slide_schedule_sha256") is not None:
+        schedule_path = Path(str(first["slide_schedule_path"])).resolve()
+        if (
+            not schedule_path.is_file()
+            or file_sha256(schedule_path) != str(first["slide_schedule_sha256"])
+        ):
+            raise ValueError("candidate time-slide frozen schedule hash mismatch")
+        with schedule_path.open("r", encoding="utf-8") as handle:
+            schedule = json.load(handle)
+        schedule_indices = [int(value) for value in schedule.get("slide_indices", [])]
+        schedule_identity = {
+            field: schedule.get(field)
+            for field in (
+                "schema_version",
+                "selection_rule",
+                "split",
+                "reference_ifo",
+                "shifted_ifo",
+                "step_seconds",
+                "slide_indices",
+                "background_manifest_sha256",
+                "target_far_per_year",
+                "zero_count_confidence",
+            )
+        }
+        if (
+            schedule.get("status") != "frozen_candidate_time_slide_schedule"
+            or schedule.get("schedule_id") != first.get("slide_schedule_id")
+            or schedule.get("candidate_scores_inspected") is not False
+            or schedule.get("selection_data")
+            != "background_gps_and_detector_availability_only"
+            or schedule.get("background_manifest_sha256")
+            != first.get("background_manifest_sha256")
+            or int(schedule.get("slide_count", -1)) != len(schedule_indices)
+            or canonical_hash(schedule_indices, 64)
+            != schedule.get("slide_indices_sha256")
+            or canonical_hash(schedule_identity, 32) != schedule.get("schedule_id")
+        ):
+            raise ValueError("candidate time-slide frozen schedule identity mismatch")
+        expected_schedule_indices = schedule_indices
+        if not set(ordered_indices).issubset(expected_schedule_indices):
+            raise ValueError("candidate time-slide shard contains an unscheduled offset")
+        schedule_complete = ordered_indices == expected_schedule_indices
+    execution_complete = schedule_complete if schedule_complete is not None else contiguous
     exposures.sort(key=lambda row: int(row["slide_index"]))
     rows.sort(key=lambda row: (int(row["slide_index"]), float(row["gps_peak"])))
     output = Path(output_dir).resolve()
@@ -1789,13 +1919,15 @@ def merge_candidate_time_slide_shards(
         "slide_start_index": ordered_indices[0],
         "slide_stop_index_exclusive": ordered_indices[-1] + 1,
         "slide_indices_contiguous": contiguous,
+        "slide_schedule_complete": schedule_complete,
+        "execution_schedule_complete": execution_complete,
         "source_publication_timing_gate_passed": bool(
             first.get("publication_timing_gate_passed")
         ),
         "publication_timing_gate_passed": bool(
             first.get("publication_timing_gate_passed")
         )
-        and contiguous,
+        and execution_complete,
         "source_shards": sorted(source_ranges, key=lambda row: row["slide_start_index"]),
         "background_rows": len(rows),
         "slide_exposure": exposures,
@@ -1820,8 +1952,8 @@ def merge_candidate_time_slide_shards(
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
         "scientific_blocker": (
-            "merged slide indices contain gaps; complete the predeclared absolute offset range"
-            if not contiguous
+            "merged slide shards do not complete the frozen offset schedule"
+            if not execution_complete
             else "adequate exposure, validation-only threshold freeze and locked-test evaluation "
             "remain required"
         ),

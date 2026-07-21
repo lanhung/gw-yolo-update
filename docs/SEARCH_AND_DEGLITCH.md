@@ -221,8 +221,16 @@ Large time-slide schedules are also resumable. `candidate-time-slides --slide-st
 retain those absolute indices. `candidate-time-slide-merge` verifies identical candidate/background
 hashes, detector/timing/model provenance and physics settings, rejects repeated offsets or candidate
 IDs, and combines exposure only after every shard manifest hash and row count passes. A gapped
-absolute offset range is retained as partial engineering evidence but cannot pass the merged
-publication timing gate.
+absolute offset range without a schedule is retained as partial engineering evidence and cannot pass
+the merged publication timing gate.
+
+Discontinuous observing segments should not be bridged by scanning millions of zero-exposure
+offsets. `candidate-time-slide-schedule-freeze` accepts explicit positive absolute indices, uses only
+background GPS and detector availability, rejects every zero-exposure offset, and freezes the
+background hash, detector pair, step, ordered indices and target FAR before candidate scores are
+read. Scheduled runner shards select by `--schedule-offset`; the merge passes its execution-complete
+gate only when the union of shard indices exactly equals the frozen schedule. Thus a deliberately
+sparse schedule is distinct from an accidentally missing contiguous shard.
 
 ```bash
 python -m gwyolo.cli candidate-time-slides \
@@ -237,6 +245,20 @@ python -m gwyolo.cli candidate-time-slide-merge \
   --report val-slides-0001/val_candidate_time_slide_report.json \
   --report val-slides-0513/val_candidate_time_slide_report.json \
   --output-dir val-slides-merged --split val
+```
+
+For a predeclared sparse schedule:
+
+```bash
+python -m gwyolo.cli candidate-time-slide-schedule-freeze \
+  --background-manifest val-background.jsonl --output val-slide-schedule.json \
+  --split val --step-seconds 8 --slide-index 1 3 5 7 \
+  --target-far-per-year 0.1
+python -m gwyolo.cli candidate-time-slides \
+  --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
+  --slide-schedule val-slide-schedule.json --schedule-offset 0 --slide-count 4 \
+  --output-dir val-scheduled-slides --split val --step-seconds 8 \
+  --coincidence-window-seconds 0.012
 ```
 
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent

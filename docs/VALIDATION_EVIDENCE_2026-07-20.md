@@ -727,6 +727,13 @@ monolithic manifest; the merged report SHA256 is
 `fea5111c2d4d4306c86b8f25f646130e9e4b1b707c5e2d1c397025dc3edd6309`. This proves execution
 equivalence and resumability, not adequate FAR exposure.
 
+The next scaling boundary adds a frozen sparse-offset schedule for discontinuous observing
+segments. It is derived only from background GPS and detector availability, rejects zero-exposure
+indices, and hashes the ordered indices, background, detector pair, step and target FAR before any
+candidate score is consumed. A merged sparse run is complete only when its absolute indices exactly
+equal the frozen schedule; an unscheduled gap still fails closed. This enables efficient future
+cross-segment exposure, but no sparse O4a schedule or added live time is claimed in this entry.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed

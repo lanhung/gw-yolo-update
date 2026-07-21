@@ -17,6 +17,7 @@ from gwyolo.candidates import (
     run_candidate_time_slides,
     select_candidate_proposal_threshold,
 )
+from gwyolo.exposure import freeze_candidate_time_slide_schedule
 
 
 def test_temporal_clusters_preserve_multiple_candidates_and_refine_peak() -> None:
@@ -328,7 +329,7 @@ def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
             "gps_block": f"b{index}",
             "ifos": ["H1", "L1"],
         }
-        for index in range(3)
+        for index in range(4)
     ]
     candidates = [
         {
@@ -352,7 +353,7 @@ def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
                 "glitch_score_at_peak": 0.2,
                 "bin_width_seconds": 0.01,
             }
-            for index in (1, 2)
+            for index in (1, 3)
         ],
     ]
     candidate_path = tmp_path / "candidates.jsonl"
@@ -363,8 +364,19 @@ def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
     background_path.write_text(
         "".join(json.dumps(row) + "\n" for row in windows), encoding="utf-8"
     )
+    schedule_path = tmp_path / "schedule.json"
+    freeze_candidate_time_slide_schedule(
+        background_path,
+        schedule_path,
+        "val",
+        "H1",
+        "L1",
+        8.0,
+        [1, 3],
+        1.0,
+    )
     reports = []
-    for slide_index in (1, 2):
+    for schedule_offset, slide_index in enumerate((1, 3)):
         output = tmp_path / f"shard-{slide_index}"
         run_candidate_time_slides(
             candidate_path,
@@ -377,7 +389,8 @@ def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
             8.0,
             0.03,
             0.1,
-            slide_start_index=slide_index,
+            slide_schedule_path=schedule_path,
+            schedule_offset=schedule_offset,
         )
         reports.append(output / "val_candidate_time_slide_report.json")
     merged = merge_candidate_time_slide_shards(
@@ -385,15 +398,37 @@ def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
     )
     assert merged["slide_count"] == 2
     assert merged["slide_start_index"] == 1
-    assert merged["slide_stop_index_exclusive"] == 3
-    assert merged["slide_indices_contiguous"] is True
-    assert merged["equivalent_live_time_seconds"] == 24
+    assert merged["slide_stop_index_exclusive"] == 4
+    assert merged["slide_indices_contiguous"] is False
+    assert merged["slide_schedule_complete"] is True
+    assert merged["execution_schedule_complete"] is True
+    assert merged["equivalent_live_time_seconds"] == 32
     assert merged["background_rows"] == 2
-    assert [row["slide_index"] for row in merged["slide_exposure"]] == [1, 2]
+    assert [row["slide_index"] for row in merged["slide_exposure"]] == [1, 3]
 
     with pytest.raises(ValueError, match="repeat offsets"):
         merge_candidate_time_slide_shards(
             [reports[0], reports[0]], tmp_path / "duplicate", "val"
+        )
+
+    tampered_schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    tampered_schedule["candidate_scores_inspected"] = True
+    tampered_path = tmp_path / "tampered-schedule.json"
+    tampered_path.write_text(json.dumps(tampered_schedule), encoding="utf-8")
+    with pytest.raises(ValueError, match="schedule index hash differs"):
+        run_candidate_time_slides(
+            candidate_path,
+            background_path,
+            tmp_path / "tampered-output",
+            "val",
+            "H1",
+            "L1",
+            1,
+            8.0,
+            0.03,
+            0.1,
+            slide_schedule_path=tampered_path,
+            schedule_offset=0,
         )
 
 
