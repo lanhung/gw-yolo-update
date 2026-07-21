@@ -601,3 +601,159 @@ def freeze_candidate_block_permutation_schedule(
     }
     atomic_write_json(target, result)
     return result
+
+
+def forecast_candidate_block_permutation_capacity(
+    pilot_schedule_path: str | Path,
+    pilot_background_report_path: str | Path,
+    planned_parent_plan_path: str | Path,
+    safety_factor: float = 1.5,
+) -> dict[str, Any]:
+    """Forecast score-blind block-permutation capacity from a DQ-verified pilot."""
+
+    if not math.isfinite(safety_factor) or safety_factor < 1:
+        raise ValueError("candidate background capacity safety factor must be at least one")
+    with Path(pilot_schedule_path).open("r", encoding="utf-8") as handle:
+        schedule = json.load(handle)
+    with Path(pilot_background_report_path).open("r", encoding="utf-8") as handle:
+        background = json.load(handle)
+    with Path(planned_parent_plan_path).open("r", encoding="utf-8") as handle:
+        plan = json.load(handle)
+    if (
+        schedule.get("status") != "frozen_candidate_block_permutation_schedule"
+        or schedule.get("selection_data") != CANDIDATE_BLOCK_SELECTION_DATA
+        or schedule.get("candidate_scores_inspected") is not False
+        or schedule.get("split") != "val"
+    ):
+        raise ValueError("pilot block schedule is not a score-blind validation schedule")
+    if (
+        background.get("status") != "verified_multi_segment_development_background"
+        or background.get("scientific_claim_allowed") is not False
+    ):
+        raise ValueError("pilot background report is not a verified development background")
+    manifest = Path(str(background.get("manifest_path", ""))).resolve()
+    if (
+        not manifest.is_file()
+        or file_sha256(manifest) != background.get("manifest_sha256")
+        or schedule.get("background_manifest_sha256") != background.get("manifest_sha256")
+    ):
+        raise ValueError("pilot schedule and background manifest hashes differ")
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or not isinstance(plan.get("pairs"), list)
+        or int(plan.get("selected_pairs", -1)) != len(plan["pairs"])
+    ):
+        raise ValueError("planned parent acquisition is not a complete development plan")
+    pair_ids = [str(row.get("pair_id", "")) for row in plan["pairs"]]
+    if any(not pair_id for pair_id in pair_ids) or len(set(pair_ids)) != len(pair_ids):
+        raise ValueError("planned parent acquisition pair IDs must be nonempty and unique")
+    source_pairs = int(background.get("source_pairs", 0))
+    pilot_blocks = int(schedule.get("gps_blocks", 0))
+    selected_shifts = int(schedule.get("selected_shift_count", 0))
+    pilot_seconds = float(schedule.get("selected_equivalent_live_time_seconds", 0))
+    required_seconds = float(schedule.get("required_equivalent_live_time_seconds", 0))
+    if (
+        source_pairs <= 0
+        or pilot_blocks < 2
+        or selected_shifts <= 0
+        or pilot_seconds <= 0
+        or required_seconds <= 0
+    ):
+        raise ValueError("pilot schedule lacks positive pair, block, shift or exposure counts")
+
+    blocks_per_source_pair = pilot_blocks / source_pairs
+    seconds_per_block_shift = pilot_seconds / (pilot_blocks * selected_shifts)
+    planned_pairs = len(plan["pairs"])
+    projected_blocks = math.floor(blocks_per_source_pair * planned_pairs)
+    projected_shifts = max(0, projected_blocks - 1)
+    projected_seconds = (
+        seconds_per_block_shift * projected_blocks * projected_shifts
+    )
+    safety_required_seconds = required_seconds * safety_factor
+    block_discriminant = 1 + 4 * safety_required_seconds / seconds_per_block_shift
+    recommended_blocks = math.ceil((1 + math.sqrt(block_discriminant)) / 2)
+    recommended_pairs = math.ceil(recommended_blocks / blocks_per_source_pair)
+    aligned_available = int(plan.get("aligned_pairs_available", planned_pairs))
+    safe = projected_seconds >= safety_required_seconds
+    feasible = recommended_pairs <= aligned_available
+    if safe:
+        blocker = (
+            "forecast passed; exact post-DQ schedule and locked test are still required"
+        )
+    elif feasible:
+        blocker = "planned acquisition lacks the predeclared forecast safety margin"
+    else:
+        blocker = (
+            "available aligned source pairs cannot meet the predeclared forecast "
+            "safety margin"
+        )
+    return {
+        "status": "score_blind_candidate_block_capacity_forecast",
+        "scientific_claim_allowed": False,
+        "forecast_only": True,
+        "candidate_scores_inspected": False,
+        "selection_data": CANDIDATE_BLOCK_SELECTION_DATA,
+        "projection_assumption": (
+            "linear validation-block yield per selected source pair and constant "
+            "pilot-average seconds per block-shift"
+        ),
+        "pilot_schedule_path": str(Path(pilot_schedule_path).resolve()),
+        "pilot_schedule_sha256": file_sha256(pilot_schedule_path),
+        "pilot_background_report_path": str(
+            Path(pilot_background_report_path).resolve()
+        ),
+        "pilot_background_report_sha256": file_sha256(
+            pilot_background_report_path
+        ),
+        "planned_parent_plan_path": str(Path(planned_parent_plan_path).resolve()),
+        "planned_parent_plan_sha256": file_sha256(planned_parent_plan_path),
+        "safety_factor": safety_factor,
+        "target_far_per_year": float(schedule["target_far_per_year"]),
+        "zero_count_confidence": float(schedule["zero_count_confidence"]),
+        "pilot_source_pairs": source_pairs,
+        "pilot_gps_blocks": pilot_blocks,
+        "pilot_selected_shifts": selected_shifts,
+        "pilot_equivalent_live_time_seconds": pilot_seconds,
+        "observed_blocks_per_source_pair": blocks_per_source_pair,
+        "observed_seconds_per_block_shift": seconds_per_block_shift,
+        "planned_source_pairs": planned_pairs,
+        "aligned_pairs_available": aligned_available,
+        "projected_gps_blocks": projected_blocks,
+        "projected_available_nonzero_shifts": projected_shifts,
+        "projected_maximum_equivalent_live_time_seconds": projected_seconds,
+        "required_equivalent_live_time_seconds": required_seconds,
+        "safety_required_equivalent_live_time_seconds": safety_required_seconds,
+        "projected_to_required_ratio": projected_seconds / required_seconds,
+        "projected_to_safety_required_ratio": (
+            projected_seconds / safety_required_seconds
+        ),
+        "recommended_minimum_gps_blocks": recommended_blocks,
+        "recommended_minimum_source_pairs": recommended_pairs,
+        "recommendation_fits_available_pairs": feasible,
+        "planned_pairs_satisfy_safety_forecast": safe,
+        "scientific_blocker": blocker,
+        **execution_provenance(),
+    }
+
+
+def run_candidate_block_permutation_capacity_forecast(
+    pilot_schedule_path: str | Path,
+    pilot_background_report_path: str | Path,
+    planned_parent_plan_path: str | Path,
+    output_path: str | Path,
+    safety_factor: float = 1.5,
+    allow_insufficient: bool = False,
+) -> dict[str, Any]:
+    report = forecast_candidate_block_permutation_capacity(
+        pilot_schedule_path,
+        pilot_background_report_path,
+        planned_parent_plan_path,
+        safety_factor,
+    )
+    atomic_write_json(output_path, report)
+    if not report["planned_pairs_satisfy_safety_forecast"] and not allow_insufficient:
+        raise RuntimeError(
+            f"candidate block capacity forecast failed; inspect {output_path}"
+        )
+    return report

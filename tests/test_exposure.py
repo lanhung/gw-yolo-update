@@ -9,12 +9,14 @@ import pytest
 from gwyolo.background import SECONDS_PER_YEAR
 from gwyolo.exposure import (
     candidate_slide_schedule_identity,
+    forecast_candidate_block_permutation_capacity,
     freeze_candidate_time_slide_schedule,
     freeze_candidate_time_slide_range_schedule,
     freeze_candidate_block_permutation_schedule,
     plan_candidate_background_exposure,
+    run_candidate_block_permutation_capacity_forecast,
 )
-from gwyolo.io import canonical_hash
+from gwyolo.io import canonical_hash, file_sha256
 
 
 def test_candidate_exposure_plan_counts_every_valid_noncyclic_pair_once() -> None:
@@ -79,6 +81,107 @@ def test_block_permutation_schedule_reaches_target_without_scores(tmp_path) -> N
     assert result["selection_data"] == (
         "background_gps_blocks_and_detector_availability_only"
     )
+
+
+def test_block_capacity_forecast_matches_hand_calculated_quadratic_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "background.jsonl"
+    rows = []
+    for block in range(3):
+        block_start = 1000 + block * 256
+        for slot in range(2):
+            rows.append(
+                {
+                    "window_id": f"w-{block}-{slot}",
+                    "split": "val",
+                    "gps_start": block_start + slot * 8,
+                    "gps_end": block_start + (slot + 1) * 8,
+                    "gps_block": f"gps:{block_start}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    schedule_path = tmp_path / "schedule.json"
+    freeze_candidate_block_permutation_schedule(
+        manifest,
+        schedule_path,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    background = tmp_path / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "scientific_claim_allowed": False,
+                "source_pairs": 3,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def plan(path: Path, pairs: int) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "development_acquisition_plan",
+                    "locked_evaluation_data": False,
+                    "selected_pairs": pairs,
+                    "aligned_pairs_available": 10,
+                    "pairs": [{"pair_id": f"p-{index}"} for index in range(pairs)],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    small_plan = tmp_path / "small-plan.json"
+    plan(small_plan, 3)
+    failed = forecast_candidate_block_permutation_capacity(
+        schedule_path, background, small_plan, safety_factor=2
+    )
+    # The pilot has 3 blocks / 3 pairs and 96 s over 2 shifts, hence
+    # 16 s per block-shift. Three projected blocks yield 16*3*2 = 96 s.
+    assert failed["observed_blocks_per_source_pair"] == 1
+    assert failed["observed_seconds_per_block_shift"] == 16
+    assert failed["projected_maximum_equivalent_live_time_seconds"] == 96
+    assert failed["recommended_minimum_gps_blocks"] == 4
+    assert failed["recommended_minimum_source_pairs"] == 4
+    assert failed["planned_pairs_satisfy_safety_forecast"] is False
+    assert failed["target_far_per_year"] == 1_000_000
+    assert failed["zero_count_confidence"] == 0.90
+    assert failed["candidate_scores_inspected"] is False
+    output = tmp_path / "failed-capacity.json"
+    with pytest.raises(RuntimeError, match="capacity forecast failed"):
+        run_candidate_block_permutation_capacity_forecast(
+            schedule_path, background, small_plan, output, safety_factor=2
+        )
+    assert json.loads(output.read_text())["forecast_only"] is True
+
+    large_plan = tmp_path / "large-plan.json"
+    plan(large_plan, 5)
+    passed = forecast_candidate_block_permutation_capacity(
+        schedule_path, background, large_plan, safety_factor=2
+    )
+    assert passed["projected_maximum_equivalent_live_time_seconds"] == 320
+    assert passed["planned_pairs_satisfy_safety_forecast"] is True
+
+    duplicate_plan = tmp_path / "duplicate-plan.json"
+    plan(duplicate_plan, 3)
+    duplicate = json.loads(duplicate_plan.read_text())
+    duplicate["pairs"][2]["pair_id"] = duplicate["pairs"][1]["pair_id"]
+    duplicate_plan.write_text(json.dumps(duplicate), encoding="utf-8")
+    with pytest.raises(ValueError, match="pair IDs must be nonempty and unique"):
+        forecast_candidate_block_permutation_capacity(
+            schedule_path, background, duplicate_plan, safety_factor=2
+        )
 
 
 def test_candidate_exposure_plan_excludes_missing_shifted_detector() -> None:

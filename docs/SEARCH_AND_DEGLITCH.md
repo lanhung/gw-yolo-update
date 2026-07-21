@@ -283,6 +283,16 @@ freezes the shortest shift prefix reaching the target exposure, or truthfully re
 available permutations are insufficient. This is a standard background-resampling exposure, not
 additional independent zero-lag strain.
 
+Before committing the expensive full parent bank,
+`candidate-block-permutation-capacity-forecast` combines a DQ-verified pilot schedule, its exact
+background report and the proposed parent acquisition plan. It projects the maximum circular-shift
+capacity from observed validation blocks per source pair and seconds per block-shift, solves the
+quadratic block count required by the zero-count FAR exposure, and applies a predeclared safety
+factor (1.5 by default). It reads no candidates or scores and is explicitly a planning forecast,
+not achieved live time. A failed safety margin is nonzero by default but still writes an atomic
+report with the recommended minimum source-pair count; `--allow-insufficient` is only for retaining
+diagnostics and cannot make the later exact schedule pass.
+
 `candidate-block-permutations` re-hashes that immutable schedule and the background manifest,
 requires validation-calibrated candidate timing at <=10 ms resolution, applies the predeclared
 light-travel limit plus twice the empirical timing allowance to relative within-window peaks, and
@@ -331,6 +341,11 @@ python -m gwyolo.cli candidate-time-slide-range-schedule-freeze \
 For fragmented run-scale background:
 
 ```bash
+python -m gwyolo.cli candidate-block-permutation-capacity-forecast \
+  --pilot-schedule pilot-block-schedule.json \
+  --pilot-background-report pilot-background/background_plan_report.json \
+  --planned-parent-plan gwosc-o4a-parent-plan.json \
+  --safety-factor 1.5 --output block-capacity-forecast.json
 python -m gwyolo.cli candidate-block-permutation-schedule-freeze \
   --background-manifest val-background.jsonl --output val-block-schedule.json \
   --split val --reference-ifo H1 --shifted-ifo L1 --target-far-per-year 0.1

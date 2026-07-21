@@ -79,6 +79,7 @@ gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking t
 gwyolo candidate-extract retain every per-IFO temporal cluster from saved probability maps
 gwyolo candidate-time-slides form and cluster exact-time nonzero-shift network candidates
 gwyolo candidate-block-permutation-schedule-freeze plan score-blind fragmented-background exposure
+gwyolo candidate-block-permutation-capacity-forecast size the parent bank before scoring
 gwyolo candidate-block-permutations execute frozen relative-slot GPS-block background pairings
 gwyolo gravityspy-ood-family-freeze freeze the next score-blind held-family protocol
 gwyolo glitch-ood-train train single-IFO or aligned detector-set OOD embeddings

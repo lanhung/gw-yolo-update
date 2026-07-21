@@ -1023,6 +1023,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_block_schedule.add_argument("--maximum-shifts", type=int)
 
+    candidate_block_capacity = subparsers.add_parser(
+        "candidate-block-permutation-capacity-forecast"
+    )
+    candidate_block_capacity.add_argument("--pilot-schedule", required=True)
+    candidate_block_capacity.add_argument("--pilot-background-report", required=True)
+    candidate_block_capacity.add_argument("--planned-parent-plan", required=True)
+    candidate_block_capacity.add_argument("--output", required=True)
+    candidate_block_capacity.add_argument("--safety-factor", type=float, default=1.5)
+    candidate_block_capacity.add_argument("--allow-insufficient", action="store_true")
+
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
     candidate_pipeline.add_argument("--injection-manifest", required=True)
@@ -2681,6 +2691,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.zero_count_confidence,
                 args.maximum_shifts,
+            )
+        )
+    elif args.command == "candidate-block-permutation-capacity-forecast":
+        from .exposure import run_candidate_block_permutation_capacity_forecast
+
+        _print(
+            run_candidate_block_permutation_capacity_forecast(
+                args.pilot_schedule,
+                args.pilot_background_report,
+                args.planned_parent_plan,
+                args.output,
+                args.safety_factor,
+                args.allow_insufficient,
             )
         )
     elif args.command == "candidate-search-validation-pipeline":
