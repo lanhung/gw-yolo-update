@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +78,14 @@ def test_candidate_background_extension_binds_authoritative_parent() -> None:
     assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source
+
+
+def test_candidate_background_embedded_python_compiles() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    snippets = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
+    assert len(snippets) >= 4
+    for index, snippet in enumerate(snippets):
+        compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
 
 
 def test_candidate_background_propagates_five_seed_selector_failure(
