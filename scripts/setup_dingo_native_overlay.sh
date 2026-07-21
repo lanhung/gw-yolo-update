@@ -80,18 +80,22 @@ expected = sys.argv[1]
 observed = importlib.metadata.version("dingo-gw")
 if observed != expected:
     raise SystemExit(f"base DINGO runtime mismatch: {observed} != {expected}")
-site_packages = [pathlib.Path(path).resolve() for path in site.getsitepackages()]
-own = pathlib.Path(sys.prefix).resolve()
-eligible = [path for path in site_packages if own in path.parents]
-if len(eligible) != 1:
-    raise SystemExit("cannot resolve one base-runtime site-packages directory")
-print(json.dumps({"version": observed, "site_packages": str(eligible[0])}))
+site_packages = [str(pathlib.Path(path).resolve()) for path in site.getsitepackages()]
+if not site_packages or any(not pathlib.Path(path).is_dir() for path in site_packages):
+    raise SystemExit("cannot resolve base-runtime site-packages directories")
+print(json.dumps({"version": observed, "site_packages": site_packages}))
 PY
 )
-base_site=$(
-  "$TASK_PYTHON" -c 'import json,sys; print(json.loads(sys.argv[1])["site_packages"])' \
+base_sites_output=$(
+  "$TASK_PYTHON" -c \
+    'import json,sys; print("\n".join(json.loads(sys.argv[1])["site_packages"]))' \
     "$base_identity"
 )
+readarray -t base_sites <<<"$base_sites_output"
+if (( ${#base_sites[@]} == 0 )); then
+  echo "base DINGO runtime exposes no dependency directories" >&2
+  exit 5
+fi
 "$BASE_RUNTIME_PYTHON" -m pip freeze --all | LC_ALL=C sort >"$base_freeze.part"
 mv "$base_freeze.part" "$base_freeze"
 
@@ -108,16 +112,19 @@ if [[ ! -x "$NATIVE_VENV/bin/python" ]]; then
     "$partial/bin/python" -c \
       'import site; print(next(path for path in site.getsitepackages() if path.startswith(__import__("sys").prefix)))'
   )
-  "$TASK_PYTHON" - "$partial_site/gwyolo-dingo-dependency-base.pth" "$base_site" <<'PY'
+  "$TASK_PYTHON" - "$partial_site/gwyolo-dingo-dependency-base.pth" \
+    "${base_sites[@]}" <<'PY'
 import pathlib
 import sys
 
 target = pathlib.Path(sys.argv[1])
 target.parent.mkdir(parents=True, exist_ok=True)
 temporary = target.with_suffix(target.suffix + ".part")
-temporary.write_text(str(pathlib.Path(sys.argv[2]).resolve()) + "\n", encoding="utf-8")
+paths = [str(pathlib.Path(path).resolve()) for path in sys.argv[2:]]
+temporary.write_text("\n".join(paths) + "\n", encoding="utf-8")
 temporary.replace(target)
 PY
+  SETUPTOOLS_SCM_PRETEND_VERSION="$EXPECTED_NATIVE_VERSION" \
   "$partial/bin/python" -m pip install \
     --ignore-installed --no-deps --no-build-isolation --disable-pip-version-check \
     "$NATIVE_SOURCE_DIR"

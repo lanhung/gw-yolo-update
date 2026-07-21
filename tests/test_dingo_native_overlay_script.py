@@ -30,6 +30,8 @@ def test_dingo_native_overlay_freezes_source_runtime_and_no_test_rows() -> None:
     assert "--no-deps" in source
     assert "--no-build-isolation" in source
     assert "--ignore-installed" in source
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION" in source
+    assert '"${base_sites[@]}"' in source
     assert "test_rows_read\": 0" in source
     assert "scientific_claim_allowed\": False" in source
     assert "torch.cuda.is_available" in source
