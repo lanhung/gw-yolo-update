@@ -688,6 +688,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", choices=("train", "val", "test"), required=True
     )
 
+    gravityspy_network_corpus_audit = subparsers.add_parser(
+        "gravityspy-network-corpus-audit"
+    )
+    gravityspy_network_corpus_audit.add_argument("--train-report", required=True)
+    gravityspy_network_corpus_audit.add_argument("--validation-report", required=True)
+    gravityspy_network_corpus_audit.add_argument("--output", required=True)
+
+    gravityspy_network_resplit = subparsers.add_parser(
+        "gravityspy-network-corpus-resplit"
+    )
+    gravityspy_network_resplit.add_argument("--report", action="append", required=True)
+    gravityspy_network_resplit.add_argument("--output-dir", required=True)
+    gravityspy_network_resplit.add_argument("--validation-fraction", type=float, default=0.2)
+    gravityspy_network_resplit.add_argument("--seed", type=int, default=20260720)
+
     gravityspy_evict = subparsers.add_parser("gravityspy-strain-evict")
     gravityspy_evict.add_argument("--materialization-report", required=True)
     gravityspy_evict.add_argument("--cache-dir", required=True)
@@ -2176,6 +2191,22 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             merge_gravityspy_network_numeric_manifests(
                 args.report, args.output_dir, args.split
+            )
+        )
+    elif args.command == "gravityspy-network-corpus-audit":
+        from .glitch_training import audit_gravityspy_network_numeric_corpus
+
+        _print(
+            audit_gravityspy_network_numeric_corpus(
+                args.train_report, args.validation_report, args.output
+            )
+        )
+    elif args.command == "gravityspy-network-corpus-resplit":
+        from .gravityspy import resplit_gravityspy_network_numeric_corpus
+
+        _print(
+            resplit_gravityspy_network_numeric_corpus(
+                args.report, args.output_dir, args.validation_fraction, args.seed
             )
         )
     elif args.command == "gravityspy-strain-evict":

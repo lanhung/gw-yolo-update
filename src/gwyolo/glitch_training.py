@@ -28,6 +28,19 @@ except ImportError:  # pragma: no cover
     WeightedRandomSampler = None
 
 
+def _execution_provenance() -> dict[str, Any]:
+    return {
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+    }
+
+
 def gravityspy_numeric_split_audit(
     train_rows: list[dict[str, Any]], validation_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -37,11 +50,38 @@ def gravityspy_numeric_split_audit(
         raise ValueError("Gravity Spy train manifest contains a non-train row")
     if any(row.get("split") != "val" for row in validation_rows):
         raise ValueError("Gravity Spy validation manifest contains a non-validation row")
-    overlaps = {}
-    for field in ("glitch_id", "network_gps_block"):
-        train_values = {str(row[field]) for row in train_rows}
-        validation_values = {str(row[field]) for row in validation_rows}
-        overlaps[field] = sorted(train_values & validation_values)
+    def source_urls(rows: list[dict[str, Any]]) -> set[str]:
+        return {
+            str(source["hdf5_url"])
+            for row in rows
+            for source in row.get("network_strain_sources", {}).values()
+            if source.get("hdf5_url")
+        }
+
+    train_sets = {
+        "glitch_id": {str(row["glitch_id"]) for row in train_rows},
+        "network_gps_block": {
+            str(row["network_gps_block"]) for row in train_rows
+        },
+        "source_hdf5_url": source_urls(train_rows),
+        "numeric_sample_sha256": {
+            str(row["sha256"]) for row in train_rows if row.get("sha256")
+        },
+    }
+    validation_sets = {
+        "glitch_id": {str(row["glitch_id"]) for row in validation_rows},
+        "network_gps_block": {
+            str(row["network_gps_block"]) for row in validation_rows
+        },
+        "source_hdf5_url": source_urls(validation_rows),
+        "numeric_sample_sha256": {
+            str(row["sha256"]) for row in validation_rows if row.get("sha256")
+        },
+    }
+    overlaps = {
+        field: sorted(train_sets[field] & validation_sets[field])
+        for field in train_sets
+    }
     if any(overlaps.values()):
         raise ValueError(f"Gravity Spy numeric split leakage: {overlaps}")
     return {
@@ -60,6 +100,94 @@ def gravityspy_numeric_split_audit(
         ),
         "cross_split_overlaps": overlaps,
     }
+
+
+def audit_gravityspy_network_numeric_corpus(
+    train_report_path: str | Path,
+    validation_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Verify an expanded aligned-network corpus before overlap generation."""
+
+    accepted_statuses = {
+        "verified_merged_gravityspy_aligned_network_numeric_split",
+        "verified_resplit_gravityspy_aligned_network_numeric_split",
+    }
+
+    def load_report(path: str | Path, expected_split: str) -> tuple[dict, list[dict]]:
+        report_path = Path(path)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if report.get("status") not in accepted_statuses:
+            raise ValueError(f"Gravity Spy {expected_split} merge report is not verified")
+        if report.get("split") != expected_split:
+            raise ValueError(f"Gravity Spy merge report is not {expected_split}")
+        manifest = Path(report["manifest_path"])
+        if file_sha256(manifest) != str(report["manifest_sha256"]):
+            raise ValueError(f"Gravity Spy {expected_split} manifest hash mismatch")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(report["rows"]):
+            raise ValueError(f"Gravity Spy {expected_split} row count mismatch")
+        seen: set[str] = set()
+        for row in rows:
+            glitch_id = str(row.get("glitch_id", ""))
+            if not glitch_id or glitch_id in seen:
+                raise ValueError(f"Gravity Spy {expected_split} duplicate/empty glitch ID")
+            seen.add(glitch_id)
+            if row.get("split") != expected_split:
+                raise ValueError(f"Gravity Spy {expected_split} manifest mixes splits")
+            if not row.get("aligned_network_context"):
+                raise ValueError("Gravity Spy row lacks aligned network certification")
+            available_ifos = [str(ifo) for ifo in row.get("available_ifos", [])]
+            if len(available_ifos) < 2 or len(available_ifos) != len(set(available_ifos)):
+                raise ValueError("Gravity Spy row has an invalid detector set")
+            if str(row.get("ifo", "")) not in set(available_ifos):
+                raise ValueError("Gravity Spy event detector is unavailable")
+            sources = row.get("network_strain_sources")
+            if not isinstance(sources, dict) or set(sources) != set(available_ifos):
+                raise ValueError("Gravity Spy source inventory differs from detector set")
+            if any(not source.get("hdf5_url") for source in sources.values()):
+                raise ValueError("Gravity Spy source inventory lacks an official URL")
+            sample = Path(row["path"])
+            if file_sha256(sample) != str(row["sha256"]):
+                raise ValueError(f"Gravity Spy numeric sample hash mismatch: {sample}")
+        return report, rows
+
+    train_report, train_rows = load_report(train_report_path, "train")
+    validation_report, validation_rows = load_report(
+        validation_report_path, "val"
+    )
+    split_audit = gravityspy_numeric_split_audit(train_rows, validation_rows)
+    result = {
+        "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "weak masks still require a frozen human audit and continuous-background evaluation"
+        ),
+        "train_report_path": str(train_report_path),
+        "train_report_sha256": file_sha256(train_report_path),
+        "validation_report_path": str(validation_report_path),
+        "validation_report_sha256": file_sha256(validation_report_path),
+        "train_manifest_sha256": train_report["manifest_sha256"],
+        "validation_manifest_sha256": validation_report["manifest_sha256"],
+        "split_audit": split_audit,
+        "detector_subset_counts": {
+            "train": train_report.get("detector_subset_counts", {}),
+            "val": validation_report.get("detector_subset_counts", {}),
+        },
+        "label_counts": {
+            "train": train_report.get("labels", {}),
+            "val": validation_report.get("labels", {}),
+        },
+        "run_counts": {
+            "train": train_report.get("runs", {}),
+            "val": validation_report.get("runs", {}),
+        },
+        **_execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
 
 
 def inverse_label_sampling_weights(rows: list[dict[str, Any]]) -> np.ndarray:

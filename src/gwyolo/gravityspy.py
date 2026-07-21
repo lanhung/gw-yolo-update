@@ -545,6 +545,7 @@ def _gravityspy_network_source_components(
             parents[right_root] = left_root
 
     source_owner: dict[str, int] = {}
+    block_owner: dict[str, int] = {}
     row_sources: list[set[str]] = []
     for index, row in enumerate(rows):
         sources = {
@@ -559,6 +560,12 @@ def _gravityspy_network_source_components(
                 union(index, source_owner[url])
             else:
                 source_owner[url] = index
+        if row.get("network_gps_block") is not None:
+            block = str(row["network_gps_block"])
+            if block in block_owner:
+                union(index, block_owner[block])
+            else:
+                block_owner[block] = index
     components: dict[int, list[int]] = defaultdict(list)
     for index in range(len(rows)):
         components[find(index)].append(index)
@@ -576,6 +583,256 @@ def _gravityspy_network_source_components(
         )
     component_records.sort(key=lambda item: str(item["tie_break"]))
     return component_records
+
+
+def resplit_gravityspy_network_numeric_corpus(
+    report_paths: Iterable[str | Path],
+    output_dir: str | Path,
+    validation_fraction: float = 0.2,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Freeze a score-blind source-component-safe train/validation split."""
+
+    if not 0 < validation_fraction < 0.5:
+        raise ValueError("Network Gravity Spy validation fraction must be in (0, 0.5)")
+    paths = [Path(path) for path in report_paths]
+    if len(paths) < 2:
+        raise ValueError("Network Gravity Spy resplit requires at least two merged reports")
+    accepted = {
+        "verified_merged_gravityspy_aligned_network_numeric_split",
+        "verified_resplit_gravityspy_aligned_network_numeric_split",
+    }
+    rows: list[dict[str, Any]] = []
+    sources = []
+    seen: set[str] = set()
+    for path in paths:
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") not in accepted:
+            raise ValueError(f"Network Gravity Spy merge report is incomplete: {path}")
+        manifest = Path(report["manifest_path"])
+        if file_sha256(manifest) != str(report["manifest_sha256"]):
+            raise ValueError(f"Network Gravity Spy manifest hash mismatch: {manifest}")
+        with manifest.open("r", encoding="utf-8") as handle:
+            report_rows = [json.loads(line) for line in handle if line.strip()]
+        if len(report_rows) != int(report["rows"]):
+            raise ValueError(f"Network Gravity Spy row count mismatch: {manifest}")
+        for row in report_rows:
+            glitch_id = str(row["glitch_id"])
+            if glitch_id in seen:
+                raise ValueError(f"Duplicate network Gravity Spy glitch: {glitch_id}")
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError(f"Network Gravity Spy sample hash mismatch: {row['path']}")
+            seen.add(glitch_id)
+            rows.append(row)
+        sources.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "manifest_sha256": report["manifest_sha256"],
+                "rows": len(report_rows),
+            }
+        )
+    components = _gravityspy_network_source_components(rows, seed)
+    total_counts = Counter(str(row["ml_label"]) for row in rows)
+    target_counts = {
+        label: max(1, round(count * validation_fraction))
+        for label, count in total_counts.items()
+    }
+    target_rows = max(1, round(len(rows) * validation_fraction))
+    component_rows = [
+        [rows[index] for index in component["indices"]] for component in components
+    ]
+    component_counts = [
+        Counter(str(row["ml_label"]) for row in values) for values in component_rows
+    ]
+
+    def cost(counts: Counter[str], row_count: int) -> float:
+        label_cost = sum(
+            ((counts[label] - target) / max(target, 1)) ** 2
+            for label, target in target_counts.items()
+        )
+        row_cost = ((row_count - target_rows) / target_rows) ** 2
+        return label_cost + row_cost
+
+    selected: set[int] = set()
+    validation_counts: Counter[str] = Counter()
+    validation_rows = 0
+    while True:
+        current_cost = cost(validation_counts, validation_rows)
+        candidates = []
+        for index, counts in enumerate(component_counts):
+            if index in selected:
+                continue
+            if any(
+                total_counts[label] - validation_counts[label] - count <= 0
+                for label, count in counts.items()
+            ):
+                continue
+            candidate_counts = validation_counts + counts
+            candidate_rows = validation_rows + len(component_rows[index])
+            candidates.append(
+                (
+                    cost(candidate_counts, candidate_rows),
+                    str(components[index]["tie_break"]),
+                    index,
+                    candidate_counts,
+                    candidate_rows,
+                )
+            )
+        if not candidates:
+            break
+        best = min(candidates, key=lambda item: (item[0], item[1]))
+        if best[0] >= current_cost:
+            break
+        selected.add(best[2])
+        validation_counts = best[3]
+        validation_rows = best[4]
+
+    # Cover every family in validation whenever source-component grouping permits it.
+    for label in sorted(total_counts):
+        if validation_counts[label] > 0:
+            continue
+        candidates = []
+        for index, counts in enumerate(component_counts):
+            if index in selected or counts[label] == 0:
+                continue
+            if any(
+                total_counts[name] - validation_counts[name] - count <= 0
+                for name, count in counts.items()
+            ):
+                continue
+            candidate_counts = validation_counts + counts
+            candidate_rows = validation_rows + len(component_rows[index])
+            candidates.append(
+                (
+                    cost(candidate_counts, candidate_rows),
+                    str(components[index]["tie_break"]),
+                    index,
+                    candidate_counts,
+                    candidate_rows,
+                )
+            )
+        if candidates:
+            best = min(candidates, key=lambda item: (item[0], item[1]))
+            selected.add(best[2])
+            validation_counts = best[3]
+            validation_rows = best[4]
+
+    assignment = {
+        index: ("val" if component_index in selected else "train")
+        for component_index, component in enumerate(components)
+        for index in component["indices"]
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    split_reports = {}
+    split_rows: dict[str, list[dict[str, Any]]] = {}
+    for split in ("train", "val"):
+        selected_rows = []
+        for index, original in enumerate(rows):
+            if assignment[index] != split:
+                continue
+            row = dict(original)
+            row["pre_resplit_split"] = str(original.get("split"))
+            row["split"] = split
+            row["split_strategy"] = "source_component_balanced_v1"
+            selected_rows.append(row)
+        selected_rows.sort(key=lambda row: str(row["glitch_id"]))
+        if not selected_rows:
+            raise ValueError(f"Network Gravity Spy resplit produced an empty {split} split")
+        manifest = output / f"gravityspy_network_numeric_{split}.jsonl"
+        atomic_write_text(
+            manifest,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected_rows),
+        )
+        report = {
+            "status": "verified_resplit_gravityspy_aligned_network_numeric_split",
+            "split": split,
+            "split_strategy": "source_component_balanced_v1",
+            "seed": seed,
+            "validation_fraction": validation_fraction,
+            "source_reports": sources,
+            "source_reports_hash": canonical_hash(sources, 64),
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+            "rows": len(selected_rows),
+            "unique_glitch_ids": len({row["glitch_id"] for row in selected_rows}),
+            "unique_network_gps_blocks": len(
+                {row["network_gps_block"] for row in selected_rows}
+            ),
+            "labels": dict(sorted(Counter(row["ml_label"] for row in selected_rows).items())),
+            "runs": dict(
+                sorted(Counter(row["observing_run"] for row in selected_rows).items())
+            ),
+            "detector_subset_counts": dict(
+                sorted(Counter("".join(row["available_ifos"]) for row in selected_rows).items())
+            ),
+            **_execution_provenance(),
+        }
+        report_path = output / f"gravityspy_network_numeric_{split}_report.json"
+        atomic_write_json(report_path, report)
+        split_reports[split] = {
+            "path": str(report_path),
+            "sha256": file_sha256(report_path),
+            "manifest_path": str(manifest),
+            "manifest_sha256": report["manifest_sha256"],
+            "rows": len(selected_rows),
+        }
+        split_rows[split] = selected_rows
+
+    def urls(values: list[dict[str, Any]]) -> set[str]:
+        return {
+            str(source["hdf5_url"])
+            for row in values
+            for source in row["network_strain_sources"].values()
+        }
+
+    overlaps = {
+        "glitch_id": sorted(
+            {row["glitch_id"] for row in split_rows["train"]}
+            & {row["glitch_id"] for row in split_rows["val"]}
+        ),
+        "network_gps_block": sorted(
+            {row["network_gps_block"] for row in split_rows["train"]}
+            & {row["network_gps_block"] for row in split_rows["val"]}
+        ),
+        "source_hdf5_url": sorted(urls(split_rows["train"]) & urls(split_rows["val"])),
+        "numeric_sample_sha256": sorted(
+            {row["sha256"] for row in split_rows["train"]}
+            & {row["sha256"] for row in split_rows["val"]}
+        ),
+    }
+    if any(overlaps.values()):
+        raise ValueError(f"Network Gravity Spy resplit leakage: {overlaps}")
+    missing_validation = sorted(set(total_counts) - set(validation_counts))
+    result = {
+        "status": "frozen_source_component_safe_gravityspy_network_resplit",
+        "passed": not missing_validation,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "numeric corpus is group-safe but weak masks and continuous evaluation remain"
+        ),
+        "split_strategy": "source_component_balanced_v1",
+        "seed": seed,
+        "validation_fraction": validation_fraction,
+        "rows": len(rows),
+        "source_components": len(components),
+        "selected_validation_components": len(selected),
+        "target_validation_rows": target_rows,
+        "actual_validation_rows": len(split_rows["val"]),
+        "target_validation_label_counts": dict(sorted(target_counts.items())),
+        "actual_validation_label_counts": dict(sorted(validation_counts.items())),
+        "validation_unrepresented_labels": missing_validation,
+        "cross_split_overlaps": overlaps,
+        "reports": split_reports,
+        **_execution_provenance(),
+    }
+    atomic_write_json(output / "gravityspy_network_numeric_resplit_report.json", result)
+    if missing_validation:
+        raise ValueError(
+            f"Network Gravity Spy validation lacks source-independent labels: {missing_validation}"
+        )
+    return result
 
 
 def select_gravityspy_network_source_components(

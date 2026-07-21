@@ -94,3 +94,15 @@ for split in train val; do
     --output-dir "$OUTPUT_ROOT/$split-expanded-merged" \
     --split "$split"
 done
+
+"$TASK_PYTHON" -m gwyolo.cli gravityspy-network-corpus-resplit \
+  --report "$OUTPUT_ROOT/train-expanded-merged/gravityspy_network_numeric_merge_report.json" \
+  --report "$OUTPUT_ROOT/val-expanded-merged/gravityspy_network_numeric_merge_report.json" \
+  --output-dir "$OUTPUT_ROOT/source-component-safe-resplit" \
+  --validation-fraction 0.2 \
+  --seed 20260720
+
+"$TASK_PYTHON" -m gwyolo.cli gravityspy-network-corpus-audit \
+  --train-report "$OUTPUT_ROOT/source-component-safe-resplit/gravityspy_network_numeric_train_report.json" \
+  --validation-report "$OUTPUT_ROOT/source-component-safe-resplit/gravityspy_network_numeric_val_report.json" \
+  --output "$OUTPUT_ROOT/gravityspy_network_expanded_corpus_audit.json"

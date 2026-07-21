@@ -18,6 +18,7 @@ from gwyolo.gravityspy import (
     merge_gravityspy_network_numeric_manifests,
     plan_gravityspy_network_strain,
     plan_gravityspy_network_recovery,
+    resplit_gravityspy_network_numeric_corpus,
     select_gravityspy_source_files,
     select_gravityspy_network_source_components,
     shard_gravityspy_network_strain_plan,
@@ -523,7 +524,11 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
     reports = []
     for index in range(2):
         sample = tmp_path / f"network-{index}.npz"
-        np.savez(sample, detector_availability=np.asarray([1, 1, 0]))
+        np.savez(
+            sample,
+            detector_availability=np.asarray([1, 1, 0]),
+            test_identity=np.asarray([index]),
+        )
         manifest = tmp_path / f"network-{index}.jsonl"
         manifest.write_text(
             json.dumps(
@@ -582,6 +587,68 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
     )
     assert nested["rows"] == 2
     assert nested["manifest_sha256"] == merged["manifest_sha256"]
+
+
+def test_network_numeric_resplit_keeps_source_components_disjoint(tmp_path) -> None:
+    rows = []
+    for index, (component, label, split) in enumerate(
+        (
+            ("a", "Blip", "train"),
+            ("a", "Tomte", "val"),
+            ("b", "Blip", "train"),
+            ("b", "Tomte", "val"),
+        )
+    ):
+        sample = tmp_path / f"sample-{index}.npz"
+        np.savez(
+            sample,
+            detector_availability=np.asarray([1, 1, 0]),
+            test_identity=np.asarray([index]),
+        )
+        rows.append(
+            {
+                "glitch_id": f"g-{index}",
+                "split": split,
+                "network_gps_block": f"block-{index}",
+                "ml_label": label,
+                "observing_run": "O3a",
+                "ifo": "H1",
+                "available_ifos": ["H1", "L1"],
+                "network_strain_sources": {
+                    "H1": {"hdf5_url": f"https://example/{component}-shared.hdf5"},
+                    "L1": {"hdf5_url": f"https://example/{component}-{index}.hdf5"},
+                },
+                "aligned_network_context": True,
+                "human_pixel_mask": False,
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+            }
+        )
+    reports = []
+    for split in ("train", "val"):
+        selected = [row for row in rows if row["split"] == split]
+        manifest = tmp_path / f"historical-{split}.jsonl"
+        manifest.write_text("".join(json.dumps(row) + "\n" for row in selected))
+        report = tmp_path / f"historical-{split}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "verified_merged_gravityspy_aligned_network_numeric_split",
+                    "split": split,
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "rows": len(selected),
+                }
+            )
+        )
+        reports.append(report)
+    result = resplit_gravityspy_network_numeric_corpus(
+        reports, tmp_path / "resplit", validation_fraction=0.25, seed=7
+    )
+    assert result["passed"]
+    assert result["actual_validation_rows"] == 2
+    assert all(not values for values in result["cross_split_overlaps"].values())
+    assert result["actual_validation_label_counts"] == {"Blip": 1, "Tomte": 1}
 
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:

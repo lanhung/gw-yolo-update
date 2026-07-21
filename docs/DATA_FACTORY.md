@@ -120,6 +120,13 @@ and at least one other IFO remain usable; the planned subset is retained separat
 invalid event IFO or a resulting one-detector row is rejected. This is detector-set downgrade, not
 silent zero-filling, and the report counts every downgrade and unusable-detector reason.
 
+Expanded aligned-network corpora must not train directly from separately selected historical
+train/validation roles. `gravityspy-network-corpus-resplit` freezes the score-blind
+`source_component_balanced_v1` assignment over all verified merge reports, keeping every connected
+official HDF5 source component and GPS block in one role. `gravityspy-network-corpus-audit` then
+hash-verifies every numeric sample and requires zero train/validation overlap in glitch ID, network
+GPS block, official source URL and numeric sample hash before overlap materialization or training.
+
 After a stricter detector-set implementation is introduced,
 `gravityspy-network-recovery-plan` can freeze only rows rejected by earlier completed shards. It
 re-hashes every source report/state/partial/manifest/sample, proves full shard accounting and emits
