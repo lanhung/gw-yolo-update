@@ -5,10 +5,6 @@ required_variables=(
   TASK_PYTHON
   TRAIN_SOURCE_MANIFEST
   VAL_SOURCE_MANIFEST
-  TRAIN_REPORT_PREFIX
-  VAL_REPORT_PREFIX
-  SOURCE_REPORT_SUFFIX
-  SOURCE_SHARD_COUNT
   CONFIG
   CACHE_ROOT
   OUTPUT_ROOT
@@ -25,12 +21,35 @@ OUTPUT_DURATION=${OUTPUT_DURATION:-8}
 DOWNLOAD_WORKERS=${DOWNLOAD_WORKERS:-8}
 CHUNK_SAMPLES=${CHUNK_SAMPLES:-1048576}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
+REPORT_MODE=${REPORT_MODE:-prefix}
 
-if ! [[ "$SOURCE_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]; then
-  echo "SOURCE_SHARD_COUNT must be positive" >&2
+if [[ "$REPORT_MODE" == prefix ]]; then
+  for variable in TRAIN_REPORT_PREFIX VAL_REPORT_PREFIX SOURCE_REPORT_SUFFIX SOURCE_SHARD_COUNT; do
+    if [[ -z "${!variable:-}" ]]; then
+      echo "required prefix-mode variable is unset: $variable" >&2
+      exit 2
+    fi
+  done
+  if ! [[ "$SOURCE_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SOURCE_SHARD_COUNT must be positive" >&2
+    exit 2
+  fi
+elif [[ "$REPORT_MODE" == merged ]]; then
+  for variable in TRAIN_MERGE_REPORT VAL_MERGE_REPORT; do
+    if [[ -z "${!variable:-}" ]]; then
+      echo "required merged-mode variable is unset: $variable" >&2
+      exit 2
+    fi
+  done
+else
+  echo "REPORT_MODE must be prefix or merged" >&2
   exit 2
 fi
-for input in "$TASK_PYTHON" "$TRAIN_SOURCE_MANIFEST" "$VAL_SOURCE_MANIFEST" "$CONFIG"; do
+inputs=("$TASK_PYTHON" "$TRAIN_SOURCE_MANIFEST" "$VAL_SOURCE_MANIFEST" "$CONFIG")
+if [[ "$REPORT_MODE" == merged ]]; then
+  inputs+=("$TRAIN_MERGE_REPORT" "$VAL_MERGE_REPORT")
+fi
+for input in "${inputs[@]}"; do
   if [[ ! -f "$input" ]]; then
     echo "required input is absent: $input" >&2
     exit 2
@@ -41,15 +60,69 @@ mkdir -p "$CACHE_ROOT" "$OUTPUT_ROOT"
 for split in train val; do
   if [[ "$split" == train ]]; then
     source_manifest=$TRAIN_SOURCE_MANIFEST
-    report_prefix=$TRAIN_REPORT_PREFIX
+    if [[ "$REPORT_MODE" == prefix ]]; then
+      report_prefix=$TRAIN_REPORT_PREFIX
+    else
+      merge_report=$TRAIN_MERGE_REPORT
+    fi
   else
     source_manifest=$VAL_SOURCE_MANIFEST
-    report_prefix=$VAL_REPORT_PREFIX
+    if [[ "$REPORT_MODE" == prefix ]]; then
+      report_prefix=$VAL_REPORT_PREFIX
+    else
+      merge_report=$VAL_MERGE_REPORT
+    fi
   fi
   reports=()
   plan_args=()
-  for ((shard = 0; shard < SOURCE_SHARD_COUNT; shard++)); do
-    report="${report_prefix}${shard}${SOURCE_REPORT_SUFFIX}"
+  report_paths=()
+  if [[ "$REPORT_MODE" == prefix ]]; then
+    for ((shard = 0; shard < SOURCE_SHARD_COUNT; shard++)); do
+      report_paths+=("${report_prefix}${shard}${SOURCE_REPORT_SUFFIX}")
+    done
+  else
+    if ! report_output=$("$TASK_PYTHON" - "$merge_report" "$split" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+path = pathlib.Path(sys.argv[1])
+split = sys.argv[2]
+report = json.loads(path.read_text(encoding="utf-8"))
+sources = report.get("source_reports", [])
+if (
+    report.get("status") != "verified_merged_gravityspy_aligned_network_numeric_split"
+    or report.get("split") != split
+    or not sources
+):
+    raise SystemExit("merged network report is incomplete or has another split")
+for item in sources:
+    source = pathlib.Path(item["path"])
+    if not source.is_file() or digest(source) != item.get("sha256"):
+        raise SystemExit(f"merged source report hash mismatch: {source}")
+    print(source)
+PY
+    ); then
+      echo "failed to resolve completed shard reports from $split merge" >&2
+      exit 1
+    fi
+    readarray -t report_paths <<<"$report_output"
+  fi
+  if (( ${#report_paths[@]} == 0 )); then
+    echo "no completed source shard reports were resolved for $split" >&2
+    exit 1
+  fi
+  for report in "${report_paths[@]}"; do
     if [[ ! -s "$report" ]]; then
       echo "completed source shard report is absent: $report" >&2
       exit 1

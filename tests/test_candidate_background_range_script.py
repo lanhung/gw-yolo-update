@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -76,3 +77,29 @@ def test_candidate_background_extension_binds_authoritative_parent() -> None:
     assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source
+
+
+def test_candidate_background_propagates_five_seed_selector_failure(
+    tmp_path: Path,
+) -> None:
+    environment = _minimum_environment(tmp_path)
+    for name in ("task_code_dir", "scoring_code_dir"):
+        (tmp_path / name / "src" / "gwyolo").mkdir(parents=True)
+    environment.update(
+        {
+            "TASK_PYTHON": sys.executable,
+            "FIVE_SEED_SUMMARY": str(tmp_path / "missing-five-seed.json"),
+            "UNIFORM_CONFIG": str(tmp_path / "uniform.yaml"),
+            "FAMILY_BALANCED_CONFIG": str(tmp_path / "balanced.yaml"),
+        }
+    )
+    completed = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert "failed to resolve checkpoint/config" in completed.stderr
+    assert "unbound variable" not in completed.stderr
