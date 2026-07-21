@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,7 @@ from gwyolo.overlap_training import (
     PhysicalOverlapDataset,
     glitch_family_sampling_weights,
     overlap_training_split_audit,
+    promote_overlap_sampling_arm,
     summarize_glitch_family_counts,
 )
 
@@ -63,6 +66,101 @@ def test_glitch_family_metrics_use_hand_calculated_pixel_counts() -> None:
     assert summary["Blip"]["iou"] == pytest.approx(0.5)
     assert summary["Blip"]["dice"] == pytest.approx(2 / 3)
     assert summary["Tomte"]["recall"] == pytest.approx(0.75)
+
+
+def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path) -> None:
+    audit = tmp_path / "corpus-audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+                "passed": True,
+            }
+        )
+    )
+    audit_hash = file_sha256(audit)
+    manifests = {}
+    for split in ("train", "val"):
+        path = tmp_path / f"overlap-{split}.jsonl"
+        rows = [
+            {
+                "split": split,
+                "mixture_id": f"{split}-{index}",
+                "gravityspy_corpus_audit_sha256": audit_hash,
+            }
+            for index in range(10)
+        ]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        manifests[split] = path
+
+    common = {
+        "status": "validation_selected_real_glitch_overlap_finetune",
+        "overlap_train_manifest_sha256": file_sha256(manifests["train"]),
+        "overlap_validation_manifest_sha256": file_sha256(manifests["val"]),
+        "clean_train_manifest_sha256": "clean-train",
+        "clean_validation_manifest_sha256": "clean-val",
+        "pretrained_checkpoint_sha256": "pretrained",
+        "seed": 7,
+        "best_epoch": 2,
+        "history": [
+            {
+                "epoch": 2,
+                "clean_chirp_iou_retention": 0.96,
+                "checkpoint_eligible": True,
+            }
+        ],
+    }
+    reports = {}
+    for name, chirp, glitch, family_ious in (
+        ("uniform", 0.80, 0.18, {"Blip": 0.20, "Tomte": 0.10}),
+        ("family", 0.80, 0.19, {"Blip": 0.22, "Tomte": 0.12}),
+    ):
+        path = tmp_path / f"{name}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    **common,
+                    "calibrated_overlap_validation": {
+                        "chirp": {"iou": chirp},
+                        "glitch": {"iou": glitch},
+                        "by_glitch_family": {
+                            label: {"physical_rows": 5, "iou": iou}
+                            for label, iou in family_ious.items()
+                        },
+                    },
+                }
+            )
+        )
+        reports[name] = path
+    config = tmp_path / "promotion.yaml"
+    config.write_text(
+        """overlap_sampling_promotion:
+  minimum_clean_chirp_iou_retention: 0.95
+  minimum_glitch_iou: 0.10
+  minimum_family_median_iou: 0.05
+  maximum_zero_iou_families: 0
+  minimum_validation_rows_per_family: 5
+  balanced_minimum_overall_glitch_delta: -0.005
+  balanced_minimum_chirp_delta: -0.005
+  balanced_minimum_worst_family_delta: 0.0
+  balanced_minimum_median_family_delta: 0.005
+  maximum_family_regression: 0.02
+  maximum_regressed_families: 0
+"""
+    )
+    result = promote_overlap_sampling_arm(
+        reports["uniform"],
+        reports["family"],
+        manifests["train"],
+        manifests["val"],
+        audit,
+        config,
+        tmp_path / "promotion.json",
+    )
+    assert result["passed"]
+    assert result["promoted_arm"] == "family_balanced"
+    assert result["scale_to_five_seeds"]
+    assert result["test_data_opened"] is False
 
 
 def test_overlap_dataset_preserves_both_masks_and_availability(tmp_path) -> None:

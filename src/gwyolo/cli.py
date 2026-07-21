@@ -743,6 +743,17 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_train.add_argument("--seed", type=int)
     physical_overlap_train.add_argument("--clean-validation-feature-cache-dir")
 
+    overlap_sampling_promotion = subparsers.add_parser(
+        "physical-overlap-sampling-promote"
+    )
+    overlap_sampling_promotion.add_argument("--uniform-report", required=True)
+    overlap_sampling_promotion.add_argument("--family-balanced-report", required=True)
+    overlap_sampling_promotion.add_argument("--overlap-train-manifest", required=True)
+    overlap_sampling_promotion.add_argument("--overlap-validation-manifest", required=True)
+    overlap_sampling_promotion.add_argument("--gravityspy-corpus-audit", required=True)
+    overlap_sampling_promotion.add_argument("--config", required=True)
+    overlap_sampling_promotion.add_argument("--output", required=True)
+
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
     mask_audit_plan.add_argument("--output-dir", required=True)
@@ -2237,6 +2248,20 @@ def main(argv: list[str] | None = None) -> int:
         from .overlaps import audit_physical_overlap_manifests
 
         _print(audit_physical_overlap_manifests(args.manifest, args.output))
+    elif args.command == "physical-overlap-sampling-promote":
+        from .overlap_training import promote_overlap_sampling_arm
+
+        _print(
+            promote_overlap_sampling_arm(
+                args.uniform_report,
+                args.family_balanced_report,
+                args.overlap_train_manifest,
+                args.overlap_validation_manifest,
+                args.gravityspy_corpus_audit,
+                args.config,
+                args.output,
+            )
+        )
     elif args.command == "physical-overlap-contamination":
         from .overlaps import build_contaminated_injection_overrides
 

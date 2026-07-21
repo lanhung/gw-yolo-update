@@ -303,6 +303,166 @@ def summarize_glitch_family_counts(
     return result
 
 
+def promote_overlap_sampling_arm(
+    uniform_report_path: str | Path,
+    family_balanced_report_path: str | Path,
+    overlap_train_manifest: str | Path,
+    overlap_validation_manifest: str | Path,
+    gravityspy_corpus_audit: str | Path,
+    config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Select a one-seed sampling arm using frozen validation-only criteria."""
+
+    config = load_yaml(config_path)
+    settings = config.get("overlap_sampling_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("Overlap sampling promotion configuration is missing")
+    audit = json.loads(Path(gravityspy_corpus_audit).read_text(encoding="utf-8"))
+    if (
+        audit.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or not audit.get("passed")
+    ):
+        raise ValueError("Overlap promotion requires a passed network corpus audit")
+    audit_hash = file_sha256(gravityspy_corpus_audit)
+
+    manifest_paths = {
+        "train": Path(overlap_train_manifest),
+        "val": Path(overlap_validation_manifest),
+    }
+    manifest_hashes = {split: file_sha256(path) for split, path in manifest_paths.items()}
+    for split, path in manifest_paths.items():
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows or any(row.get("split") != split for row in rows):
+            raise ValueError(f"Overlap promotion received an invalid {split} manifest")
+        bound_hashes = {row.get("gravityspy_corpus_audit_sha256") for row in rows}
+        if bound_hashes != {audit_hash}:
+            raise ValueError(f"Overlap {split} rows are not bound to the corpus audit")
+
+    reports = {
+        "uniform": json.loads(Path(uniform_report_path).read_text(encoding="utf-8")),
+        "family_balanced": json.loads(
+            Path(family_balanced_report_path).read_text(encoding="utf-8")
+        ),
+    }
+    common_fields = (
+        "overlap_train_manifest_sha256",
+        "overlap_validation_manifest_sha256",
+        "clean_train_manifest_sha256",
+        "clean_validation_manifest_sha256",
+        "pretrained_checkpoint_sha256",
+        "seed",
+    )
+    for name, report in reports.items():
+        if report.get("status") != "validation_selected_real_glitch_overlap_finetune":
+            raise ValueError(f"Overlap {name} report is not validation-selected")
+        if report.get("overlap_train_manifest_sha256") != manifest_hashes["train"]:
+            raise ValueError(f"Overlap {name} report uses another training manifest")
+        if report.get("overlap_validation_manifest_sha256") != manifest_hashes["val"]:
+            raise ValueError(f"Overlap {name} report uses another validation manifest")
+    mismatches = {
+        field: [reports[name].get(field) for name in reports]
+        for field in common_fields
+        if len({json.dumps(reports[name].get(field), sort_keys=True) for name in reports}) != 1
+    }
+    if mismatches:
+        raise ValueError(f"Overlap sampling arms are not paired: {mismatches}")
+
+    minimum_clean_retention = float(settings["minimum_clean_chirp_iou_retention"])
+    minimum_glitch_iou = float(settings["minimum_glitch_iou"])
+    minimum_family_median = float(settings["minimum_family_median_iou"])
+    maximum_zero_families = int(settings["maximum_zero_iou_families"])
+    minimum_family_rows = int(settings["minimum_validation_rows_per_family"])
+
+    summaries = {}
+    for name, report in reports.items():
+        best_epoch = int(report["best_epoch"])
+        selected_history = [
+            row for row in report["history"] if int(row["epoch"]) == best_epoch
+        ]
+        if len(selected_history) != 1 or not selected_history[0].get("checkpoint_eligible"):
+            raise ValueError(f"Overlap {name} checkpoint was not retention-eligible")
+        retention = float(selected_history[0]["clean_chirp_iou_retention"])
+        metrics = report["calibrated_overlap_validation"]
+        families = metrics.get("by_glitch_family", {})
+        if not families:
+            raise ValueError(f"Overlap {name} report lacks family validation metrics")
+        if any(int(row["physical_rows"]) < minimum_family_rows for row in families.values()):
+            raise ValueError(f"Overlap {name} has an underpowered validation family")
+        family_ious = np.asarray([float(row["iou"]) for row in families.values()])
+        absolute_checks = {
+            "clean_retention": retention >= minimum_clean_retention,
+            "glitch_iou": float(metrics["glitch"]["iou"]) >= minimum_glitch_iou,
+            "family_median_iou": float(np.median(family_ious)) >= minimum_family_median,
+            "zero_iou_families": int(np.count_nonzero(family_ious == 0))
+            <= maximum_zero_families,
+        }
+        summaries[name] = {
+            "clean_chirp_iou_retention": retention,
+            "chirp_iou": float(metrics["chirp"]["iou"]),
+            "glitch_iou": float(metrics["glitch"]["iou"]),
+            "worst_family_iou": float(family_ious.min()),
+            "median_family_iou": float(np.median(family_ious)),
+            "zero_iou_families": int(np.count_nonzero(family_ious == 0)),
+            "family_ious": {label: float(row["iou"]) for label, row in families.items()},
+            "absolute_checks": absolute_checks,
+            "absolute_passed": all(absolute_checks.values()),
+        }
+
+    uniform = summaries["uniform"]
+    balanced = summaries["family_balanced"]
+    regression_tolerance = float(settings["maximum_family_regression"])
+    regressed_families = sorted(
+        label
+        for label, uniform_iou in uniform["family_ious"].items()
+        if balanced["family_ious"].get(label, float("-inf"))
+        < uniform_iou - regression_tolerance
+    )
+    comparison_checks = {
+        "overall_glitch_delta": balanced["glitch_iou"] - uniform["glitch_iou"]
+        >= float(settings["balanced_minimum_overall_glitch_delta"]),
+        "chirp_delta": balanced["chirp_iou"] - uniform["chirp_iou"]
+        >= float(settings["balanced_minimum_chirp_delta"]),
+        "worst_family_delta": balanced["worst_family_iou"] - uniform["worst_family_iou"]
+        >= float(settings["balanced_minimum_worst_family_delta"]),
+        "median_family_delta": balanced["median_family_iou"] - uniform["median_family_iou"]
+        >= float(settings["balanced_minimum_median_family_delta"]),
+        "regressed_family_count": len(regressed_families)
+        <= int(settings["maximum_regressed_families"]),
+    }
+    if balanced["absolute_passed"] and all(comparison_checks.values()):
+        promoted = "family_balanced"
+    elif uniform["absolute_passed"]:
+        promoted = "uniform"
+    else:
+        promoted = None
+    result = {
+        "status": "validation_only_overlap_sampling_promotion",
+        "passed": promoted is not None,
+        "scientific_claim_allowed": False,
+        "test_data_opened": False,
+        "promoted_arm": promoted,
+        "scale_to_five_seeds": promoted is not None,
+        "summaries": summaries,
+        "family_balanced_comparison_checks": comparison_checks,
+        "family_balanced_regressed_families": regressed_families,
+        "corpus_audit_path": str(gravityspy_corpus_audit),
+        "corpus_audit_sha256": audit_hash,
+        "overlap_manifest_hashes": manifest_hashes,
+        "input_report_hashes": {
+            "uniform": file_sha256(uniform_report_path),
+            "family_balanced": file_sha256(family_balanced_report_path),
+        },
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def _overlap_epoch(
     model: Any,
     loader: Any,

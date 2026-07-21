@@ -882,6 +882,14 @@ projection. `amplfi-common-prior-audit` checks all fourteen intrinsic, extrinsic
 distributions, their bounds, H1/L1 identity and the native 2,048 Hz/3-second contract. This is a
 semantic gate in addition to file hashes.
 
+The source-safe one-seed overlap-sampling decision is frozen in
+`configs/physical_overlap_sampling_promotion.yaml`. `physical-overlap-sampling-promote` accepts
+only uniform and family-balanced reports trained on byte-identical overlap and clean manifests with
+the same seed and pretrained checkpoint. Every overlap row must bind the passed network-corpus
+audit. Selection uses validation-only clean chirp retention, overall glitch IoU, family-median and
+worst-family IoU, zero-IoU family count and bounded family regressions. The command either names one
+arm for five-seed expansion or records `scale_to_five_seeds=false`; it never opens test data.
+
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
 numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible

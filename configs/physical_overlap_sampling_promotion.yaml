@@ -1,0 +1,12 @@
+overlap_sampling_promotion:
+  minimum_clean_chirp_iou_retention: 0.95
+  minimum_glitch_iou: 0.10
+  minimum_family_median_iou: 0.05
+  maximum_zero_iou_families: 5
+  minimum_validation_rows_per_family: 5
+  balanced_minimum_overall_glitch_delta: -0.005
+  balanced_minimum_chirp_delta: -0.005
+  balanced_minimum_worst_family_delta: 0.0
+  balanced_minimum_median_family_delta: 0.005
+  maximum_family_regression: 0.02
+  maximum_regressed_families: 5
