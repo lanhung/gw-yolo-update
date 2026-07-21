@@ -1,0 +1,103 @@
+seed_everything: 20260721
+trainer:
+  accelerator: gpu
+  devices: 1
+  strategy: auto
+  deterministic: true
+  benchmark: false
+  max_epochs: 800
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
+  enable_progress_bar: true
+  logger:
+    class_path: lightning.pytorch.loggers.CSVLogger
+    init_args:
+      save_dir: ${oc.env:AMPLFI_OUTDIR}/train_logs
+      name: common_bbh
+  callbacks:
+    - class_path: amplfi.train.callbacks.ModelCheckpoint
+      init_args:
+        monitor: valid_loss
+        save_top_k: 5
+        save_last: true
+        auto_insert_metric_name: false
+        mode: min
+    - class_path: amplfi.train.callbacks.SaveAugmentedBatch
+
+model:
+  class_path: amplfi.train.models.flow.FlowModel
+  init_args:
+    inference_params: [chirp_mass, mass_ratio, distance, phic, inclination, dec, psi, phi]
+    learning_rate: 0.00071444
+    pct_start: 0.1
+    train_outdir: ${oc.env:AMPLFI_OUTDIR}
+    test_outdir: null
+    weight_decay: 0.00042
+    verbose: false
+    arch:
+      class_path: amplfi.train.architectures.NSF
+      init_args:
+        hidden_features: [512, 512, 512]
+        transforms: 20
+        randperm: true
+        embedding_net:
+          class_path: amplfi.train.architectures.embeddings.MultiModalPsd
+          init_args:
+            time_context_dim: 8
+            freq_context_dim: 128
+            time_layers: [5, 3, 3]
+            freq_layers: [5, 3, 3]
+            norm_layer:
+              class_path: ml4gw.nn.norm.GroupNorm1DGetter
+              init_args: {groups: 8}
+    filter_params: true
+    samples_per_event: 10000
+    min_samples_per_pix_dist: 5
+    max_samples_per_pixel: 20
+    target_prior: null
+    crossmatch: true
+    create_pp_plot: true
+
+data:
+  class_path: gwyolo.amplfi_adapter.GroupSafeFlowDataset
+  init_args:
+    data_dir: ${oc.env:AMPLFI_DATADIR}
+    inference_params: [chirp_mass, mass_ratio, distance, phic, inclination, dec, psi, phi]
+    dec:
+      class_path: ml4gw.distributions.Cosine
+    psi:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 3.141592653589793, validate_args: false}
+    phi:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 6.283185307179586, validate_args: false}
+    highpass: 25
+    sample_rate: 2048
+    kernel_length: 3
+    fduration: 2
+    psd_length: 10
+    fftlength: 2
+    batches_per_epoch: 800
+    batch_size: 512
+    ifos: [H1, L1]
+    min_valid_duration: 10000.0
+    num_files_per_batch: 10
+    max_num_workers: 6
+    verbose: false
+    seed: 20260721
+    waveform_sampler:
+      class_path: amplfi.train.data.waveforms.generator.cbc.CBCGenerator
+      init_args:
+        jitter: 0.1
+        num_fit_params: 100000
+        training_prior: ${oc.env:GWYOLO_AMPLFI_TRAINING_PRIOR}
+        testing_prior: null
+        num_val_waveforms: 10000
+        num_test_waveforms: 200
+        approximant: ml4gw.waveforms.IMRPhenomPv2
+        f_min: 20
+        f_ref: 40
+        right_pad: 0.5
+    parameter_transformer: null
+    train_val_range: null
+    test_range: null

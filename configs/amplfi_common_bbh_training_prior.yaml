@@ -1,0 +1,38 @@
+# AMPLFI-native training prior derived from pe_common_bbh_analysis_prior.yaml.
+class_path: amplfi.train.prior.AmplfiPrior
+init_args:
+  conversion_function: amplfi.train.conversion.precessing_to_lalsimulation_parameters
+  priors:
+    chirp_mass:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 15.0, high: 100.0, validate_args: false}
+    mass_ratio:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.125, high: 0.999, validate_args: false}
+    distance:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 100.0, high: 3100.0, validate_args: false}
+    inclination:
+      class_path: ml4gw.distributions.Sine
+      init_args: {low: 0.0, high: 3.141592653589793, validate_args: false}
+    phic:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 6.283185307179586, validate_args: false}
+    a_1:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 0.99, validate_args: false}
+    a_2:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 0.99, validate_args: false}
+    tilt_1:
+      class_path: ml4gw.distributions.Sine
+      init_args: {low: 0.0, high: 3.141592653589793, validate_args: false}
+    tilt_2:
+      class_path: ml4gw.distributions.Sine
+      init_args: {low: 0.0, high: 3.141592653589793, validate_args: false}
+    phi_jl:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 6.283185307179586, validate_args: false}
+    phi_12:
+      class_path: torch.distributions.Uniform
+      init_args: {low: 0.0, high: 6.283185307179586, validate_args: false}

@@ -1,0 +1,63 @@
+schema_version: 1
+population: BBH
+frame: detector
+distributions:
+  chirp_mass:
+    family: uniform
+    minimum: 15.0
+    maximum: 100.0
+    unit: solar_mass
+  mass_ratio:
+    family: uniform
+    minimum: 0.125
+    maximum: 0.999
+  luminosity_distance:
+    family: uniform
+    minimum: 100.0
+    maximum: 3100.0
+    unit: Mpc
+  theta_jn:
+    family: sine
+    minimum: 0.0
+    maximum: 3.141592653589793
+  ra:
+    family: uniform_periodic
+    minimum: 0.0
+    maximum: 6.283185307179586
+  dec:
+    family: cosine
+    minimum: -1.5707963267948966
+    maximum: 1.5707963267948966
+  psi:
+    family: uniform_periodic
+    minimum: 0.0
+    maximum: 3.141592653589793
+nuisance_distributions:
+  phase:
+    family: uniform_periodic
+    minimum: 0.0
+    maximum: 6.283185307179586
+  a_1:
+    family: uniform
+    minimum: 0.0
+    maximum: 0.99
+  a_2:
+    family: uniform
+    minimum: 0.0
+    maximum: 0.99
+  tilt_1:
+    family: sine
+    minimum: 0.0
+    maximum: 3.141592653589793
+  tilt_2:
+    family: sine
+    minimum: 0.0
+    maximum: 3.141592653589793
+  phi_jl:
+    family: uniform_periodic
+    minimum: 0.0
+    maximum: 6.283185307179586
+  phi_12:
+    family: uniform_periodic
+    minimum: 0.0
+    maximum: 6.283185307179586

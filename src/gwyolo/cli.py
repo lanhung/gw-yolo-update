@@ -1175,6 +1175,19 @@ def build_parser() -> argparse.ArgumentParser:
     pe_sources.add_argument("--download", action="store_true")
     pe_sources.add_argument("--minimum-free-bytes", type=int, default=0)
 
+    amplfi_background = subparsers.add_parser("amplfi-background-export")
+    amplfi_background.add_argument("--manifest", required=True)
+    amplfi_background.add_argument("--output-dir", required=True)
+    amplfi_background.add_argument("--report", required=True)
+    amplfi_background.add_argument("--target-sample-rate", type=int, default=2048)
+    amplfi_background.add_argument("--minimum-segment-seconds", type=int, default=16)
+
+    amplfi_prior = subparsers.add_parser("amplfi-common-prior-audit")
+    amplfi_prior.add_argument("--canonical-prior", required=True)
+    amplfi_prior.add_argument("--amplfi-prior", required=True)
+    amplfi_prior.add_argument("--training-config", required=True)
+    amplfi_prior.add_argument("--output", required=True)
+
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
     ood.add_argument("--evaluation-manifest", required=True)
@@ -2669,6 +2682,29 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 download=args.download,
                 minimum_free_bytes=args.minimum_free_bytes,
+            )
+        )
+    elif args.command == "amplfi-background-export":
+        from .amplfi_adapter import run_amplfi_group_safe_background_export
+
+        _print(
+            run_amplfi_group_safe_background_export(
+                args.manifest,
+                args.output_dir,
+                args.report,
+                target_sample_rate=args.target_sample_rate,
+                minimum_segment_seconds=args.minimum_segment_seconds,
+            )
+        )
+    elif args.command == "amplfi-common-prior-audit":
+        from .amplfi_adapter import run_amplfi_common_prior_audit
+
+        _print(
+            run_amplfi_common_prior_audit(
+                args.canonical_prior,
+                args.amplfi_prior,
+                args.training_config,
+                args.output,
             )
         )
     elif args.command == "ood-abstention-evaluate":

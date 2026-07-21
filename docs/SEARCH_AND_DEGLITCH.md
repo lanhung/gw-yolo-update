@@ -581,6 +581,32 @@ AMPLFI is absent from this source manifest until a real reusable checkpoint is i
 validation-selected common-domain model is trained. A 20 MB paper-figure archive is not silently
 substituted for executable weights.
 
+The common-domain AMPLFI training path is now explicit. `amplfi-background-export` consumes the
+frozen GW-YOLO background manifest, verifies every GWOSC source hash, rejects any GPS block assigned
+to more than one split, coalesces only contiguous valid windows, and writes native HDF5 segments to
+separate `train/background`, `validation/background` and `test/background` directories. A 4,096 to
+2,048 Hz conversion uses `scipy.signal.resample_poly` with a recorded Kaiser window; no plot image or
+unfiltered decimation enters PE training. `GroupSafeFlowDataset` overrides AMPLFI's default
+file-order validation split and rechecks HDF5 GPS-block identities plus validation live time before
+training.
+
+```bash
+python -m gwyolo.cli amplfi-background-export \
+  --manifest artifacts/o4a/background_windows.jsonl \
+  --output-dir artifacts/pe/amplfi-data \
+  --report artifacts/pe/amplfi-background-export.json \
+  --target-sample-rate 2048 \
+  --minimum-segment-seconds 16
+```
+
+`configs/amplfi_common_bbh_publication.yaml` retains the published AMPLFI v0.6 CBC architecture and
+full 800-epoch/800-batch schedule, but replaces the unsafe implicit split with the group-safe data
+module and uses local CSV logging. `configs/pe_common_bbh_analysis_prior.yaml` is the canonical
+backend-neutral prior; `configs/amplfi_common_bbh_training_prior.yaml` is its native AMPLFI
+projection. `amplfi-common-prior-audit` checks all fourteen intrinsic, extrinsic and nuisance
+distributions, their bounds, H1/L1 identity and the native 2,048 Hz/3-second contract. This is a
+semantic gate in addition to file hashes.
+
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
 numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible
