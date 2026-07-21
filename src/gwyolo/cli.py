@@ -846,6 +846,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="balanced_rank_v1",
     )
 
+    background_disjoint = subparsers.add_parser("background-disjoint-subset")
+    background_disjoint.add_argument("--background-manifest", required=True)
+    background_disjoint.add_argument("--background-report", required=True)
+    background_disjoint.add_argument("--exclude-manifest", action="append", required=True)
+    background_disjoint.add_argument("--output-dir", required=True)
+    background_disjoint.add_argument("--split", choices=("train", "val"), default="val")
+
     deglitch = subparsers.add_parser("oracle-deglitch")
     deglitch.add_argument("--input", required=True)
     deglitch.add_argument("--output", required=True)
@@ -2557,6 +2564,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.test_fraction,
                 args.seed,
                 args.split_strategy,
+            )
+        )
+    elif args.command == "background-disjoint-subset":
+        from .background import run_disjoint_background_subset
+
+        _print(
+            run_disjoint_background_subset(
+                args.background_manifest,
+                args.background_report,
+                args.exclude_manifest,
+                args.output_dir,
+                args.split,
             )
         )
     elif args.command == "oracle-deglitch":

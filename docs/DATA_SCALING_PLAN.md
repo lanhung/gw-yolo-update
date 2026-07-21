@@ -274,6 +274,16 @@ IFO, detail URL and bounded cache slot, followed by an offline replay of byte ha
 sample count and DQ/injection bit sums. The inventory hash is part of the new run identity. This
 reuses public bytes, not an earlier split or scientific result.
 
+An expanded parent is not automatically an independent-GPS endpoint when it retains an earlier
+prefix. `background-disjoint-subset` hash-binds the source background and every declared prior
+train/validation manifest, removes all matching GPS blocks, and emits a one-split development
+background with recomputed live time. `run_independent_validation_injections.sh` requires at least
+the predeclared number of remaining GPS blocks before it plans validation-only recipes, reruns the
+external PyCBC/direct-LAL waveform comparison for that exact recipe hash, materializes 3,000
+signal-only scaled-float16 injections, annotates empirical SNR and adds geometric detector arrivals.
+It never creates or reads a test split. The resulting arm measures transfer to new detector noise;
+it must not be confounded with drawing another waveform population on reused GPS blocks.
+
 After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
 timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one
 split per GPS block across every shard. It writes globally ordered background plus val/test

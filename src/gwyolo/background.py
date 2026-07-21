@@ -494,3 +494,125 @@ def run_batch_background_plan(
     if not result["passed"]:
         raise RuntimeError("Batch background split audit failed")
     return result
+
+
+def run_disjoint_background_subset(
+    background_manifest: str | Path,
+    background_report: str | Path,
+    exclude_manifests: Iterable[str | Path],
+    output_dir: str | Path,
+    split: str = "val",
+) -> dict[str, Any]:
+    """Select one development split after excluding every declared GPS block."""
+
+    if split not in {"train", "val"}:
+        raise ValueError("disjoint background subsets support train or val only")
+    manifest_path = Path(background_manifest)
+    report_path = Path(background_report)
+    with report_path.open("r", encoding="utf-8") as handle:
+        source_report = json.load(handle)
+    if (
+        source_report.get("status") != "verified_multi_segment_development_background"
+        or not source_report.get("passed")
+        or source_report.get("split_strategy") != "hash_threshold_v1"
+        or source_report.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError("source background is not a verified stable-hash development corpus")
+    rows = []
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    if any(not value for value in window_ids) or len(set(window_ids)) != len(window_ids):
+        raise ValueError("source background has missing or duplicate window IDs")
+
+    exclusion_paths = [Path(path) for path in exclude_manifests]
+    if not exclusion_paths:
+        raise ValueError("at least one exclusion manifest is required")
+    excluded_blocks: set[str] = set()
+    exclusion_summaries = []
+    for path in exclusion_paths:
+        blocks = set()
+        count = 0
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                block = str(row.get("gps_block", ""))
+                if not block:
+                    raise ValueError(f"exclusion manifest row lacks gps_block: {path}")
+                blocks.add(block)
+                count += 1
+        if not count:
+            raise ValueError(f"exclusion manifest is empty: {path}")
+        excluded_blocks.update(blocks)
+        exclusion_summaries.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "rows": count,
+                "unique_gps_blocks": len(blocks),
+            }
+        )
+
+    split_rows = [row for row in rows if str(row.get("split")) == split]
+    selected = [row for row in split_rows if str(row.get("gps_block")) not in excluded_blocks]
+    if not selected:
+        raise ValueError("no split rows remain after GPS-block exclusions")
+    selected_blocks = {str(row["gps_block"]) for row in selected}
+    if selected_blocks & excluded_blocks:
+        raise RuntimeError("disjoint background subset retained an excluded GPS block")
+    live_seconds = _union_duration(
+        (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    output_manifest = output / "background_windows.jsonl"
+    atomic_write_text(
+        output_manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+    )
+    splits = {
+        name: {
+            "windows": len(selected) if name == split else 0,
+            "gps_blocks": len(selected_blocks) if name == split else 0,
+            "live_time_seconds": live_seconds if name == split else 0.0,
+            "live_time_years": live_seconds / SECONDS_PER_YEAR if name == split else 0.0,
+        }
+        for name in ("train", "val", "test")
+    }
+    result = {
+        "status": "verified_group_disjoint_development_background_subset",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "requires physical injection materialization and a frozen validation-only model gate"
+        ),
+        "passed": True,
+        "required_split": split,
+        "split_strategy": "hash_threshold_v1",
+        "split_seed": source_report.get("split_seed"),
+        "windows": len(selected),
+        "unique_gps_blocks": len(selected_blocks),
+        "source_split_windows": len(split_rows),
+        "excluded_source_split_windows": len(split_rows) - len(selected),
+        "excluded_unique_gps_blocks": len(excluded_blocks),
+        "selected_exclusion_gps_block_overlap": 0,
+        "splits": splits,
+        "cross_split_block_overlaps": {
+            "train:val": [],
+            "train:test": [],
+            "val:test": [],
+        },
+        "source_background_manifest_path": str(manifest_path.resolve()),
+        "source_background_manifest_sha256": file_sha256(manifest_path),
+        "source_background_report_path": str(report_path.resolve()),
+        "source_background_report_sha256": file_sha256(report_path),
+        "exclusion_manifests": exclusion_summaries,
+        "manifest_path": str(output_manifest.resolve()),
+        "manifest_sha256": file_sha256(output_manifest),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "background_plan_report.json", result)
+    return result

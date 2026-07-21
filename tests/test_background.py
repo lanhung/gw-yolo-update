@@ -12,6 +12,7 @@ from gwyolo.background import (
     _assign_blocks_hash_threshold,
     plan_background_windows,
     run_batch_background_plan,
+    run_disjoint_background_subset,
     run_background_plan,
     validate_source_verification,
 )
@@ -291,3 +292,78 @@ def test_batch_background_merges_reports_before_global_split(tmp_path: Path) -> 
     assert len(result["source_batch_report_sha256s"]) == 2
     assert result["unique_gps_blocks"] == 8
     assert all(not values for values in result["cross_split_block_overlaps"].values())
+
+
+def test_disjoint_background_subset_excludes_declared_gps_groups(tmp_path: Path) -> None:
+    manifest = tmp_path / "background.jsonl"
+    rows = [
+        {
+            "window_id": "old",
+            "split": "val",
+            "gps_block": "block-old",
+            "gps_start": 0.0,
+            "gps_end": 8.0,
+        },
+        {
+            "window_id": "fresh-a",
+            "split": "val",
+            "gps_block": "block-fresh",
+            "gps_start": 8.0,
+            "gps_end": 16.0,
+        },
+        {
+            "window_id": "fresh-b",
+            "split": "val",
+            "gps_block": "block-fresh",
+            "gps_start": 16.0,
+            "gps_end": 24.0,
+        },
+        {
+            "window_id": "train",
+            "split": "train",
+            "gps_block": "block-train",
+            "gps_start": 24.0,
+            "gps_end": 32.0,
+        },
+    ]
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = tmp_path / "background-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "passed": True,
+                "split_strategy": "hash_threshold_v1",
+                "split_seed": 7,
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    exclusion = tmp_path / "exclude.jsonl"
+    exclusion.write_text(
+        json.dumps({"gps_block": "block-old"})
+        + "\n"
+        + json.dumps({"gps_block": "block-not-present"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_disjoint_background_subset(
+        manifest, report, [exclusion], tmp_path / "disjoint", "val"
+    )
+
+    selected = [
+        json.loads(line)
+        for line in Path(result["manifest_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["window_id"] for row in selected] == ["fresh-a", "fresh-b"]
+    assert result["windows"] == 2
+    assert result["unique_gps_blocks"] == 1
+    assert result["excluded_source_split_windows"] == 1
+    assert result["selected_exclusion_gps_block_overlap"] == 0
+    assert result["splits"]["val"]["live_time_seconds"] == 16.0
+    assert result["splits"]["test"]["windows"] == 0
+    assert result["exclusion_manifests"][0]["sha256"] == file_sha256(exclusion)
