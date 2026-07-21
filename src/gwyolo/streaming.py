@@ -263,7 +263,7 @@ def evict_scored_background_batch_sources(
 def run_streamed_background_shard(
     parent_plan: str | Path,
     event_exclusions: str | Path,
-    timing_calibration_report: str | Path,
+    timing_calibration_report: str | Path | None,
     checkpoint: str | Path,
     config: str | Path,
     coherence_config: str | Path,
@@ -281,6 +281,7 @@ def run_streamed_background_shard(
     chirp_threshold: float = 0.3,
     minimum_bins: int = 1,
     download_workers: int = 8,
+    allow_uncalibrated_morphology_baseline: bool = False,
 ) -> dict[str, Any]:
     """Download, score, reduce, and safely release one stable-split background shard."""
 
@@ -293,12 +294,23 @@ def run_streamed_background_shard(
     from .manifests import select_jsonl_split
     from .trigger import score_background_manifest
 
+    if allow_uncalibrated_morphology_baseline:
+        if timing_calibration_report is not None:
+            raise ValueError("morphology-only streaming cannot accept timing calibration")
+        if test_fraction != 0:
+            raise ValueError("morphology-only development streaming requires test_fraction=0")
+    elif timing_calibration_report is None:
+        raise ValueError("coherent streaming requires a timing calibration report")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     identity = {
         "parent_plan_sha256": file_sha256(parent_plan),
         "event_exclusions_sha256": file_sha256(event_exclusions),
-        "timing_calibration_report_sha256": file_sha256(timing_calibration_report),
+        "timing_calibration_report_sha256": (
+            file_sha256(timing_calibration_report)
+            if timing_calibration_report is not None
+            else None
+        ),
         "checkpoint_sha256": file_sha256(checkpoint),
         "config_sha256": file_sha256(config),
         "coherence_config_sha256": file_sha256(coherence_config),
@@ -314,6 +326,11 @@ def run_streamed_background_shard(
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
         "download_workers": download_workers,
+        "streaming_mode": (
+            "morphology_only_validation"
+            if allow_uncalibrated_morphology_baseline
+            else "empirically_calibrated_timing"
+        ),
         "code_commit": execution_provenance()["code_commit"],
     }
     final_path = output / "streamed_background_shard_report.json"
@@ -403,7 +420,12 @@ def run_streamed_background_shard(
                 != file_sha256(candidate_report_path)
             ):
                 raise ValueError(f"existing {split} probability eviction is inconsistent")
-            calibrated = _load_json(calibrated_report_path)
+            calibrated = (
+                None
+                if allow_uncalibrated_morphology_baseline
+                else _load_json(calibrated_report_path)
+            )
+            candidates = _load_json(candidate_report_path)
         else:
             split_manifest_report = select_jsonl_split(
                 background["manifest_path"], split, split_dir / "manifest"
@@ -428,13 +450,15 @@ def run_streamed_background_shard(
                 chirp_threshold,
                 minimum_bins,
             )
-            calibrated = run_apply_candidate_timing_calibration(
-                candidates["manifest_path"], timing_calibration_report, calibrated_path
-            )
-            if calibrated["uncalibrated_candidates"]:
-                raise RuntimeError(
-                    f"{split} shard candidates do not match the frozen timing calibration"
+            calibrated = None
+            if not allow_uncalibrated_morphology_baseline:
+                calibrated = run_apply_candidate_timing_calibration(
+                    candidates["manifest_path"], timing_calibration_report, calibrated_path
                 )
+                if calibrated["uncalibrated_candidates"]:
+                    raise RuntimeError(
+                        f"{split} shard candidates do not match the frozen timing calibration"
+                    )
             eviction = evict_candidate_probability_artifacts(
                 candidate_report_path,
                 score_report_path,
@@ -447,9 +471,17 @@ def run_streamed_background_shard(
             "windows": split_counts[split],
             "score_report_sha256": file_sha256(score_report_path),
             "candidate_report_sha256": file_sha256(candidate_report_path),
-            "calibrated_candidate_manifest_path": str(calibrated_path),
-            "calibrated_candidate_manifest_sha256": file_sha256(calibrated_path),
-            "calibrated_candidate_report_sha256": file_sha256(calibrated_report_path),
+            "candidate_manifest_path": str(candidates["manifest_path"]),
+            "candidate_manifest_sha256": file_sha256(candidates["manifest_path"]),
+            "calibrated_candidate_manifest_path": (
+                str(calibrated_path) if calibrated is not None else None
+            ),
+            "calibrated_candidate_manifest_sha256": (
+                file_sha256(calibrated_path) if calibrated is not None else None
+            ),
+            "calibrated_candidate_report_sha256": (
+                file_sha256(calibrated_report_path) if calibrated is not None else None
+            ),
             "probability_eviction_report_sha256": file_sha256(eviction_path),
             "probability_files_removed": int(eviction["removed_files"]),
         }
@@ -475,11 +507,20 @@ def run_streamed_background_shard(
             source_eviction_path,
         )
     result = {
-        "status": "verified_streamed_candidate_background_shard",
+        "status": (
+            "verified_streamed_morphology_background_shard"
+            if allow_uncalibrated_morphology_baseline
+            else "verified_streamed_candidate_background_shard"
+        ),
         "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "timing_empirically_calibrated": not allow_uncalibrated_morphology_baseline,
         "scientific_blocker": (
-            "merge disjoint stable-hash shards, construct adequate time-slide exposure, freeze "
-            "the validation threshold, and evaluate the independently locked test partition"
+            "morphology-only validation baseline; no test scoring or network-coherence claim is "
+            "allowed until a separate empirical timing calibration passes"
+            if allow_uncalibrated_morphology_baseline
+            else "merge disjoint stable-hash shards, construct adequate time-slide exposure, "
+            "freeze the validation threshold, and evaluate the independently locked test partition"
         ),
         "run_identity": identity,
         "run_identity_hash": canonical_hash(identity, 64),
@@ -506,6 +547,52 @@ def run_streamed_background_shard(
     return result
 
 
+def run_streamed_morphology_background_shard(
+    parent_plan: str | Path,
+    event_exclusions: str | Path,
+    checkpoint: str | Path,
+    config: str | Path,
+    coherence_config: str | Path,
+    cache_root: str | Path,
+    output_dir: str | Path,
+    shard_index: int,
+    pairs_per_shard: int = 1,
+    validation_fraction: float = 0.2,
+    seed: int = 20260720,
+    model_ifos: tuple[str, ...] = ("H1", "L1", "V1"),
+    q_values: tuple[float, ...] = (4.0, 8.0, 16.0),
+    target_sample_rate: int = 1024,
+    context_duration: float = 64.0,
+    chirp_threshold: float = 0.3,
+    minimum_bins: int = 1,
+    download_workers: int = 8,
+) -> dict[str, Any]:
+    """Stream a validation-only morphology baseline without implying timing coherence."""
+    return run_streamed_background_shard(
+        parent_plan,
+        event_exclusions,
+        None,
+        checkpoint,
+        config,
+        coherence_config,
+        cache_root,
+        output_dir,
+        shard_index,
+        pairs_per_shard,
+        validation_fraction,
+        0.0,
+        seed,
+        model_ifos,
+        q_values,
+        target_sample_rate,
+        context_duration,
+        chirp_threshold,
+        minimum_bins,
+        download_workers,
+        True,
+    )
+
+
 def merge_streamed_background_shards(
     shard_reports: Iterable[str | Path], output_dir: str | Path
 ) -> dict[str, Any]:
@@ -515,8 +602,16 @@ def merge_streamed_background_shards(
     if not report_paths:
         raise ValueError("at least one streamed background shard is required")
     reports = [_load_json(path) for path in report_paths]
+    statuses = {str(report.get("status")) for report in reports}
+    allowed_statuses = {
+        "verified_streamed_candidate_background_shard",
+        "verified_streamed_morphology_background_shard",
+    }
+    if len(statuses) != 1 or not statuses <= allowed_statuses:
+        raise ValueError("streamed background shards mix calibrated and morphology modes")
+    morphology_only = statuses == {"verified_streamed_morphology_background_shard"}
     for report in reports:
-        if report.get("status") != "verified_streamed_candidate_background_shard":
+        if report.get("status") not in allowed_statuses:
             raise ValueError("streamed background shard report has the wrong status")
         if report.get("split_strategy") != "hash_threshold_v1":
             raise ValueError("only stable hash-threshold shards can be merged")
@@ -536,6 +631,7 @@ def merge_streamed_background_shards(
         "context_duration",
         "chirp_threshold",
         "minimum_bins",
+        "streaming_mode",
         "code_commit",
     )
     reference = reports[0]["run_identity"]
@@ -574,11 +670,19 @@ def merge_streamed_background_shards(
         for split, artifact in report.get("split_artifacts", {}).items():
             if split not in candidates_by_split:
                 raise ValueError(f"unexpected streamed candidate split: {split}")
-            candidate_manifest = Path(artifact["calibrated_candidate_manifest_path"])
-            if file_sha256(candidate_manifest) != str(
-                artifact["calibrated_candidate_manifest_sha256"]
-            ):
-                raise ValueError("streamed calibrated candidate manifest hash mismatch")
+            path_field = (
+                "candidate_manifest_path"
+                if morphology_only
+                else "calibrated_candidate_manifest_path"
+            )
+            hash_field = (
+                "candidate_manifest_sha256"
+                if morphology_only
+                else "calibrated_candidate_manifest_sha256"
+            )
+            candidate_manifest = Path(artifact[path_field])
+            if file_sha256(candidate_manifest) != str(artifact[hash_field]):
+                raise ValueError("streamed candidate manifest hash mismatch")
             split_rows = _load_jsonl(candidate_manifest)
             if any(str(row["split"]) != split for row in split_rows):
                 raise ValueError("calibrated candidate appears in the wrong split")
@@ -604,7 +708,7 @@ def merge_streamed_background_shards(
         for row in rows:
             if str(row["window_id"]) not in known_windows:
                 raise ValueError("streamed candidate references an unknown window")
-            if not row.get("timing_empirically_calibrated"):
+            if not morphology_only and not row.get("timing_empirically_calibrated"):
                 raise ValueError("streamed candidate lacks empirical timing calibration")
             candidate_ids.append(str(row["candidate_id"]))
     if len(candidate_ids) != len(set(candidate_ids)):
@@ -625,7 +729,11 @@ def merge_streamed_background_shards(
     )
     candidate_outputs = {}
     for split, rows in candidates_by_split.items():
-        path = output / f"{split}_calibrated_candidates.jsonl"
+        path = output / (
+            f"{split}_morphology_candidates.jsonl"
+            if morphology_only
+            else f"{split}_calibrated_candidates.jsonl"
+        )
         ordered = sorted(
             rows,
             key=lambda row: (
@@ -650,10 +758,19 @@ def merge_streamed_background_shards(
         for split in ("train", "val", "test")
     }
     result = {
-        "status": "verified_merged_streamed_candidate_background",
+        "status": (
+            "verified_merged_streamed_morphology_background"
+            if morphology_only
+            else "verified_merged_streamed_candidate_background"
+        ),
         "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "morphology_only": morphology_only,
         "scientific_blocker": (
-            "adequate time-slide exposure, validation-only threshold freeze and an independent "
+            "empirical timing calibration and a separate locked test evaluation remain required; "
+            "this merged bank supports validation morphology/FAR development only"
+            if morphology_only
+            else "adequate time-slide exposure, validation-only threshold freeze and an independent "
             "locked test evaluation remain required"
         ),
         "common_run_identity": {field: reference.get(field) for field in common_fields},

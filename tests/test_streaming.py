@@ -436,3 +436,88 @@ def test_streamed_background_merge_checks_global_groups_and_pair_ranges(
     assert result["candidate_manifests"]["test"]["candidates"] == 1
     with pytest.raises(FileExistsError, match="immutable"):
         merge_streamed_background_shards(reports, tmp_path / "merged")
+
+
+def test_streamed_morphology_merge_retains_uncalibrated_validation_candidates(
+    tmp_path: Path,
+) -> None:
+    reports = []
+    for index in range(2):
+        shard = tmp_path / f"morph-{index}"
+        shard.mkdir()
+        background = shard / "background.jsonl"
+        candidates = shard / "candidates.jsonl"
+        window_id = f"window-{index}"
+        _jsonl(
+            background,
+            [
+                {
+                    "window_id": window_id,
+                    "split": "val",
+                    "gps_block": f"block-{index}",
+                    "gps_start": 200.0 + 8 * index,
+                    "gps_end": 208.0 + 8 * index,
+                }
+            ],
+        )
+        _jsonl(
+            candidates,
+            [
+                {
+                    "candidate_id": f"candidate-{index}",
+                    "window_id": window_id,
+                    "split": "val",
+                    "ifo": "H1",
+                    "gps_peak": 204.0 + 8 * index,
+                    "timing_empirically_calibrated": False,
+                }
+            ],
+        )
+        report_path = shard / "report.json"
+        atomic_write_json(
+            report_path,
+            {
+                "status": "verified_streamed_morphology_background_shard",
+                "split_strategy": "hash_threshold_v1",
+                "run_identity": {
+                    "parent_plan_sha256": "parent",
+                    "event_exclusions_sha256": "events",
+                    "timing_calibration_report_sha256": None,
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "coherence_config_sha256": "coherence",
+                    "validation_fraction": 0.2,
+                    "test_fraction": 0.0,
+                    "seed": 7,
+                    "model_ifos": ["H1", "L1", "V1"],
+                    "q_values": [4.0, 8.0, 16.0],
+                    "target_sample_rate": 1024,
+                    "context_duration": 64.0,
+                    "chirp_threshold": 0.3,
+                    "minimum_bins": 1,
+                    "streaming_mode": "morphology_only_validation",
+                    "code_commit": "commit",
+                    "shard_index": index,
+                },
+                "parent_selected_pairs": 2,
+                "shard_count": 2,
+                "pair_index_start_inclusive": index,
+                "pair_index_stop_exclusive": index + 1,
+                "background_manifest_path": str(background),
+                "background_manifest_sha256": file_sha256(background),
+                "split_artifacts": {
+                    "val": {
+                        "candidate_manifest_path": str(candidates),
+                        "candidate_manifest_sha256": file_sha256(candidates),
+                    }
+                },
+            },
+        )
+        reports.append(report_path)
+
+    result = merge_streamed_background_shards(reports, tmp_path / "morph-merged")
+
+    assert result["status"] == "verified_merged_streamed_morphology_background"
+    assert result["morphology_only"] is True
+    assert result["network_coherence_claim_allowed"] is False
+    assert result["candidate_manifests"]["val"]["candidates"] == 2

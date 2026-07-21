@@ -937,6 +937,32 @@ def build_parser() -> argparse.ArgumentParser:
     stream_shard.add_argument("--minimum-bins", type=int, default=1)
     stream_shard.add_argument("--download-workers", type=int, default=8)
 
+    morphology_stream_shard = subparsers.add_parser(
+        "background-morphology-stream-shard"
+    )
+    morphology_stream_shard.add_argument("--parent-plan", required=True)
+    morphology_stream_shard.add_argument("--event-exclusions", required=True)
+    morphology_stream_shard.add_argument("--checkpoint", required=True)
+    morphology_stream_shard.add_argument("--config", required=True)
+    morphology_stream_shard.add_argument("--coherence-config", required=True)
+    morphology_stream_shard.add_argument("--cache-root", required=True)
+    morphology_stream_shard.add_argument("--output-dir", required=True)
+    morphology_stream_shard.add_argument("--shard-index", type=int, required=True)
+    morphology_stream_shard.add_argument("--pairs-per-shard", type=int, default=1)
+    morphology_stream_shard.add_argument("--validation-fraction", type=float, default=0.2)
+    morphology_stream_shard.add_argument("--seed", type=int, default=20260720)
+    morphology_stream_shard.add_argument(
+        "--model-ifos", nargs="+", default=["H1", "L1", "V1"]
+    )
+    morphology_stream_shard.add_argument(
+        "--q-values", nargs="+", type=float, default=[4, 8, 16]
+    )
+    morphology_stream_shard.add_argument("--target-sample-rate", type=int, default=1024)
+    morphology_stream_shard.add_argument("--context-duration", type=float, default=64.0)
+    morphology_stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
+    morphology_stream_shard.add_argument("--minimum-bins", type=int, default=1)
+    morphology_stream_shard.add_argument("--download-workers", type=int, default=8)
+
     stream_merge = subparsers.add_parser("background-stream-merge")
     stream_merge.add_argument("--shard-report", action="append", required=True)
     stream_merge.add_argument("--output-dir", required=True)
@@ -2226,6 +2252,31 @@ def main(argv: list[str] | None = None) -> int:
                 args.pairs_per_shard,
                 args.validation_fraction,
                 args.test_fraction,
+                args.seed,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.download_workers,
+            )
+        )
+    elif args.command == "background-morphology-stream-shard":
+        from .streaming import run_streamed_morphology_background_shard
+
+        _print(
+            run_streamed_morphology_background_shard(
+                args.parent_plan,
+                args.event_exclusions,
+                args.checkpoint,
+                args.config,
+                args.coherence_config,
+                args.cache_root,
+                args.output_dir,
+                args.shard_index,
+                args.pairs_per_shard,
+                args.validation_fraction,
                 args.seed,
                 tuple(args.model_ifos),
                 tuple(args.q_values),
