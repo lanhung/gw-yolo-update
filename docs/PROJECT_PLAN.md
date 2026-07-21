@@ -338,3 +338,11 @@ updates. Promote more same-distribution data only when the paired bootstrap and 
 gates pass under both controls; otherwise prioritize independent GPS/run/family coverage or a new
 representation. This validation-only curve precedes any claim from the 800/880-pair continuous
 background and does not alter the locked O4b/GWTC-5 boundary.
+
+`scripts/run_source_safe_overlap_publication.sh` is the immutable handoff from the expanded
+Gravity Spy audit to the one-seed sampling ablation, validation-only promotion and conditional
+five-seed expansion. It replays the exact checkout, source-corpus hashes, zero cross-split overlap,
+both clean manifests, pretrained checkpoint, arm configs, selected checkpoints and promotion
+receipt. A valid negative promotion is retained atomically and does not start more training; a
+positive promotion must finish all five seeds before the chain receipt can be written. The runner
+reads zero test rows and cannot authorize a search claim.
