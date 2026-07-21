@@ -722,3 +722,21 @@ p90. The candidate report SHA256 is
 SHA256 is `61206163807d517d8218e745da7f18bfae19a99634787fd52135475990839843`.
 Scaling this arm to 5k is prohibited. Neither waveform count nor a simple multi-resolution STFT
 stack resolves the current candidate ambiguity on fixed GPS support.
+
+## Backend-neutral PE source boundary — 2026-07-21
+
+The posterior comparison now has an executable source-data boundary rather than only a result
+schema. `pe-input-materialize` requires exactly paired clean, real-glitch-contaminated and learned
+mask-conditioned validation/test manifests; preserves injection, waveform, glitch and GPS lineage;
+filters only BBH truths within the committed common-prior support; and freezes any bounded subset by
+a seeded injection-ID hash before posterior metrics exist. It writes one 16-second H1/L1 4,096-Hz
+numeric artifact per condition whose exact bytes must be shared by DINGO and AMPLFI. It carries the
+base, contamination, probability mask, selected mask model and mask-policy hashes into every row.
+
+Because the current detection injection contexts were materialized at 2,048 Hz, the bridge declares
+band-limited interpolation and the original 1,024-Hz information Nyquist rather than implying new
+bandwidth. The interpolation's even-length Nyquist-bin scaling was corrected and locked by a
+hand-checkable alternating-sample regression. Direct 4,096-Hz regeneration remains the preferred
+waveform-systematics stratum. No posterior has yet been run, so the new report deliberately sets
+`scientific_claim_allowed=false` until validation-selected DINGO/AMPLFI models and paired posterior
+coverage, bias, width, sample-efficiency, sky-area and latency intervals exist.

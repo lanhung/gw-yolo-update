@@ -1144,6 +1144,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-incomplete-provenance", action="store_true"
     )
 
+    pe_inputs = subparsers.add_parser("pe-input-materialize")
+    pe_inputs.add_argument("--clean-manifest", required=True)
+    pe_inputs.add_argument("--contaminated-manifest", required=True)
+    pe_inputs.add_argument("--mask-conditioned-manifest", required=True)
+    pe_inputs.add_argument("--common-prior", required=True)
+    pe_inputs.add_argument("--mask-model", required=True)
+    pe_inputs.add_argument("--mask-policy", required=True)
+    pe_inputs.add_argument("--output-dir", required=True)
+    pe_inputs.add_argument("--required-split", choices=["val", "test"], required=True)
+    pe_inputs.add_argument("--required-ifos", nargs="+", default=["H1", "L1"])
+    pe_inputs.add_argument("--source-sample-rate-hz", type=int, default=4096)
+    pe_inputs.add_argument("--source-duration-seconds", type=float, default=16.0)
+    pe_inputs.add_argument("--analysis-high-frequency-hz", type=float, default=1024.0)
+    pe_inputs.add_argument("--limit", type=int)
+    pe_inputs.add_argument("--selection-seed", type=int, default=20260721)
+
     pe_backend = subparsers.add_parser("pe-backend-lock-audit")
     pe_backend.add_argument("--config", required=True)
     pe_backend.add_argument("--output", required=True)
@@ -2636,6 +2652,27 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+            )
+        )
+    elif args.command == "pe-input-materialize":
+        from .pe_inputs import materialize_common_pe_inputs
+
+        _print(
+            materialize_common_pe_inputs(
+                clean_manifest=args.clean_manifest,
+                contaminated_manifest=args.contaminated_manifest,
+                mask_conditioned_manifest=args.mask_conditioned_manifest,
+                common_prior_path=args.common_prior,
+                mask_model_path=args.mask_model,
+                mask_policy_path=args.mask_policy,
+                output_dir=args.output_dir,
+                required_split=args.required_split,
+                required_ifos=tuple(args.required_ifos),
+                source_sample_rate_hz=args.source_sample_rate_hz,
+                source_duration_seconds=args.source_duration_seconds,
+                analysis_high_frequency_hz=args.analysis_high_frequency_hz,
+                limit=args.limit,
+                selection_seed=args.selection_seed,
             )
         )
     elif args.command == "pe-backend-lock-audit":

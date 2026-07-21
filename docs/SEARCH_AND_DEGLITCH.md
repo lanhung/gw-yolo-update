@@ -561,6 +561,44 @@ configuration must also be hashed. Native parameter names are mapped to a common
 example AMPLFI `distance`, `inclination` and `phi` map to canonical `luminosity_distance`, `theta_jn`
 and `ra`, respectively.
 
+`pe-input-materialize` now constructs that source artifact from three exactly paired manifests:
+clean injection strain, the same injection with a real Gravity Spy glitch, and the corresponding
+learned-mask-conditioned strain. It rejects train rows, unequal injection sets, waveform/GPS/truth
+identity changes, mismatched glitch lineage, masks not derived from the contaminated override,
+missing H1/L1, truth outside the canonical prior support and a contaminated series numerically
+identical to clean. Eligible BBHs are selected by an ID hash and frozen seed before posterior
+results exist. Every output is a numeric NPZ containing 16 seconds of H1/L1 strain at 4,096 Hz, with
+one SHA-256 that both backends must consume.
+
+```bash
+python -m gwyolo.cli pe-input-materialize \
+  --clean-manifest artifacts/pe/paired_clean_val.jsonl \
+  --contaminated-manifest artifacts/pe/contaminated_val.jsonl \
+  --mask-conditioned-manifest artifacts/pe/mask_conditioned_val.jsonl \
+  --common-prior configs/pe_common_bbh_analysis_prior.yaml \
+  --mask-model artifacts/models/best_validation.pt \
+  --mask-policy configs/pe_mask_conditioning_policy.yaml \
+  --output-dir artifacts/pe/common_sources_val \
+  --required-split val \
+  --required-ifos H1 L1 \
+  --source-sample-rate-hz 4096 \
+  --source-duration-seconds 16 \
+  --analysis-high-frequency-hz 1024 \
+  --limit 100 \
+  --selection-seed 20260721
+```
+
+The current physical injection bank is native 2,048 Hz. Its conversion to the common 4,096 Hz
+container is explicitly recorded as band-limited FFT interpolation: it adds no information above
+the original 1,024 Hz Nyquist, and the command refuses an analysis band beyond that limit. The FFT
+implementation splits an even-length source Nyquist coefficient when it becomes a paired target
+frequency; a unit test verifies both the original samples and half-sample interpolation. This is a
+valid shared 20--1,024 Hz input for the present robustness study, but future waveform-systematics
+work should regenerate primary PE injections and background directly at 4,096 Hz rather than claim
+that interpolation created high-frequency detector information. The report also states that the
+selected detection-injection population lies inside common-prior support but was not sampled from
+that prior distribution.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time

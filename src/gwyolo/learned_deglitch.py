@@ -142,7 +142,10 @@ def run_learned_deglitch(
                 "input_analysis_override_kind": input_override.get(
                     "analysis_override_kind"
                 ),
+                "probability_path": str(probability_path),
                 "probability_sha256": scored["probability_sha256"],
+                "deglitch_strength": strength,
+                "deglitch_algorithm": "hamming_stft_overlap_add",
                 "metrics": metrics,
                 "suppression": suppression,
             }

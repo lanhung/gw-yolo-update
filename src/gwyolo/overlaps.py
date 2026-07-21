@@ -502,6 +502,11 @@ def _fft_upsample(values: np.ndarray, source_rate: int, target_rate: int) -> np.
     source_spectrum = np.fft.rfft(signal)
     target_spectrum = np.zeros(target_size // 2 + 1, dtype=np.complex128)
     target_spectrum[: source_spectrum.size] = source_spectrum
+    # For an even-length source the final rFFT bin is an unpaired Nyquist
+    # coefficient. At the larger target length it gains a conjugate partner,
+    # so split it to preserve the original samples and amplitude.
+    if signal.size % 2 == 0:
+        target_spectrum[source_spectrum.size - 1] *= 0.5
     return np.fft.irfft(target_spectrum, n=target_size) * (target_size / signal.size)
 
 

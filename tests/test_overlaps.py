@@ -260,6 +260,13 @@ def test_fft_upsample_preserves_bandlimited_amplitude_and_samples() -> None:
     assert np.max(np.abs(upsampled)) == pytest.approx(1.0, abs=1e-12)
 
 
+def test_fft_upsample_splits_even_source_nyquist_bin() -> None:
+    signal = (-1.0) ** np.arange(16)
+    upsampled = _fft_upsample(signal, 16, 32)
+    assert upsampled[::2] == pytest.approx(signal, abs=1e-12)
+    assert upsampled[1::2] == pytest.approx(0.0, abs=1e-12)
+
+
 def test_overlap_cross_split_audit_rejects_reused_waveform_or_glitch(tmp_path) -> None:
     base = {
         "mixture_id": "m-train",

@@ -1,0 +1,12 @@
+schema_version: 1
+mode: cleaned_strain
+algorithm: hamming_stft_overlap_add
+suppression_strength: 0.9
+glitch_suppression_weight: glitch_probability_times_one_minus_chirp_probability
+probability_threshold: null
+strain_only: true
+auxiliary_channel_veto: false
+notes:
+  - Continuous mask probabilities are used; no test-tuned hard mask threshold is applied.
+  - Chirp probability protects overlapping signal pixels from glitch suppression.
+  - The clean, contaminated and conditioned inputs retain identical GPS and detector axes.
