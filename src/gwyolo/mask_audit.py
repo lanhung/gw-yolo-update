@@ -27,6 +27,39 @@ def binary_mask_iou(left: np.ndarray, right: np.ndarray) -> float:
     return int(np.count_nonzero(left_mask & right_mask)) / union
 
 
+def binary_mask_metrics(expected: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
+    """Return hand-auditable per-mask counts and overlap metrics."""
+
+    target = np.asarray(expected, dtype=bool)
+    estimate = np.asarray(predicted, dtype=bool)
+    if target.shape != estimate.shape or target.size == 0:
+        raise ValueError("binary masks must be non-empty and aligned")
+    true_positive = int(np.count_nonzero(target & estimate))
+    false_positive = int(np.count_nonzero(~target & estimate))
+    false_negative = int(np.count_nonzero(target & ~estimate))
+    true_negative = int(np.count_nonzero(~target & ~estimate))
+    predicted_positive = true_positive + false_positive
+    target_positive = true_positive + false_negative
+    union = true_positive + false_positive + false_negative
+    dice_denominator = 2 * true_positive + false_positive + false_negative
+    precision = (
+        true_positive / predicted_positive
+        if predicted_positive
+        else (1.0 if target_positive == 0 else 0.0)
+    )
+    recall = true_positive / target_positive if target_positive else 1.0
+    return {
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "true_negative": true_negative,
+        "precision": precision,
+        "recall": recall,
+        "iou": true_positive / union if union else 1.0,
+        "dice": 2 * true_positive / dice_denominator if dice_denominator else 1.0,
+    }
+
+
 def _load_npz_mask(path: str | Path, key: str) -> np.ndarray:
     with np.load(path, allow_pickle=False) as arrays:
         if key not in arrays:
@@ -437,4 +470,262 @@ def materialize_gravityspy_mask_consensus(
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
     }
     atomic_write_json(report_path, result)
+    return result
+
+
+def _load_npz_probability(path: str | Path, key: str) -> np.ndarray:
+    with np.load(path, allow_pickle=False) as arrays:
+        if key not in arrays:
+            raise ValueError(f"prediction file {path} lacks key {key}")
+        probability = np.asarray(arrays[key], dtype=np.float64)
+    if probability.size == 0 or not np.isfinite(probability).all():
+        raise ValueError(f"prediction file {path} is empty or non-finite")
+    if np.any((probability < 0) | (probability > 1)):
+        raise ValueError(f"prediction file {path} lies outside [0,1]")
+    return probability
+
+
+def _mask_segmentation_summary(
+    rows: list[dict[str, Any]], bootstrap_replicates: int, seed: int
+) -> dict[str, Any]:
+    if not rows:
+        raise ValueError("mask segmentation summary requires rows")
+    metric_names = ("precision", "recall", "iou", "dice")
+    macro = {
+        name: float(np.mean([float(row[name]) for row in rows]))
+        for name in metric_names
+    }
+    pooled_counts = {
+        name: sum(int(row[name]) for row in rows)
+        for name in (
+            "true_positive",
+            "false_positive",
+            "false_negative",
+            "true_negative",
+        )
+    }
+    tp = pooled_counts["true_positive"]
+    fp = pooled_counts["false_positive"]
+    fn = pooled_counts["false_negative"]
+    pooled = {
+        **pooled_counts,
+        "precision": tp / (tp + fp) if tp + fp else (1.0 if tp + fn == 0 else 0.0),
+        "recall": tp / (tp + fn) if tp + fn else 1.0,
+        "iou": tp / (tp + fp + fn) if tp + fp + fn else 1.0,
+        "dice": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 1.0,
+    }
+    intervals: dict[str, list[float | None]] = {}
+    if len(rows) < 2:
+        intervals = {name: [None, None] for name in metric_names}
+    else:
+        values = np.asarray(
+            [[float(row[name]) for name in metric_names] for row in rows],
+            dtype=np.float64,
+        )
+        rng = np.random.default_rng(seed)
+        indices = rng.integers(0, len(rows), size=(bootstrap_replicates, len(rows)))
+        estimates = values[indices].mean(axis=1)
+        for index, name in enumerate(metric_names):
+            intervals[name] = [
+                float(np.percentile(estimates[:, index], 2.5)),
+                float(np.percentile(estimates[:, index], 97.5)),
+            ]
+    successes = sum(float(row["iou"]) >= 0.5 for row in rows)
+    return {
+        "tasks": len(rows),
+        "macro": macro,
+        "macro_paired_task_bootstrap_95": intervals,
+        "pooled_pixels": pooled,
+        "iou_ge_0_5": successes,
+        "iou_ge_0_5_fraction": successes / len(rows),
+        "iou_ge_0_5_wilson_95": list(wilson_interval(successes, len(rows))),
+    }
+
+
+def evaluate_gravityspy_mask_segmentation(
+    gold_report_path: str | Path,
+    prediction_manifest_path: str | Path,
+    output_path: str | Path,
+    bootstrap_replicates: int = 10000,
+    bootstrap_seed: int = 20260720,
+) -> dict[str, Any]:
+    """Evaluate validation-only model masks against a blinded human-consensus bank."""
+
+    if bootstrap_replicates < 100 or bootstrap_seed < 0:
+        raise ValueError("mask segmentation evaluation needs >=100 bootstrap replicates and a seed")
+    output = Path(output_path).resolve()
+    if output.exists():
+        raise FileExistsError("Gravity Spy mask segmentation reports are immutable")
+    gold_report_path = Path(gold_report_path).resolve()
+    gold_report = json.loads(gold_report_path.read_text(encoding="utf-8"))
+    gold_manifest = Path(str(gold_report.get("manifest_path", "")))
+    if (
+        gold_report.get("status") != "verified_gravityspy_human_consensus_mask_bank"
+        or gold_report.get("training_allowed") is not False
+        or not gold_manifest.is_file()
+        or file_sha256(gold_manifest) != str(gold_report.get("manifest_sha256", ""))
+    ):
+        raise ValueError("mask segmentation requires an exact validation-only consensus bank")
+    with gold_manifest.open("r", encoding="utf-8") as handle:
+        gold_rows = [json.loads(line) for line in handle if line.strip()]
+    prediction_manifest = Path(prediction_manifest_path).resolve()
+    with prediction_manifest.open("r", encoding="utf-8") as handle:
+        predictions = [json.loads(line) for line in handle if line.strip()]
+    if not gold_rows or not predictions:
+        raise ValueError("gold and prediction mask manifests must be non-empty")
+    if int(gold_report.get("tasks", -1)) != len(gold_rows):
+        raise ValueError("human-consensus report and manifest row counts differ")
+    gold_by_id = {str(row["audit_id"]): row for row in gold_rows}
+    prediction_by_id = {str(row["audit_id"]): row for row in predictions}
+    if len(gold_by_id) != len(gold_rows) or len(prediction_by_id) != len(predictions):
+        raise ValueError("gold or prediction audit IDs are not unique")
+    if set(gold_by_id) != set(prediction_by_id):
+        raise ValueError("prediction manifest does not exactly cover the human gold bank")
+    if len({str(row.get("path")) for row in gold_rows}) != len(gold_rows) or len(
+        {str(row.get("path")) for row in predictions}
+    ) != len(predictions):
+        raise ValueError("gold or prediction mask paths are not unique")
+
+    required_artifacts = (
+        ("model_path", "model_sha256"),
+        ("config_path", "config_sha256"),
+        ("checkpoint_selection_report_path", "checkpoint_selection_report_sha256"),
+    )
+    identities = set()
+    artifact_digests: dict[Path, str] = {}
+    inspected_selection_reports: set[Path] = set()
+    evaluated = []
+    for audit_id, gold in sorted(gold_by_id.items()):
+        prediction = prediction_by_id[audit_id]
+        checkpoint_split = str(prediction.get("checkpoint_selection_split", ""))
+        threshold_split = str(prediction.get("threshold_selection_split", ""))
+        if (
+            gold.get("split") != "val"
+            or gold.get("training_allowed") is not False
+            or gold.get("human_pixel_mask") is not True
+            or prediction.get("split") != "val"
+            or checkpoint_split not in {"calibration", "val"}
+            or threshold_split not in {"calibration", "val"}
+        ):
+            raise ValueError("human-consensus segmentation evaluation is validation-only")
+        if str(gold["glitch_id"]) != str(prediction.get("glitch_id")):
+            raise ValueError(f"prediction glitch identity mismatch: {audit_id}")
+        for path_field, hash_field in required_artifacts:
+            artifact = Path(str(prediction.get(path_field, "")))
+            if not artifact.is_file():
+                raise ValueError(f"prediction artifact hash mismatch: {path_field}")
+            if artifact not in artifact_digests:
+                artifact_digests[artifact] = file_sha256(artifact)
+            if artifact_digests[artifact] != str(prediction.get(hash_field, "")):
+                raise ValueError(f"prediction artifact hash mismatch: {path_field}")
+            if (
+                path_field == "checkpoint_selection_report_path"
+                and artifact not in inspected_selection_reports
+            ):
+                selection_report = json.loads(artifact.read_text(encoding="utf-8"))
+                forbidden_test_selection = (
+                    selection_report.get("test_evaluation") is True
+                    or selection_report.get("selected_split") == "test"
+                    or selection_report.get("selection_split") == "test"
+                    or selection_report.get("test_metrics") not in (None, {})
+                )
+                if forbidden_test_selection:
+                    raise ValueError("checkpoint selection report contains test selection")
+                inspected_selection_reports.add(artifact)
+        threshold = float(prediction.get("threshold", -1))
+        if not 0 <= threshold <= 1:
+            raise ValueError(f"prediction threshold lies outside [0,1]: {audit_id}")
+        prediction_path = Path(str(prediction.get("path", "")))
+        if not prediction_path.is_file() or file_sha256(prediction_path) != str(
+            prediction.get("sha256", "")
+        ):
+            raise ValueError(f"prediction mask hash mismatch: {audit_id}")
+        gold_path = Path(str(gold.get("path", "")))
+        if not gold_path.is_file() or file_sha256(gold_path) != str(gold.get("sha256", "")):
+            raise ValueError(f"gold mask hash mismatch: {audit_id}")
+        expected = _load_npz_mask(gold_path, str(gold["mask_key"]))
+        probability = _load_npz_probability(
+            prediction_path, str(prediction.get("mask_key", "mask_probability"))
+        )
+        if probability.shape != expected.shape or list(expected.shape) != list(
+            gold.get("mask_shape", [])
+        ):
+            raise ValueError(f"prediction/gold mask shape mismatch: {audit_id}")
+        identity = {
+            field: prediction[field]
+            for pair in required_artifacts
+            for field in pair
+        }
+        identity.update(
+            {
+                "threshold": threshold,
+                "prediction_mask_key": str(
+                    prediction.get("mask_key", "mask_probability")
+                ),
+                "checkpoint_selection_split": checkpoint_split,
+                "threshold_selection_split": threshold_split,
+            }
+        )
+        identities.add(canonical_hash(identity, 64))
+        evaluated.append(
+            {
+                "audit_id": audit_id,
+                "glitch_id": str(gold["glitch_id"]),
+                "ml_label": str(gold["ml_label"]),
+                **binary_mask_metrics(expected, probability >= threshold),
+            }
+        )
+    if len(identities) != 1:
+        raise ValueError("prediction rows do not share one model/config/threshold identity")
+
+    labels = sorted({str(row["ml_label"]) for row in evaluated})
+    by_label = {
+        label: _mask_segmentation_summary(
+            [row for row in evaluated if row["ml_label"] == label],
+            bootstrap_replicates,
+            bootstrap_seed + index + 1,
+        )
+        for index, label in enumerate(labels)
+    }
+    first_prediction = prediction_by_id[sorted(prediction_by_id)[0]]
+    result = {
+        "status": "completed_validation_human_consensus_mask_segmentation",
+        "scientific_claim_allowed": False,
+        "promotion_evidence_allowed": True,
+        "claim_scope": (
+            "validation-only human-consensus glitch-mask segmentation; locked search, deglitch "
+            "and test evaluation remain separate"
+        ),
+        "test_evaluation": False,
+        "gold_report_path": str(gold_report_path),
+        "gold_report_sha256": file_sha256(gold_report_path),
+        "gold_manifest_path": str(gold_manifest),
+        "gold_manifest_sha256": file_sha256(gold_manifest),
+        "prediction_manifest_path": str(prediction_manifest),
+        "prediction_manifest_sha256": file_sha256(prediction_manifest),
+        "prediction_identity_hash": next(iter(identities)),
+        "model_sha256": str(first_prediction["model_sha256"]),
+        "config_sha256": str(first_prediction["config_sha256"]),
+        "checkpoint_selection_report_sha256": str(
+            first_prediction["checkpoint_selection_report_sha256"]
+        ),
+        "threshold": float(first_prediction["threshold"]),
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": bootstrap_seed,
+        "tasks": len(evaluated),
+        "overall": _mask_segmentation_summary(
+            evaluated, bootstrap_replicates, bootstrap_seed
+        ),
+        "by_label": by_label,
+        "evaluated_tasks": evaluated,
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+    }
+    atomic_write_json(output, result)
     return result

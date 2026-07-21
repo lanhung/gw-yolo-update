@@ -784,6 +784,13 @@ def build_parser() -> argparse.ArgumentParser:
     mask_consensus.add_argument("--audit-report", required=True)
     mask_consensus.add_argument("--output-dir", required=True)
 
+    mask_segmentation = subparsers.add_parser("gravityspy-mask-segmentation-evaluate")
+    mask_segmentation.add_argument("--gold-report", required=True)
+    mask_segmentation.add_argument("--predictions", required=True)
+    mask_segmentation.add_argument("--output", required=True)
+    mask_segmentation.add_argument("--bootstrap-replicates", type=int, default=10000)
+    mask_segmentation.add_argument("--bootstrap-seed", type=int, default=20260720)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -2462,6 +2469,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.annotations,
                 args.audit_report,
                 args.output_dir,
+            )
+        )
+    elif args.command == "gravityspy-mask-segmentation-evaluate":
+        from .mask_audit import evaluate_gravityspy_mask_segmentation
+
+        _print(
+            evaluate_gravityspy_mask_segmentation(
+                args.gold_report,
+                args.predictions,
+                args.output,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
             )
         )
     elif args.command == "fit-curve":

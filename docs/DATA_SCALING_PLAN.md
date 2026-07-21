@@ -609,3 +609,11 @@ features plus non-target detector/Q metadata. The internal manifest retains weak
 later scoring, but it is not an annotation input. Evaluation re-hashes the blinded files and rejects
 `mask`, `chirp_mask` or `glitch_mask` keys, making blinding an enforced data property rather than an
 instruction to the annotator.
+
+`gravityspy-mask-segmentation-evaluate` is the only model-facing consumer of that gold bank. It
+requires exact one-to-one audit/glitch coverage, validation-only rows, immutable model/config/
+checkpoint-selection hashes and one common frozen threshold. It rejects test-selected checkpoints
+both from row metadata and from populated test fields in the selection report. Per-task pixel counts
+produce macro and pooled precision, recall, IoU and Dice; paired task bootstrap intervals and an
+IoU>=0.5 Wilson interval are reported overall and by glitch family. These remain validation promotion
+evidence only. Search, deglitch and locked-test claims require their separate predeclared endpoints.

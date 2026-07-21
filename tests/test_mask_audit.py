@@ -9,7 +9,9 @@ import pytest
 from gwyolo.io import file_sha256
 from gwyolo.mask_audit import (
     binary_mask_iou,
+    binary_mask_metrics,
     evaluate_gravityspy_mask_audit,
+    evaluate_gravityspy_mask_segmentation,
     materialize_gravityspy_mask_consensus,
     plan_gravityspy_mask_audit,
 )
@@ -19,6 +21,22 @@ def test_binary_mask_iou_is_hand_calculated() -> None:
     left = np.asarray([1, 1, 0, 0])
     right = np.asarray([1, 0, 1, 0])
     assert binary_mask_iou(left, right) == pytest.approx(1 / 3)
+
+
+def test_binary_mask_metrics_are_hand_calculated() -> None:
+    expected = np.asarray([1, 1, 0, 0])
+    predicted = np.asarray([1, 0, 1, 0])
+    metrics = binary_mask_metrics(expected, predicted)
+    assert metrics == {
+        "true_positive": 1,
+        "false_positive": 1,
+        "false_negative": 1,
+        "true_negative": 1,
+        "precision": 0.5,
+        "recall": 0.5,
+        "iou": pytest.approx(1 / 3),
+        "dice": 0.5,
+    }
 
 
 def test_mask_audit_plan_requires_three_blinded_annotators(tmp_path) -> None:
@@ -157,4 +175,146 @@ def test_mask_audit_requires_blinded_independent_annotations(tmp_path) -> None:
     with pytest.raises(ValueError, match="lacks independent annotators"):
         evaluate_gravityspy_mask_audit(
             tasks, repeated, tmp_path / "repeated-annotator-report.json"
+        )
+
+
+def test_human_consensus_segmentation_is_validation_only_and_hash_bound(
+    tmp_path: Path,
+) -> None:
+    gold_masks = []
+    prediction_masks = []
+    for index, (gold, probability) in enumerate(
+        (
+            ([1, 1, 0, 0], [0.9, 0.1, 0.8, 0.2]),
+            ([0, 0, 0, 0], [0.1, 0.2, 0.1, 0.0]),
+        )
+    ):
+        gold_path = tmp_path / f"gold-{index}.npz"
+        prediction_path = tmp_path / f"prediction-{index}.npz"
+        np.savez(gold_path, mask=np.asarray(gold, dtype=np.uint8))
+        np.savez(
+            prediction_path,
+            mask_probability=np.asarray(probability, dtype=np.float32),
+        )
+        gold_masks.append(gold_path)
+        prediction_masks.append(prediction_path)
+
+    gold_manifest = tmp_path / "gold.jsonl"
+    gold_rows = [
+        {
+            "audit_id": f"a{index}",
+            "glitch_id": f"g{index}",
+            "ml_label": label,
+            "split": "val",
+            "training_allowed": False,
+            "human_pixel_mask": True,
+            "mask_key": "mask",
+            "mask_shape": [4],
+            "path": str(path),
+            "sha256": file_sha256(path),
+        }
+        for index, (label, path) in enumerate(
+            zip(("Blip", "Tomte"), gold_masks)
+        )
+    ]
+    gold_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in gold_rows), encoding="utf-8"
+    )
+    gold_report = tmp_path / "gold-report.json"
+    gold_report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_human_consensus_mask_bank",
+                "training_allowed": False,
+                "tasks": 2,
+                "manifest_path": str(gold_manifest),
+                "manifest_sha256": file_sha256(gold_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = tmp_path / "model.pt"
+    config = tmp_path / "config.yaml"
+    selection = tmp_path / "selection.json"
+    model.write_bytes(b"model")
+    config.write_text("model: dual-mask\n", encoding="utf-8")
+    selection.write_text('{"split":"val"}\n', encoding="utf-8")
+    prediction_rows = [
+        {
+            "audit_id": gold["audit_id"],
+            "glitch_id": gold["glitch_id"],
+            "split": "val",
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "mask_key": "mask_probability",
+            "threshold": 0.5,
+            "checkpoint_selection_split": "val",
+            "threshold_selection_split": "val",
+            "model_path": str(model),
+            "model_sha256": file_sha256(model),
+            "config_path": str(config),
+            "config_sha256": file_sha256(config),
+            "checkpoint_selection_report_path": str(selection),
+            "checkpoint_selection_report_sha256": file_sha256(selection),
+        }
+        for gold, path in zip(gold_rows, prediction_masks)
+    ]
+    predictions = tmp_path / "predictions.jsonl"
+    predictions.write_text(
+        "".join(json.dumps(row) + "\n" for row in prediction_rows),
+        encoding="utf-8",
+    )
+    output = tmp_path / "segmentation.json"
+    report = evaluate_gravityspy_mask_segmentation(
+        gold_report, predictions, output, bootstrap_replicates=500, bootstrap_seed=7
+    )
+    assert report["test_evaluation"] is False
+    assert report["promotion_evidence_allowed"] is True
+    assert report["overall"]["macro"]["iou"] == pytest.approx(2 / 3)
+    assert report["overall"]["macro"]["dice"] == pytest.approx(0.75)
+    assert report["overall"]["pooled_pixels"]["iou"] == pytest.approx(1 / 3)
+    assert report["overall"]["pooled_pixels"]["true_negative"] == 5
+    assert report["overall"]["iou_ge_0_5"] == 1
+    assert report["overall"]["macro_paired_task_bootstrap_95"]["iou"] == [
+        pytest.approx(1 / 3),
+        1.0,
+    ]
+    assert report["by_label"]["Blip"]["macro_paired_task_bootstrap_95"][
+        "iou"
+    ] == [None, None]
+    with pytest.raises(FileExistsError, match="immutable"):
+        evaluate_gravityspy_mask_segmentation(gold_report, predictions, output)
+
+    incomplete = tmp_path / "incomplete.jsonl"
+    incomplete.write_text(json.dumps(prediction_rows[0]) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly cover"):
+        evaluate_gravityspy_mask_segmentation(
+            gold_report, incomplete, tmp_path / "incomplete-report.json"
+        )
+
+    prediction_rows[0]["threshold_selection_split"] = "test"
+    test_selected = tmp_path / "test-selected.jsonl"
+    test_selected.write_text(
+        "".join(json.dumps(row) + "\n" for row in prediction_rows),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="validation-only"):
+        evaluate_gravityspy_mask_segmentation(
+            gold_report, test_selected, tmp_path / "test-selected-report.json"
+        )
+
+    prediction_rows[0]["threshold_selection_split"] = "val"
+    selection.write_text('{"test_metrics":{"iou":1.0}}\n', encoding="utf-8")
+    for row in prediction_rows:
+        row["checkpoint_selection_report_sha256"] = file_sha256(selection)
+    test_report_selected = tmp_path / "test-report-selected.jsonl"
+    test_report_selected.write_text(
+        "".join(json.dumps(row) + "\n" for row in prediction_rows),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="contains test selection"):
+        evaluate_gravityspy_mask_segmentation(
+            gold_report,
+            test_report_selected,
+            tmp_path / "test-report-selected-output.json",
         )
