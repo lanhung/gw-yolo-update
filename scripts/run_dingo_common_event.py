@@ -106,9 +106,34 @@ def main() -> int:
         raise FileExistsError("DINGO inference refuses to overwrite an existing output")
 
     import torch
-    from dingo.core.posterior_models.build_model import build_model_from_kwargs
     from dingo.gw.data.event_dataset import EventDataset
     from dingo.gw.inference.gw_samplers import GWSampler, GWSamplerGNPE
+
+    dingo_version = importlib.metadata.version("dingo-gw")
+    if dingo_version == "0.5.8":
+        from dingo.core.models import PosteriorModel
+
+        def load_model(path: Path):
+            return PosteriorModel(
+                model_filename=str(path),
+                device=args.device,
+                load_training_info=False,
+            )
+
+        model_load_api = "dingo.core.models.PosteriorModel"
+    elif dingo_version == "0.9.8":
+        from dingo.core.posterior_models.build_model import build_model_from_kwargs
+
+        def load_model(path: Path):
+            return build_model_from_kwargs(
+                filename=str(path), device=args.device, load_training_info=False
+            )
+
+        model_load_api = (
+            "dingo.core.posterior_models.build_model.build_model_from_kwargs"
+        )
+    else:
+        raise RuntimeError(f"unsupported DINGO inference API version: {dingo_version}")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -121,12 +146,8 @@ def main() -> int:
     event_preprocessing_seconds = time.perf_counter() - event_started
 
     model_load_started = time.perf_counter()
-    model = build_model_from_kwargs(
-        filename=str(model_path), device=args.device, load_training_info=False
-    )
-    init_model = build_model_from_kwargs(
-        filename=str(init_path), device=args.device, load_training_info=False
-    )
+    model = load_model(model_path)
+    init_model = load_model(init_path)
     if args.device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
     model_load_seconds = time.perf_counter() - model_load_started
@@ -183,7 +204,8 @@ def main() -> int:
     report = {
         "status": "real_dingo_gnpe_posterior_complete",
         "backend": "DINGO",
-        "backend_version": importlib.metadata.version("dingo-gw"),
+        "backend_version": dingo_version,
+        "model_load_api": model_load_api,
         "event_path": str(event_path),
         "event_sha256": observed["event"],
         "model_path": str(model_path),

@@ -71,6 +71,16 @@ def test_standalone_pe_runners_export_the_frozen_latency_scope() -> None:
         assert namespace["LATENCY_SCOPE"] == PAIRED_PE_LATENCY_SCOPE_V1
 
 
+def test_dingo_event_runner_supports_only_frozen_native_and_current_apis() -> None:
+    script = Path(__file__).parents[1] / "scripts/run_dingo_common_event.py"
+    source = script.read_text(encoding="utf-8")
+    assert 'dingo_version == "0.5.8"' in source
+    assert "from dingo.core.models import PosteriorModel" in source
+    assert 'dingo_version == "0.9.8"' in source
+    assert "from dingo.core.posterior_models.build_model import" in source
+    assert "unsupported DINGO inference API version" in source
+
+
 def test_posterior_truth_metrics_match_quantiles_and_bias() -> None:
     result = posterior_truth_metrics({"mass": np.asarray([0, 1, 2, 3, 4])}, {"mass": 2}, 0.8)
     assert result["mass"]["mean"] == 2
