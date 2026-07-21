@@ -96,6 +96,7 @@ gwyolo injection-score score full-context-whitened physical injections with the 
 gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
 gwyolo dingo-common-prior-audit prove or reject DINGO/common-prior equivalence before PE
 gwyolo dingo-runtime-failure-adjudicate authorize only a hash-bound native-runtime retry
+gwyolo dingo-official-native-model-freeze bind the official DINGO native-prior comparison boundary
 gwyolo amplfi-background-capacity-audit measure group-safe physical noise duration before training
 gwyolo amplfi-background-source-evict release recoverable GWOSC sources after verified export
 gwyolo amplfi-training-stage-freeze resolve a predeclared fixed-update AMPLFI budget

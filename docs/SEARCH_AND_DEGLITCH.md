@@ -1027,6 +1027,16 @@ verifies an exact DINGO 0.5.8 runtime, and reloads the identical posterior and t
 Neither compatibility path reads test rows or becomes PE evidence; no model substitution is
 allowed.
 
+The official release has a separate, deliberately narrower evaluation path. The
+`dingo-official-native-model-freeze` command replays the source acquisition and passing dual-model
+load receipt, parses the published settings, and binds the 10-million-waveform, epoch-225,
+SEOBNRv5PHM H1/L1 model to its 16-second, 4,096 Hz native contract. It explicitly records
+`common_prior_equivalent=false` and `cross_backend_absolute_comparison_allowed=false`.
+`scripts/run_dingo_official_native_paired_smoke.sh` can therefore measure only the validation-set
+clean/contaminated/mask-conditioned change within this one backend. It cannot enter
+`pe-robustness-joint-evaluate`, cannot establish an absolute DINGO-versus-AMPLFI ranking, and does
+not relax the common-prior paper gate.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time

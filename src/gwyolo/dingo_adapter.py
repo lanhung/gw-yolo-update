@@ -271,6 +271,144 @@ def run_dingo_common_prior_audit(
     return report
 
 
+def freeze_official_dingo_native_model_metadata(
+    source_config_path: str | Path,
+    acquisition_report_path: str | Path,
+    model_load_receipt_path: str | Path,
+    native_conditioning_config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze official DINGO identity without claiming common-prior equivalence."""
+
+    source_config = load_yaml(source_config_path)
+    acquisition = load_yaml(acquisition_report_path)
+    load_receipt = load_yaml(model_load_receipt_path)
+    conditioning = load_yaml(native_conditioning_config_path)
+    source_by_role = {
+        str(row.get("role")): row for row in source_config.get("sources", [])
+    }
+    acquired_by_role = {
+        str(row.get("role")): row for row in acquisition.get("files", [])
+    }
+    expected_roles = {
+        "model_manifest",
+        "training_settings",
+        "posterior_model",
+        "time_initialization_model",
+    }
+    if (
+        source_config.get("schema_version") != 1
+        or set(source_by_role) != expected_roles
+        or acquisition.get("status") != "verified"
+        or acquisition.get("download_enabled") is not True
+        or set(acquired_by_role) != expected_roles
+        or acquisition.get("config_sha256") != file_sha256(source_config_path)
+        or load_receipt.get("status") != "verified_official_dingo_dual_model_load"
+        or load_receipt.get("passed") is not True
+        or load_receipt.get("scientific_claim_allowed") is not False
+        or load_receipt.get("test_rows_read") != 0
+        or conditioning.get("schema_version") != 1
+        or conditioning.get("backend") != "DINGO"
+    ):
+        raise ValueError("official DINGO native metadata inputs failed their status gates")
+    for role in expected_roles:
+        source = source_by_role[role]
+        acquired = acquired_by_role[role]
+        path = Path(str(acquired.get("path", ""))).resolve()
+        if (
+            source.get("backend") != "DINGO"
+            or acquired.get("backend") != "DINGO"
+            or acquired.get("valid") is not True
+            or not path.is_file()
+            or path.name != source.get("filename")
+            or int(path.stat().st_size) != int(source.get("size_bytes", -1))
+            or file_sha256(path) != acquired.get("sha256")
+        ):
+            raise ValueError(f"official DINGO native source replay failed: {role}")
+    posterior = Path(acquired_by_role["posterior_model"]["path"]).resolve()
+    initialization = Path(
+        acquired_by_role["time_initialization_model"]["path"]
+    ).resolve()
+    settings_path = Path(acquired_by_role["training_settings"]["path"]).resolve()
+    if (
+        Path(str(load_receipt.get("posterior_model_path", ""))).resolve() != posterior
+        or load_receipt.get("posterior_model_sha256") != file_sha256(posterior)
+        or Path(str(load_receipt.get("initialization_model_path", ""))).resolve()
+        != initialization
+        or load_receipt.get("initialization_model_sha256") != file_sha256(initialization)
+    ):
+        raise ValueError("official DINGO load receipt binds different model bytes")
+    settings = _load_dingo_settings(settings_path)
+    dataset = settings.get("dataset_settings", {})
+    train = settings.get("train_settings", {})
+    data = train.get("data", {}) if isinstance(train, dict) else {}
+    waveform = dataset.get("waveform_generator", {}) if isinstance(dataset, dict) else {}
+    window = data.get("window", {}) if isinstance(data, dict) else {}
+    domain = data.get("domain_update", {}) if isinstance(data, dict) else {}
+    text = settings_path.read_text(encoding="utf-8")
+    version_match = re.search(r"Version:\s*dingo=([^\s]+)", text)
+    epoch_match = re.search(r"Model epoch:\s*(\d+)", text)
+    if (
+        version_match is None
+        or epoch_match is None
+        or data.get("detectors") != ["H1", "L1"]
+        or waveform.get("approximant") != "SEOBNRv5PHM"
+        or float(window.get("T", 0)) != 16
+        or float(window.get("f_s", 0)) != 4096
+        or float(domain.get("f_min", 0)) != 20
+        or float(domain.get("f_max", 0)) != 1024
+        or int(dataset.get("num_samples", 0)) <= 0
+        or conditioning.get("ifos") != ["H1", "L1"]
+        or float(conditioning.get("source_sample_rate_hz", 0)) != 4096
+        or float(conditioning.get("source_duration_seconds", 0)) != 16
+    ):
+        raise ValueError("official DINGO settings differ from the frozen native contract")
+    artifacts = {
+        "source_config": source_config_path,
+        "acquisition_report": acquisition_report_path,
+        "model_load_receipt": model_load_receipt_path,
+        "training_settings": settings_path,
+        "native_conditioning_config": native_conditioning_config_path,
+        "initialization_model": initialization,
+    }
+    result = {
+        "status": "verified_official_dingo_native_model_metadata",
+        "backend": "DINGO",
+        "model_path": str(posterior),
+        "model_sha256": file_sha256(posterior),
+        "initialization_model_path": str(initialization),
+        "initialization_model_sha256": file_sha256(initialization),
+        "selection_split": "external_official_single_model",
+        "selection_metric": "official_release_single_checkpoint_no_local_selection",
+        "within_backend_paired_robustness_allowed": True,
+        "cross_backend_absolute_comparison_allowed": False,
+        "common_prior_equivalent": False,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "training_backend_version": version_match.group(1),
+        "load_runtime_version": load_receipt["backend_version"],
+        "model_epoch": int(epoch_match.group(1)),
+        "training_waveforms": int(dataset["num_samples"]),
+        "native_model_waveform_approximant": waveform["approximant"],
+        "source_input": {
+            "ifos": ["H1", "L1"],
+            "sample_rate_hz": 4096,
+            "duration_seconds": 16,
+            "post_trigger_seconds": float(conditioning["source_post_trigger_seconds"]),
+            "common_asd_required": True,
+        },
+        "native_frequency_band_hz": [20.0, 1024.0],
+        "native_inference_parameters": list(data.get("inference_parameters", [])),
+        "artifacts": {
+            label: {"path": str(Path(path).resolve()), "sha256": file_sha256(path)}
+            for label, path in artifacts.items()
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def _load_native_rows(path: str | Path, required_split: str) -> list[dict[str, Any]]:
     with Path(path).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -328,14 +466,28 @@ def run_dingo_common_batch(
     num_gnpe_iterations: int = 30,
     device: str = "cuda",
     seed: int = 20260721,
+    comparison_mode: str = "common_prior",
 ) -> dict[str, Any]:
     if required_split not in {"val", "test"}:
         raise ValueError("DINGO batch is restricted to val or test")
     if num_samples <= 0 or batch_size <= 0 or num_gnpe_iterations <= 0:
         raise ValueError("DINGO batch sampling settings must be positive")
+    if comparison_mode not in {"common_prior", "official_native"}:
+        raise ValueError("DINGO comparison mode must be common_prior or official_native")
+    official_native = comparison_mode == "official_native"
     metadata_path = Path(model_metadata_path).resolve()
     metadata = load_yaml(metadata_path)
-    if metadata.get("backend") != "DINGO" or metadata.get("selection_split") != "validation":
+    if official_native:
+        if (
+            metadata.get("status") != "verified_official_dingo_native_model_metadata"
+            or metadata.get("backend") != "DINGO"
+            or metadata.get("selection_split") != "external_official_single_model"
+            or metadata.get("within_backend_paired_robustness_allowed") is not True
+            or metadata.get("cross_backend_absolute_comparison_allowed") is not False
+            or metadata.get("common_prior_equivalent") is not False
+        ):
+            raise ValueError("DINGO official-native metadata does not permit paired robustness")
+    elif metadata.get("backend") != "DINGO" or metadata.get("selection_split") != "validation":
         raise ValueError("DINGO batch requires validation-selected standardized model metadata")
     model = Path(metadata["model_path"]).resolve()
     if file_sha256(model) != str(metadata["model_sha256"]):
@@ -344,14 +496,24 @@ def run_dingo_common_batch(
     model_init_sha = file_sha256(model_init)
     artifacts = metadata.get("artifacts", {})
     required_artifacts = (
-        "training_config",
-        "training_data_manifest",
-        "analysis_prior",
-        "native_prior",
-        "prior_projection_report",
-        "selection_report",
-        "native_conditioning_config",
-        "initialization_model",
+        (
+            "training_settings",
+            "acquisition_report",
+            "model_load_receipt",
+            "native_conditioning_config",
+            "initialization_model",
+        )
+        if official_native
+        else (
+            "training_config",
+            "training_data_manifest",
+            "analysis_prior",
+            "native_prior",
+            "prior_projection_report",
+            "selection_report",
+            "native_conditioning_config",
+            "initialization_model",
+        )
     )
     verified_artifacts = {}
     for label in required_artifacts:
@@ -365,31 +527,34 @@ def run_dingo_common_batch(
         verified_artifacts[label] = identity
     native_prior = Path(native_prior_path).resolve()
     native_prior_sha = file_sha256(native_prior)
-    if native_prior_sha != verified_artifacts["native_prior"]["sha256"]:
+    native_prior_label = "training_settings" if official_native else "native_prior"
+    if native_prior_sha != verified_artifacts[native_prior_label]["sha256"]:
         raise ValueError("DINGO runtime native prior differs from model metadata")
-    projection = load_yaml(verified_artifacts["prior_projection_report"]["path"])
-    if (
-        projection.get("status") != "passed"
-        or projection.get("publication_ready") is not True
-        or projection.get("failures") not in (None, [])
-        or projection.get("canonical_prior_sha256")
-        != verified_artifacts["analysis_prior"]["sha256"]
-        or projection.get("dingo_prior_config_sha256") != native_prior_sha
-        or projection.get("dingo_training_config_sha256")
-        != verified_artifacts["training_config"]["sha256"]
-    ):
-        raise ValueError("DINGO prior projection differs from model metadata")
+    if not official_native:
+        projection = load_yaml(verified_artifacts["prior_projection_report"]["path"])
+        if (
+            projection.get("status") != "passed"
+            or projection.get("publication_ready") is not True
+            or projection.get("failures") not in (None, [])
+            or projection.get("canonical_prior_sha256")
+            != verified_artifacts["analysis_prior"]["sha256"]
+            or projection.get("dingo_prior_config_sha256") != native_prior_sha
+            or projection.get("dingo_training_config_sha256")
+            != verified_artifacts["training_config"]["sha256"]
+        ):
+            raise ValueError("DINGO prior projection differs from model metadata")
     if model_init_sha != verified_artifacts["initialization_model"]["sha256"]:
         raise ValueError("DINGO runtime initialization model differs from metadata")
-    selection = load_yaml(verified_artifacts["selection_report"]["path"])
-    if (
-        selection.get("status") != "validation_selected_checkpoint"
-        or selection.get("publication_eligible") is not True
-        or selection.get("selection_split") != "validation"
-        or selection.get("selected_checkpoint_sha256") != metadata["model_sha256"]
-        or selection.get("selection_metric") != metadata.get("selection_metric")
-    ):
-        raise ValueError("DINGO validation selection report differs from metadata")
+    if not official_native:
+        selection = load_yaml(verified_artifacts["selection_report"]["path"])
+        if (
+            selection.get("status") != "validation_selected_checkpoint"
+            or selection.get("publication_eligible") is not True
+            or selection.get("selection_split") != "validation"
+            or selection.get("selected_checkpoint_sha256") != metadata["model_sha256"]
+            or selection.get("selection_metric") != metadata.get("selection_metric")
+        ):
+            raise ValueError("DINGO validation selection report differs from metadata")
     python = Path(python_executable).resolve()
     runner = Path(runner_script).resolve()
     if not python.is_file() or not runner.is_file():
@@ -427,7 +592,7 @@ def run_dingo_common_batch(
         for row in rows
     ):
         raise ValueError("DINGO native rows use conditioning outside model metadata")
-    if any(
+    if not official_native and any(
         row.get("common_prior_sha256")
         != verified_artifacts["analysis_prior"]["sha256"]
         for row in rows
@@ -436,21 +601,35 @@ def run_dingo_common_batch(
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
-        "schema": "dingo_common_batch_v1",
+        "schema": (
+            "dingo_official_native_paired_robustness_batch_v1"
+            if official_native
+            else "dingo_common_batch_v1"
+        ),
         "native_manifest_sha256": file_sha256(native_manifest),
         "model_metadata_sha256": file_sha256(metadata_path),
         "model_sha256": metadata["model_sha256"],
         "model_init_sha256": model_init_sha,
-        "training_config_sha256": verified_artifacts["training_config"]["sha256"],
-        "training_data_manifest_sha256": verified_artifacts[
-            "training_data_manifest"
-        ]["sha256"],
-        "analysis_prior_sha256": verified_artifacts["analysis_prior"]["sha256"],
+        "training_config_sha256": (
+            verified_artifacts[native_prior_label]["sha256"]
+        ),
+        "training_data_manifest_sha256": (
+            None
+            if official_native
+            else verified_artifacts["training_data_manifest"]["sha256"]
+        ),
+        "analysis_prior_sha256": (
+            None if official_native else verified_artifacts["analysis_prior"]["sha256"]
+        ),
         "native_prior_sha256": native_prior_sha,
-        "prior_projection_report_sha256": verified_artifacts[
-            "prior_projection_report"
-        ]["sha256"],
-        "selection_report_sha256": verified_artifacts["selection_report"]["sha256"],
+        "prior_projection_report_sha256": (
+            None
+            if official_native
+            else verified_artifacts["prior_projection_report"]["sha256"]
+        ),
+        "selection_report_sha256": (
+            None if official_native else verified_artifacts["selection_report"]["sha256"]
+        ),
         "native_conditioning_config_sha256": conditioning_sha,
         "python_executable": str(python),
         "runner_sha256": file_sha256(runner),
@@ -460,6 +639,7 @@ def run_dingo_common_batch(
         "num_gnpe_iterations": num_gnpe_iterations,
         "device": device,
         "seed": seed,
+        "comparison_mode": comparison_mode,
     }
     state_path = output / "dingo_batch_state.json"
     if state_path.is_file():
@@ -570,8 +750,15 @@ def run_dingo_common_batch(
                 },
                 "backend_version": report["backend_version"],
                 "backend_model_hash": report["model_sha256"],
-                "prior_hash": row["common_prior_sha256"],
-                "waveform_approximant": metadata["analysis_waveform_approximant"],
+                "prior_hash": (
+                    native_prior_sha if official_native else row["common_prior_sha256"]
+                ),
+                "waveform_approximant": (
+                    metadata["native_model_waveform_approximant"]
+                    if official_native
+                    else metadata["analysis_waveform_approximant"]
+                ),
+                "cross_backend_absolute_comparison_allowed": not official_native,
                 "detector_set": row["input_ifos"],
                 "calibration_version": "none_software_injection_o4a_strain",
                 "source_event_hash": row["source_event_hash"],
@@ -593,10 +780,18 @@ def run_dingo_common_batch(
         manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in result_rows)
     )
     report = {
-        "status": "real_dingo_common_batch_complete",
+        "status": (
+            "real_dingo_official_native_paired_robustness_batch_complete"
+            if official_native
+            else "real_dingo_common_batch_complete"
+        ),
         "scientific_claim_allowed": False,
         "scientific_blocker": (
-            "matched AMPLFI results and paired robustness evaluation are still required"
+            (
+                "official native prior/waveform differs from the common cross-backend contract"
+                if official_native
+                else "matched AMPLFI results and paired robustness evaluation are still required"
+            )
         ),
         "rows": len(result_rows),
         "paired_injections": len({row["injection_id"] for row in result_rows}),

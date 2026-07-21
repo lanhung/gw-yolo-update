@@ -9,6 +9,7 @@ import yaml
 
 from gwyolo.dingo_adapter import (
     audit_dingo_common_prior_projection,
+    freeze_official_dingo_native_model_metadata,
     run_dingo_common_batch,
     run_dingo_common_prior_audit,
 )
@@ -337,3 +338,222 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     other_prior.write_text("native: changed\n", encoding="utf-8")
     with pytest.raises(ValueError, match="runtime native prior differs"):
         run_dingo_common_batch(**{**kwargs, "native_prior_path": other_prior})
+
+
+def _official_settings_text() -> str:
+    settings = _compatible_dingo_settings()
+    settings["dataset_settings"].update(
+        {
+            "num_samples": 10_000_000,
+            "waveform_generator": {"approximant": "SEOBNRv5PHM"},
+        }
+    )
+    return (
+        "Extracting information about torch model.\n\n"
+        "Version: dingo=0.5.8\n"
+        "Model epoch: 225\n\n"
+        "Model metadata:\n"
+        + yaml.safe_dump(settings, sort_keys=False)
+    )
+
+
+def _official_source_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dict[str, Path]]:
+    roles = {
+        "model_manifest": ("MODEL_MANIFEST.md", "official manifest\n"),
+        "training_settings": ("settings.yaml", _official_settings_text()),
+        "posterior_model": ("posterior.pt", "posterior-model"),
+        "time_initialization_model": ("time.pt", "time-model"),
+    }
+    sources = []
+    acquired = []
+    paths = {}
+    for role, (filename, content) in roles.items():
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        paths[role] = path
+        sources.append(
+            {
+                "backend": "DINGO",
+                "role": role,
+                "filename": filename,
+                "size_bytes": path.stat().st_size,
+            }
+        )
+        acquired.append(
+            {
+                "backend": "DINGO",
+                "role": role,
+                "path": str(path),
+                "size_bytes": path.stat().st_size,
+                "sha256": file_sha256(path),
+                "valid": True,
+            }
+        )
+    source = tmp_path / "sources.yaml"
+    source.write_text(
+        yaml.safe_dump({"schema_version": 1, "sources": sources}), encoding="utf-8"
+    )
+    acquisition = tmp_path / "acquisition.json"
+    acquisition.write_text(
+        json.dumps(
+            {
+                "status": "verified",
+                "download_enabled": True,
+                "config_sha256": file_sha256(source),
+                "files": acquired,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt = tmp_path / "load-receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "status": "verified_official_dingo_dual_model_load",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "backend": "DINGO",
+                "backend_version": "0.9.8",
+                "posterior_model_path": str(paths["posterior_model"]),
+                "posterior_model_sha256": file_sha256(paths["posterior_model"]),
+                "initialization_model_path": str(paths["time_initialization_model"]),
+                "initialization_model_sha256": file_sha256(
+                    paths["time_initialization_model"]
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    conditioning = tmp_path / "conditioning.yaml"
+    conditioning.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "backend": "DINGO",
+                "ifos": ["H1", "L1"],
+                "source_sample_rate_hz": 4096,
+                "source_duration_seconds": 16,
+                "source_post_trigger_seconds": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return source, acquisition, receipt, conditioning, paths
+
+
+def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
+    tmp_path: Path,
+) -> None:
+    source, acquisition, receipt, conditioning, paths = _official_source_inputs(tmp_path)
+    output = tmp_path / "official-metadata.json"
+    report = freeze_official_dingo_native_model_metadata(
+        source, acquisition, receipt, conditioning, output
+    )
+    assert report["status"] == "verified_official_dingo_native_model_metadata"
+    assert report["training_backend_version"] == "0.5.8"
+    assert report["load_runtime_version"] == "0.9.8"
+    assert report["model_epoch"] == 225
+    assert report["training_waveforms"] == 10_000_000
+    assert report["native_model_waveform_approximant"] == "SEOBNRv5PHM"
+    assert report["within_backend_paired_robustness_allowed"] is True
+    assert report["cross_backend_absolute_comparison_allowed"] is False
+    assert report["common_prior_equivalent"] is False
+    assert report["test_rows_read"] == 0
+    assert report["model_sha256"] == file_sha256(paths["posterior_model"])
+
+    changed = yaml.safe_load(conditioning.read_text(encoding="utf-8"))
+    changed["source_sample_rate_hz"] = 2048
+    conditioning.write_text(yaml.safe_dump(changed), encoding="utf-8")
+    with pytest.raises(ValueError, match="frozen native contract"):
+        freeze_official_dingo_native_model_metadata(
+            source, acquisition, receipt, conditioning, output
+        )
+
+
+def test_dingo_official_native_batch_is_not_cross_backend_comparable(
+    tmp_path: Path,
+) -> None:
+    native, conditioning_config = _native_manifest(tmp_path)
+    model = tmp_path / "official-model.pt"
+    model_init = tmp_path / "official-time.pt"
+    model.write_bytes(b"official-model")
+    model_init.write_bytes(b"official-time")
+    settings = tmp_path / "official-settings.yaml"
+    settings.write_text(_official_settings_text(), encoding="utf-8")
+    acquisition = tmp_path / "official-acquisition.json"
+    acquisition.write_text("{}\n", encoding="utf-8")
+    receipt = tmp_path / "official-load.json"
+    receipt.write_text("{}\n", encoding="utf-8")
+    metadata = tmp_path / "official-metadata.json"
+    metadata.write_text(
+        json.dumps(
+            {
+                "status": "verified_official_dingo_native_model_metadata",
+                "backend": "DINGO",
+                "selection_split": "external_official_single_model",
+                "within_backend_paired_robustness_allowed": True,
+                "cross_backend_absolute_comparison_allowed": False,
+                "common_prior_equivalent": False,
+                "model_path": str(model),
+                "model_sha256": file_sha256(model),
+                "source_input": {
+                    "ifos": ["H1", "L1"],
+                    "common_asd_required": True,
+                    "sample_rate_hz": 16,
+                    "duration_seconds": 4,
+                    "post_trigger_seconds": 1,
+                },
+                "native_model_waveform_approximant": "SEOBNRv5PHM",
+                "artifacts": {
+                    "training_settings": {
+                        "path": str(settings),
+                        "sha256": file_sha256(settings),
+                    },
+                    "acquisition_report": {
+                        "path": str(acquisition),
+                        "sha256": file_sha256(acquisition),
+                    },
+                    "model_load_receipt": {
+                        "path": str(receipt),
+                        "sha256": file_sha256(receipt),
+                    },
+                    "native_conditioning_config": {
+                        "path": str(conditioning_config),
+                        "sha256": file_sha256(conditioning_config),
+                    },
+                    "initialization_model": {
+                        "path": str(model_init),
+                        "sha256": file_sha256(model_init),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = tmp_path / "runner.py"
+    _fake_runner(runner)
+    report = run_dingo_common_batch(
+        native_manifest=native,
+        model_metadata_path=metadata,
+        native_prior_path=settings,
+        model_init_path=model_init,
+        python_executable=sys.executable,
+        runner_script=runner,
+        output_dir=tmp_path / "official-posteriors",
+        required_split="val",
+        num_samples=2,
+        batch_size=1,
+        num_gnpe_iterations=2,
+        device="cpu",
+        comparison_mode="official_native",
+    )
+    assert report["status"] == (
+        "real_dingo_official_native_paired_robustness_batch_complete"
+    )
+    assert report["run_identity"]["analysis_prior_sha256"] is None
+    assert report["run_identity"]["prior_projection_report_sha256"] is None
+    rows = [json.loads(line) for line in Path(report["manifest_path"]).read_text().splitlines()]
+    assert all(row["cross_backend_absolute_comparison_allowed"] is False for row in rows)
+    assert all(row["waveform_approximant"] == "SEOBNRv5PHM" for row in rows)
+    assert all(row["prior_hash"] == file_sha256(settings) for row in rows)

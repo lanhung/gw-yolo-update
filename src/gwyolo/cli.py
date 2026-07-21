@@ -1468,6 +1468,18 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_batch.add_argument("--num-gnpe-iterations", type=int, default=30)
     dingo_batch.add_argument("--device", default="cuda")
     dingo_batch.add_argument("--seed", type=int, default=20260721)
+    dingo_batch.add_argument(
+        "--comparison-mode",
+        choices=("common_prior", "official_native"),
+        default="common_prior",
+    )
+
+    dingo_official_metadata = subparsers.add_parser("dingo-official-native-model-freeze")
+    dingo_official_metadata.add_argument("--source-config", required=True)
+    dingo_official_metadata.add_argument("--acquisition-report", required=True)
+    dingo_official_metadata.add_argument("--model-load-receipt", required=True)
+    dingo_official_metadata.add_argument("--native-conditioning-config", required=True)
+    dingo_official_metadata.add_argument("--output", required=True)
 
     amplfi_batch = subparsers.add_parser("amplfi-common-batch")
     amplfi_batch.add_argument("--native-manifest", required=True)
@@ -3428,6 +3440,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.num_gnpe_iterations,
                 args.device,
                 args.seed,
+                args.comparison_mode,
+            )
+        )
+    elif args.command == "dingo-official-native-model-freeze":
+        from .dingo_adapter import freeze_official_dingo_native_model_metadata
+
+        _print(
+            freeze_official_dingo_native_model_metadata(
+                args.source_config,
+                args.acquisition_report,
+                args.model_load_receipt,
+                args.native_conditioning_config,
+                args.output,
             )
         )
     elif args.command == "amplfi-common-batch":
