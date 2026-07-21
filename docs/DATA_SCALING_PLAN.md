@@ -520,6 +520,18 @@ A qualitative gain is plausible only after real overlap, new GPS/run, detector-s
 grow together and pass frozen hard-subset endpoints. Scale promotion remains an empirical decision,
 not a calendar milestone.
 
+The first five completed aligned-network train shards sharpen the real-glitch part of this decision.
+They account for 1,082 planned glitches, but only 859 pass finite-strain/DQ materialization; 182 are
+rejected for non-finite L1 context and 41 for non-finite V1 context. Among the 859 usable rows,
+`1400Ripples` alone contributes 352, while several families have only one or two examples. Reports
+must therefore use 859—not 1,082—as the current usable physical count. The primary remedy remains
+new independent glitch/GPS/run coverage. As a bounded optimization ablation,
+`physical_overlap_finetune_family_balanced.yaml` draws the same number of rows per epoch using
+square-root inverse family frequency capped at 4×; families with fewer than five physical examples
+are not boosted. The report explicitly records that replacement sampling adds zero independent
+physical examples. Compare this arm with uniform sampling at the same updates/seeds; it cannot
+authorize a data-scale or paper claim by itself.
+
 The next GPS-domain experiment is now explicitly paired rather than merely equal-sized.
 `injection-background-remap` preserves every training injection/waveform identity and all intrinsic
 and extrinsic source parameters, distance and `<VT>` weight while deterministically moving the

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +22,12 @@ from .runtime import execution_provenance
 try:
     import torch
     from torch.nn import functional as torch_functional
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, WeightedRandomSampler
 except ImportError:  # pragma: no cover
     torch = None
     torch_functional = None
     DataLoader = None
+    WeightedRandomSampler = None
 
 
 def _require_torch() -> None:
@@ -39,6 +41,65 @@ def _read_rows(path: str | Path) -> list[dict[str, Any]]:
     if not rows:
         raise ValueError(f"Manifest is empty: {path}")
     return rows
+
+
+def glitch_family_sampling_weights(
+    rows: list[dict[str, Any]],
+    exponent: float,
+    maximum_weight_ratio: float,
+    minimum_family_count: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build bounded family weights without changing the physical-example count."""
+
+    if not rows:
+        raise ValueError("Glitch-family sampling requires non-empty rows")
+    if not 0 <= exponent <= 1:
+        raise ValueError("Glitch-family sampling exponent must lie in [0, 1]")
+    if maximum_weight_ratio < 1 or minimum_family_count <= 0:
+        raise ValueError("Glitch-family sampling cap/count settings are invalid")
+    labels = [str(row.get("ml_label", "")).strip() for row in rows]
+    if any(not label for label in labels):
+        raise ValueError("Every overlap row requires an ml_label for family sampling")
+    counts = Counter(labels)
+    reference_count = max(counts.values())
+    family_weights = {
+        label: (
+            min(
+                maximum_weight_ratio,
+                (reference_count / count) ** exponent,
+            )
+            if count >= minimum_family_count
+            else 1.0
+        )
+        for label, count in counts.items()
+    }
+    weights = np.asarray([family_weights[label] for label in labels], dtype=np.float64)
+    weights /= float(weights.mean())
+    total_mass = float(sum(counts[label] * family_weights[label] for label in counts))
+    report = {
+        "strategy": "bounded_inverse_glitch_family_frequency_v1",
+        "physical_rows": len(rows),
+        "sample_draws_per_epoch": len(rows),
+        "adds_independent_physical_examples": False,
+        "replacement": True,
+        "exponent": exponent,
+        "maximum_weight_ratio": maximum_weight_ratio,
+        "minimum_family_count": minimum_family_count,
+        "family_counts": dict(sorted(counts.items())),
+        "family_relative_weights": {
+            label: family_weights[label] for label in sorted(family_weights)
+        },
+        "family_expected_draw_fraction": {
+            label: counts[label] * family_weights[label] / total_mass
+            for label in sorted(counts)
+        },
+        "families_below_minimum_count_not_boosted": sorted(
+            label for label, count in counts.items() if count < minimum_family_count
+        ),
+        "normalized_minimum_row_weight": float(weights.min()),
+        "normalized_maximum_row_weight": float(weights.max()),
+    }
+    return weights, report
 
 
 def overlap_training_split_audit(
@@ -223,6 +284,25 @@ def _metrics(counts: np.ndarray) -> dict[str, Any]:
     return result
 
 
+def summarize_glitch_family_counts(
+    counts_by_family: dict[str, np.ndarray], row_counts: dict[str, int]
+) -> dict[str, dict[str, Any]]:
+    """Report hand-auditable mask counts and metrics for each physical glitch family."""
+
+    if set(counts_by_family) != set(row_counts):
+        raise ValueError("Glitch-family metric count keys differ")
+    result = {}
+    for label in sorted(counts_by_family):
+        counts = np.asarray(counts_by_family[label], dtype=np.int64)
+        if counts.shape != (2, 3) or np.any(counts < 0) or row_counts[label] <= 0:
+            raise ValueError(f"Invalid overlap counts for glitch family {label}")
+        result[label] = {
+            "physical_rows": int(row_counts[label]),
+            **_metrics(counts)["glitch"],
+        }
+    return result
+
+
 def _overlap_epoch(
     model: Any,
     loader: Any,
@@ -232,9 +312,13 @@ def _overlap_epoch(
     class_weights: tuple[float, float],
     gamma: float,
     thresholds: tuple[float, float] = (0.5, 0.5),
+    row_labels: list[str] | None = None,
 ) -> dict[str, Any]:
     model.eval()
     counts = np.zeros((2, 3), dtype=np.int64)
+    family_counts: dict[str, np.ndarray] = {}
+    family_rows: Counter[str] = Counter()
+    row_offset = 0
     losses = []
     with torch.no_grad():
         for features, targets, availability in loader:
@@ -246,7 +330,31 @@ def _overlap_epoch(
                 logits, targets, availability, q_count, positive_weights, class_weights, gamma
             ).cpu()))
             counts += _counts(logits, targets, availability, q_count, thresholds)
-    return {"loss": float(np.mean(losses)), **_metrics(counts)}
+            if row_labels is not None:
+                batch_labels = row_labels[row_offset : row_offset + logits.shape[0]]
+                if len(batch_labels) != logits.shape[0]:
+                    raise ValueError("Glitch-family labels do not align with validation rows")
+                for index, label in enumerate(batch_labels):
+                    family_rows[label] += 1
+                    family_counts.setdefault(
+                        label, np.zeros((2, 3), dtype=np.int64)
+                    )
+                    family_counts[label] += _counts(
+                        logits[index : index + 1],
+                        targets[index : index + 1],
+                        availability[index : index + 1],
+                        q_count,
+                        thresholds,
+                    )
+                row_offset += logits.shape[0]
+    if row_labels is not None and row_offset != len(row_labels):
+        raise ValueError("Glitch-family labels were not fully evaluated")
+    result = {"loss": float(np.mean(losses)), **_metrics(counts)}
+    if row_labels is not None:
+        result["by_glitch_family"] = summarize_glitch_family_counts(
+            family_counts, dict(family_rows)
+        )
+    return result
 
 
 def _clean_metrics(
@@ -448,9 +556,46 @@ def run_physical_overlap_finetune(
     }
     generator = torch.Generator().manual_seed(seed)
     batch_size = int(settings["batch_size"])
+    family_sampling = settings.get("glitch_family_sampling", {})
+    family_sampling_enabled = bool(family_sampling.get("enabled", False))
+    sampling_report: dict[str, Any] = {
+        "strategy": "uniform_row_shuffle_v1",
+        "enabled": False,
+        "physical_rows": len(train_rows),
+        "sample_draws_per_epoch": len(train_rows),
+        "adds_independent_physical_examples": False,
+        "replacement": False,
+        "family_counts": dict(
+            sorted(Counter(str(row.get("ml_label")) for row in train_rows).items())
+        ),
+    }
+    train_sampler = None
+    if family_sampling_enabled:
+        weights, sampling_report = glitch_family_sampling_weights(
+            train_rows,
+            float(family_sampling.get("exponent", 0.5)),
+            float(family_sampling.get("maximum_weight_ratio", 4.0)),
+            int(family_sampling.get("minimum_family_count", 5)),
+        )
+        sampling_report["enabled"] = True
+        train_sampler = WeightedRandomSampler(
+            torch.as_tensor(weights, dtype=torch.double),
+            num_samples=len(train_rows),
+            replacement=True,
+            generator=generator,
+        )
     overlap_loaders = {
-        key: DataLoader(value, batch_size=batch_size, shuffle=key == "train", num_workers=0, generator=generator if key == "train" else None)
-        for key, value in overlap_datasets.items()
+        "train": DataLoader(
+            overlap_datasets["train"],
+            batch_size=batch_size,
+            shuffle=not family_sampling_enabled,
+            sampler=train_sampler,
+            num_workers=0,
+            generator=generator if not family_sampling_enabled else None,
+        ),
+        "val": DataLoader(
+            overlap_datasets["val"], batch_size=batch_size, shuffle=False, num_workers=0
+        ),
     }
     clean_loaders = {
         key: DataLoader(value, batch_size=batch_size, shuffle=key == "train", num_workers=0, generator=generator if key == "train" else None)
@@ -572,6 +717,7 @@ def run_physical_overlap_finetune(
         tuple(float(value) for value in settings["class_weights"]),
         float(settings.get("focal_gamma", 0.0)),
         thresholds,
+        [str(row["ml_label"]) for row in validation_rows],
     )
     calibrated_clean = _clean_metrics(
         student, "detector_set", clean_loaders["val"], device, q_count, thresholds[0]
@@ -590,6 +736,7 @@ def run_physical_overlap_finetune(
         "run_identity": run_identity,
         "split_audit": split_audit,
         "clean_split_audit": clean_split_audit,
+        "glitch_family_sampling": sampling_report,
         "warm_start": warm_start,
         "teacher_architecture": teacher_architecture,
         "teacher_clean_validation": teacher_clean,
