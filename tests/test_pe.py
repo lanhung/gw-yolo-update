@@ -188,6 +188,8 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
 
     rows = []
     for backend in ("DINGO", "AMPLFI"):
+        native_config = tmp_path / f"{backend}-native-config.yaml"
+        native_config.write_text(f"backend: {backend}\n", encoding="utf-8")
         provenance = {
             "backend_version": f"{backend}-version",
             "backend_model_hash": f"{backend}-model",
@@ -202,6 +204,8 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
         for condition in ("clean", "contaminated", "mask_conditioned"):
             posterior = tmp_path / f"{backend}-{condition}.npz"
             np.savez(posterior, mass=np.asarray([1.0, 2.0, 3.0]))
+            native = tmp_path / f"{backend}-{condition}-native.hdf5"
+            native.write_bytes(f"{backend}-{condition}-native".encode())
             input_name = "masked" if condition == "mask_conditioned" else condition
             row = {
                 "backend": backend,
@@ -216,9 +220,14 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
                 "analysis_input_sha256": file_sha256(files[input_name]),
                 "input_sample_rate_hz": 2048,
                 "input_duration_seconds": 8.0,
+                "input_post_trigger_seconds": 2.0,
                 "input_ifos": ["H1", "L1"],
                 "base_injection_manifest_path": str(files["base"]),
                 "base_injection_manifest_sha256": file_sha256(files["base"]),
+                "native_conditioning_path": str(native),
+                "native_conditioning_sha256": file_sha256(native),
+                "native_conditioning_config_path": str(native_config),
+                "native_conditioning_config_sha256": file_sha256(native_config),
                 **provenance,
             }
             if condition in {"contaminated", "mask_conditioned"}:

@@ -29,9 +29,14 @@ PUBLICATION_INPUT_FIELDS = (
     "analysis_input_sha256",
     "input_sample_rate_hz",
     "input_duration_seconds",
+    "input_post_trigger_seconds",
     "input_ifos",
     "base_injection_manifest_path",
     "base_injection_manifest_sha256",
+    "native_conditioning_path",
+    "native_conditioning_sha256",
+    "native_conditioning_config_path",
+    "native_conditioning_config_sha256",
 )
 
 PUBLICATION_SHARED_BACKEND_FIELDS = (
@@ -107,10 +112,13 @@ def _validate_publication_input_provenance(
         raise ValueError(f"PE row has empty publication input provenance: {empty}")
     sample_rate = float(row["input_sample_rate_hz"])
     duration = float(row["input_duration_seconds"])
+    post_trigger = float(row["input_post_trigger_seconds"])
     if not np.isfinite(sample_rate) or sample_rate <= 0:
         raise ValueError("PE input sample rate must be finite and positive")
     if not np.isfinite(duration) or duration <= 0:
         raise ValueError("PE input duration must be finite and positive")
+    if not np.isfinite(post_trigger) or not 0 < post_trigger < duration:
+        raise ValueError("PE input post-trigger duration must lie inside the input window")
     input_ifos = tuple(str(value) for value in row["input_ifos"])
     detector_set = tuple(str(value) for value in row["detector_set"])
     if not input_ifos or len(set(input_ifos)) != len(input_ifos):
@@ -124,11 +132,20 @@ def _validate_publication_input_provenance(
         ),
         "input_sample_rate_hz": sample_rate,
         "input_duration_seconds": duration,
+        "input_post_trigger_seconds": post_trigger,
         "input_ifos": list(input_ifos),
         "base_injection_manifest": _verified_file_identity(
             row,
             "base_injection_manifest_path",
             "base_injection_manifest_sha256",
+        ),
+        "native_conditioning": _verified_file_identity(
+            row, "native_conditioning_path", "native_conditioning_sha256"
+        ),
+        "native_conditioning_config": _verified_file_identity(
+            row,
+            "native_conditioning_config_path",
+            "native_conditioning_config_sha256",
         ),
     }
     if condition in {"contaminated", "mask_conditioned"}:
@@ -190,8 +207,13 @@ def _publication_input_semantics(identity: dict[str, Any]) -> dict[str, Any]:
         "analysis_input_sha256": identity["analysis_input"]["sha256"],
         "input_sample_rate_hz": identity["input_sample_rate_hz"],
         "input_duration_seconds": identity["input_duration_seconds"],
+        "input_post_trigger_seconds": identity["input_post_trigger_seconds"],
         "input_ifos": identity["input_ifos"],
         "base_injection_manifest_sha256": identity["base_injection_manifest"]["sha256"],
+        "native_conditioning_sha256": identity["native_conditioning"]["sha256"],
+        "native_conditioning_config_sha256": identity["native_conditioning_config"][
+            "sha256"
+        ],
     }
     for field in ("glitch_id", "mask_conditioning_mode"):
         if field in identity:
@@ -200,6 +222,19 @@ def _publication_input_semantics(identity: dict[str, Any]) -> dict[str, Any]:
         if field in identity:
             result[f"{field}_sha256"] = identity[field]["sha256"]
     return result
+
+
+def _common_source_semantics(identity: dict[str, Any]) -> dict[str, Any]:
+    """Fields that must match across backends before native conditioning diverges."""
+    return {
+        key: value
+        for key, value in _publication_input_semantics(identity).items()
+        if key
+        not in {
+            "native_conditioning_sha256",
+            "native_conditioning_config_sha256",
+        }
+    }
 
 
 def _load_posterior(path: str | Path) -> dict[str, np.ndarray]:
@@ -531,8 +566,10 @@ def evaluate_pe_robustness_rows(
             shared_fields = (
                 "input_sample_rate_hz",
                 "input_duration_seconds",
+                "input_post_trigger_seconds",
                 "input_ifos",
                 "base_injection_manifest_sha256",
+                "native_conditioning_config_sha256",
             )
             inconsistent_inputs = [
                 field
@@ -681,11 +718,11 @@ def evaluate_pe_robustness_rows(
                         f"Publication PE assumptions differ across backends for "
                         f"{injection_id}/{condition}: {inconsistent}"
                     )
-                semantic = _publication_input_semantics(
+                semantic = _common_source_semantics(
                     backend_rows[0]["verified_publication_input"]
                 )
                 if any(
-                    _publication_input_semantics(row["verified_publication_input"])
+                    _common_source_semantics(row["verified_publication_input"])
                     != semantic
                     for row in backend_rows[1:]
                 ):

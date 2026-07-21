@@ -1156,9 +1156,33 @@ def build_parser() -> argparse.ArgumentParser:
     pe_inputs.add_argument("--required-ifos", nargs="+", default=["H1", "L1"])
     pe_inputs.add_argument("--source-sample-rate-hz", type=int, default=4096)
     pe_inputs.add_argument("--source-duration-seconds", type=float, default=16.0)
+    pe_inputs.add_argument("--source-post-trigger-seconds", type=float, default=2.0)
     pe_inputs.add_argument("--analysis-high-frequency-hz", type=float, default=1024.0)
+    pe_inputs.add_argument("--asd-segment-seconds", type=float, default=8.0)
+    pe_inputs.add_argument("--asd-stride-seconds", type=float, default=4.0)
+    pe_inputs.add_argument("--asd-guard-seconds", type=float, default=2.0)
     pe_inputs.add_argument("--limit", type=int)
     pe_inputs.add_argument("--selection-seed", type=int, default=20260721)
+
+    pe_conditioning = subparsers.add_parser("pe-native-condition")
+    pe_conditioning.add_argument("--source-manifest", required=True)
+    pe_conditioning.add_argument("--config", required=True)
+    pe_conditioning.add_argument("--output-dir", required=True)
+    pe_conditioning.add_argument("--required-split", choices=["val", "test"], required=True)
+
+    dingo_batch = subparsers.add_parser("dingo-common-batch")
+    dingo_batch.add_argument("--native-manifest", required=True)
+    dingo_batch.add_argument("--model-metadata", required=True)
+    dingo_batch.add_argument("--model-init", required=True)
+    dingo_batch.add_argument("--python-executable", required=True)
+    dingo_batch.add_argument("--runner-script", default="scripts/run_dingo_common_event.py")
+    dingo_batch.add_argument("--output-dir", required=True)
+    dingo_batch.add_argument("--required-split", choices=["val", "test"], required=True)
+    dingo_batch.add_argument("--num-samples", type=int, default=10000)
+    dingo_batch.add_argument("--batch-size", type=int, default=1000)
+    dingo_batch.add_argument("--num-gnpe-iterations", type=int, default=30)
+    dingo_batch.add_argument("--device", default="cuda")
+    dingo_batch.add_argument("--seed", type=int, default=20260721)
 
     pe_backend = subparsers.add_parser("pe-backend-lock-audit")
     pe_backend.add_argument("--config", required=True)
@@ -1178,6 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe_model.add_argument("--source-ifos", nargs="+", default=["H1", "L1"])
     pe_model.add_argument("--source-sample-rate-hz", type=float, default=2048)
     pe_model.add_argument("--source-duration-seconds", type=float, default=8)
+    pe_model.add_argument("--source-post-trigger-seconds", type=float, default=2)
     pe_model.add_argument("--analysis-waveform-approximant", required=True)
     pe_model.add_argument("--native-model-waveform-approximant", required=True)
     pe_model.add_argument("--model-training-backend-version", required=True)
@@ -2670,7 +2695,11 @@ def main(argv: list[str] | None = None) -> int:
                 required_ifos=tuple(args.required_ifos),
                 source_sample_rate_hz=args.source_sample_rate_hz,
                 source_duration_seconds=args.source_duration_seconds,
+                source_post_trigger_seconds=args.source_post_trigger_seconds,
                 analysis_high_frequency_hz=args.analysis_high_frequency_hz,
+                asd_segment_seconds=args.asd_segment_seconds,
+                asd_stride_seconds=args.asd_stride_seconds,
+                asd_guard_seconds=args.asd_guard_seconds,
                 limit=args.limit,
                 selection_seed=args.selection_seed,
             )
@@ -2683,6 +2712,36 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.output,
                 args.allow_incomplete,
+            )
+        )
+    elif args.command == "pe-native-condition":
+        from .pe_conditioning import materialize_native_pe_conditioning
+
+        _print(
+            materialize_native_pe_conditioning(
+                args.source_manifest,
+                args.config,
+                args.output_dir,
+                args.required_split,
+            )
+        )
+    elif args.command == "dingo-common-batch":
+        from .dingo_adapter import run_dingo_common_batch
+
+        _print(
+            run_dingo_common_batch(
+                args.native_manifest,
+                args.model_metadata,
+                args.model_init,
+                args.python_executable,
+                args.runner_script,
+                args.output_dir,
+                args.required_split,
+                args.num_samples,
+                args.batch_size,
+                args.num_gnpe_iterations,
+                args.device,
+                args.seed,
             )
         )
     elif args.command == "pe-backend-model-freeze":
@@ -2702,6 +2761,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_ifos=args.source_ifos,
                 source_sample_rate_hz=args.source_sample_rate_hz,
                 source_duration_seconds=args.source_duration_seconds,
+                source_post_trigger_seconds=args.source_post_trigger_seconds,
                 analysis_waveform_approximant=args.analysis_waveform_approximant,
                 native_model_waveform_approximant=args.native_model_waveform_approximant,
                 model_training_backend_version=args.model_training_backend_version,

@@ -1,0 +1,17 @@
+schema_version: 1
+backend: AMPLFI
+ifos: [H1, L1]
+source_sample_rate_hz: 4096
+source_duration_seconds: 16
+source_post_trigger_seconds: 2
+native_sample_rate_hz: 2048
+native_kernel_seconds: 3
+native_whitening_duration_seconds: 2
+native_highpass_hz: 25
+resampling:
+  method: scipy_signal_resample_poly
+  window: [kaiser, 8.6]
+asd:
+  source: common_source_artifact
+  condition_invariant_required: true
+  runtime_whitening_must_not_reestimate_psd: true

@@ -145,7 +145,11 @@ def test_common_pe_inputs_are_paired_backend_neutral_and_resumable(tmp_path: Pat
         required_split="val",
         source_sample_rate_hz=16,
         source_duration_seconds=4.0,
+        source_post_trigger_seconds=1.0,
         analysis_high_frequency_hz=4.0,
+        asd_segment_seconds=1.0,
+        asd_stride_seconds=0.5,
+        asd_guard_seconds=0.5,
     )
     report = materialize_common_pe_inputs(**kwargs)
     assert report["paired_injections"] == 1
@@ -166,6 +170,10 @@ def test_common_pe_inputs_are_paired_backend_neutral_and_resumable(tmp_path: Pat
         with np.load(row["analysis_input_path"], allow_pickle=False) as arrays:
             assert arrays["strain"].shape == (2, 64)
             assert arrays["strain"].dtype == np.float32
+            assert arrays["asd"].shape == (2, 17)
+            assert arrays["asd_frequencies"][-1] == 4.0
+            assert np.all(arrays["asd"] > 0)
+    assert len({row["common_asd_sha256"] for row in rows}) == 1
     masked_row = next(row for row in rows if row["condition"] == "mask_conditioned")
     assert masked_row["mask_artifact_sha256"] == file_sha256(
         masked_row["mask_artifact_path"]
@@ -192,5 +200,9 @@ def test_common_pe_inputs_reject_mismatched_mask_lineage(tmp_path: Path) -> None
             "val",
             source_sample_rate_hz=16,
             source_duration_seconds=4.0,
+            source_post_trigger_seconds=1.0,
             analysis_high_frequency_hz=4.0,
+            asd_segment_seconds=1.0,
+            asd_stride_seconds=0.5,
+            asd_guard_seconds=0.5,
         )

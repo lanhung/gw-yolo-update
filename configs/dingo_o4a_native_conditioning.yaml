@@ -1,0 +1,19 @@
+schema_version: 1
+backend: DINGO
+ifos: [H1, L1]
+source_sample_rate_hz: 4096
+source_duration_seconds: 16
+source_post_trigger_seconds: 2
+window:
+  type: tukey
+  roll_off_seconds: 0.4
+frequency_domain:
+  minimum_frequency_hz: 20
+  maximum_frequency_hz: 1024
+  delta_frequency_hz: 0.0625
+  fourier_convention: numpy_rfft_times_delta_t
+  time_translation: exp_minus_2pi_i_f_post_trigger
+asd:
+  source: common_source_artifact
+  condition_invariant_required: true
+  below_minimum_frequency_value: 1.0

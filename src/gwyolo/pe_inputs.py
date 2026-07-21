@@ -30,6 +30,7 @@ IDENTITY_FIELDS = (
     "polarization",
     "inclination",
     "coalescence_phase",
+    "materialized_sha256",
 )
 
 
@@ -62,8 +63,6 @@ def _canonical_truth(row: dict[str, Any]) -> dict[str, float]:
         "ra": float(row["right_ascension"]),
         "dec": float(row["declination"]),
         "psi": float(row["polarization"]),
-        "phase": float(row["coalescence_phase"]),
-        "geocent_time": float(row["gps_time"]),
     }
 
 
@@ -94,6 +93,8 @@ def _crop_and_resample(
     required_ifos: tuple[str, ...],
     duration_seconds: float,
     target_sample_rate: int,
+    event_gps: float,
+    post_trigger_seconds: float,
 ) -> tuple[np.ndarray, float, dict[str, Any]]:
     ifos = list(context["ifos"])
     if any(ifo not in ifos for ifo in required_ifos):
@@ -106,10 +107,11 @@ def _crop_and_resample(
         source_samples / source_rate, duration_seconds, rtol=0.0, atol=1e-12
     ):
         raise ValueError("PE source duration must contain an integer number of samples")
-    analysis_start = int(context["analysis_start_index"])
-    analysis_stop = int(context["analysis_stop_index"])
-    center = (analysis_start + analysis_stop) // 2
-    start = center - source_samples // 2
+    desired_start_gps = float(event_gps) - (duration_seconds - post_trigger_seconds)
+    start_float = (desired_start_gps - float(context["context_gps_start"])) * source_rate
+    start = int(round(start_float))
+    if not np.isclose(start_float, start, rtol=0.0, atol=1e-6):
+        raise ValueError("PE event-aligned crop does not fall on the materialized sample grid")
     stop = start + source_samples
     if start < 0 or stop > context["mixture"].shape[1]:
         raise ValueError("PE source crop falls outside the materialized context")
@@ -132,6 +134,88 @@ def _crop_and_resample(
             else "FFT bandlimited integer upsampling; no information added above the materialized Nyquist"
         ),
         "information_nyquist_hz": source_rate / 2.0,
+        "event_gps": float(event_gps),
+        "post_trigger_seconds": post_trigger_seconds,
+        "event_sample_index": int(
+            round((float(event_gps) - gps_start) * target_sample_rate)
+        ),
+    }
+
+
+def _common_asd_from_clean_context(
+    context: dict[str, Any],
+    required_ifos: tuple[str, ...],
+    output_duration_seconds: float,
+    analysis_high_frequency_hz: float,
+    segment_seconds: float,
+    stride_seconds: float,
+    guard_seconds: float,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Estimate a condition-invariant ASD without using the central analysis crop."""
+
+    source_rate = int(context["sample_rate"])
+    segment_samples = int(round(segment_seconds * source_rate))
+    stride_samples = int(round(stride_seconds * source_rate))
+    guard_samples = int(round(guard_seconds * source_rate))
+    if segment_samples <= 1 or stride_samples <= 0:
+        raise ValueError("Common ASD segment and stride must contain positive samples")
+    if segment_samples > context["noise"].shape[1]:
+        raise ValueError("Common ASD segment exceeds the clean context")
+    analysis_start = int(context["analysis_start_index"]) - guard_samples
+    analysis_stop = int(context["analysis_stop_index"]) + guard_samples
+    starts = [
+        start
+        for start in range(0, context["noise"].shape[1] - segment_samples + 1, stride_samples)
+        if start + segment_samples <= analysis_start or start >= analysis_stop
+    ]
+    if len(starts) < 4:
+        raise ValueError("Common ASD requires at least four clean off-source segments")
+    window = np.hanning(segment_samples).astype(np.float64)
+    window_norm = source_rate * float(np.sum(window**2))
+    if window_norm <= 0:
+        raise ValueError("Common ASD window normalization is invalid")
+    native_frequencies = np.fft.rfftfreq(segment_samples, d=1.0 / source_rate)
+    target_frequencies = np.arange(
+        int(round(analysis_high_frequency_hz * output_duration_seconds)) + 1,
+        dtype=np.float64,
+    ) / output_duration_seconds
+    if target_frequencies[-1] > source_rate / 2.0 + 1e-12:
+        raise ValueError("Common ASD target exceeds the clean-context Nyquist")
+    ifos = list(context["ifos"])
+    asds = []
+    for ifo in required_ifos:
+        values = np.asarray(context["noise"][ifos.index(ifo)], dtype=np.float64)
+        periodograms = []
+        for start in starts:
+            segment = values[start : start + segment_samples]
+            segment = segment - float(np.mean(segment))
+            spectrum = np.fft.rfft(segment * window)
+            psd = np.abs(spectrum) ** 2 / window_norm
+            if segment_samples % 2 == 0:
+                psd[1:-1] *= 2.0
+            else:
+                psd[1:] *= 2.0
+            periodograms.append(psd)
+        mean_psd = np.mean(np.stack(periodograms), axis=0)
+        interpolated = np.interp(target_frequencies, native_frequencies, mean_psd)
+        interpolated = np.maximum(interpolated, np.finfo(np.float64).tiny)
+        asds.append(np.sqrt(interpolated))
+    result = np.stack(asds)
+    if not np.isfinite(result).all() or np.any(result <= 0):
+        raise ValueError("Common clean-context ASD is non-finite or non-positive")
+    return result, target_frequencies, {
+        "estimator": "mean_one_sided_periodogram",
+        "window": "numpy_hanning_symmetric",
+        "detrend": "segment_mean",
+        "segment_seconds": segment_seconds,
+        "stride_seconds": stride_seconds,
+        "analysis_guard_seconds": guard_seconds,
+        "off_source_segments": len(starts),
+        "source_sample_rate_hz": source_rate,
+        "frequency_resolution_hz": 1.0 / output_duration_seconds,
+        "maximum_frequency_hz": analysis_high_frequency_hz,
+        "condition_invariant": True,
+        "source": "clean materialized noise outside the guarded analysis interval",
     }
 
 
@@ -142,19 +226,58 @@ def _validate_existing_source(
     expected_samples: int,
     expected_condition: str,
     expected_injection: str,
+    expected_strain: np.ndarray,
+    expected_asd: np.ndarray,
+    expected_asd_frequencies: np.ndarray,
+    expected_gps_start: float,
+    expected_post_trigger_seconds: float,
 ) -> None:
     with np.load(path, allow_pickle=False) as arrays:
-        required = {"strain", "ifos", "sample_rate", "gps_start", "condition", "injection_id"}
+        required = {
+            "strain",
+            "asd",
+            "asd_frequencies",
+            "ifos",
+            "sample_rate",
+            "gps_start",
+            "post_trigger_seconds",
+            "condition",
+            "injection_id",
+        }
         missing = required - set(arrays.files)
         if missing:
             raise ValueError(f"Existing PE source lacks fields: {sorted(missing)}")
         strain = np.asarray(arrays["strain"])
         ifos = tuple(str(value) for value in arrays["ifos"].tolist())
         rate = int(arrays["sample_rate"])
+        gps_start = float(arrays["gps_start"])
+        post_trigger_seconds = float(arrays["post_trigger_seconds"])
         condition = str(arrays["condition"].item())
         injection = str(arrays["injection_id"].item())
+        asd = np.asarray(arrays["asd"])
+        asd_frequencies = np.asarray(arrays["asd_frequencies"])
     if strain.shape != (len(expected_ifos), expected_samples) or not np.isfinite(strain).all():
         raise ValueError("Existing PE source has invalid strain shape/content")
+    if (
+        asd.shape[0] != len(expected_ifos)
+        or asd.ndim != 2
+        or asd_frequencies.shape != (asd.shape[1],)
+        or not np.isfinite(asd).all()
+        or np.any(asd <= 0)
+    ):
+        raise ValueError("Existing PE source has invalid common ASD")
+    if not np.array_equal(strain, np.asarray(expected_strain, dtype=np.float32)):
+        raise ValueError("Existing PE source strain differs from deterministic reconstruction")
+    if not np.array_equal(asd, np.asarray(expected_asd, dtype=np.float64)):
+        raise ValueError("Existing PE source ASD differs from deterministic reconstruction")
+    if not np.array_equal(
+        asd_frequencies, np.asarray(expected_asd_frequencies, dtype=np.float64)
+    ):
+        raise ValueError("Existing PE source ASD frequencies differ from the frozen grid")
+    if not np.isclose(gps_start, expected_gps_start, rtol=0.0, atol=1e-9) or not np.isclose(
+        post_trigger_seconds, expected_post_trigger_seconds, rtol=0.0, atol=1e-12
+    ):
+        raise ValueError("Existing PE source timing differs from deterministic reconstruction")
     if (ifos, rate, condition, injection) != (
         expected_ifos,
         expected_rate,
@@ -176,7 +299,11 @@ def materialize_common_pe_inputs(
     required_ifos: tuple[str, ...] = ("H1", "L1"),
     source_sample_rate_hz: int = 4096,
     source_duration_seconds: float = 16.0,
+    source_post_trigger_seconds: float = 2.0,
     analysis_high_frequency_hz: float = 1024.0,
+    asd_segment_seconds: float = 8.0,
+    asd_stride_seconds: float = 4.0,
+    asd_guard_seconds: float = 2.0,
     limit: int | None = None,
     selection_seed: int = 20260721,
 ) -> dict[str, Any]:
@@ -188,8 +315,12 @@ def materialize_common_pe_inputs(
         raise ValueError("PE source detector set must contain at least two unique IFOs")
     if source_sample_rate_hz <= 0 or source_duration_seconds <= 0:
         raise ValueError("PE source sample rate and duration must be positive")
+    if not 0 < source_post_trigger_seconds < source_duration_seconds:
+        raise ValueError("PE source post-trigger duration must lie inside the source window")
     if analysis_high_frequency_hz <= 0 or analysis_high_frequency_hz > source_sample_rate_hz / 2:
         raise ValueError("PE analysis high frequency exceeds the output Nyquist")
+    if asd_segment_seconds <= 0 or asd_stride_seconds <= 0 or asd_guard_seconds < 0:
+        raise ValueError("PE common ASD settings are invalid")
     if limit is not None and limit <= 0:
         raise ValueError("PE source limit must be positive")
 
@@ -289,7 +420,11 @@ def materialize_common_pe_inputs(
         "required_ifos": list(required_ifos),
         "source_sample_rate_hz": source_sample_rate_hz,
         "source_duration_seconds": source_duration_seconds,
+        "source_post_trigger_seconds": source_post_trigger_seconds,
         "analysis_high_frequency_hz": analysis_high_frequency_hz,
+        "asd_segment_seconds": asd_segment_seconds,
+        "asd_stride_seconds": asd_stride_seconds,
+        "asd_guard_seconds": asd_guard_seconds,
         "limit": limit,
         "selection_seed": selection_seed,
         "selected_ids_hash": canonical_hash(selected_ids, 64),
@@ -311,6 +446,21 @@ def materialize_common_pe_inputs(
     expected_samples = int(round(source_duration_seconds * source_sample_rate_hz))
     for injection_id in selected_ids:
         condition_strain_digests = {}
+        clean_context = load_materialized_context(
+            indexed["clean"][injection_id], verified_background_hashes
+        )
+        common_asd, asd_frequencies, asd_metadata = _common_asd_from_clean_context(
+            clean_context,
+            required_ifos,
+            source_duration_seconds,
+            analysis_high_frequency_hz,
+            asd_segment_seconds,
+            asd_stride_seconds,
+            asd_guard_seconds,
+        )
+        common_asd_digest = hashlib.sha256(
+            np.asarray(common_asd, dtype="<f8").tobytes(order="C")
+        ).hexdigest()
         for condition in CONDITIONS:
             row = indexed[condition][injection_id]
             context = load_materialized_context(row, verified_background_hashes)
@@ -322,6 +472,8 @@ def materialize_common_pe_inputs(
                 required_ifos,
                 source_duration_seconds,
                 source_sample_rate_hz,
+                float(row["gps_time"]),
+                source_post_trigger_seconds,
             )
             if resampling["information_nyquist_hz"] < analysis_high_frequency_hz:
                 raise ValueError(
@@ -336,15 +488,25 @@ def materialize_common_pe_inputs(
                     expected_samples,
                     condition,
                     injection_id,
+                    strain,
+                    common_asd,
+                    asd_frequencies,
+                    gps_start,
+                    source_post_trigger_seconds,
                 )
             else:
                 _atomic_save_npz(
                     source_path,
                     strain=strain.astype(np.float32),
+                    asd=common_asd.astype(np.float64),
+                    asd_frequencies=asd_frequencies.astype(np.float64),
                     ifos=np.asarray(required_ifos),
                     sample_rate=np.asarray(source_sample_rate_hz, dtype=np.int64),
                     gps_start=np.asarray(gps_start, dtype=np.float64),
                     geocent_time=np.asarray(float(row["gps_time"]), dtype=np.float64),
+                    post_trigger_seconds=np.asarray(
+                        source_post_trigger_seconds, dtype=np.float64
+                    ),
                     condition=np.asarray(condition),
                     injection_id=np.asarray(injection_id),
                 )
@@ -363,6 +525,7 @@ def materialize_common_pe_inputs(
                 "analysis_input_sha256": source_sha,
                 "input_sample_rate_hz": source_sample_rate_hz,
                 "input_duration_seconds": source_duration_seconds,
+                "input_post_trigger_seconds": source_post_trigger_seconds,
                 "input_ifos": list(required_ifos),
                 "base_injection_manifest_path": str(paths["clean"]),
                 "base_injection_manifest_sha256": run_identity["manifest_sha256"]["clean"],
@@ -374,8 +537,18 @@ def materialize_common_pe_inputs(
                 ],
                 "source_information_nyquist_hz": resampling["information_nyquist_hz"],
                 "resampling": resampling["resampling"],
+                "common_asd_sha256": common_asd_digest,
+                "common_asd_metadata": asd_metadata,
                 "gps_block": row["gps_block"],
                 "gps_time": row["gps_time"],
+                "source_event_hash": canonical_hash(
+                    {
+                        "injection_id": injection_id,
+                        "waveform_id": row["waveform_id"],
+                        "gps_time": row["gps_time"],
+                    },
+                    64,
+                ),
             }
             if condition in {"contaminated", "mask_conditioned"}:
                 record.update(
@@ -434,7 +607,15 @@ def materialize_common_pe_inputs(
         "required_ifos": list(required_ifos),
         "source_sample_rate_hz": source_sample_rate_hz,
         "source_duration_seconds": source_duration_seconds,
+        "source_post_trigger_seconds": source_post_trigger_seconds,
         "analysis_high_frequency_hz": analysis_high_frequency_hz,
+        "common_asd": {
+            "segment_seconds": asd_segment_seconds,
+            "stride_seconds": asd_stride_seconds,
+            "analysis_guard_seconds": asd_guard_seconds,
+            "condition_invariant": True,
+            "source": "clean off-source materialized noise",
+        },
         "eligible_before_limit": len(eligible),
         "rejection_counts": dict(sorted(rejection_counts.items())),
         "selection_seed": selection_seed,

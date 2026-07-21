@@ -544,6 +544,9 @@ python -m gwyolo.cli pe-backend-model-freeze \
   --analysis-prior artifacts/pe/common/analysis_prior.yaml \
   --selection-report artifacts/pe/dingo/selection.json \
   --native-conditioning-config artifacts/pe/dingo/conditioning.yaml \
+  --source-sample-rate-hz 4096 \
+  --source-duration-seconds 16 \
+  --source-post-trigger-seconds 2 \
   --analysis-waveform-approximant IMRPhenomXPHM \
   --native-model-waveform-approximant IMRPhenomXPHM \
   --model-training-backend-version 0.5.8 \
@@ -568,7 +571,8 @@ identity changes, mismatched glitch lineage, masks not derived from the contamin
 missing H1/L1, truth outside the canonical prior support and a contaminated series numerically
 identical to clean. Eligible BBHs are selected by an ID hash and frozen seed before posterior
 results exist. Every output is a numeric NPZ containing 16 seconds of H1/L1 strain at 4,096 Hz, with
-one SHA-256 that both backends must consume.
+one SHA-256 that both backends must consume. The event is placed exactly two seconds before the
+source-window end rather than centered on an arbitrary eight-second background window.
 
 ```bash
 python -m gwyolo.cli pe-input-materialize \
@@ -583,6 +587,7 @@ python -m gwyolo.cli pe-input-materialize \
   --required-ifos H1 L1 \
   --source-sample-rate-hz 4096 \
   --source-duration-seconds 16 \
+  --source-post-trigger-seconds 2 \
   --analysis-high-frequency-hz 1024 \
   --limit 100 \
   --selection-seed 20260721
@@ -598,6 +603,34 @@ work should regenerate primary PE injections and background directly at 4,096 Hz
 that interpolation created high-frequency detector information. The report also states that the
 selected detection-injection population lies inside common-prior support but was not sampled from
 that prior distribution.
+
+The common source includes a condition-invariant ASD as well as strain. It is estimated once from
+the clean 64-second materialized noise context using off-source Hann-windowed periodograms; every
+segment touching the central analysis interval plus a two-second guard is excluded. The three
+conditions must contain an identical ASD and frequency-grid hash. This prevents backend- or
+condition-specific PSD estimation from masquerading as a mask-cleaning effect.
+
+`pe-native-condition` creates backend-native, hash-locked artifacts. For DINGO it applies the
+official 0.4-second Tukey roll-off, `rfft × delta_t`, two-second frequency-domain time translation
+and 20--1,024 Hz domain, writing an `EventDataset`-schema HDF5. For AMPLFI it anti-alias downsamples
+the same source to 2,048 Hz and stores the common ASD beside strain; its runtime contract forbids
+PSD re-estimation. Both native manifests retain the common-source, ASD and conditioning-config
+hashes.
+
+```bash
+python -m gwyolo.cli pe-native-condition \
+  --source-manifest artifacts/pe/common_sources_val/common_pe_inputs.jsonl \
+  --config configs/dingo_o4a_native_conditioning.yaml \
+  --output-dir artifacts/pe/dingo_native_val \
+  --required-split val
+```
+
+Real DINGO GNPE sampling is executed by the pinned backend interpreter through
+`dingo-common-batch` and `scripts/run_dingo_common_event.py`. The runner verifies the event, main
+model and time-initialization model hashes, loads upstream `EventDataset`, `GWSampler` and
+`GWSamplerGNPE`, retains the native result HDF5, and writes numeric posterior NPZ plus measured
+latency. Backend import or model compatibility failures are explicit and non-zero; no synthetic
+posterior fallback exists. A resumed batch revalidates every posterior and native-result hash.
 
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte

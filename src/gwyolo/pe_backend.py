@@ -244,6 +244,8 @@ def _audit_model_metadata_semantics(
         "ifos": contract.get("source_ifos"),
         "sample_rate_hz": contract.get("source_sample_rate_hz"),
         "duration_seconds": contract.get("source_duration_seconds"),
+        "post_trigger_seconds": contract.get("source_post_trigger_seconds"),
+        "common_asd_required": contract.get("common_asd_required"),
     }
     if source_input != expected_source:
         failures.append("model metadata source_input does not match comparison contract")
@@ -324,13 +326,28 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
         failures.append("identical source bytes across backends must be required")
     if contract.get("conditions") != list(REQUIRED_CONDITIONS):
         failures.append(f"conditions must be {list(REQUIRED_CONDITIONS)}")
-    for numeric_field in ("source_sample_rate_hz", "source_duration_seconds"):
+    for numeric_field in (
+        "source_sample_rate_hz",
+        "source_duration_seconds",
+        "source_post_trigger_seconds",
+    ):
         try:
             value = float(contract[numeric_field])
             if value <= 0:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             failures.append(f"comparison_contract.{numeric_field} must be positive")
+    try:
+        if float(contract["source_post_trigger_seconds"]) >= float(
+            contract["source_duration_seconds"]
+        ):
+            failures.append("source post-trigger duration must be shorter than source duration")
+    except (KeyError, TypeError, ValueError):
+        pass
+    if not contract.get("common_asd_required"):
+        failures.append("a common source ASD must be required")
+    if not contract.get("common_asd_condition_invariant"):
+        failures.append("the common source ASD must be invariant across conditions")
 
     backend_config = config.get("backends")
     if not isinstance(backend_config, dict):
@@ -443,6 +460,7 @@ def freeze_pe_backend_model_metadata(
     source_ifos: list[str],
     source_sample_rate_hz: float,
     source_duration_seconds: float,
+    source_post_trigger_seconds: float,
     analysis_waveform_approximant: str,
     native_model_waveform_approximant: str,
     model_training_backend_version: str,
@@ -456,8 +474,12 @@ def freeze_pe_backend_model_metadata(
         raise ValueError("initial shared PE model metadata supports BBH only")
     if source_ifos != ["H1", "L1"]:
         raise ValueError("initial shared PE source IFOs must be H1/L1")
-    if source_sample_rate_hz <= 0 or source_duration_seconds <= 0:
-        raise ValueError("source sample rate and duration must be positive")
+    if (
+        source_sample_rate_hz <= 0
+        or source_duration_seconds <= 0
+        or not 0 < source_post_trigger_seconds < source_duration_seconds
+    ):
+        raise ValueError("source rate, duration and post-trigger duration are invalid")
     if not native_inference_parameters or len(set(native_inference_parameters)) != len(
         native_inference_parameters
     ):
@@ -506,6 +528,8 @@ def freeze_pe_backend_model_metadata(
             "ifos": source_ifos,
             "sample_rate_hz": source_sample_rate_hz,
             "duration_seconds": source_duration_seconds,
+            "post_trigger_seconds": source_post_trigger_seconds,
+            "common_asd_required": True,
         },
         "analysis_waveform_approximant": analysis_waveform_approximant,
         "native_model_waveform_approximant": native_model_waveform_approximant,

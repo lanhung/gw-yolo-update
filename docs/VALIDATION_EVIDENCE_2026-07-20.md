@@ -740,3 +740,11 @@ hand-checkable alternating-sample regression. Direct 4,096-Hz regeneration remai
 waveform-systematics stratum. No posterior has yet been run, so the new report deliberately sets
 `scientific_claim_allowed=false` until validation-selected DINGO/AMPLFI models and paired posterior
 coverage, bias, width, sample-efficiency, sky-area and latency intervals exist.
+
+The source boundary was then tightened in two ways. First, geocentric event time is frozen at a
+two-second post-trigger offset within every 16-second source, removing background-window-dependent
+event placement. Second, each source carries an ASD estimated only from clean, guarded off-source
+context, and all three conditions share its exact hash. DINGO and AMPLFI conditioning configs now
+generate resumable native HDF5 artifacts with source/ASD/config lineage. The DINGO runner calls the
+real upstream `EventDataset`, `GWSampler` and `GWSamplerGNPE` APIs and has no mock-posterior fallback;
+an actual model-load smoke remains pending the queued pinned environment and official weights.

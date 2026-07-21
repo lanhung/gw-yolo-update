@@ -5,6 +5,9 @@ comparison_contract:
   source_ifos: [H1, L1]
   source_sample_rate_hz: 4096
   source_duration_seconds: 16
+  source_post_trigger_seconds: 2
+  common_asd_required: true
+  common_asd_condition_invariant: true
   conditions: [clean, contaminated, mask_conditioned]
   identical_source_bytes_across_backends: true
   backend_native_conditioning_allowed: true
