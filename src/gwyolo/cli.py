@@ -1164,7 +1164,9 @@ def build_parser() -> argparse.ArgumentParser:
     pe_model.add_argument("--source-duration-seconds", type=float, default=8)
     pe_model.add_argument("--analysis-waveform-approximant", required=True)
     pe_model.add_argument("--native-model-waveform-approximant", required=True)
-    pe_model.add_argument("--inference-parameters", nargs="+", required=True)
+    pe_model.add_argument("--model-training-backend-version", required=True)
+    pe_model.add_argument("--native-inference-parameters", nargs="+", required=True)
+    pe_model.add_argument("--reported-parameter-mapping", nargs="+", required=True)
 
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
@@ -2645,7 +2647,9 @@ def main(argv: list[str] | None = None) -> int:
                 source_duration_seconds=args.source_duration_seconds,
                 analysis_waveform_approximant=args.analysis_waveform_approximant,
                 native_model_waveform_approximant=args.native_model_waveform_approximant,
-                inference_parameters=args.inference_parameters,
+                model_training_backend_version=args.model_training_backend_version,
+                native_inference_parameters=args.native_inference_parameters,
+                reported_parameter_mapping=args.reported_parameter_mapping,
             )
         )
     elif args.command == "ood-abstention-evaluate":

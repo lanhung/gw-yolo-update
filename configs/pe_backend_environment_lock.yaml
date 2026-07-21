@@ -3,8 +3,8 @@ schema_version: 1
 comparison_contract:
   population: BBH
   source_ifos: [H1, L1]
-  source_sample_rate_hz: 2048
-  source_duration_seconds: 8
+  source_sample_rate_hz: 4096
+  source_duration_seconds: 16
   conditions: [clean, contaminated, mask_conditioned]
   identical_source_bytes_across_backends: true
   backend_native_conditioning_allowed: true

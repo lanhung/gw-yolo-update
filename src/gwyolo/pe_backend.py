@@ -250,18 +250,34 @@ def _audit_model_metadata_semantics(
     for field in (
         "analysis_waveform_approximant",
         "native_model_waveform_approximant",
+        "model_training_backend_version",
         "selection_metric",
     ):
         if metadata.get(field) in (None, ""):
             failures.append(f"model metadata {field} is required")
-    parameters = metadata.get("inference_parameters")
+    parameters = metadata.get("native_inference_parameters")
     if (
         not isinstance(parameters, list)
         or not parameters
         or any(not isinstance(value, str) or not value for value in parameters)
         or len(set(parameters)) != len(parameters)
     ):
-        failures.append("model metadata inference_parameters must be non-empty and unique")
+        failures.append("model metadata native_inference_parameters must be non-empty and unique")
+    mapping = metadata.get("reported_parameter_mapping")
+    if (
+        not isinstance(mapping, dict)
+        or not mapping
+        or any(
+            not isinstance(canonical, str)
+            or not canonical
+            or not isinstance(native, str)
+            or not native
+            for canonical, native in mapping.items()
+        )
+    ):
+        failures.append("model metadata reported_parameter_mapping must be non-empty")
+    elif isinstance(parameters, list) and any(native not in parameters for native in mapping.values()):
+        failures.append("reported parameter mapping references a non-native parameter")
     if metadata.get("selection_split") != "validation":
         failures.append("model checkpoint must be selected only on validation")
     artifacts = metadata.get("artifacts")
@@ -368,10 +384,15 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
     if all(name in backends for name in REQUIRED_BACKENDS):
         semantics = [backends[name]["model_metadata_semantics"] for name in REQUIRED_BACKENDS]
         if all(semantics):
-            shared_fields = ("analysis_waveform_approximant", "inference_parameters")
-            for field in shared_fields:
-                if semantics[0].get(field) != semantics[1].get(field):
-                    failures.append(f"DINGO/AMPLFI model metadata differ in {field}")
+            if semantics[0].get("analysis_waveform_approximant") != semantics[1].get(
+                "analysis_waveform_approximant"
+            ):
+                failures.append("DINGO/AMPLFI model metadata differ in analysis waveform")
+            common_parameters = [
+                sorted(value.get("reported_parameter_mapping", {})) for value in semantics
+            ]
+            if common_parameters[0] != common_parameters[1]:
+                failures.append("DINGO/AMPLFI reported common parameter sets differ")
             prior_hashes = [
                 value.get("verified_artifacts", {})
                 .get("analysis_prior", {})
@@ -424,7 +445,9 @@ def freeze_pe_backend_model_metadata(
     source_duration_seconds: float,
     analysis_waveform_approximant: str,
     native_model_waveform_approximant: str,
-    inference_parameters: list[str],
+    model_training_backend_version: str,
+    native_inference_parameters: list[str],
+    reported_parameter_mapping: list[str],
 ) -> dict[str, Any]:
     normalized_backend = backend.upper()
     if normalized_backend not in REQUIRED_BACKENDS:
@@ -435,8 +458,24 @@ def freeze_pe_backend_model_metadata(
         raise ValueError("initial shared PE source IFOs must be H1/L1")
     if source_sample_rate_hz <= 0 or source_duration_seconds <= 0:
         raise ValueError("source sample rate and duration must be positive")
-    if not inference_parameters or len(set(inference_parameters)) != len(inference_parameters):
-        raise ValueError("inference parameters must be non-empty and unique")
+    if not native_inference_parameters or len(set(native_inference_parameters)) != len(
+        native_inference_parameters
+    ):
+        raise ValueError("native inference parameters must be non-empty and unique")
+    mapping: dict[str, str] = {}
+    for value in reported_parameter_mapping:
+        if value.count("=") != 1:
+            raise ValueError("reported parameter mappings must use canonical=native")
+        canonical, native = value.split("=", 1)
+        if not canonical or not native or canonical in mapping:
+            raise ValueError("reported parameter mapping is empty or duplicated")
+        if native not in native_inference_parameters:
+            raise ValueError("reported parameter mapping references a non-native parameter")
+        mapping[canonical] = native
+    if not mapping:
+        raise ValueError("at least one reported common parameter is required")
+    if not model_training_backend_version:
+        raise ValueError("model training backend version is required")
     paths = {
         "training_config": Path(training_config_path).resolve(),
         "training_data_manifest": Path(training_data_manifest_path).resolve(),
@@ -470,7 +509,9 @@ def freeze_pe_backend_model_metadata(
         },
         "analysis_waveform_approximant": analysis_waveform_approximant,
         "native_model_waveform_approximant": native_model_waveform_approximant,
-        "inference_parameters": inference_parameters,
+        "model_training_backend_version": model_training_backend_version,
+        "native_inference_parameters": native_inference_parameters,
+        "reported_parameter_mapping": mapping,
         "selection_split": "validation",
         "selection_metric": selection_metric,
         "artifacts": {

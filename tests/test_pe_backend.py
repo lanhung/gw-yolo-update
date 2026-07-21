@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -97,12 +98,24 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "population": "BBH",
                     "source_input": {
                         "ifos": ["H1", "L1"],
-                        "sample_rate_hz": 2048,
-                        "duration_seconds": 8,
+                        "sample_rate_hz": 4096,
+                        "duration_seconds": 16,
                     },
                     "analysis_waveform_approximant": "IMRPhenomXPHM",
                     "native_model_waveform_approximant": "IMRPhenomPv2",
-                    "inference_parameters": ["chirp_mass", "mass_ratio", "distance"],
+                    "model_training_backend_version": version,
+                    "native_inference_parameters": [
+                        "chirp_mass",
+                        "mass_ratio",
+                        "distance" if backend == "AMPLFI" else "luminosity_distance",
+                    ],
+                    "reported_parameter_mapping": {
+                        "chirp_mass": "chirp_mass",
+                        "mass_ratio": "mass_ratio",
+                        "luminosity_distance": (
+                            "distance" if backend == "AMPLFI" else "luminosity_distance"
+                        ),
+                    },
                     "selection_split": "validation",
                     "selection_metric": "validation_loss",
                     "artifacts": {
@@ -139,8 +152,8 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "comparison_contract": {
             "population": "BBH",
             "source_ifos": ["H1", "L1"],
-            "source_sample_rate_hz": 2048,
-            "source_duration_seconds": 8,
+            "source_sample_rate_hz": 4096,
+            "source_duration_seconds": 16,
             "conditions": ["clean", "contaminated", "mask_conditioned"],
             "identical_source_bytes_across_backends": True,
         },
@@ -227,11 +240,13 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
         output_path=output,
         population="BBH",
         source_ifos=["H1", "L1"],
-        source_sample_rate_hz=2048,
-        source_duration_seconds=8,
+        source_sample_rate_hz=4096,
+        source_duration_seconds=16,
         analysis_waveform_approximant="IMRPhenomXPHM",
         native_model_waveform_approximant="IMRPhenomPv2",
-        inference_parameters=["chirp_mass", "mass_ratio"],
+        model_training_backend_version="0.5.8",
+        native_inference_parameters=["chirp_mass", "mass_ratio"],
+        reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
     )
     assert report["model_sha256"] == file_sha256(model)
     assert report["selection_split"] == "validation"
@@ -252,9 +267,27 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
             output_path=output,
             population="BBH",
             source_ifos=["H1", "L1"],
-            source_sample_rate_hz=2048,
-            source_duration_seconds=8,
+            source_sample_rate_hz=4096,
+            source_duration_seconds=16,
             analysis_waveform_approximant="IMRPhenomXPHM",
             native_model_waveform_approximant="IMRPhenomPv2",
-            inference_parameters=["chirp_mass", "mass_ratio"],
+            model_training_backend_version="0.5.8",
+            native_inference_parameters=["chirp_mass", "mass_ratio"],
+            reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
         )
+
+
+def test_pe_backend_lock_rejects_different_reported_parameter_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _config(tmp_path, monkeypatch)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    metadata_path = Path(os.environ["TEST_AMPLFI_METADATA"])
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    metadata["reported_parameter_mapping"].pop("luminosity_distance")
+    metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+    config["backends"]["AMPLFI"]["model_metadata_sha256"] = file_sha256(metadata_path)
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    report = audit_pe_backend_lock(path)
+    assert report["publication_ready"] is False
+    assert "DINGO/AMPLFI reported common parameter sets differ" in report["failures"]

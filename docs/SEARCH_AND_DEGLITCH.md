@@ -499,7 +499,7 @@ readiness boundary. `configs/pe_backend_environment_lock.yaml` pins the upstream
 commit while machine paths are supplied through environment variables. The strict command verifies
 clean Git sources, distinct Python interpreters, compatible Python and installed distribution
 versions, CUDA visibility, and the SHA-256 of both the selected checkpoint and its training/model
-metadata. It also freezes a shared BBH, H1/L1, 2,048 Hz source-input contract with byte-identical
+metadata. It also freezes a shared BBH, H1/L1, 4,096 Hz, 16-second source-input contract with byte-identical
 clean, contaminated and mask-conditioned source artifacts across backends. Backend-native
 conditioning may differ only when its derived artifact and settings are separately recorded and
 hashed. The committed checkpoint hashes intentionally remain `UNRESOLVED`; therefore the strict
@@ -531,7 +531,8 @@ configuration, training-data manifest, common analysis prior, selection report a
 conditioning configuration. The sidecar records the native and common analysis waveform
 approximants, common source contract and inference parameters. The environment audit reloads and
 verifies every referenced artifact, then requires DINGO and AMPLFI to use the same analysis prior,
-analysis waveform and inferred parameter set. This prevents an arbitrary downloaded checkpoint or
+analysis waveform and explicitly mapped common parameter set. Native output spaces may differ, but
+every canonical paper parameter must map to a real native posterior field. This prevents an arbitrary downloaded checkpoint or
 a test-selected model from entering the paper table.
 
 ```bash
@@ -545,9 +546,20 @@ python -m gwyolo.cli pe-backend-model-freeze \
   --native-conditioning-config artifacts/pe/dingo/conditioning.yaml \
   --analysis-waveform-approximant IMRPhenomXPHM \
   --native-model-waveform-approximant IMRPhenomXPHM \
-  --inference-parameters chirp_mass mass_ratio luminosity_distance \
+  --model-training-backend-version 0.5.8 \
+  --native-inference-parameters chirp_mass mass_ratio luminosity_distance theta_jn ra dec psi \
+  --reported-parameter-mapping chirp_mass=chirp_mass mass_ratio=mass_ratio \
+    luminosity_distance=luminosity_distance theta_jn=theta_jn ra=ra dec=dec psi=psi \
   --output artifacts/pe/dingo/model_metadata.json
 ```
+
+The shared source artifact is deliberately a superset of backend-native conditioning. The selected
+official O4a DINGO precessing HL model uses 16 seconds at 4,096 Hz and analyzes 20--1,024 Hz, while
+the AMPLFI v0.6 CBC default uses a 3-second, 2,048 Hz native window. Both must derive their native
+input from the same hashed 16-second source artifact, and each derived tensor plus conditioning
+configuration must also be hashed. Native parameter names are mapped to a common paper space; for
+example AMPLFI `distance`, `inclination` and `phi` map to canonical `luminosity_distance`, `theta_jn`
+and `ra`, respectively.
 
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
