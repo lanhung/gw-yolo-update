@@ -754,6 +754,13 @@ def build_parser() -> argparse.ArgumentParser:
     overlap_sampling_promotion.add_argument("--config", required=True)
     overlap_sampling_promotion.add_argument("--output", required=True)
 
+    overlap_five_seed_summary = subparsers.add_parser(
+        "physical-overlap-five-seed-summarize"
+    )
+    overlap_five_seed_summary.add_argument("--promotion-report", required=True)
+    overlap_five_seed_summary.add_argument("--report", action="append", required=True)
+    overlap_five_seed_summary.add_argument("--output", required=True)
+
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
     mask_audit_plan.add_argument("--output-dir", required=True)
@@ -2260,6 +2267,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.gravityspy_corpus_audit,
                 args.config,
                 args.output,
+            )
+        )
+    elif args.command == "physical-overlap-five-seed-summarize":
+        from .overlap_training import summarize_overlap_five_seed_promotion
+
+        _print(
+            summarize_overlap_five_seed_promotion(
+                args.promotion_report, args.report, args.output
             )
         )
     elif args.command == "physical-overlap-contamination":

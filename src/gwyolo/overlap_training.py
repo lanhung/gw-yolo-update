@@ -463,6 +463,134 @@ def promote_overlap_sampling_arm(
     return result
 
 
+def summarize_overlap_five_seed_promotion(
+    promotion_report_path: str | Path,
+    finetune_report_paths: list[str | Path],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Aggregate exactly five validation-selected runs of the promoted arm."""
+
+    promotion = json.loads(Path(promotion_report_path).read_text(encoding="utf-8"))
+    promoted = promotion.get("promoted_arm")
+    if (
+        promotion.get("status") != "validation_only_overlap_sampling_promotion"
+        or not promotion.get("passed")
+        or not promotion.get("scale_to_five_seeds")
+        or promoted not in {"uniform", "family_balanced"}
+    ):
+        raise ValueError("Overlap sampling promotion did not authorize five seeds")
+    paths = [Path(path) for path in finetune_report_paths]
+    if len(paths) != 5:
+        raise ValueError("Overlap promotion summary requires exactly five reports")
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    if any(
+        report.get("status") != "validation_selected_real_glitch_overlap_finetune"
+        for report in reports
+    ):
+        raise ValueError("A five-seed overlap report is not validation-selected")
+    seeds = [int(report["seed"]) for report in reports]
+    if len(set(seeds)) != 5:
+        raise ValueError("Five-seed overlap reports do not contain five unique seeds")
+    report_hashes = {file_sha256(path) for path in paths}
+    promoted_hash = str(promotion["input_report_hashes"][promoted])
+    if promoted_hash not in report_hashes:
+        raise ValueError("Five-seed reports omit the one-seed promoted checkpoint report")
+    common_fields = (
+        "config_hash",
+        "overlap_train_manifest_sha256",
+        "overlap_validation_manifest_sha256",
+        "clean_train_manifest_sha256",
+        "clean_validation_manifest_sha256",
+        "pretrained_checkpoint_sha256",
+    )
+    for field in common_fields:
+        if len({str(report.get(field)) for report in reports}) != 1:
+            raise ValueError(f"Five-seed overlap reports differ in {field}")
+
+    family_labels = [
+        set(report["calibrated_overlap_validation"]["by_glitch_family"])
+        for report in reports
+    ]
+    if any(labels != family_labels[0] for labels in family_labels[1:]):
+        raise ValueError("Five-seed overlap reports differ in validation families")
+
+    def selected_retention(report: dict[str, Any]) -> float:
+        rows = [
+            row
+            for row in report["history"]
+            if int(row["epoch"]) == int(report["best_epoch"])
+        ]
+        if len(rows) != 1 or not rows[0].get("checkpoint_eligible"):
+            raise ValueError("A five-seed overlap checkpoint is not retention-eligible")
+        return float(rows[0]["clean_chirp_iou_retention"])
+
+    def summary(values: list[float]) -> dict[str, float]:
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            "mean": float(array.mean()),
+            "sample_standard_deviation": float(array.std(ddof=1)),
+            "minimum": float(array.min()),
+            "maximum": float(array.max()),
+        }
+
+    metrics = {
+        "clean_chirp_iou_retention": summary(
+            [selected_retention(report) for report in reports]
+        ),
+        "overlap_chirp_iou": summary(
+            [
+                float(report["calibrated_overlap_validation"]["chirp"]["iou"])
+                for report in reports
+            ]
+        ),
+        "overlap_glitch_iou": summary(
+            [
+                float(report["calibrated_overlap_validation"]["glitch"]["iou"])
+                for report in reports
+            ]
+        ),
+    }
+    by_family = {
+        label: summary(
+            [
+                float(
+                    report["calibrated_overlap_validation"]["by_glitch_family"][label][
+                        "iou"
+                    ]
+                )
+                for report in reports
+            ]
+        )
+        for label in sorted(family_labels[0])
+    }
+    result = {
+        "status": "completed_five_seed_source_safe_overlap_validation",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "test_data_opened": False,
+        "promoted_arm": promoted,
+        "seeds": sorted(seeds),
+        "metrics": metrics,
+        "by_glitch_family": by_family,
+        "promotion_report_path": str(promotion_report_path),
+        "promotion_report_sha256": file_sha256(promotion_report_path),
+        "finetune_reports": [
+            {"path": str(path), "sha256": file_sha256(path)} for path in paths
+        ],
+        "common_artifact_hashes": {
+            field: reports[0].get(field) for field in common_fields
+        },
+        "required_next_gates": [
+            "continuous_background_far_ifar_vt",
+            "human_weak_mask_audit",
+            "locked_o4a_then_o4b_evaluation",
+        ],
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def _overlap_epoch(
     model: Any,
     loader: Any,

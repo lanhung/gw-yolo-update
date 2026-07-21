@@ -11,6 +11,7 @@ from gwyolo.overlap_training import (
     glitch_family_sampling_weights,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
+    summarize_overlap_five_seed_promotion,
     summarize_glitch_family_counts,
 )
 
@@ -161,6 +162,25 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
     assert result["promoted_arm"] == "family_balanced"
     assert result["scale_to_five_seeds"]
     assert result["test_data_opened"] is False
+    five_reports = [reports["family"]]
+    family_payload = json.loads(reports["family"].read_text())
+    for seed in (8, 9, 10, 11):
+        path = tmp_path / f"family-seed-{seed}.json"
+        payload = dict(family_payload)
+        payload["seed"] = seed
+        path.write_text(json.dumps(payload))
+        five_reports.append(path)
+    summary = summarize_overlap_five_seed_promotion(
+        tmp_path / "promotion.json",
+        five_reports,
+        tmp_path / "five-seed-summary.json",
+    )
+    assert summary["passed"]
+    assert summary["seeds"] == [7, 8, 9, 10, 11]
+    assert summary["metrics"]["overlap_glitch_iou"]["mean"] == pytest.approx(0.19)
+    assert summary["metrics"]["overlap_glitch_iou"][
+        "sample_standard_deviation"
+    ] == pytest.approx(0.0)
 
 
 def test_overlap_dataset_preserves_both_masks_and_availability(tmp_path) -> None:

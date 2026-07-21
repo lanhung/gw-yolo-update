@@ -889,6 +889,11 @@ the same seed and pretrained checkpoint. Every overlap row must bind the passed 
 audit. Selection uses validation-only clean chirp retention, overall glitch IoU, family-median and
 worst-family IoU, zero-IoU family count and bounded family regressions. The command either names one
 arm for five-seed expansion or records `scale_to_five_seeds=false`; it never opens test data.
+`scripts/run_overlap_five_seed_promotion.sh` exits without training when that flag is false. When it
+is true, it retains the promoted seed, runs four additional declared seeds and requires exactly five
+unique validation-selected reports with identical data, config and pretrained-model hashes.
+`physical-overlap-five-seed-summarize` records mean, sample standard deviation, extrema and
+per-family IoU while continuing to withhold any test or search claim.
 
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
