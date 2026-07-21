@@ -708,3 +708,17 @@ the bounded cache. A global `hash_threshold_v1` 40-pair background plan and expo
 queued after all source files pass full-file verification. Raw pair count is not a success gate:
 only DQ-valid validation windows and their realized non-cyclic positive-lag exposure determine
 whether the 0.1/year target becomes measurable.
+
+Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
+log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
+numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed
+before the candidate report was read. On the exact same 2,000 physical parents, 596 validation
+parents and 900 optimizer updates, overall padded top-1 changes from 0.3322 to 0.3339, SNR 8--15
+top-1 from 0.6849 to 0.7123, and peak p90 from 4.4769 s to 4.4028 s. BNS top-1 rises by 0.0106 and
+NSBH falls by 0.0066, both within the predeclared family-regression tolerance. The three material
+improvement checks all fail: required gains were +0.05 overall, +0.03 at SNR 8--15 and -0.25 s at
+p90. The candidate report SHA256 is
+`5144888861c83f244618b60dcada5789792bcd5f46cc45b0b3faae146955e3a0`; the machine gate report
+SHA256 is `61206163807d517d8218e745da7f18bfae19a99634787fd52135475990839843`.
+Scaling this arm to 5k is prohibited. Neither waveform count nor a simple multi-resolution STFT
+stack resolves the current candidate ambiguity on fixed GPS support.
