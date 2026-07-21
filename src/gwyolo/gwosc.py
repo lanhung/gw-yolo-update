@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import urllib.request
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +21,35 @@ from .runtime import execution_provenance
 
 API_ROOT = "https://gwosc.org/api/v2"
 USER_AGENT = "GW-YOLO-research/0.1"
+METADATA_MAX_ATTEMPTS = 5
+RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _urlopen_metadata(
+    request: urllib.request.Request,
+    timeout: float,
+    max_attempts: int = METADATA_MAX_ATTEMPTS,
+) -> Any:
+    """Open public metadata with bounded retry for transient transport failures."""
+
+    if max_attempts <= 0:
+        raise ValueError("metadata request max attempts must be positive")
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP_STATUS:
+                raise
+            last_error = exc
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+        if attempt + 1 < max_attempts:
+            time.sleep(min(0.5 * (2**attempt), 8.0))
+    raise IOError(
+        f"public metadata request failed after {max_attempts} attempts: "
+        f"{request.full_url}; last_error={last_error}"
+    ) from last_error
 
 
 def _api_json(url: str) -> dict[str, Any]:
@@ -27,7 +57,7 @@ def _api_json(url: str) -> dict[str, Any]:
         url,
         headers={"Accept": "application/json", "User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _urlopen_metadata(request, timeout=60) as response:
         value = json.load(response)
     if not isinstance(value, dict):
         raise ValueError(f"Expected an object from {url}")
@@ -540,7 +570,7 @@ def run_gwosc_verification(
 
 def _remote_size(url: str) -> int | None:
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _urlopen_metadata(request, timeout=60) as response:
         value = response.headers.get("Content-Length")
     return int(value) if value else None
 
