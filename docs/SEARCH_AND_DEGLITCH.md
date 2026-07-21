@@ -1030,7 +1030,12 @@ allowed.
 The official release has a separate, deliberately narrower evaluation path. The
 `dingo-official-native-model-freeze` command replays the source acquisition and passing dual-model
 load receipt, parses the published settings, and binds the 10-million-waveform, epoch-225,
-SEOBNRv5PHM H1/L1 model to its 16-second, 4,096 Hz native contract. It explicitly records
+SEOBNRv5PHM H1/L1 model to its 16-second, 4,096 Hz native contract. The load receipt's DINGO
+version must equal the published training version; loading a 0.5.8 model under 0.9.8 is rejected
+because DINGO itself reports a backward-incompatible window-factor change. The separate
+`setup_dingo_native_overlay.sh` installs exact tag/commit v0.5.8 in an isolated package overlay,
+hashes both the read-only dependency base and overlay package inventories, and requires CUDA before
+any native model-load retry. It explicitly records
 `common_prior_equivalent=false` and `cross_backend_absolute_comparison_allowed=false`.
 `scripts/run_dingo_official_native_paired_smoke.sh` can therefore measure only the validation-set
 clean/contaminated/mask-conditioned change within this one backend. It cannot enter

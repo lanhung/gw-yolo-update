@@ -52,9 +52,8 @@ def _native_manifest(tmp_path: Path) -> tuple[Path, Path]:
     return Path(report["manifest_path"]), config
 
 
-def _fake_runner(path: Path) -> None:
-    path.write_text(
-        """import argparse,hashlib,json,numpy as np,pathlib
+def _fake_runner(path: Path, backend_version: str = "0.9.8") -> None:
+    source = """import argparse,hashlib,json,numpy as np,pathlib
 p=argparse.ArgumentParser()
 for x in ('event','model','model_init','posterior_output','result_output','report_output','expected_event_sha256','expected_model_sha256','expected_model_init_sha256','num_samples','batch_size','num_gnpe_iterations','device','seed'):
  p.add_argument('--'+x.replace('_','-'))
@@ -65,7 +64,9 @@ np.savez(a.posterior_output, chirp_mass=np.array([20.,21.]), mass_ratio=np.array
 pathlib.Path(a.result_output).write_bytes(b'native-result')
 r={'status':'real_dingo_gnpe_posterior_complete','backend':'DINGO','backend_version':'0.9.8','event_sha256':a.expected_event_sha256,'model_sha256':a.expected_model_sha256,'model_init_sha256':a.expected_model_init_sha256,'posterior_path':str(pathlib.Path(a.posterior_output).resolve()),'posterior_sha256':sha(a.posterior_output),'native_result_path':str(pathlib.Path(a.result_output).resolve()),'native_result_sha256':sha(a.result_output),'latency_seconds':1.5,'latency_scope':'model-load-and-event-preprocessing-through-posterior-and-native-result-write_v1_excludes-artifact-verification-imports-and-mask-generation','latency_components_seconds':{'model_load':.2,'event_preprocessing':.1,'posterior_sampling':1.0,'posterior_postprocessing_and_write':.1},'effective_sample_size':2.0,'environment':{'hostname':'gpu-node','gpu':'RTX 4090','python':'3.11','torch':'2','cuda':'12'}}
 pathlib.Path(a.report_output).write_text(json.dumps(r))
-""",
+"""
+    path.write_text(
+        source.replace("'backend_version':'0.9.8'", f"'backend_version':'{backend_version}'"),
         encoding="utf-8",
     )
 
@@ -414,7 +415,7 @@ def _official_source_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dic
                 "scientific_claim_allowed": False,
                 "test_rows_read": 0,
                 "backend": "DINGO",
-                "backend_version": "0.9.8",
+                "backend_version": "0.5.8",
                 "posterior_model_path": str(paths["posterior_model"]),
                 "posterior_model_sha256": file_sha256(paths["posterior_model"]),
                 "initialization_model_path": str(paths["time_initialization_model"]),
@@ -452,7 +453,7 @@ def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
     )
     assert report["status"] == "verified_official_dingo_native_model_metadata"
     assert report["training_backend_version"] == "0.5.8"
-    assert report["load_runtime_version"] == "0.9.8"
+    assert report["load_runtime_version"] == "0.5.8"
     assert report["model_epoch"] == 225
     assert report["training_waveforms"] == 10_000_000
     assert report["native_model_waveform_approximant"] == "SEOBNRv5PHM"
@@ -461,6 +462,16 @@ def test_freeze_official_dingo_metadata_keeps_native_comparison_boundary(
     assert report["common_prior_equivalent"] is False
     assert report["test_rows_read"] == 0
     assert report["model_sha256"] == file_sha256(paths["posterior_model"])
+
+    incompatible_receipt = json.loads(receipt.read_text(encoding="utf-8"))
+    incompatible_receipt["backend_version"] = "0.9.8"
+    receipt.write_text(json.dumps(incompatible_receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="inference runtime must match"):
+        freeze_official_dingo_native_model_metadata(
+            source, acquisition, receipt, conditioning, output
+        )
+    incompatible_receipt["backend_version"] = "0.5.8"
+    receipt.write_text(json.dumps(incompatible_receipt), encoding="utf-8")
 
     changed = yaml.safe_load(conditioning.read_text(encoding="utf-8"))
     changed["source_sample_rate_hz"] = 2048
@@ -495,6 +506,7 @@ def test_dingo_official_native_batch_is_not_cross_backend_comparable(
                 "within_backend_paired_robustness_allowed": True,
                 "cross_backend_absolute_comparison_allowed": False,
                 "common_prior_equivalent": False,
+                "load_runtime_version": "0.5.8",
                 "model_path": str(model),
                 "model_sha256": file_sha256(model),
                 "source_input": {
@@ -532,7 +544,7 @@ def test_dingo_official_native_batch_is_not_cross_backend_comparable(
         encoding="utf-8",
     )
     runner = tmp_path / "runner.py"
-    _fake_runner(runner)
+    _fake_runner(runner, "0.5.8")
     report = run_dingo_common_batch(
         native_manifest=native,
         model_metadata_path=metadata,
@@ -557,3 +569,22 @@ def test_dingo_official_native_batch_is_not_cross_backend_comparable(
     assert all(row["cross_backend_absolute_comparison_allowed"] is False for row in rows)
     assert all(row["waveform_approximant"] == "SEOBNRv5PHM" for row in rows)
     assert all(row["prior_hash"] == file_sha256(settings) for row in rows)
+
+    incompatible_runner = tmp_path / "incompatible-runner.py"
+    _fake_runner(incompatible_runner, "0.9.8")
+    with pytest.raises(ValueError, match="event runtime differs"):
+        run_dingo_common_batch(
+            native_manifest=native,
+            model_metadata_path=metadata,
+            native_prior_path=settings,
+            model_init_path=model_init,
+            python_executable=sys.executable,
+            runner_script=incompatible_runner,
+            output_dir=tmp_path / "incompatible-posteriors",
+            required_split="val",
+            num_samples=2,
+            batch_size=1,
+            num_gnpe_iterations=2,
+            device="cpu",
+            comparison_mode="official_native",
+        )

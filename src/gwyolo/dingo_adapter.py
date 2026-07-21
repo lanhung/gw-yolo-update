@@ -363,6 +363,10 @@ def freeze_official_dingo_native_model_metadata(
         or float(conditioning.get("source_duration_seconds", 0)) != 16
     ):
         raise ValueError("official DINGO settings differ from the frozen native contract")
+    if load_receipt.get("backend_version") != version_match.group(1):
+        raise ValueError(
+            "official DINGO inference runtime must match the model training runtime"
+        )
     artifacts = {
         "source_config": source_config_path,
         "acquisition_report": acquisition_report_path,
@@ -726,6 +730,12 @@ def run_dingo_common_batch(
                 row["native_conditioning_sha256"],
                 metadata["model_sha256"],
                 model_init_sha,
+            )
+        if official_native and report.get("backend_version") != metadata.get(
+            "load_runtime_version"
+        ):
+            raise ValueError(
+                "official DINGO event runtime differs from the native model-load receipt"
             )
         with np.load(report["posterior_path"], allow_pickle=False) as posterior:
             if "ra" not in posterior.files or "dec" not in posterior.files:
