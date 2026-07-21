@@ -4,11 +4,15 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 from .io import atomic_write_json, file_sha256, load_yaml
 from .runtime import execution_provenance
+
+
+TRANSIENT_CURL_EXIT_CODES = frozenset({5, 6, 7, 18, 28, 35, 52, 55, 56, 92})
 
 
 def _digest(path: Path, algorithm: str) -> str:
@@ -67,15 +71,113 @@ def _verify(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _download_resumable(
+    url: str,
+    partial: Path,
+    expected_size: int,
+    *,
+    transfer_attempts: int,
+    retry_delay_seconds: float,
+    maximum_stalled_attempts: int,
+) -> dict[str, int]:
+    """Resume a large immutable file across transient curl disconnects."""
+
+    attempts_used = 0
+    stalled_attempts = 0
+    initial_size = partial.stat().st_size if partial.exists() else 0
+    if initial_size == expected_size:
+        return {
+            "download_attempts": 0,
+            "initial_partial_bytes": initial_size,
+            "downloaded_bytes_this_run": 0,
+        }
+    for attempt in range(1, transfer_attempts + 1):
+        attempts_used = attempt
+        before = partial.stat().st_size if partial.exists() else 0
+        if before > expected_size:
+            raise ValueError(
+                f"partial model source exceeds expected size: {partial}: "
+                f"{before}>{expected_size}"
+            )
+        try:
+            subprocess.run(
+                [
+                    "curl",
+                    "-L",
+                    "--fail",
+                    "--retry",
+                    "8",
+                    "--retry-delay",
+                    str(max(1, int(retry_delay_seconds))),
+                    "--retry-connrefused",
+                    "--connect-timeout",
+                    "60",
+                    "--speed-limit",
+                    "1024",
+                    "--speed-time",
+                    "180",
+                    "--continue-at",
+                    "-",
+                    "--output",
+                    str(partial),
+                    url,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as error:
+            after = partial.stat().st_size if partial.exists() else 0
+            if after > expected_size:
+                raise ValueError(
+                    f"partial model source exceeds expected size: {partial}: "
+                    f"{after}>{expected_size}"
+                ) from error
+            stalled_attempts = stalled_attempts + 1 if after <= before else 0
+            if error.returncode not in TRANSIENT_CURL_EXIT_CODES:
+                raise
+            if stalled_attempts >= maximum_stalled_attempts:
+                raise RuntimeError(
+                    f"model download made no byte progress for {stalled_attempts} "
+                    f"transient attempts: {partial}"
+                ) from error
+            if attempt == transfer_attempts:
+                raise RuntimeError(
+                    f"model download exhausted {transfer_attempts} transient attempts: {partial}"
+                ) from error
+            if retry_delay_seconds:
+                time.sleep(retry_delay_seconds)
+            continue
+        after = partial.stat().st_size if partial.exists() else 0
+        if after != expected_size:
+            raise ValueError(
+                f"curl reported success with an unexpected model size: "
+                f"{partial}: {after}!={expected_size}"
+            )
+        return {
+            "download_attempts": attempts_used,
+            "initial_partial_bytes": initial_size,
+            "downloaded_bytes_this_run": after - initial_size,
+        }
+    raise AssertionError("unreachable model transfer loop")
+
+
 def acquire_external_model_sources(
     config_path: str | Path,
     output_dir: str | Path,
     *,
     download: bool = False,
     minimum_free_bytes: int = 0,
+    transfer_attempts: int = 40,
+    retry_delay_seconds: float = 5.0,
+    maximum_stalled_attempts: int = 5,
 ) -> dict[str, Any]:
     if minimum_free_bytes < 0:
         raise ValueError("minimum_free_bytes cannot be negative")
+    if transfer_attempts <= 0:
+        raise ValueError("transfer_attempts must be positive")
+    if retry_delay_seconds < 0:
+        raise ValueError("retry_delay_seconds cannot be negative")
+    if maximum_stalled_attempts <= 0:
+        raise ValueError("maximum_stalled_attempts must be positive")
     config = load_yaml(config_path)
     if config.get("schema_version") != 1:
         raise ValueError("external model source schema_version must be 1")
@@ -95,6 +197,11 @@ def acquire_external_model_sources(
             verification = _verify(target, entry)
             if not verification["valid"]:
                 raise ValueError(f"existing model source fails integrity lock: {target}")
+            transfer = {
+                "download_attempts": 0,
+                "initial_partial_bytes": 0,
+                "downloaded_bytes_this_run": 0,
+            }
         else:
             if not download:
                 raise FileNotFoundError(f"model source is absent in verify-only mode: {target}")
@@ -107,22 +214,13 @@ def acquire_external_model_sources(
                     f"insufficient free space for {target.name}: free={free}, "
                     f"remaining={remaining}, required_reserve={minimum_free_bytes}"
                 )
-            subprocess.run(
-                [
-                    "curl",
-                    "-L",
-                    "--fail",
-                    "--retry",
-                    "8",
-                    "--retry-delay",
-                    "5",
-                    "--continue-at",
-                    "-",
-                    "--output",
-                    str(partial),
-                    str(entry["url"]),
-                ],
-                check=True,
+            transfer = _download_resumable(
+                str(entry["url"]),
+                partial,
+                int(entry["size_bytes"]),
+                transfer_attempts=transfer_attempts,
+                retry_delay_seconds=retry_delay_seconds,
+                maximum_stalled_attempts=maximum_stalled_attempts,
             )
             verification = _verify(partial, entry)
             if not verification["valid"]:
@@ -134,6 +232,7 @@ def acquire_external_model_sources(
                 "backend": entry["backend"],
                 "role": entry["role"],
                 "record_url": entry.get("record_url"),
+                **transfer,
                 **verification,
             }
         )
@@ -144,6 +243,9 @@ def acquire_external_model_sources(
         "config_path": str(Path(config_path).resolve()),
         "config_sha256": file_sha256(config_path),
         "minimum_free_bytes": minimum_free_bytes,
+        "transfer_attempts": transfer_attempts,
+        "retry_delay_seconds": retry_delay_seconds,
+        "maximum_stalled_attempts": maximum_stalled_attempts,
         "files": results,
         **execution_provenance(),
     }
@@ -156,6 +258,9 @@ def run_external_model_source_acquisition(
     *,
     download: bool = False,
     minimum_free_bytes: int = 0,
+    transfer_attempts: int = 40,
+    retry_delay_seconds: float = 5.0,
+    maximum_stalled_attempts: int = 5,
 ) -> dict[str, Any]:
     try:
         report = acquire_external_model_sources(
@@ -163,6 +268,9 @@ def run_external_model_source_acquisition(
             output_dir,
             download=download,
             minimum_free_bytes=minimum_free_bytes,
+            transfer_attempts=transfer_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+            maximum_stalled_attempts=maximum_stalled_attempts,
         )
     except Exception as error:
         report = {
@@ -174,6 +282,9 @@ def run_external_model_source_acquisition(
             "config_path": str(Path(config_path).resolve()),
             "config_sha256": file_sha256(config_path),
             "minimum_free_bytes": minimum_free_bytes,
+            "transfer_attempts": transfer_attempts,
+            "retry_delay_seconds": retry_delay_seconds,
+            "maximum_stalled_attempts": maximum_stalled_attempts,
             **execution_provenance(),
         }
         atomic_write_json(report_path, report)

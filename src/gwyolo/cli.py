@@ -1513,6 +1513,9 @@ def build_parser() -> argparse.ArgumentParser:
     pe_sources.add_argument("--report", required=True)
     pe_sources.add_argument("--download", action="store_true")
     pe_sources.add_argument("--minimum-free-bytes", type=int, default=0)
+    pe_sources.add_argument("--transfer-attempts", type=int, default=40)
+    pe_sources.add_argument("--retry-delay-seconds", type=float, default=5.0)
+    pe_sources.add_argument("--maximum-stalled-attempts", type=int, default=5)
 
     amplfi_background = subparsers.add_parser("amplfi-background-export")
     amplfi_background.add_argument("--manifest", required=True)
@@ -3424,6 +3427,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 download=args.download,
                 minimum_free_bytes=args.minimum_free_bytes,
+                transfer_attempts=args.transfer_attempts,
+                retry_delay_seconds=args.retry_delay_seconds,
+                maximum_stalled_attempts=args.maximum_stalled_attempts,
             )
         )
     elif args.command == "pe-lightning-checkpoint-select":

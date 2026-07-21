@@ -997,8 +997,19 @@ python -m gwyolo.cli pe-model-sources-acquire \
   --output-dir artifacts/pe/official_models/dingo-o4a \
   --report artifacts/pe/official_models/dingo-o4a-acquisition.json \
   --minimum-free-bytes 16106127360 \
+  --transfer-attempts 1000 \
+  --retry-delay-seconds 5 \
+  --maximum-stalled-attempts 5 \
   --download
 ```
+
+Large Zenodo objects retain their `.part` file across transient DNS, connection, TLS, partial-body,
+timeout, empty-reply and HTTP/2 failures. Each outer attempt invokes curl's own bounded HTTP retry,
+then resumes at the exact current byte offset. Permanent curl failures remain fail-fast, a partial
+larger than the frozen source size is rejected, and five consecutive attempts without byte progress
+stop the run rather than spin forever. A complete partial is checksum-verified and atomically
+promoted without another network request. The report records initial partial bytes, attempts and
+new bytes before the published MD5 and local SHA-256 become model identity.
 
 AMPLFI is absent from this source manifest until a real reusable checkpoint is identified or a
 validation-selected common-domain model is trained. A 20 MB paper-figure archive is not silently
