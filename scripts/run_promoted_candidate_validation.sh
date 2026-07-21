@@ -3,8 +3,8 @@ set -euo pipefail
 
 required_variables=(
   TASK_PYTHON
-  WAVEFORM_PYTHON
   FIVE_SEED_SUMMARY
+  INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   BACKGROUND_MANIFEST
   INJECTION_MANIFEST
   UNIFORM_CONFIG
@@ -21,8 +21,8 @@ for variable in "${required_variables[@]}"; do
 done
 for input in \
   "$TASK_PYTHON" \
-  "$WAVEFORM_PYTHON" \
   "$FIVE_SEED_SUMMARY" \
+  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$BACKGROUND_MANIFEST" \
   "$INJECTION_MANIFEST" \
   "$UNIFORM_CONFIG" \
@@ -65,15 +65,52 @@ if [[ ! -f "$checkpoint" ]]; then
   exit 2
 fi
 
+"$TASK_PYTHON" - "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+  "$BACKGROUND_MANIFEST" "$INJECTION_MANIFEST" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+endpoint_path, background_path, injection_path = sys.argv[1:]
+endpoint = json.loads(pathlib.Path(endpoint_path).read_text(encoding="utf-8"))
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+components = endpoint.get("component_reports", {})
+expected_components = {
+    "purpose_partition",
+    "injection_plan",
+    "waveform_validation",
+    "materialization",
+    "snr_annotation",
+    "arrival_annotation",
+}
+if (
+    endpoint.get("status") != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+    or not endpoint.get("passed")
+    or endpoint.get("test_rows_read") != 0
+    or endpoint.get("test_evaluation") is not None
+    or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+    or pathlib.Path(endpoint["candidate_calibration_background_manifest_path"]).resolve()
+    != pathlib.Path(background_path).resolve()
+    or endpoint.get("candidate_calibration_background_manifest_sha256")
+    != digest(background_path)
+    or pathlib.Path(endpoint["injection_arrival_manifest_path"]).resolve()
+    != pathlib.Path(injection_path).resolve()
+    or endpoint.get("injection_arrival_manifest_sha256") != digest(injection_path)
+    or set(components) != expected_components
+    or any(
+        digest(item["path"]) != item["sha256"]
+        for item in components.values()
+    )
+):
+    raise SystemExit("candidate validation inputs do not match the frozen independent endpoint")
+PY
+
 mkdir -p "$OUTPUT_ROOT"
 "$TASK_PYTHON" -m gwyolo.cli manifest-select-split \
   --manifest "$BACKGROUND_MANIFEST" \
   --split val \
   --output-dir "$OUTPUT_ROOT/background-val"
-"$WAVEFORM_PYTHON" -m gwyolo.cli injection-arrival-annotate \
-  --manifest "$INJECTION_MANIFEST" \
-  --output-dir "$OUTPUT_ROOT/injection-arrivals"
-
 while :; do
   gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
     | sed '/^[[:space:]]*$/d' || true)
@@ -82,7 +119,7 @@ while :; do
 done
 "$TASK_PYTHON" -m gwyolo.cli candidate-search-validation-pipeline \
   --background-manifest "$OUTPUT_ROOT/background-val/val_manifest.jsonl" \
-  --injection-manifest "$OUTPUT_ROOT/injection-arrivals/materialized_injections_arrivals.jsonl" \
+  --injection-manifest "$INJECTION_MANIFEST" \
   --checkpoint "$checkpoint" \
   --config "$config" \
   --coherence-config "$COHERENCE_CONFIG" \

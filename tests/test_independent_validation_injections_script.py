@@ -24,12 +24,13 @@ def test_independent_validation_runner_is_group_disjoint_and_test_blind() -> Non
     assert "signal_scaled_float16" in source
     assert "injection-snr-annotate" in source
     assert "injection-arrival-annotate" in source
+    assert "independent-validation-endpoint-freeze" in source
 
 
 def test_independent_validation_embedded_python_compiles() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     snippets = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
-    assert len(snippets) == 6
+    assert len(snippets) == 7
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
 

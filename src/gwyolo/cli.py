@@ -1275,6 +1275,17 @@ def build_parser() -> argparse.ArgumentParser:
     injection_domain_audit.add_argument("--validation-manifest", required=True)
     injection_domain_audit.add_argument("--output", required=True)
 
+    independent_validation_freeze = subparsers.add_parser(
+        "independent-validation-endpoint-freeze"
+    )
+    independent_validation_freeze.add_argument("--purpose-partition-report", required=True)
+    independent_validation_freeze.add_argument("--injection-plan-report", required=True)
+    independent_validation_freeze.add_argument("--waveform-validation-report", required=True)
+    independent_validation_freeze.add_argument("--materialization-report", required=True)
+    independent_validation_freeze.add_argument("--snr-annotation-report", required=True)
+    independent_validation_freeze.add_argument("--arrival-annotation-report", required=True)
+    independent_validation_freeze.add_argument("--output", required=True)
+
     evaluation_freeze = subparsers.add_parser("evaluation-corpus-freeze")
     evaluation_freeze.add_argument("--manifest", required=True)
     evaluation_freeze.add_argument("--output", required=True)
@@ -3093,6 +3104,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.baseline_manifest,
                 args.independent_gps_manifest,
                 args.validation_manifest,
+                args.output,
+            )
+        )
+    elif args.command == "independent-validation-endpoint-freeze":
+        from .injections import freeze_independent_validation_endpoint
+
+        _print(
+            freeze_independent_validation_endpoint(
+                args.purpose_partition_report,
+                args.injection_plan_report,
+                args.waveform_validation_report,
+                args.materialization_report,
+                args.snr_annotation_report,
+                args.arrival_annotation_report,
                 args.output,
             )
         )

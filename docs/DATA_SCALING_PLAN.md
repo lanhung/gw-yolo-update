@@ -290,6 +290,10 @@ frozen hash to `candidate_calibration` or `injection_validation`, writes a compa
 report for each purpose, and records complete coverage plus zero cross-purpose block overlap. The
 primary 3k endpoint requires at least 25 blocks per arm. A broader unpartitioned 3k run may be kept
 as engineering evidence, but it cannot be the paper's threshold-versus-efficiency validation pair.
+`independent-validation-endpoint-freeze` then replays the complete partition → recipe → external
+waveform comparison → materialization → SNR → arrival hash chain and emits one immutable receipt.
+The promoted candidate-search runner requires that receipt and exact candidate-calibration plus
+arrival manifests; passing paths from unrelated runs is rejected before GPU scoring.
 
 After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
 timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one

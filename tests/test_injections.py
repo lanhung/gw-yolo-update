@@ -10,6 +10,7 @@ import pytest
 from gwyolo.cosmology import FlatLambdaCDMGrid
 from gwyolo.injections import (
     audit_paired_data_domain_manifests,
+    freeze_independent_validation_endpoint,
     plan_injection_recipes,
     run_paired_background_remap,
     run_injection_plan,
@@ -155,6 +156,156 @@ def test_run_injection_plan_can_create_train_val_without_test(tmp_path) -> None:
     assert report["counts_by_split"] == {"train": 3, "val": 2}
     assert report["requested_counts_by_split"]["test"] == 0
     assert report["background_manifest_sha256"] == file_sha256(manifest)
+
+
+def test_independent_validation_endpoint_freezes_complete_hash_chain(
+    tmp_path: Path,
+) -> None:
+    def json_file(name: str, value: dict) -> Path:
+        path = tmp_path / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    def jsonl_file(name: str, rows: list[dict]) -> Path:
+        path = tmp_path / name
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        return path
+
+    calibration_manifest = jsonl_file("calibration.jsonl", [{"window_id": "c"}])
+    injection_background = jsonl_file("injection-background.jsonl", [{"window_id": "i"}])
+    calibration_report = json_file("calibration-report.json", {"passed": True})
+    injection_background_report = json_file(
+        "injection-background-report.json", {"passed": True}
+    )
+    purpose_report = json_file(
+        "purpose-report.json",
+        {
+            "status": "verified_validation_gps_purpose_partition",
+            "passed": True,
+            "purpose_gps_block_overlap": 0,
+            "complete_source_gps_block_coverage": True,
+            "purposes": {
+                "candidate_calibration": {
+                    "unique_gps_blocks": 3,
+                    "manifest_path": str(calibration_manifest),
+                    "manifest_sha256": file_sha256(calibration_manifest),
+                    "report_path": str(calibration_report),
+                    "report_sha256": file_sha256(calibration_report),
+                },
+                "injection_validation": {
+                    "unique_gps_blocks": 4,
+                    "manifest_path": str(injection_background),
+                    "manifest_sha256": file_sha256(injection_background),
+                    "report_path": str(injection_background_report),
+                    "report_sha256": file_sha256(injection_background_report),
+                },
+            },
+        },
+    )
+    recipes = jsonl_file(
+        "recipes.jsonl",
+        [
+            {"injection_id": "i1", "waveform_id": "w1", "split": "val"},
+            {"injection_id": "i2", "waveform_id": "w2", "split": "val"},
+        ],
+    )
+    plan_report = json_file(
+        "plan-report.json",
+        {
+            "status": "cosmological_injection_recipe_plan_requires_validated_waveform_backend",
+            "recipes": 2,
+            "counts_by_split": {"val": 2},
+            "requested_counts_by_split": {"train": 0, "val": 2, "test": 0},
+            "unique_injection_ids": 2,
+            "unique_waveform_ids": 2,
+            "background_manifest_sha256": file_sha256(injection_background),
+            "background_report_sha256": file_sha256(injection_background_report),
+            "manifest_path": str(recipes),
+            "manifest_sha256": file_sha256(recipes),
+        },
+    )
+    waveform_report = json_file(
+        "waveform-report.json",
+        {
+            "passed": True,
+            "validation_scope": "external_reference_waveform_equivalence",
+            "recipe_manifest_sha256": file_sha256(recipes),
+            "selected_cases": 1,
+            "cases": [{"passed": True}],
+        },
+    )
+    materialized = jsonl_file("materialized.jsonl", [{"injection_id": "i1"}, {"injection_id": "i2"}])
+    materialization_report = json_file(
+        "materialization-report.json",
+        {
+            "status": "materialized_externally_validated_backend",
+            "waveform_materialization_validated": True,
+            "selected_split": "val",
+            "selected_recipes": 2,
+            "recipe_manifest_sha256": file_sha256(recipes),
+            "background_manifest_sha256": file_sha256(injection_background),
+            "backend_validation_report_sha256": file_sha256(waveform_report),
+            "manifest_path": str(materialized),
+            "manifest_sha256": file_sha256(materialized),
+        },
+    )
+    snr_manifest = jsonl_file("snr.jsonl", [{"injection_id": "i1"}, {"injection_id": "i2"}])
+    snr_report = json_file(
+        "snr-report.json",
+        {
+            "status": "empirical_noise_optimal_snr_annotation",
+            "rows": 2,
+            "split_counts": {"val": 2},
+            "input_manifest_sha256": file_sha256(materialized),
+            "output_manifest_path": str(snr_manifest),
+            "output_manifest_sha256": file_sha256(snr_manifest),
+        },
+    )
+    arrival_manifest = jsonl_file(
+        "arrivals.jsonl", [{"injection_id": "i1"}, {"injection_id": "i2"}]
+    )
+    arrival_report = json_file(
+        "arrival-report.json",
+        {
+            "status": "verified_geometric_detector_arrival_annotation",
+            "rows": 2,
+            "unique_injection_ids": 2,
+            "splits": {"val": 2},
+            "input_manifest_sha256": file_sha256(snr_manifest),
+            "manifest_path": str(arrival_manifest),
+            "manifest_sha256": file_sha256(arrival_manifest),
+        },
+    )
+    output = tmp_path / "endpoint.json"
+
+    result = freeze_independent_validation_endpoint(
+        purpose_report,
+        plan_report,
+        waveform_report,
+        materialization_report,
+        snr_report,
+        arrival_report,
+        output,
+    )
+
+    assert result["passed"]
+    assert result["rows"] == 2
+    assert result["purpose_gps_block_overlap"] == 0
+    assert result["candidate_calibration_unique_gps_blocks"] == 3
+    assert result["injection_validation_unique_gps_blocks"] == 4
+    assert result["injection_arrival_manifest_sha256"] == file_sha256(arrival_manifest)
+    with pytest.raises(FileExistsError, match="immutable"):
+        freeze_independent_validation_endpoint(
+            purpose_report,
+            plan_report,
+            waveform_report,
+            materialization_report,
+            snr_report,
+            arrival_report,
+            output,
+        )
 
 
 def test_paired_background_remap_preserves_sources_and_replaces_gps_groups(

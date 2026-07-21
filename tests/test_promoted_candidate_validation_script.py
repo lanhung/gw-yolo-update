@@ -31,6 +31,7 @@ def test_promoted_candidate_propagates_five_seed_selector_failure(
     inputs = {}
     for name in (
         "five_seed_summary",
+        "independent_validation_endpoint_report",
         "background_manifest",
         "injection_manifest",
         "uniform_config",
@@ -44,7 +45,6 @@ def test_promoted_candidate_propagates_five_seed_selector_failure(
     environment.update(
         {
             "TASK_PYTHON": sys.executable,
-            "WAVEFORM_PYTHON": sys.executable,
             "OUTPUT_ROOT": str(tmp_path / "output"),
             "GWYOLO_CODE_COMMIT": "commit",
             **inputs,

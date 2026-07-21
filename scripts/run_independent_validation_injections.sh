@@ -349,7 +349,64 @@ if (
     raise SystemExit("SNR or detector-arrival annotation failed its final identity gate")
 PY
 
+endpoint_report="$OUTPUT_ROOT/independent_validation_endpoint_report.json"
+if [[ ! -s "$endpoint_report" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+    "$TASK_PYTHON" -m gwyolo.cli independent-validation-endpoint-freeze \
+      --purpose-partition-report "$purpose_report" \
+      --injection-plan-report "$recipe_report" \
+      --waveform-validation-report "$waveform_report" \
+      --materialization-report "$materialization_report" \
+      --snr-annotation-report "$snr_report" \
+      --arrival-annotation-report "$arrival_report" \
+      --output "$endpoint_report"
+  )
+fi
+"$TASK_PYTHON" - "$endpoint_report" "$VALIDATION_COUNT" \
+  "$MINIMUM_PURPOSE_GPS_BLOCKS" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+report_path, count, minimum_blocks = sys.argv[1:]
+report = json.loads(pathlib.Path(report_path).read_text(encoding="utf-8"))
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+components = report.get("component_reports", {})
+expected_components = {
+    "purpose_partition",
+    "injection_plan",
+    "waveform_validation",
+    "materialization",
+    "snr_annotation",
+    "arrival_annotation",
+}
+if (
+    report.get("status") != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+    or not report.get("passed")
+    or report.get("test_rows_read") != 0
+    or report.get("test_evaluation") is not None
+    or int(report.get("rows", -1)) != int(count)
+    or int(report.get("purpose_gps_block_overlap", -1)) != 0
+    or int(report.get("candidate_calibration_unique_gps_blocks", -1))
+    < int(minimum_blocks)
+    or int(report.get("injection_validation_unique_gps_blocks", -1))
+    < int(minimum_blocks)
+    or set(components) != expected_components
+    or any(digest(item["path"]) != item["sha256"] for item in components.values())
+    or digest(report["candidate_calibration_background_manifest_path"])
+    != report["candidate_calibration_background_manifest_sha256"]
+    or digest(report["injection_arrival_manifest_path"])
+    != report["injection_arrival_manifest_sha256"]
+):
+    raise SystemExit("frozen independent validation endpoint failed final replay")
+PY
+
 printf '%s independent-validation-arrivals=%s\n' \
   "$(date -u +%FT%TZ)" "$arrival_manifest"
 printf '%s candidate-calibration-background=%s\n' \
   "$(date -u +%FT%TZ)" "$calibration_manifest"
+printf '%s independent-validation-endpoint=%s\n' \
+  "$(date -u +%FT%TZ)" "$endpoint_report"
