@@ -11,8 +11,6 @@ required_variables=(
   PROMOTED_PIPELINE_REPORT
   PARENT_PLAN
   EVENT_EXCLUSIONS
-  CHECKPOINT
-  CONFIG
   COHERENCE_CONFIG
   TIMING_CALIBRATION_REPORT
   VALIDATION_INJECTION_RANKING_REPORT
@@ -44,6 +42,8 @@ TARGET_FAR_PER_YEAR=${TARGET_FAR_PER_YEAR:-0.1}
 ZERO_COUNT_CONFIDENCE=${ZERO_COUNT_CONFIDENCE:-0.9}
 REFERENCE_IFO=${REFERENCE_IFO:-H1}
 SHIFTED_IFO=${SHIFTED_IFO:-L1}
+CHECKPOINT=${CHECKPOINT:-}
+CONFIG=${CONFIG:-}
 
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[1-9][0-9]*$ ]] \
@@ -57,6 +57,38 @@ if [[ "$TEST_FRACTION" != "0" && "$TEST_FRACTION" != "0.0" ]]; then
   exit 2
 fi
 
+for code_dir in "$TASK_CODE_DIR" "$SCORING_CODE_DIR"; do
+  if [[ ! -d "$code_dir/src/gwyolo" ]]; then
+    echo "code directory is invalid: $code_dir" >&2
+    exit 2
+  fi
+done
+if [[ -z "$CHECKPOINT" || -z "$CONFIG" ]]; then
+  for variable in FIVE_SEED_SUMMARY UNIFORM_CONFIG FAMILY_BALANCED_CONFIG; do
+    if [[ -z "${!variable:-}" ]]; then
+      echo "checkpoint/config selection variable is unset: $variable" >&2
+      exit 2
+    fi
+  done
+  readarray -t selection < <("$TASK_PYTHON" -c '
+import json, sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+if report.get("status") != "completed_five_seed_source_safe_overlap_validation":
+    raise SystemExit("five-seed summary has the wrong status")
+print(report["promoted_arm"])
+print(report["selected_checkpoint_path"])
+' "$FIVE_SEED_SUMMARY")
+  arm=${selection[0]}
+  CHECKPOINT=${selection[1]}
+  if [[ "$arm" == uniform ]]; then
+    CONFIG=$UNIFORM_CONFIG
+  elif [[ "$arm" == family_balanced ]]; then
+    CONFIG=$FAMILY_BALANCED_CONFIG
+  else
+    echo "five-seed summary selected an unknown arm: $arm" >&2
+    exit 2
+  fi
+fi
 for input in \
   "$TASK_PYTHON" \
   "$PROMOTION_REPORT" \
@@ -70,12 +102,6 @@ for input in \
   "$VALIDATION_INJECTION_RANKING_REPORT"; do
   if [[ ! -f "$input" ]]; then
     echo "required input is absent: $input" >&2
-    exit 2
-  fi
-done
-for code_dir in "$TASK_CODE_DIR" "$SCORING_CODE_DIR"; do
-  if [[ ! -d "$code_dir/src/gwyolo" ]]; then
-    echo "code directory is invalid: $code_dir" >&2
     exit 2
   fi
 done
