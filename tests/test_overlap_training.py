@@ -107,8 +107,9 @@ def test_overlap_train_epoch_stops_at_exact_update_budget() -> None:
                 features.shape[0], 2, 1, features.shape[-2], features.shape[-1]
             )
 
-    student = TinyDetectorSet()
-    teacher = TinyDetectorSet()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    student = TinyDetectorSet().to(device)
+    teacher = TinyDetectorSet().to(device)
     overlap_batch = (
         torch.zeros((1, 1, 2, 2)),
         torch.zeros((1, 2, 1, 2, 2)),
@@ -125,7 +126,7 @@ def test_overlap_train_epoch_stops_at_exact_update_budget() -> None:
         "detector_set",
         [overlap_batch, overlap_batch, overlap_batch],
         [clean_batch],
-        torch.device("cpu"),
+        device,
         torch.optim.SGD(student.parameters(), lr=0.01),
         1,
         {
