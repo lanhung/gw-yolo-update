@@ -754,6 +754,16 @@ required exposure into the schedule ID. If the range cannot reach the target, al
 nonzero offsets are retained with an explicit blocker. This prevents either model-score-guided
 offset selection or a misleading claim that a finite schedule attained its requested FAR.
 
+The range-derived contract was then run on the same real-O4a engineering background at commit
+`e350237`. All 127 offsets in the frozen 1--128 half-open range have nonzero exposure, so the
+automatically selected schedule contains indices 1--127 and exactly reproduces the prior 98,800
+seconds. The requested 0.1/year FAR at 90% zero-count confidence requires 726,640,593.306689
+seconds; consequently `schedule_exposure_target_reached=false` and the explicit insufficient-
+exposure blocker is retained. The schema-v2 schedule ID is
+`74e02fc00770d58c2845dda6f369400d` and its report SHA256 is
+`03b512fea9fe77be6363984776b023ca7addfdf7f9cca041ce749f9975f41d40`. This is a real-data
+planning/provenance result, not added search exposure or a FAR claim.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed
