@@ -660,6 +660,14 @@ The AMPLFI runner is now unit-tested at the orchestration, hash, resume, archite
 contract boundaries. A real checkpoint-load smoke remains mandatory; a fake subprocess used by the
 CPU orchestration test is not posterior evidence and cannot enable a scientific claim.
 
+`scripts/run_paired_pe_smoke.sh` closes the preceding validation-data gap without touching a locked
+test corpus. After a detector-set overlap run writes its validation-selected checkpoint, the script
+builds paired clean and real-glitch-contaminated overrides, scores every contaminated instance with
+saved numeric chirp/glitch probabilities, applies the frozen mask policy, selects a bounded BBH
+subset before posterior results exist, and materializes both DINGO and AMPLFI native inputs. Each
+stage is resumable by its atomic report and all machine paths are explicit environment variables.
+The smoke defaults to three validation injections and remains ineligible for a scientific claim.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time
