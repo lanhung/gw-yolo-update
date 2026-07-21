@@ -103,13 +103,15 @@ def test_dingo_official_load_freezes_acquisition_and_dual_model_receipt(
     config.write_text(
         yaml.safe_dump({"schema_version": 1, "sources": sources}), encoding="utf-8"
     )
+    recorded_config = tmp_path / "acquisition-sources.yaml"
+    recorded_config.write_bytes(config.read_bytes())
     acquisition = tmp_path / "acquisition.json"
     acquisition.write_text(
         json.dumps(
             {
                 "status": "verified",
                 "download_enabled": True,
-                "config_path": str(config.resolve()),
+                "config_path": str(recorded_config.resolve()),
                 "config_sha256": _digest(config),
                 "files": acquired,
             }

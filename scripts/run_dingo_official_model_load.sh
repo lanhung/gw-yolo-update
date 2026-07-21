@@ -73,13 +73,14 @@ expected_roles = {
 }
 by_role = {str(row.get("role")): row for row in sources}
 files = {str(row.get("role")): row for row in report.get("files", [])}
+recorded_config = pathlib.Path(report.get("config_path", ""))
 if (
     set(by_role) != expected_roles
     or set(files) != expected_roles
     or report.get("status") != "verified"
     or report.get("download_enabled") is not True
-    or pathlib.Path(report.get("config_path", "")).resolve()
-    != pathlib.Path(config_path).resolve()
+    or not recorded_config.is_file()
+    or digest(recorded_config) != report.get("config_sha256")
     or report.get("config_sha256") != digest(config_path)
 ):
     raise SystemExit("DINGO acquisition report does not bind the official source configuration")
