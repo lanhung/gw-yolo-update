@@ -310,6 +310,12 @@ injection-ranking reports require one common calibration, checkpoint, config and
 injection or waveform overlap, refuses to overwrite an existing locked result, and reports FAR,
 IFAR and weighted `<VT>` with bootstrap uncertainty. An empty background-candidate list freezes a
 threshold above probability support; it can never turn score-zero injection misses into detections.
+Calibration from an unscheduled or exposure-insufficient slide report remains available as explicit
+engineering output, but is marked `publication_calibration_eligible=false`. The locked command now
+fails closed unless both validation and test reports re-hash a score-blind frozen schedule, execute
+every scheduled absolute offset, match the requested FAR, reproduce the schedule's equivalent live
+time and reach its predeclared zero-count exposure. A nominal threshold can therefore no longer
+cross the paper boundary merely because its empirical surviving count is zero.
 
 The intended H1/L1 sequence is:
 

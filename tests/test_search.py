@@ -23,6 +23,8 @@ from gwyolo.search import (
     summarize_injection_efficiency,
 )
 from gwyolo.io import file_sha256
+from gwyolo.io import canonical_hash
+from gwyolo.exposure import candidate_slide_schedule_identity
 
 
 def test_zero_count_far_limit_is_poisson_2p3_over_time():
@@ -58,12 +60,50 @@ def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_pa
             json.dumps({"split": split, "ranking_score": background_score}) + "\n",
             encoding="utf-8",
         )
+        background_sha = file_sha256(background)
+        schedule = {
+            "schema_version": 2,
+            "selection_rule": "nonzero_prefix_to_zero_count_target_within_range_v1",
+            "selection_metadata": {"candidate_scores_inspected": False},
+            "status": "frozen_candidate_time_slide_schedule",
+            "scientific_claim_allowed": False,
+            "selection_data": "background_gps_and_detector_availability_only",
+            "candidate_scores_inspected": False,
+            "split": split,
+            "reference_ifo": "H1",
+            "shifted_ifo": "L1",
+            "step_seconds": 8.0,
+            "slide_indices": [1],
+            "background_manifest_sha256": background_sha,
+            "target_far_per_year": 0.1,
+            "zero_count_confidence": 0.5,
+            "slide_count": 1,
+            "slide_indices_sha256": canonical_hash([1], 64),
+            "schedule_exposure_target_reached": True,
+            "exposure_plan": {
+                "equivalent_live_time_years": 10.0,
+                "target_zero_count_upper_reached": True,
+            },
+        }
+        schedule["schedule_id"] = canonical_hash(
+            candidate_slide_schedule_identity(schedule), 32
+        )
+        schedule_path = tmp_path / f"{split}-schedule.json"
+        schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
         slide = {
             "status": "subwindow_clustered_time_slide_integration_only",
             "split": split,
             "manifest_path": str(background),
-            "manifest_sha256": file_sha256(background),
+            "manifest_sha256": background_sha,
+            "background_manifest_sha256": background_sha,
             "equivalent_live_time_years": 10.0,
+            "slide_count": 1,
+            "slide_exposure": [{"slide_index": 1, "live_time_seconds": 315576000.0}],
+            "execution_schedule_complete": True,
+            "slide_schedule_path": str(schedule_path),
+            "slide_schedule_sha256": file_sha256(schedule_path),
+            "slide_schedule_id": schedule["schedule_id"],
+            "slide_schedule_count": 1,
             "input_gps_blocks": [block],
             "reference_ifo": "H1",
             "shifted_ifo": "L1",
@@ -115,6 +155,7 @@ def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_pa
         seed=1,
     )
     assert calibration["calibration"]["threshold"] == 0.8
+    assert calibration["publication_calibration_eligible"] is True
     test_slide, test_injections = artifacts("test", 0.85, [0.9, 0.1], "test-block")
     result = run_frozen_candidate_search_evaluation(
         calibration_path,
@@ -129,6 +170,90 @@ def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_pa
     assert result["candidate_endpoint_gates_passed"] is True
     assert result["test_evaluation"]["background"]["far_per_year"] == 0.1
     assert result["test_evaluation"]["injections"]["recovered"] == 1
+
+
+def test_locked_candidate_search_rejects_engineering_calibration_without_schedule(
+    tmp_path,
+) -> None:
+    background = tmp_path / "background.jsonl"
+    background.write_text(json.dumps({"split": "val", "ranking_score": 0.8}) + "\n")
+    identity = {
+        "candidate_checkpoint_sha256": "a" * 64,
+        "candidate_config_sha256": "b" * 64,
+        "candidate_code_commit": "deadbee",
+        "timing_calibration_report_sha256": "c" * 64,
+        "physical_delay_limit_seconds": 0.01,
+        "empirical_timing_uncertainty_seconds": 0.001,
+    }
+    slide = tmp_path / "slide.json"
+    slide.write_text(
+        json.dumps(
+            {
+                "status": "subwindow_clustered_time_slide_integration_only",
+                "split": "val",
+                "manifest_path": str(background),
+                "manifest_sha256": file_sha256(background),
+                "equivalent_live_time_years": 10.0,
+                "input_gps_blocks": ["val-background"],
+                "reference_ifo": "H1",
+                "shifted_ifo": "L1",
+                "publication_timing_gate_passed": True,
+                **identity,
+            }
+        )
+    )
+    injections = tmp_path / "injections.jsonl"
+    injections.write_text(
+        json.dumps(
+            {
+                "split": "val",
+                "injection_id": "i",
+                "waveform_id": "w",
+                "gps_block": "injection-block",
+                "source_family": "BBH",
+                "vt_weight": 1.0,
+                "ranking_score": 0.9,
+            }
+        )
+        + "\n"
+    )
+    injection_report = tmp_path / "injection-report.json"
+    injection_report.write_text(
+        json.dumps(
+            {
+                "status": "physical_network_injection_candidate_rankings",
+                "split": "val",
+                "manifest_path": str(injections),
+                "manifest_sha256": file_sha256(injections),
+                "reference_ifo": "H1",
+                "second_ifo": "L1",
+                "timing_calibration_consistent": True,
+                "candidate_scoring_provenance_consistent": True,
+                **identity,
+            }
+        )
+    )
+    calibration_path = tmp_path / "engineering-calibration.json"
+    calibration = run_candidate_search_calibration(
+        slide,
+        injection_report,
+        target_far_per_year=0.1,
+        output=calibration_path,
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert calibration["publication_calibration_eligible"] is False
+    with pytest.raises(ValueError, match="target-exposure frozen schedule"):
+        run_frozen_candidate_search_evaluation(
+            calibration_path,
+            slide,
+            injection_report,
+            tmp_path / "must-not-exist.json",
+            minimum_test_live_time_years=1.0,
+            minimum_test_injections=1,
+            bootstrap_replicates=20,
+            seed=2,
+        )
 
 
 def test_validation_count_threshold_handles_ties_without_exceeding_budget():

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
+from .exposure import candidate_slide_schedule_identity
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -354,6 +355,103 @@ def _verified_candidate_search_artifact(
     return report, rows
 
 
+def _audit_candidate_slide_schedule(
+    slide_report: dict[str, Any], target_far_per_year: float
+) -> dict[str, Any]:
+    """Verify that a score-blind frozen schedule was executed in full at target exposure."""
+
+    schedule_value = slide_report.get("slide_schedule_path")
+    if schedule_value is None:
+        return {
+            "frozen_schedule_present": False,
+            "schedule_identity_verified": False,
+            "execution_schedule_complete": False,
+            "target_far_matches": False,
+            "target_exposure_reached": False,
+            "equivalent_exposure_matches": False,
+            "passed": False,
+        }
+    schedule_path = Path(str(schedule_value)).resolve()
+    if not schedule_path.is_file():
+        raise ValueError("candidate time-slide frozen schedule is missing")
+    expected_sha = slide_report.get("slide_schedule_sha256")
+    if not expected_sha or file_sha256(schedule_path) != str(expected_sha):
+        raise ValueError("candidate time-slide frozen schedule hash mismatch")
+    with schedule_path.open("r", encoding="utf-8") as handle:
+        schedule = json.load(handle)
+    indices = [int(value) for value in schedule.get("slide_indices", [])]
+    identity_verified = bool(
+        schedule.get("status") == "frozen_candidate_time_slide_schedule"
+        and schedule.get("candidate_scores_inspected") is False
+        and schedule.get("selection_data")
+        == "background_gps_and_detector_availability_only"
+        and schedule.get("schedule_id") == slide_report.get("slide_schedule_id")
+        and int(schedule.get("slide_count", -1)) == len(indices)
+        and int(slide_report.get("slide_schedule_count", -1)) == len(indices)
+        and canonical_hash(indices, 64) == schedule.get("slide_indices_sha256")
+        and canonical_hash(candidate_slide_schedule_identity(schedule), 32)
+        == schedule.get("schedule_id")
+        and schedule.get("background_manifest_sha256")
+        == slide_report.get("background_manifest_sha256")
+        and str(schedule.get("split")) == str(slide_report.get("split"))
+        and str(schedule.get("reference_ifo"))
+        == str(slide_report.get("reference_ifo"))
+        and str(schedule.get("shifted_ifo"))
+        == str(slide_report.get("shifted_ifo"))
+    )
+    if not identity_verified:
+        raise ValueError("candidate time-slide frozen schedule identity mismatch")
+    observed_indices = sorted(
+        int(row["slide_index"]) for row in slide_report.get("slide_exposure", [])
+    )
+    execution_complete = bool(
+        observed_indices == indices
+        and (
+            slide_report.get("execution_schedule_complete") is True
+            or (
+                slide_report.get("execution_schedule_complete") is None
+                and int(slide_report.get("slide_count", -1)) == len(indices)
+            )
+        )
+    )
+    target_matches = bool(
+        np.isclose(
+            float(schedule.get("target_far_per_year", -1)),
+            target_far_per_year,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    )
+    exposure = schedule.get("exposure_plan", {})
+    schedule_years = float(exposure.get("equivalent_live_time_years", -1))
+    report_years = float(slide_report.get("equivalent_live_time_years", -2))
+    exposure_matches = bool(
+        schedule_years >= 0
+        and np.isclose(schedule_years, report_years, rtol=0.0, atol=1e-12)
+    )
+    target_reached = bool(
+        schedule.get("schedule_exposure_target_reached") is True
+        and exposure.get("target_zero_count_upper_reached") is True
+    )
+    gates = {
+        "frozen_schedule_present": True,
+        "schedule_identity_verified": identity_verified,
+        "execution_schedule_complete": execution_complete,
+        "target_far_matches": target_matches,
+        "target_exposure_reached": target_reached,
+        "equivalent_exposure_matches": exposure_matches,
+    }
+    return {
+        **gates,
+        "passed": all(gates.values()),
+        "schedule_path": str(schedule_path),
+        "schedule_sha256": file_sha256(schedule_path),
+        "schedule_id": schedule["schedule_id"],
+        "schedule_target_far_per_year": schedule["target_far_per_year"],
+        "schedule_equivalent_live_time_years": schedule_years,
+    }
+
+
 def _candidate_search_identity(
     slide_report: dict[str, Any], injection_report: dict[str, Any]
 ) -> dict[str, Any]:
@@ -417,6 +515,7 @@ def run_candidate_search_calibration(
         "val",
     )
     identity = _candidate_search_identity(slide, injections)
+    schedule_audit = _audit_candidate_slide_schedule(slide, target_far_per_year)
     live_time_years = float(slide["equivalent_live_time_years"])
     if live_time_years <= 0:
         raise ValueError("validation candidate background has no equivalent live time")
@@ -443,6 +542,8 @@ def run_candidate_search_calibration(
         "target_far_has_at_least_one_expected_background_count": (
             live_time_years * target_far_per_year >= 1.0
         ),
+        "slide_schedule_audit": schedule_audit,
+        "publication_calibration_eligible": bool(schedule_audit["passed"]),
         "validation_injection_diagnostic": validation_efficiency,
         "validation_background_gps_blocks": list(slide["input_gps_blocks"]),
         "validation_injection_gps_blocks": sorted(
@@ -499,6 +600,10 @@ def run_frozen_candidate_search_evaluation(
         raise ValueError("candidate search calibration artifact has the wrong status")
     if frozen.get("test_evaluation") is not None:
         raise ValueError("candidate search calibration already contains test information")
+    if frozen.get("publication_calibration_eligible") is not True:
+        raise ValueError(
+            "candidate search calibration lacks a complete target-exposure frozen schedule"
+        )
     slide, background = _verified_candidate_search_artifact(
         test_time_slide_report,
         "subwindow_clustered_time_slide_integration_only",
@@ -512,6 +617,13 @@ def run_frozen_candidate_search_evaluation(
     identity = _candidate_search_identity(slide, injections)
     if identity != frozen.get("identity"):
         raise ValueError("locked test candidate identity differs from frozen validation identity")
+    test_schedule_audit = _audit_candidate_slide_schedule(
+        slide, float(frozen["target_far_per_year"])
+    )
+    if not test_schedule_audit["passed"]:
+        raise ValueError(
+            "locked candidate test lacks a complete target-exposure frozen schedule"
+        )
     background_overlap = sorted(
         set(str(value) for value in frozen["validation_background_gps_blocks"])
         & set(str(value) for value in slide["input_gps_blocks"])
@@ -553,6 +665,7 @@ def run_frozen_candidate_search_evaluation(
         "zero_cross_split_waveform_ids": not waveform_id_overlap,
         "frozen_candidate_identity": True,
         "publication_timing_gate": bool(slide["publication_timing_gate_passed"]),
+        "frozen_test_slide_schedule": bool(test_schedule_audit["passed"]),
     }
     result = {
         "status": "locked_candidate_search_evaluation",
@@ -573,6 +686,7 @@ def run_frozen_candidate_search_evaluation(
         "identity": identity,
         "threshold_source": "frozen_validation_candidate_search_calibration",
         "target_far_per_year": frozen["target_far_per_year"],
+        "test_slide_schedule_audit": test_schedule_audit,
         "endpoint_gates": endpoint_gates,
         "minimum_test_live_time_years": minimum_test_live_time_years,
         "minimum_test_injections": minimum_test_injections,
