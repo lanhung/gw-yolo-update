@@ -716,6 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap.add_argument("--split", required=True, choices=["train", "val", "test"])
     physical_overlap.add_argument("--seed", type=int, default=20260720)
     physical_overlap.add_argument("--limit", type=int)
+    physical_overlap.add_argument("--gravityspy-corpus-audit")
 
     physical_overlap_audit = subparsers.add_parser("physical-overlap-audit")
     physical_overlap_audit.add_argument("--manifest", action="append", required=True)
@@ -2229,6 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.split,
                 args.seed,
                 args.limit,
+                args.gravityspy_corpus_audit,
             )
         )
     elif args.command == "physical-overlap-audit":

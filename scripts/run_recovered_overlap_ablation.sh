@@ -23,6 +23,7 @@ done
 
 SEED=${SEED:-20260720}
 CLEAN_VALIDATION_FEATURE_CACHE_DIR=${CLEAN_VALIDATION_FEATURE_CACHE_DIR:-}
+GLITCH_CORPUS_AUDIT=${GLITCH_CORPUS_AUDIT:-}
 for input in \
   "$TASK_PYTHON" \
   "$TRAIN_GLITCH_MANIFEST" \
@@ -40,6 +41,15 @@ for input in \
 done
 mkdir -p "$OUTPUT_ROOT"
 
+corpus_audit_args=()
+if [[ -n "$GLITCH_CORPUS_AUDIT" ]]; then
+  if [[ ! -f "$GLITCH_CORPUS_AUDIT" ]]; then
+    echo "Gravity Spy corpus audit is absent: $GLITCH_CORPUS_AUDIT" >&2
+    exit 2
+  fi
+  corpus_audit_args=(--gravityspy-corpus-audit "$GLITCH_CORPUS_AUDIT")
+fi
+
 train_overlap="$OUTPUT_ROOT/train-overlaps"
 val_overlap="$OUTPUT_ROOT/val-overlaps"
 if [[ ! -s "$train_overlap/physical_overlap_report.json" ]]; then
@@ -49,6 +59,7 @@ if [[ ! -s "$train_overlap/physical_overlap_report.json" ]]; then
     --config "$MATERIALIZATION_CONFIG" \
     --output-dir "$train_overlap" \
     --split train \
+    "${corpus_audit_args[@]}" \
     --seed "$SEED"
 fi
 if [[ ! -s "$val_overlap/physical_overlap_report.json" ]]; then
@@ -58,6 +69,7 @@ if [[ ! -s "$val_overlap/physical_overlap_report.json" ]]; then
     --config "$MATERIALIZATION_CONFIG" \
     --output-dir "$val_overlap" \
     --split val \
+    "${corpus_audit_args[@]}" \
     --seed "$SEED"
 fi
 audit="$OUTPUT_ROOT/physical_overlap_audit.json"

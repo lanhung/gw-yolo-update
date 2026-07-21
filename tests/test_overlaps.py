@@ -84,6 +84,26 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
     gravity_manifest = tmp_path / "gravity.jsonl"
     _write_jsonl(gravity_manifest, [glitch_row])
 
+    corpus_audit = tmp_path / "corpus-audit.json"
+    corpus_audit.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+                "passed": True,
+                "train_manifest_sha256": file_sha256(gravity_manifest),
+                "validation_manifest_sha256": "unused-in-this-test",
+                "split_audit": {
+                    "cross_split_overlaps": {
+                        "glitch_id": [],
+                        "network_gps_block": [],
+                        "source_hdf5_url": [],
+                        "numeric_sample_sha256": [],
+                    }
+                },
+            }
+        )
+    )
+
     signal = np.zeros((2, 256), dtype=np.float64)
     phase = np.linspace(0, 20 * np.pi, 128, endpoint=False)
     signal[1, 64:192] = np.sin(phase) * np.linspace(0.1, 1.0, 128) * 2e-22
@@ -120,10 +140,26 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
         tmp_path / "output",
         "train",
         seed=7,
+        gravityspy_corpus_audit=corpus_audit,
     )
     assert report["rows"] == 1
     assert report["rendered_image_count"] == 0
     assert report["network_coherence_claim_allowed"] is False
+    assert report["gravityspy_corpus_audit_sha256"] == file_sha256(corpus_audit)
+    bad_audit = tmp_path / "bad-corpus-audit.json"
+    bad_payload = json.loads(corpus_audit.read_text())
+    bad_payload["train_manifest_sha256"] = "0" * 64
+    bad_audit.write_text(json.dumps(bad_payload))
+    with pytest.raises(ValueError, match="does not bind"):
+        materialize_physical_overlaps(
+            gravity_manifest,
+            injection_manifest,
+            config,
+            tmp_path / "bad-output",
+            "train",
+            seed=7,
+            gravityspy_corpus_audit=bad_audit,
+        )
     row = json.loads(Path(report["manifest_path"]).read_text().strip())
     with np.load(row["path"], allow_pickle=False) as arrays:
         assert arrays["features"].shape == (3, 1, 8, 8)

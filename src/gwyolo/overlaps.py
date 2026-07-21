@@ -257,6 +257,7 @@ def materialize_physical_overlaps(
     split: str,
     seed: int = 20260720,
     limit: int | None = None,
+    gravityspy_corpus_audit: str | Path | None = None,
 ) -> dict[str, Any]:
     config = load_yaml(config_path)
     settings = config.get("overlap_factory")
@@ -278,6 +279,24 @@ def materialize_physical_overlaps(
         raise ValueError("Real-glitch overlap v1 supports self whitening only")
     if str(tensor.get("target_whitening", "morphology")) != "morphology":
         raise ValueError("Real-glitch overlap v1 supports morphology targets only")
+
+    corpus_audit_sha256 = None
+    if gravityspy_corpus_audit is not None:
+        audit_path = Path(gravityspy_corpus_audit)
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if (
+            audit.get("status")
+            != "verified_group_safe_gravityspy_aligned_network_corpus"
+            or not audit.get("passed")
+        ):
+            raise ValueError("Gravity Spy network corpus audit did not pass")
+        expected_key = "train_manifest_sha256" if split == "train" else "validation_manifest_sha256"
+        if str(audit.get(expected_key)) != file_sha256(gravityspy_manifest):
+            raise ValueError("Gravity Spy corpus audit does not bind this split manifest")
+        overlaps = audit.get("split_audit", {}).get("cross_split_overlaps", {})
+        if not overlaps or any(overlaps.values()):
+            raise ValueError("Gravity Spy corpus audit lacks a zero-overlap certificate")
+        corpus_audit_sha256 = file_sha256(audit_path)
 
     glitch_rows = _read_jsonl(gravityspy_manifest)
     injection_rows = _read_jsonl(injection_manifest)
@@ -339,6 +358,7 @@ def materialize_physical_overlaps(
             "glitch_sha256": str(glitch["sha256"]),
             "injection_sha256": str(injection["materialized_sha256"]),
             "config_sha256": file_sha256(config_path),
+            "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
         }
         mixture_id = f"overlap-{canonical_hash(identity, 24)}"
         sample_path = output / "samples" / f"{mixture_id}.npz"
@@ -383,6 +403,7 @@ def materialize_physical_overlaps(
             "training_signal_scale": float(injection.get("training_signal_scale", 1.0)),
             "optimal_snr_by_ifo": injection.get("optimal_snr_by_ifo"),
             "artifact_version": OVERLAP_ARTIFACT_VERSION,
+            "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
         }
         records.append(record)
 
@@ -430,6 +451,10 @@ def materialize_physical_overlaps(
         "gravityspy_manifest_sha256": file_sha256(gravityspy_manifest),
         "injection_manifest_sha256": file_sha256(injection_manifest),
         "config_sha256": file_sha256(config_path),
+        "gravityspy_corpus_audit_path": (
+            str(gravityspy_corpus_audit) if gravityspy_corpus_audit is not None else None
+        ),
+        "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
         "seed": seed,
         "required_next_gates": [
             "joint_cross_split_overlap_audit",

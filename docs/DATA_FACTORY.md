@@ -126,6 +126,10 @@ train/validation roles. `gravityspy-network-corpus-resplit` freezes the score-bl
 official HDF5 source component and GPS block in one role. `gravityspy-network-corpus-audit` then
 hash-verifies every numeric sample and requires zero train/validation overlap in glitch ID, network
 GPS block, official source URL and numeric sample hash before overlap materialization or training.
+Publication overlap materialization passes that audit through `--gravityspy-corpus-audit`; the
+command verifies that the audit binds the exact split-manifest hash and records the audit hash in
+every mixture identity, row and materialization report. Historical source-sharing controls omit
+this certificate and are not eligible for a primary result.
 
 After a stricter detector-set implementation is introduced,
 `gravityspy-network-recovery-plan` can freeze only rows rejected by earlier completed shards. It
