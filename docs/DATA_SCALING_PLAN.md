@@ -263,6 +263,17 @@ eviction. A completed shard is immutable under its full run identity and can be 
 release without attempting to redownload a deleted source. Shards containing only training blocks
 are explicitly counted and safely released for this search-only corpus.
 
+For a model-independent injection/background corpus, use
+`scripts/run_background_acquisition_range.sh`. It starts at shard zero, retries each resumable
+`gwosc-batch-download`, rejects a missing or identity-mismatched batch report, and only then creates
+one global `hash_threshold_v1` background manifest from every verified shard. Development
+calibration runs force `test_fraction=0`; the validation blocks may be used for injection planning
+and threshold calibration but not relabelled as a test. A prior completed batch report can be passed
+as `VERIFIED_SOURCE_INVENTORY`: requested files are imported only after matching run, pair, GPS,
+IFO, detail URL and bounded cache slot, followed by an offline replay of byte hash, HDF5 statistics,
+sample count and DQ/injection bit sums. The inventory hash is part of the new run identity. This
+reuses public bytes, not an earlier split or scientific result.
+
 After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
 timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one
 split per GPS block across every shard. It writes globally ordered background plus val/test

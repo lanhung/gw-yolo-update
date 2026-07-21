@@ -24,6 +24,7 @@ from gwyolo.gwosc import (
     extend_gwosc_run_plan,
     event_strain_files,
     plan_run_strain_pairs,
+    run_gwosc_batch_download,
     read_hdf5_segment,
     run_gwosc_event_exclusions,
     run_gwosc_plan_shard,
@@ -274,6 +275,134 @@ def test_full_hdf5_verification_matches_official_statistics(tmp_path: Path) -> N
     assert report["passed"]
     assert report["strain_samples"] == 4
     assert report["observed_bitsums"] == {"0": 2, "1": 2, "32": 2}
+
+
+def test_batch_download_replays_exact_verified_inventory_without_network(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    run_cache = cache / "O4a"
+    run_cache.mkdir(parents=True)
+    pair = {
+        "pair_id": "O4a-100-H1-L1",
+        "run": "O4a",
+        "gps_start": 100,
+        "detectors": {},
+    }
+    files = []
+    for index, ifo in enumerate(("H1", "L1")):
+        filename = f"{ifo}-100-4096.hdf5"
+        path = run_cache / filename
+        values = np.arange(16, dtype=float) + index
+        with h5py.File(path, "w") as handle:
+            handle.create_group("strain").create_dataset("Strain", data=values)
+            quality = handle.create_group("quality")
+            quality.create_group("simple").create_dataset("DQmask", data=[3, 1])
+            quality.create_group("injections").create_dataset("Injmask", data=[1, 0])
+        detail = {
+            "filesize_bytes": path.stat().st_size,
+            "mean_strain": float(np.mean(values)),
+            "stdev_strain": float(np.std(values)),
+            "min_strain": float(np.min(values)),
+            "max_strain": float(np.max(values)),
+            "nans_fraction": 0.0,
+            "bitsums": [
+                {"bit": 0, "sum": 2},
+                {"bit": 1, "sum": 1},
+                {"bit": 32, "sum": 1},
+            ],
+        }
+        verification = verify_hdf5_against_detail(path, detail, chunk_samples=4)
+        pair["detectors"][ifo] = {
+            "detector": ifo,
+            "gps_start": 100,
+            "sample_rate": 4096,
+            "hdf5_url": f"https://example.test/{filename}",
+            "detail_url": f"https://example.test/{ifo}-detail",
+        }
+        files.append(
+            {
+                "pair_id": pair["pair_id"],
+                "run": "O4a",
+                "gps_start": 100,
+                "detector": ifo,
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "bytes": path.stat().st_size,
+                "downloaded": True,
+                "detail_url": pair["detectors"][ifo]["detail_url"],
+                "verification": verification,
+            }
+        )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "run": "O4a",
+                "detectors": ["H1", "L1"],
+                "sample_rate_khz": 4,
+                "seed": 7,
+                "selected_pairs": 1,
+                "pairs": [pair],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "run": "O4a",
+                "files": files,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("gwyolo.gwosc.download_resumable") as download, patch(
+        "gwyolo.gwosc._api_json"
+    ) as metadata:
+        result = run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "output",
+            download_workers=2,
+            chunk_samples=4,
+            verified_source_inventories=[inventory],
+        )
+
+    download.assert_not_called()
+    metadata.assert_not_called()
+    assert result["verified_files"] == 2
+    assert result["imported_verified_files"] == 2
+    assert all(not row["downloaded"] for row in result["files"])
+    assert result["verified_source_inventory_sha256s"] == [file_sha256(inventory)]
+
+    with Path(files[0]["path"]).open("ab") as handle:
+        handle.write(b"tamper")
+    with pytest.raises(ValueError, match="byte count changed"):
+        run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "tampered-output",
+            download_workers=2,
+            chunk_samples=4,
+            verified_source_inventories=[inventory],
+        )
+
+    inventory.unlink()
+    with pytest.raises(ValueError, match="different run"):
+        run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "output",
+            download_workers=2,
+            chunk_samples=4,
+        )
 
 
 def test_run_plan_keeps_only_aligned_pairs_and_stratifies() -> None:

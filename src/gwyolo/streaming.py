@@ -284,6 +284,7 @@ def run_streamed_background_shard(
     minimum_bins: int = 1,
     download_workers: int = 8,
     allow_uncalibrated_morphology_baseline: bool = False,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Download, score, reduce, and safely release one stable-split background shard."""
 
@@ -305,6 +306,7 @@ def run_streamed_background_shard(
         raise ValueError("coherent streaming requires a timing calibration report")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    inventory_paths = [Path(path) for path in verified_source_inventories]
     identity = {
         "parent_plan_sha256": file_sha256(parent_plan),
         "event_exclusions_sha256": file_sha256(event_exclusions),
@@ -328,6 +330,9 @@ def run_streamed_background_shard(
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
         "download_workers": download_workers,
+        "verified_source_inventory_sha256s": [
+            file_sha256(path) for path in inventory_paths
+        ],
         "streaming_mode": (
             "morphology_only_validation"
             if allow_uncalibrated_morphology_baseline
@@ -369,6 +374,8 @@ def run_streamed_background_shard(
             batch_dir,
             None,
             download_workers,
+            1_048_576,
+            inventory_paths,
         )
 
     background_dir = output / "background"
@@ -568,6 +575,7 @@ def run_streamed_morphology_background_shard(
     chirp_threshold: float = 0.3,
     minimum_bins: int = 1,
     download_workers: int = 8,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Stream a validation-only morphology baseline without implying timing coherence."""
     return run_streamed_background_shard(
@@ -592,6 +600,7 @@ def run_streamed_morphology_background_shard(
         minimum_bins,
         download_workers,
         True,
+        verified_source_inventories,
     )
 
 

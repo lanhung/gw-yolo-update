@@ -48,6 +48,7 @@ CHECKPOINT=${CHECKPOINT:-}
 CONFIG=${CONFIG:-}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
 RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-120}
+VERIFIED_SOURCE_INVENTORY=${VERIFIED_SOURCE_INVENTORY:-}
 
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[1-9][0-9]*$ ]] \
@@ -87,6 +88,14 @@ for code_dir in "$TASK_CODE_DIR" "$SCORING_CODE_DIR"; do
     exit 2
   fi
 done
+inventory_args=()
+if [[ -n "$VERIFIED_SOURCE_INVENTORY" ]]; then
+  if [[ ! -f "$VERIFIED_SOURCE_INVENTORY" ]]; then
+    echo "verified source inventory is absent: $VERIFIED_SOURCE_INVENTORY" >&2
+    exit 2
+  fi
+  inventory_args+=(--verified-source-inventory "$VERIFIED_SOURCE_INVENTORY")
+fi
 if [[ -z "$CHECKPOINT" || -z "$CONFIG" ]]; then
   for variable in FIVE_SEED_SUMMARY UNIFORM_CONFIG FAMILY_BALANCED_CONFIG; do
     if [[ -z "${!variable:-}" ]]; then
@@ -346,7 +355,8 @@ for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
         --context-duration "$CONTEXT_DURATION" \
         --chirp-threshold "$CHIRP_THRESHOLD" \
         --minimum-bins "$MINIMUM_BINS" \
-        --download-workers "$DOWNLOAD_WORKERS"
+        --download-workers "$DOWNLOAD_WORKERS" \
+        "${inventory_args[@]}"
     ); then
       completed=1
       break

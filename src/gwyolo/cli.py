@@ -337,6 +337,9 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_batch.add_argument("--maximum-pairs", type=int)
     gwosc_batch.add_argument("--download-workers", type=int, default=8)
     gwosc_batch.add_argument("--chunk-samples", type=int, default=1_048_576)
+    gwosc_batch.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     gwosc_exclusions = subparsers.add_parser("gwosc-event-exclusions")
     gwosc_exclusions.add_argument("--run", required=True)
@@ -1172,6 +1175,9 @@ def build_parser() -> argparse.ArgumentParser:
     stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
     stream_shard.add_argument("--minimum-bins", type=int, default=1)
     stream_shard.add_argument("--download-workers", type=int, default=8)
+    stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     morphology_stream_shard = subparsers.add_parser(
         "background-morphology-stream-shard"
@@ -1198,6 +1204,9 @@ def build_parser() -> argparse.ArgumentParser:
     morphology_stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
     morphology_stream_shard.add_argument("--minimum-bins", type=int, default=1)
     morphology_stream_shard.add_argument("--download-workers", type=int, default=8)
+    morphology_stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     stream_merge = subparsers.add_parser("background-stream-merge")
     stream_merge.add_argument("--shard-report", action="append", required=True)
@@ -1897,6 +1906,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.maximum_pairs,
                 args.download_workers,
                 args.chunk_samples,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "gwosc-event-exclusions":
@@ -2934,6 +2944,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.chirp_threshold,
                 args.minimum_bins,
                 args.download_workers,
+                False,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "background-morphology-stream-shard":
@@ -2959,6 +2971,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.chirp_threshold,
                 args.minimum_bins,
                 args.download_workers,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "background-stream-merge":

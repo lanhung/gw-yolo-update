@@ -439,6 +439,7 @@ def run_gwosc_batch_download(
     maximum_pairs: int | None = None,
     download_workers: int = 8,
     chunk_samples: int = 1_048_576,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     with Path(plan_path).open("r", encoding="utf-8") as handle:
         plan = json.load(handle)
@@ -450,11 +451,14 @@ def run_gwosc_batch_download(
     cache = Path(cache_dir)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    inventory_paths = [Path(path) for path in verified_source_inventories]
+    inventory_hashes = [file_sha256(path) for path in inventory_paths]
     run_identity = {
         "plan_sha256": file_sha256(plan_path),
         "selected_pair_ids_hash": canonical_hash([row["pair_id"] for row in pairs], 64),
         "download_workers": download_workers,
         "chunk_samples": chunk_samples,
+        "verified_source_inventory_sha256s": inventory_hashes,
     }
     state_path = output / "batch_download_state.json"
     partial_path = output / "batch_download_partial.json"
@@ -473,6 +477,33 @@ def run_gwosc_batch_download(
         if key in completed_keys or file_sha256(row["path"]) != row["sha256"]:
             raise ValueError(f"Invalid resumable batch-download entry: {key}")
         completed_keys.add(key)
+    requested = {
+        (str(pair["pair_id"]), str(ifo)): (pair, str(ifo), record)
+        for pair in pairs
+        for ifo, record in pair["detectors"].items()
+    }
+    imported = _import_verified_batch_sources(
+        inventory_paths,
+        requested,
+        cache,
+        str(plan["run"]),
+        chunk_samples,
+    )
+    for key, entry in sorted(imported.items()):
+        if key in completed_keys:
+            continue
+        completed.append(entry)
+        completed_keys.add(key)
+        atomic_write_json(partial_path, {"run_identity": run_identity, "files": completed})
+        atomic_write_json(
+            state_path,
+            {
+                "status": "in_progress",
+                "run_identity": run_identity,
+                "completed_files": len(completed),
+                "requested_files": len(requested),
+            },
+        )
     for pair in pairs:
         for ifo, record in sorted(pair["detectors"].items()):
             key = (str(pair["pair_id"]), str(ifo))
@@ -519,6 +550,10 @@ def run_gwosc_batch_download(
         "plan_sha256": run_identity["plan_sha256"],
         "selected_pairs": len(pairs),
         "verified_files": len(completed),
+        "imported_verified_files": sum(
+            bool(row.get("imported_from_verified_source_inventory")) for row in completed
+        ),
+        "verified_source_inventory_sha256s": inventory_hashes,
         "files": completed,
         **execution_provenance(),
     }
@@ -535,6 +570,91 @@ def run_gwosc_batch_download(
         },
     )
     return result
+
+
+def _import_verified_batch_sources(
+    inventory_paths: Iterable[Path],
+    requested: dict[tuple[str, str], tuple[dict[str, Any], str, dict[str, Any]]],
+    cache_dir: Path,
+    run: str,
+    chunk_samples: int,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Offline-reverify exact requested sources from completed batch reports."""
+
+    imported: dict[tuple[str, str], dict[str, Any]] = {}
+    for inventory_path in inventory_paths:
+        with inventory_path.open("r", encoding="utf-8") as handle:
+            inventory = json.load(handle)
+        if (
+            inventory.get("status") != "verified_development_strain_batch"
+            or not inventory.get("passed")
+            or str(inventory.get("run")) != run
+        ):
+            raise ValueError("Verified source inventory is not a passing batch for this run")
+        inventory_sha = file_sha256(inventory_path)
+        for source in inventory.get("files", []):
+            key = (str(source.get("pair_id")), str(source.get("detector")))
+            request = requested.get(key)
+            if request is None:
+                continue
+            pair, ifo, record = request
+            filename = Path(urlparse(str(record["hdf5_url"])).path).name
+            expected_path = (cache_dir / run / filename).resolve()
+            source_path = Path(str(source.get("path", ""))).resolve()
+            verification = source.get("verification", {})
+            if (
+                str(source.get("run")) != run
+                or int(source.get("gps_start", -1)) != int(pair["gps_start"])
+                or str(source.get("detail_url")) != str(record["detail_url"])
+                or str(source.get("detector")) != ifo
+                or source_path != expected_path
+                or str(verification.get("path", "")) != str(source.get("path", ""))
+                or not verification.get("passed")
+                or int(source.get("bytes", -1)) != int(verification.get("bytes", -2))
+                or str(source.get("sha256")) != str(verification.get("sha256"))
+            ):
+                raise ValueError(f"Verified source inventory entry differs from request: {key}")
+            if not source_path.is_file():
+                raise ValueError(f"Verified source inventory file is absent: {source_path}")
+            if source_path.stat().st_size != int(source["bytes"]):
+                raise ValueError(f"Verified source inventory byte count changed: {source_path}")
+            if file_sha256(source_path) != str(source["sha256"]):
+                raise ValueError(f"Verified source inventory hash changed: {source_path}")
+            expected = dict(verification.get("expected", {}))
+            bitsums = dict(verification.get("observed_bitsums", {}))
+            if not expected or not bitsums:
+                raise ValueError(f"Verified source inventory lacks full HDF evidence: {key}")
+            detail = {
+                **expected,
+                "bitsums": [
+                    {"bit": int(bit), "sum": int(value)}
+                    for bit, value in sorted(bitsums.items(), key=lambda item: int(item[0]))
+                ],
+            }
+            offline_verification = verify_hdf5_against_detail(
+                source_path, detail, chunk_samples
+            )
+            if not offline_verification["passed"]:
+                raise ValueError(f"Verified source inventory failed offline replay: {key}")
+            entry = {
+                "pair_id": pair["pair_id"],
+                "run": run,
+                "gps_start": pair["gps_start"],
+                "detector": ifo,
+                "path": str(source_path),
+                "sha256": offline_verification["sha256"],
+                "bytes": offline_verification["bytes"],
+                "downloaded": False,
+                "detail_url": record["detail_url"],
+                "verification": offline_verification,
+                "imported_from_verified_source_inventory": str(inventory_path),
+                "imported_from_verified_source_inventory_sha256": inventory_sha,
+            }
+            prior = imported.get(key)
+            if prior is not None and prior != entry:
+                raise ValueError(f"Verified source inventories conflict for {key}")
+            imported[key] = entry
+    return imported
 
 
 def verify_hdf5_against_detail(

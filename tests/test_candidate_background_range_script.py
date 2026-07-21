@@ -80,6 +80,7 @@ def test_candidate_background_extension_binds_authoritative_parent() -> None:
     assert 'get("parent_plan_sha256") != digest' in source
     assert "background shard $shard exhausted bounded retries" in source
     assert "MAX_ATTEMPTS" in source
+    assert "--verified-source-inventory" in source
 
 
 def test_candidate_background_embedded_python_compiles() -> None:

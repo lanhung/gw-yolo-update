@@ -267,6 +267,8 @@ def test_streamed_background_shard_resumes_after_verified_source_eviction(
         output_dir: Path,
         _maximum_pairs: None,
         _workers: int,
+        _chunk_samples: int,
+        _verified_source_inventories: list[Path],
     ) -> dict:
         cache_path = Path(cache_root)
         cache_path.mkdir(parents=True, exist_ok=True)
