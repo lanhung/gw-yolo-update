@@ -262,6 +262,109 @@ def evict_scored_background_batch_sources(
     return result
 
 
+def evict_amplfi_background_batch_sources(
+    batch_download_report: str | Path,
+    background_plan_report: str | Path,
+    amplfi_export_report: str | Path,
+    cache_root: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Release public source HDFs after a hash-complete AMPLFI background export."""
+
+    output_path, intent_path = _prepare_output(output)
+    batch = _load_json(batch_download_report)
+    plan = _load_json(background_plan_report)
+    export = _load_json(amplfi_export_report)
+    if batch.get("status") != "verified_development_strain_batch" or not batch.get("passed"):
+        raise ValueError("AMPLFI source eviction requires a verified GWOSC batch")
+    if (
+        plan.get("status") != "verified_multi_segment_development_background"
+        or not plan.get("passed")
+        or plan.get("split_strategy") != "hash_threshold_v1"
+        or int(plan.get("splits", {}).get("test", {}).get("windows", -1)) != 0
+    ):
+        raise ValueError("AMPLFI source eviction requires a stable train/validation plan")
+    if export.get("status") != "group_safe_amplfi_background":
+        raise ValueError("AMPLFI source eviction requires a complete group-safe export")
+    batch_sha = file_sha256(batch_download_report)
+    bound_batch_hashes = set(
+        str(value) for value in plan.get("source_batch_report_sha256s", [])
+    )
+    if plan.get("source_batch_report_sha256"):
+        bound_batch_hashes.add(str(plan["source_batch_report_sha256"]))
+    if batch_sha not in bound_batch_hashes:
+        raise ValueError("AMPLFI background plan does not bind the supplied batch")
+    manifest_path = Path(str(plan.get("manifest_path", ""))).resolve()
+    if (
+        not manifest_path.is_file()
+        or file_sha256(manifest_path) != plan.get("manifest_sha256")
+        or Path(str(export.get("manifest_path", ""))).resolve() != manifest_path
+        or export.get("manifest_sha256") != plan.get("manifest_sha256")
+        or int(export.get("split_file_counts", {}).get("test", -1)) != 0
+    ):
+        raise ValueError("AMPLFI export does not bind the train/validation background manifest")
+    for row in export.get("files", []):
+        path = Path(str(row.get("path", ""))).resolve()
+        if not path.is_file() or file_sha256(path) != row.get("sha256"):
+            raise ValueError(f"AMPLFI exported background hash mismatch: {path}")
+    batch_sources = {
+        str(Path(row["path"]).resolve()): str(row["sha256"]) for row in batch["files"]
+    }
+    manifest_sources = {
+        str(Path(source["path"]).resolve()): str(source["sha256"])
+        for row in _load_jsonl(manifest_path)
+        for source in row["source_files"].values()
+    }
+    export_sources = {
+        str(Path(source["path"]).resolve()): str(source["sha256"])
+        for row in export.get("files", [])
+        for source in row["source_files"].values()
+    }
+    if manifest_sources != batch_sources or export_sources != batch_sources:
+        raise ValueError("AMPLFI export does not cover every verified batch source")
+    root = Path(cache_root).resolve()
+    validated = []
+    for path_value, expected_sha in sorted(batch_sources.items()):
+        path = _bounded_file(path_value, root)
+        if not path.is_file() or file_sha256(path) != expected_sha:
+            raise ValueError(f"GWOSC source hash mismatch before AMPLFI eviction: {path}")
+        validated.append((path, path.stat().st_size, expected_sha))
+    atomic_write_json(
+        intent_path,
+        {
+            "status": "validated_amplfi_source_eviction_intent",
+            "batch_download_report_sha256": batch_sha,
+            "background_plan_report_sha256": file_sha256(background_plan_report),
+            "amplfi_export_report_sha256": file_sha256(amplfi_export_report),
+            "targets": [str(path) for path, _, _ in validated],
+        },
+    )
+    removed = []
+    for path, size, sha256 in validated:
+        path.unlink()
+        removed.append({"path": str(path), "bytes": size, "sha256": sha256})
+    result = {
+        "status": "verified_exported_amplfi_source_eviction",
+        "recoverable": True,
+        "recovery": "re-run gwosc-batch-download from the hash-bound public plan",
+        "batch_download_report_path": str(Path(batch_download_report).resolve()),
+        "batch_download_report_sha256": batch_sha,
+        "background_plan_report_path": str(Path(background_plan_report).resolve()),
+        "background_plan_report_sha256": file_sha256(background_plan_report),
+        "amplfi_export_report_path": str(Path(amplfi_export_report).resolve()),
+        "amplfi_export_report_sha256": file_sha256(amplfi_export_report),
+        "cache_root": str(root),
+        "removed_files": len(removed),
+        "removed_bytes": sum(row["bytes"] for row in removed),
+        "removed": removed,
+        "intent_path": str(intent_path),
+        "intent_sha256": file_sha256(intent_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_streamed_background_shard(
     parent_plan: str | Path,
     event_exclusions: str | Path,

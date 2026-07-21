@@ -719,6 +719,13 @@ a seeded stratified selection from the complement. The intended AMPLFI training 
 entire frozen 880-pair candidate/independent-validation parent before selecting 80 new H1/L1 pairs.
 It cannot query O4b, inspect candidate scores or open test strain.
 
+`scripts/run_amplfi_background_acquisition.sh` executes that plan in twenty four-pair shards. Each
+shard uses the stable GPS hash split with `test_fraction=0`, exports numeric 2,048 Hz H1/L1 HDF5
+background, verifies every output and source hash, writes an eviction intent, and only then removes
+the recoverable public source HDF5 copies. The final merge replays all shard-plan ranges and report
+hashes, rejects duplicate windows/files or cross-split GPS blocks, and must pass the frozen capacity
+policy before writing a training-background receipt.
+
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
 `validation_selected_checkpoint`, says `selection_split: validation`, is explicitly

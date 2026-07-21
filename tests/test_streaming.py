@@ -8,6 +8,7 @@ import pytest
 from gwyolo.io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
 from gwyolo.streaming import (
     calibrate_streamed_morphology_candidate_rate,
+    evict_amplfi_background_batch_sources,
     evict_candidate_probability_artifacts,
     evict_scored_background_batch_sources,
     merge_streamed_background_shards,
@@ -226,6 +227,75 @@ def test_background_source_eviction_rejects_unscored_required_window(
     with pytest.raises(ValueError, match="non-empty required splits"):
         evict_scored_background_batch_sources(batch, plan, [], [], cache, tmp_path / "out.json")
     assert h1.exists()
+
+
+def test_amplfi_source_eviction_requires_complete_hash_bound_export(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "gwosc-cache"
+    cache.mkdir()
+    sources = {}
+    batch_rows = []
+    for ifo in ("H1", "L1"):
+        path = cache / f"{ifo}.hdf5"
+        path.write_bytes(f"{ifo} public strain".encode())
+        sources[ifo] = {"path": str(path), "sha256": file_sha256(path)}
+        batch_rows.append({**sources[ifo], "detector": ifo})
+    batch = tmp_path / "batch.json"
+    atomic_write_json(
+        batch,
+        {
+            "status": "verified_development_strain_batch",
+            "passed": True,
+            "files": batch_rows,
+        },
+    )
+    manifest = tmp_path / "background.jsonl"
+    _jsonl(
+        manifest,
+        [{"window_id": "train-1", "split": "train", "source_files": sources}],
+    )
+    background = tmp_path / "background-report.json"
+    atomic_write_json(
+        background,
+        {
+            "status": "verified_multi_segment_development_background",
+            "passed": True,
+            "split_strategy": "hash_threshold_v1",
+            "source_batch_report_sha256s": [file_sha256(batch)],
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+            "splits": {"test": {"windows": 0}},
+        },
+    )
+    exported = tmp_path / "exported.hdf5"
+    exported.write_bytes(b"downsampled H1 L1 background")
+    export = tmp_path / "export-report.json"
+    atomic_write_json(
+        export,
+        {
+            "status": "group_safe_amplfi_background",
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+            "split_file_counts": {"train": 1, "val": 0, "test": 0},
+            "files": [
+                {
+                    "path": str(exported),
+                    "sha256": file_sha256(exported),
+                    "source_files": sources,
+                }
+            ],
+        },
+    )
+    output = tmp_path / "amplfi-source-eviction.json"
+    result = evict_amplfi_background_batch_sources(
+        batch, background, export, cache, output
+    )
+    assert result["status"] == "verified_exported_amplfi_source_eviction"
+    assert result["recoverable"] is True
+    assert result["removed_files"] == 2
+    assert all(not Path(value["path"]).exists() for value in sources.values())
+    assert output.with_suffix(".json.intent.json").is_file()
 
 
 def test_streamed_background_shard_resumes_after_verified_source_eviction(

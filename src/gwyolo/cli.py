@@ -1177,6 +1177,13 @@ def build_parser() -> argparse.ArgumentParser:
     source_evict.add_argument("--cache-root", required=True)
     source_evict.add_argument("--output", required=True)
 
+    amplfi_source_evict = subparsers.add_parser("amplfi-background-source-evict")
+    amplfi_source_evict.add_argument("--batch-report", required=True)
+    amplfi_source_evict.add_argument("--background-report", required=True)
+    amplfi_source_evict.add_argument("--export-report", required=True)
+    amplfi_source_evict.add_argument("--cache-root", required=True)
+    amplfi_source_evict.add_argument("--output", required=True)
+
     stream_shard = subparsers.add_parser("background-stream-shard")
     stream_shard.add_argument("--parent-plan", required=True)
     stream_shard.add_argument("--event-exclusions", required=True)
@@ -3001,6 +3008,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.background_report,
                 args.score_report,
                 args.candidate_report,
+                args.cache_root,
+                args.output,
+            )
+        )
+    elif args.command == "amplfi-background-source-evict":
+        from .streaming import evict_amplfi_background_batch_sources
+
+        _print(
+            evict_amplfi_background_batch_sources(
+                args.batch_report,
+                args.background_report,
+                args.export_report,
                 args.cache_root,
                 args.output,
             )
