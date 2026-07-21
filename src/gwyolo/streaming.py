@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -793,4 +795,127 @@ def merge_streamed_background_shards(
         **execution_provenance(),
     }
     atomic_write_json(report_path, result)
+    return result
+
+
+def calibrate_streamed_morphology_candidate_rate(
+    merge_report_path: str | Path,
+    target_rate_per_detector_year: float,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze a validation-only single-IFO morphology trigger-rate threshold.
+
+    Detector-time exposure is the union of valid window intervals for each IFO. This is
+    deliberately not a network-coincident FAR or a search-sensitivity measurement.
+    """
+    from .background import SECONDS_PER_YEAR, _union_duration
+    from .search import calibrate_threshold
+
+    if target_rate_per_detector_year < 0:
+        raise ValueError("target morphology trigger rate must be non-negative")
+    merge_path = Path(merge_report_path)
+    merged = _load_json(merge_path)
+    if merged.get("status") != "verified_merged_streamed_morphology_background":
+        raise ValueError("morphology calibration requires a merged morphology background")
+    if not merged.get("morphology_only") or merged.get("test_evaluation") is not None:
+        raise ValueError("morphology calibration accepts validation-only morphology data")
+    if int(merged.get("split_counts", {}).get("test", 0)) != 0:
+        raise ValueError("morphology calibration refuses a merge containing test windows")
+
+    background_path = Path(merged["background_manifest_path"])
+    if file_sha256(background_path) != str(merged["background_manifest_sha256"]):
+        raise ValueError("merged morphology background manifest hash mismatch")
+    candidate_item = merged["candidate_manifests"]["val"]
+    candidate_path = Path(candidate_item["path"])
+    if file_sha256(candidate_path) != str(candidate_item["sha256"]):
+        raise ValueError("merged morphology candidate manifest hash mismatch")
+    windows = [
+        row for row in _load_jsonl(background_path) if str(row.get("split")) == "val"
+    ]
+    candidates = _load_jsonl(candidate_path)
+    if not windows:
+        raise ValueError("morphology calibration has no validation windows")
+    if any(str(row.get("split")) != "val" for row in candidates):
+        raise ValueError("morphology calibration candidate appears outside validation")
+
+    windows_by_id = {str(row["window_id"]): row for row in windows}
+    if len(windows_by_id) != len(windows):
+        raise ValueError("morphology calibration repeats validation window IDs")
+    intervals_by_ifo: dict[str, list[tuple[float, float]]] = {}
+    for row in windows:
+        start = float(row["gps_start"])
+        stop = float(row["gps_end"])
+        if stop <= start or not row.get("ifos"):
+            raise ValueError("morphology validation window has invalid exposure metadata")
+        for ifo in row["ifos"]:
+            intervals_by_ifo.setdefault(str(ifo), []).append((start, stop))
+    exposure_by_ifo = {
+        ifo: _union_duration(intervals) for ifo, intervals in sorted(intervals_by_ifo.items())
+    }
+    detector_time_seconds = sum(exposure_by_ifo.values())
+    detector_time_years = detector_time_seconds / SECONDS_PER_YEAR
+    if detector_time_years <= 0:
+        raise ValueError("morphology calibration has no detector-time exposure")
+
+    for row in candidates:
+        window = windows_by_id.get(str(row["window_id"]))
+        if window is None or str(row["ifo"]) not in {str(value) for value in window["ifos"]}:
+            raise ValueError("morphology candidate is not covered by its detector window")
+        if row.get("timing_empirically_calibrated"):
+            raise ValueError("morphology-only calibration received timing-calibrated candidates")
+    scores = [float(row["chirp_score"]) for row in candidates]
+    calibration = calibrate_threshold(
+        scores, detector_time_years, target_rate_per_detector_year
+    )
+    selected = [
+        row for row in candidates if float(row["chirp_score"]) >= calibration["threshold"]
+    ]
+    selected_by_ifo = Counter(str(row["ifo"]) for row in selected)
+    per_ifo = {}
+    for ifo, seconds in exposure_by_ifo.items():
+        years = seconds / SECONDS_PER_YEAR
+        count = int(selected_by_ifo.get(ifo, 0))
+        per_ifo[ifo] = {
+            "exposure_seconds": seconds,
+            "exposure_years": years,
+            "surviving_candidates": count,
+            "rate_per_detector_year": count / years,
+            "rate_90_upper_limit_if_zero": (
+                -math.log(0.1) / years if count == 0 else None
+            ),
+        }
+    extraction_floor = float(merged["common_run_identity"]["chirp_threshold"])
+    result = {
+        "status": "validation_only_morphology_candidate_rate_frozen",
+        "scientific_claim_allowed": False,
+        "network_far_claim_allowed": False,
+        "test_evaluation": None,
+        "scientific_blocker": (
+            "single-IFO detector-time morphology trigger rate is not a network FAR; empirical "
+            "timing calibration, physical coincidence and a locked test are still required"
+        ),
+        "merge_report_path": str(merge_path.resolve()),
+        "merge_report_sha256": file_sha256(merge_path),
+        "background_manifest_path": str(background_path.resolve()),
+        "background_manifest_sha256": file_sha256(background_path),
+        "candidate_manifest_path": str(candidate_path.resolve()),
+        "candidate_manifest_sha256": file_sha256(candidate_path),
+        "validation_windows": len(windows),
+        "validation_candidates": len(candidates),
+        "extraction_floor": extraction_floor,
+        "selected_threshold_respects_extraction_floor": (
+            float(calibration["threshold"]) >= extraction_floor
+        ),
+        "detector_time_seconds": detector_time_seconds,
+        "detector_time_years": detector_time_years,
+        "exposure_by_ifo_seconds": exposure_by_ifo,
+        "target_expected_count": target_rate_per_detector_year * detector_time_years,
+        "target_rate_exposure_gate_one_expected_count": (
+            target_rate_per_detector_year * detector_time_years >= 1.0
+        ),
+        "calibration": calibration,
+        "per_ifo_at_frozen_threshold": per_ifo,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
     return result

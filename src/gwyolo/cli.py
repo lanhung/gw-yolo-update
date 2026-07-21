@@ -984,6 +984,13 @@ def build_parser() -> argparse.ArgumentParser:
     stream_merge.add_argument("--shard-report", action="append", required=True)
     stream_merge.add_argument("--output-dir", required=True)
 
+    morphology_calibrate = subparsers.add_parser("background-morphology-calibrate")
+    morphology_calibrate.add_argument("--merge-report", required=True)
+    morphology_calibrate.add_argument(
+        "--target-rate-per-detector-year", required=True, type=float
+    )
+    morphology_calibrate.add_argument("--output", required=True)
+
     time_slide = subparsers.add_parser("time-slide-background")
     time_slide.add_argument("--triggers", required=True)
     time_slide.add_argument("--output-dir", required=True)
@@ -2355,6 +2362,16 @@ def main(argv: list[str] | None = None) -> int:
         from .streaming import merge_streamed_background_shards
 
         _print(merge_streamed_background_shards(args.shard_report, args.output_dir))
+    elif args.command == "background-morphology-calibrate":
+        from .streaming import calibrate_streamed_morphology_candidate_rate
+
+        _print(
+            calibrate_streamed_morphology_candidate_rate(
+                args.merge_report,
+                args.target_rate_per_detector_year,
+                args.output,
+            )
+        )
     elif args.command == "time-slide-background":
         from .timeslides import run_window_time_slides
 

@@ -7,6 +7,7 @@ import pytest
 
 from gwyolo.io import atomic_write_json, atomic_write_text, file_sha256
 from gwyolo.streaming import (
+    calibrate_streamed_morphology_candidate_rate,
     evict_candidate_probability_artifacts,
     evict_scored_background_batch_sources,
     merge_streamed_background_shards,
@@ -521,3 +522,85 @@ def test_streamed_morphology_merge_retains_uncalibrated_validation_candidates(
     assert result["morphology_only"] is True
     assert result["network_coherence_claim_allowed"] is False
     assert result["candidate_manifests"]["val"]["candidates"] == 2
+
+
+def test_morphology_rate_calibration_uses_detector_time_not_window_count(
+    tmp_path: Path,
+) -> None:
+    background = tmp_path / "background.jsonl"
+    _jsonl(
+        background,
+        [
+            {
+                "window_id": "w0",
+                "split": "val",
+                "gps_block": "b0",
+                "gps_start": 0.0,
+                "gps_end": 10.0,
+                "ifos": ["H1", "L1"],
+            },
+            {
+                "window_id": "w1",
+                "split": "val",
+                "gps_block": "b1",
+                "gps_start": 10.0,
+                "gps_end": 20.0,
+                "ifos": ["H1"],
+            },
+        ],
+    )
+    candidates = tmp_path / "candidates.jsonl"
+    _jsonl(
+        candidates,
+        [
+            {
+                "candidate_id": "c0",
+                "window_id": "w0",
+                "split": "val",
+                "ifo": "H1",
+                "gps_peak": 5.0,
+                "chirp_score": 0.9,
+                "timing_empirically_calibrated": False,
+            },
+            {
+                "candidate_id": "c1",
+                "window_id": "w0",
+                "split": "val",
+                "ifo": "L1",
+                "gps_peak": 6.0,
+                "chirp_score": 0.8,
+                "timing_empirically_calibrated": False,
+            },
+        ],
+    )
+    merge = tmp_path / "merge.json"
+    atomic_write_json(
+        merge,
+        {
+            "status": "verified_merged_streamed_morphology_background",
+            "morphology_only": True,
+            "test_evaluation": None,
+            "split_counts": {"train": 0, "val": 2, "test": 0},
+            "common_run_identity": {"chirp_threshold": 0.5},
+            "background_manifest_path": str(background),
+            "background_manifest_sha256": file_sha256(background),
+            "candidate_manifests": {
+                "val": {
+                    "path": str(candidates),
+                    "sha256": file_sha256(candidates),
+                    "candidates": 2,
+                }
+            },
+        },
+    )
+    seconds_per_year = 31_557_600.0
+    target_rate = seconds_per_year / 30.0
+    report = calibrate_streamed_morphology_candidate_rate(
+        merge, target_rate, tmp_path / "calibration.json"
+    )
+    assert report["detector_time_seconds"] == pytest.approx(30.0)
+    assert report["exposure_by_ifo_seconds"] == {"H1": 20.0, "L1": 10.0}
+    assert report["target_expected_count"] == pytest.approx(1.0)
+    assert report["calibration"]["threshold"] == pytest.approx(0.9)
+    assert report["calibration"]["background_count"] == 1
+    assert report["network_far_claim_allowed"] is False

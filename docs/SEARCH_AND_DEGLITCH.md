@@ -443,6 +443,14 @@ corresponding background overrides while hash-verifying every original source fi
 intermediate score, probability, override and report hashes are retained; each stage is resumable,
 and the aggregate output still has `test_evaluation: null` and `promotion_allowed: false`.
 
+The validation-only morphology stream also has a deliberately narrower rate diagnostic.
+`background-morphology-calibrate` computes exposure as the union of valid intervals separately for
+each IFO and calibrates a single-IFO candidate rate per detector-year above the immutable extraction
+floor. It records per-IFO rates and zero-count Poisson upper limits, refuses any test windows and
+sets `network_far_claim_allowed=false`. This diagnostic can expose an unusably noisy mask front end
+before timing work completes, but it is not a substitute for calibrated H1/L1/V1 coincidence,
+time-slide FAR/IFAR or injection `<VT>`.
+
 A successful five-row engineering pilot is not a sensitivity result. The paper gate still needs a
 statistically useful, group-independent contaminated corpus, clean non-inferiority, at least five
 learned seeds, clustered continuous background/time slides and the one-time locked evaluation.
