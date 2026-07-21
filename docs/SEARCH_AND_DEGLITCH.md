@@ -984,6 +984,14 @@ architecture and fitted scaler. It records backend version, parameter counts, GP
 latency and refuses to overwrite its report. This distinguishes a real 5.9 GB DINGO or trained
 AMPLFI checkpoint from a source-import smoke, while still withholding all posterior claims.
 
+`scripts/run_dingo_official_model_load.sh` is the official-source handoff for that smoke. It replays
+the complete acquisition report against the four-entry source configuration, including exact role,
+filename, size, published MD5 and local SHA-256. It then verifies the pinned `dingo-gw` runtime and
+loads both the posterior and GNPE time-initialization networks on the requested device. An immutable
+receipt binds the acquisition, source configuration, backend load report, model hashes, parameter
+counts and runtime environment. A compatibility failure is retained as such; it does not silently
+switch the official 0.5.8-trained serialization to a different runtime or become PE evidence.
+
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
 sizes and published MD5 values for the O4a DINGO manifest, settings, posterior model and time
