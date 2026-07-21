@@ -10,7 +10,12 @@ from typing import Any
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .exposure import candidate_slide_schedule_identity
+from .exposure import (
+    CANDIDATE_BLOCK_PERMUTATION_METHOD,
+    CANDIDATE_BLOCK_SELECTION_DATA,
+    candidate_block_schedule_identity,
+    candidate_slide_schedule_identity,
+)
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -379,25 +384,72 @@ def _audit_candidate_slide_schedule(
         raise ValueError("candidate time-slide frozen schedule hash mismatch")
     with schedule_path.open("r", encoding="utf-8") as handle:
         schedule = json.load(handle)
-    indices = [int(value) for value in schedule.get("slide_indices", [])]
+    schedule_status = str(schedule.get("status"))
+    if schedule_status == "frozen_candidate_time_slide_schedule":
+        schedule_kind = "absolute_time_slide"
+        indices = [int(value) for value in schedule.get("slide_indices", [])]
+        count_matches = int(schedule.get("slide_count", -1)) == len(indices)
+        indices_hash_matches = canonical_hash(indices, 64) == schedule.get(
+            "slide_indices_sha256"
+        )
+        identity_hash_matches = canonical_hash(
+            candidate_slide_schedule_identity(schedule), 32
+        ) == schedule.get("schedule_id")
+        selection_matches = (
+            schedule.get("selection_data")
+            == "background_gps_and_detector_availability_only"
+        )
+        exposure = schedule.get("exposure_plan", {})
+        schedule_years = float(exposure.get("equivalent_live_time_years", -1))
+        target_reached = bool(
+            schedule.get("schedule_exposure_target_reached") is True
+            and exposure.get("target_zero_count_upper_reached") is True
+        )
+        pairing_contract_matches = slide_report.get("background_pairing_method") in (
+            None,
+            "absolute_gps_time_slide_v1",
+        )
+    elif schedule_status == "frozen_candidate_block_permutation_schedule":
+        schedule_kind = "gps_block_permutation"
+        indices = [int(value) for value in schedule.get("shift_indices", [])]
+        count_matches = int(schedule.get("selected_shift_count", -1)) == len(indices)
+        indices_hash_matches = canonical_hash(indices, 64) == schedule.get(
+            "shift_indices_sha256"
+        ) and slide_report.get("slide_indices_sha256") == schedule.get(
+            "shift_indices_sha256"
+        )
+        identity_hash_matches = canonical_hash(
+            candidate_block_schedule_identity(schedule), 32
+        ) == schedule.get("schedule_id")
+        selection_matches = (
+            schedule.get("selection_data") == CANDIDATE_BLOCK_SELECTION_DATA
+        )
+        schedule_years = float(schedule.get("selected_equivalent_live_time_years", -1))
+        target_reached = schedule.get("schedule_exposure_target_reached") is True
+        pairing_contract_matches = bool(
+            schedule.get("method") == CANDIDATE_BLOCK_PERMUTATION_METHOD
+            and slide_report.get("background_pairing_method") == schedule.get("method")
+            and slide_report.get("input_gps_blocks")
+            == schedule.get("ordered_gps_blocks")
+        )
+    else:
+        raise ValueError("candidate background schedule has an unsupported status")
     identity_verified = bool(
-        schedule.get("status") == "frozen_candidate_time_slide_schedule"
-        and schedule.get("candidate_scores_inspected") is False
-        and schedule.get("selection_data")
-        == "background_gps_and_detector_availability_only"
+        schedule.get("candidate_scores_inspected") is False
+        and selection_matches
         and schedule.get("schedule_id") == slide_report.get("slide_schedule_id")
-        and int(schedule.get("slide_count", -1)) == len(indices)
+        and count_matches
         and int(slide_report.get("slide_schedule_count", -1)) == len(indices)
-        and canonical_hash(indices, 64) == schedule.get("slide_indices_sha256")
-        and canonical_hash(candidate_slide_schedule_identity(schedule), 32)
-        == schedule.get("schedule_id")
+        and indices_hash_matches
+        and identity_hash_matches
         and schedule.get("background_manifest_sha256")
         == slide_report.get("background_manifest_sha256")
         and str(schedule.get("split")) == str(slide_report.get("split"))
-        and str(schedule.get("reference_ifo"))
-        == str(slide_report.get("reference_ifo"))
-        and str(schedule.get("shifted_ifo"))
-        == str(slide_report.get("shifted_ifo"))
+        and str(schedule.get("reference_ifo")) == str(slide_report.get("reference_ifo"))
+        and str(schedule.get("shifted_ifo")) == str(slide_report.get("shifted_ifo"))
+        and pairing_contract_matches
+        and indices == sorted(set(indices))
+        and all(value > 0 for value in indices)
     )
     if not identity_verified:
         raise ValueError("candidate time-slide frozen schedule identity mismatch")
@@ -422,16 +474,10 @@ def _audit_candidate_slide_schedule(
             atol=1e-12,
         )
     )
-    exposure = schedule.get("exposure_plan", {})
-    schedule_years = float(exposure.get("equivalent_live_time_years", -1))
     report_years = float(slide_report.get("equivalent_live_time_years", -2))
     exposure_matches = bool(
         schedule_years >= 0
         and np.isclose(schedule_years, report_years, rtol=0.0, atol=1e-12)
-    )
-    target_reached = bool(
-        schedule.get("schedule_exposure_target_reached") is True
-        and exposure.get("target_zero_count_upper_reached") is True
     )
     gates = {
         "frozen_schedule_present": True,
@@ -447,6 +493,7 @@ def _audit_candidate_slide_schedule(
         "schedule_path": str(schedule_path),
         "schedule_sha256": file_sha256(schedule_path),
         "schedule_id": schedule["schedule_id"],
+        "schedule_kind": schedule_kind,
         "schedule_target_far_per_year": schedule["target_far_per_year"],
         "schedule_equivalent_live_time_years": schedule_years,
     }
@@ -534,7 +581,11 @@ def run_candidate_search_calibration(
     result = {
         "status": "frozen_validation_candidate_search_calibration",
         "scientific_claim_allowed": False,
-        "selection_data": "validation_candidate_time_slides_only",
+        "selection_data": (
+            "validation_candidate_block_permutations_only"
+            if schedule_audit.get("schedule_kind") == "gps_block_permutation"
+            else "validation_candidate_time_slides_only"
+        ),
         "test_evaluation": None,
         "identity": identity,
         "target_far_per_year": target_far_per_year,
@@ -575,7 +626,6 @@ def run_candidate_search_calibration(
     }
     atomic_write_json(output, result)
     return result
-
 
 def run_frozen_candidate_search_evaluation(
     calibration_report: str | Path,

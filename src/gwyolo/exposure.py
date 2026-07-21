@@ -10,6 +10,14 @@ from .io import atomic_write_json, canonical_hash, file_sha256
 from .runtime import execution_provenance
 
 
+CANDIDATE_BLOCK_PERMUTATION_METHOD = (
+    "circular_gps_block_relative_window_permutation_v1"
+)
+CANDIDATE_BLOCK_SELECTION_DATA = (
+    "background_gps_blocks_and_detector_availability_only"
+)
+
+
 def _ifos(row: dict[str, Any]) -> set[str]:
     values = row.get("valid_ifos", row.get("ifos"))
     if not isinstance(values, list) or not values:
@@ -64,6 +72,27 @@ def candidate_slide_schedule_identity(schedule: dict[str, Any]) -> dict[str, Any
     if int(schedule.get("schema_version", 1)) >= 2:
         identity["selection_metadata"] = schedule.get("selection_metadata")
     return identity
+
+
+def candidate_block_schedule_identity(schedule: dict[str, Any]) -> dict[str, Any]:
+    """Return immutable fields covered by a GPS-block permutation schedule ID."""
+
+    return {
+        field: schedule.get(field)
+        for field in (
+            "schema_version",
+            "method",
+            "background_manifest_sha256",
+            "split",
+            "reference_ifo",
+            "shifted_ifo",
+            "window_duration_seconds",
+            "ordered_gps_blocks",
+            "shift_indices",
+            "target_far_per_year",
+            "zero_count_confidence",
+        )
+    }
 
 
 def plan_candidate_background_exposure(
@@ -417,3 +446,158 @@ def freeze_candidate_time_slide_range_schedule(
         selection_metadata=selection_metadata,
         schema_version=2,
     )
+
+
+def freeze_candidate_block_permutation_schedule(
+    background_manifest: str | Path,
+    output: str | Path,
+    split: str,
+    reference_ifo: str,
+    shifted_ifo: str,
+    target_far_per_year: float,
+    zero_count_confidence: float = 0.90,
+    maximum_shifts: int | None = None,
+) -> dict[str, Any]:
+    """Freeze circular GPS-block permutations using relative window positions."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("candidate block-permutation schedules are immutable")
+    if reference_ifo == shifted_ifo or target_far_per_year <= 0:
+        raise ValueError(
+            "block permutation requires two IFOs and a positive FAR target"
+        )
+    if not 0 < zero_count_confidence < 1:
+        raise ValueError("zero-count confidence must be between zero and one")
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    rows = [row for row in rows if str(row.get("split")) == split]
+    if not rows:
+        raise ValueError(f"no background windows for split {split}")
+    durations = {float(row["gps_end"]) - float(row["gps_start"]) for row in rows}
+    if len(durations) != 1:
+        raise ValueError("block permutation requires one common window duration")
+    window_duration = next(iter(durations))
+    if window_duration <= 0:
+        raise ValueError("block permutation window duration must be positive")
+
+    blocks: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        block_id = str(row["gps_block"])
+        parts = block_id.split(":")
+        if len(parts) != 3 or parts[0] != "gps":
+            raise ValueError(f"unsupported GPS block identity: {block_id}")
+        block_start = float(parts[1])
+        block_duration = float(parts[2])
+        offset = (float(row["gps_start"]) - block_start) / window_duration
+        slot = int(round(offset))
+        if not math.isclose(offset, slot, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError("background window is not aligned to its GPS block")
+        if slot < 0 or (slot + 1) * window_duration > block_duration + 1e-9:
+            raise ValueError("background window lies outside its GPS block")
+        record = blocks.setdefault(
+            block_id,
+            {
+                "gps_start": block_start,
+                "duration": block_duration,
+                "slots_by_ifo": {},
+            },
+        )
+        if record["gps_start"] != block_start or record["duration"] != block_duration:
+            raise ValueError("GPS block metadata is inconsistent")
+        for ifo in _ifos(row):
+            slots = record["slots_by_ifo"].setdefault(ifo, set())
+            if slot in slots:
+                raise ValueError(
+                    f"GPS block {block_id} repeats detector slot {ifo}:{slot}"
+                )
+            slots.add(slot)
+    ordered = sorted(blocks, key=lambda value: (blocks[value]["gps_start"], value))
+    if len(ordered) < 2:
+        raise ValueError("block permutation requires at least two GPS blocks")
+    available_shifts = len(ordered) - 1
+    if maximum_shifts is None:
+        maximum_shifts = available_shifts
+    if maximum_shifts <= 0 or maximum_shifts > available_shifts:
+        raise ValueError("maximum block shifts exceeds the nonzero circular range")
+    required_seconds = (
+        -math.log(1.0 - zero_count_confidence) / target_far_per_year * SECONDS_PER_YEAR
+    )
+    selected = []
+    total_seconds = 0.0
+    for shift in range(1, maximum_shifts + 1):
+        paired_windows = 0
+        paired_blocks = 0
+        for index, reference_block in enumerate(ordered):
+            shifted_block = ordered[(index + shift) % len(ordered)]
+            reference_slots = blocks[reference_block]["slots_by_ifo"].get(
+                reference_ifo, set()
+            )
+            shifted_slots = blocks[shifted_block]["slots_by_ifo"].get(
+                shifted_ifo, set()
+            )
+            overlap = len(reference_slots & shifted_slots)
+            if overlap:
+                paired_blocks += 1
+                paired_windows += overlap
+        exposure = paired_windows * window_duration
+        if exposure <= 0:
+            continue
+        selected.append(
+            {
+                "shift_index": shift,
+                "paired_blocks": paired_blocks,
+                "paired_windows": paired_windows,
+                "live_time_seconds": exposure,
+            }
+        )
+        total_seconds += exposure
+        if total_seconds >= required_seconds:
+            break
+    shift_indices = [row["shift_index"] for row in selected]
+    reached = total_seconds >= required_seconds
+    schedule_fields = {
+        "schema_version": 1,
+        "method": CANDIDATE_BLOCK_PERMUTATION_METHOD,
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "split": split,
+        "reference_ifo": reference_ifo,
+        "shifted_ifo": shifted_ifo,
+        "window_duration_seconds": window_duration,
+        "ordered_gps_blocks": ordered,
+        "shift_indices": shift_indices,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+    }
+    result = {
+        **schedule_fields,
+        "status": "frozen_candidate_block_permutation_schedule",
+        "scientific_claim_allowed": False,
+        "selection_data": CANDIDATE_BLOCK_SELECTION_DATA,
+        "candidate_scores_inspected": False,
+        "schedule_id": canonical_hash(
+            candidate_block_schedule_identity(schedule_fields), 32
+        ),
+        "gps_blocks": len(ordered),
+        "available_nonzero_circular_shifts": available_shifts,
+        "maximum_shifts_scanned": maximum_shifts,
+        "selected_shifts": selected,
+        "selected_shift_count": len(selected),
+        "shift_indices_sha256": canonical_hash(shift_indices, 64),
+        "selected_equivalent_live_time_seconds": total_seconds,
+        "selected_equivalent_live_time_years": total_seconds / SECONDS_PER_YEAR,
+        "required_equivalent_live_time_seconds": required_seconds,
+        "required_equivalent_live_time_years": required_seconds / SECONDS_PER_YEAR,
+        "schedule_exposure_target_reached": reached,
+        "far_resolution_one_count_per_year": (
+            SECONDS_PER_YEAR / total_seconds if total_seconds > 0 else None
+        ),
+        "scientific_blocker": (
+            "validation-only schedule; execution and a separate locked test remain required"
+            if reached
+            else "available GPS-block permutations do not reach the frozen FAR exposure target"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result

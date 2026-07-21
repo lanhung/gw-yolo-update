@@ -14,10 +14,14 @@ from gwyolo.candidates import (
     candidate_proposal_coverage,
     extract_temporal_clusters,
     merge_candidate_time_slide_shards,
+    run_candidate_block_permutations,
     run_candidate_time_slides,
     select_candidate_proposal_threshold,
 )
-from gwyolo.exposure import freeze_candidate_time_slide_schedule
+from gwyolo.exposure import (
+    freeze_candidate_block_permutation_schedule,
+    freeze_candidate_time_slide_schedule,
+)
 
 
 def test_temporal_clusters_preserve_multiple_candidates_and_refine_peak() -> None:
@@ -315,6 +319,90 @@ def test_candidate_time_slide_runner_preserves_declared_parameters(
     assert report["cluster_window_seconds"] == 0.1
     assert report["background_rows"] == 1
     assert Path(report["manifest_path"]).is_file()
+
+
+def test_candidate_block_permutations_execute_frozen_relative_slots(
+    tmp_path: Path,
+) -> None:
+    windows = []
+    candidates = []
+    for block_index in range(3):
+        block_start = 1000 + block_index * 256
+        for slot in range(2):
+            windows.append(
+                {
+                    "window_id": f"w-{block_index}-{slot}",
+                    "split": "val",
+                    "gps_start": block_start + slot * 8,
+                    "gps_end": block_start + (slot + 1) * 8,
+                    "gps_block": f"gps:{block_start}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+        for ifo, offset in (("H1", 1.0), ("L1", 1.005)):
+            candidates.append(
+                {
+                    "candidate_id": f"{ifo}-{block_index}",
+                    "window_id": f"w-{block_index}-0",
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": block_start + offset,
+                    "chirp_score": 0.8 if ifo == "H1" else 0.7,
+                    "glitch_score_at_peak": 0.1,
+                    "bin_width_seconds": 0.08,
+                    "timing_resolution_seconds": 1 / 1024,
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": 0.001,
+                    "timing_calibration_report_sha256": "a" * 64,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+    background_path = tmp_path / "background.jsonl"
+    background_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows), encoding="utf-8"
+    )
+    candidate_path = tmp_path / "candidates.jsonl"
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in candidates), encoding="utf-8"
+    )
+    schedule_path = tmp_path / "block-schedule.json"
+    schedule = freeze_candidate_block_permutation_schedule(
+        background_path,
+        schedule_path,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    report = run_candidate_block_permutations(
+        candidate_path,
+        background_path,
+        schedule_path,
+        tmp_path / "block-background",
+        "val",
+        "H1",
+        "L1",
+        coincidence_window_seconds=0.012,
+        cluster_window_seconds=0.1,
+        physical_delay_limit_seconds=0.010,
+        empirical_timing_uncertainty_seconds=0.001,
+    )
+    assert report["publication_timing_gate_passed"] is True
+    assert report["equivalent_live_time_seconds"] == 96
+    assert report["background_rows"] == 6
+    assert [row["paired_windows"] for row in report["slide_exposure"]] == [6, 6]
+    assert report["slide_schedule_id"] == schedule["schedule_id"]
+    rows = [
+        json.loads(line)
+        for line in Path(report["manifest_path"]).read_text().splitlines()
+    ]
+    assert {row["ranking_score"] for row in rows} == {0.7}
+    assert {row["background_pairing_method"] for row in rows} == {
+        "circular_gps_block_relative_window_permutation_v1"
+    }
 
 
 def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(

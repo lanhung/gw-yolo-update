@@ -24,7 +24,10 @@ from gwyolo.search import (
 )
 from gwyolo.io import file_sha256
 from gwyolo.io import canonical_hash
-from gwyolo.exposure import candidate_slide_schedule_identity
+from gwyolo.exposure import (
+    candidate_slide_schedule_identity,
+    freeze_candidate_block_permutation_schedule,
+)
 
 
 def test_zero_count_far_limit_is_poisson_2p3_over_time():
@@ -170,6 +173,125 @@ def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_pa
     assert result["candidate_endpoint_gates_passed"] is True
     assert result["test_evaluation"]["background"]["far_per_year"] == 0.1
     assert result["test_evaluation"]["injections"]["recovered"] == 1
+
+
+def test_candidate_search_calibration_accepts_frozen_block_permutations(
+    tmp_path,
+) -> None:
+    source_background = tmp_path / "source-background.jsonl"
+    source_rows = []
+    for block_index in range(3):
+        block_start = 1000 + block_index * 256
+        for slot in range(2):
+            source_rows.append(
+                {
+                    "window_id": f"w-{block_index}-{slot}",
+                    "split": "val",
+                    "gps_start": block_start + slot * 8,
+                    "gps_end": block_start + (slot + 1) * 8,
+                    "gps_block": f"gps:{block_start}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+    source_background.write_text(
+        "".join(json.dumps(row) + "\n" for row in source_rows), encoding="utf-8"
+    )
+    schedule_path = tmp_path / "block-schedule.json"
+    schedule = freeze_candidate_block_permutation_schedule(
+        source_background,
+        schedule_path,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    background = tmp_path / "candidate-background.jsonl"
+    background.write_text(
+        json.dumps({"split": "val", "ranking_score": 0.8}) + "\n",
+        encoding="utf-8",
+    )
+    identity = {
+        "candidate_checkpoint_sha256": "a" * 64,
+        "candidate_config_sha256": "b" * 64,
+        "candidate_code_commit": "deadbee",
+        "timing_calibration_report_sha256": "c" * 64,
+        "physical_delay_limit_seconds": 0.010,
+        "empirical_timing_uncertainty_seconds": 0.001,
+    }
+    slide_report = {
+        "status": "subwindow_clustered_time_slide_integration_only",
+        "split": "val",
+        "manifest_path": str(background),
+        "manifest_sha256": file_sha256(background),
+        "background_manifest_sha256": file_sha256(source_background),
+        "background_pairing_method": schedule["method"],
+        "equivalent_live_time_years": schedule["selected_equivalent_live_time_years"],
+        "slide_count": 2,
+        "slide_indices": schedule["shift_indices"],
+        "slide_indices_sha256": schedule["shift_indices_sha256"],
+        "slide_exposure": [
+            {**row, "slide_index": row["shift_index"]}
+            for row in schedule["selected_shifts"]
+        ],
+        "execution_schedule_complete": True,
+        "slide_schedule_path": str(schedule_path),
+        "slide_schedule_sha256": file_sha256(schedule_path),
+        "slide_schedule_id": schedule["schedule_id"],
+        "slide_schedule_count": 2,
+        "input_gps_blocks": schedule["ordered_gps_blocks"],
+        "reference_ifo": "H1",
+        "shifted_ifo": "L1",
+        "publication_timing_gate_passed": True,
+        **identity,
+    }
+    slide_path = tmp_path / "block-slide-report.json"
+    slide_path.write_text(json.dumps(slide_report), encoding="utf-8")
+    injections = tmp_path / "injections.jsonl"
+    injections.write_text(
+        json.dumps(
+            {
+                "split": "val",
+                "injection_id": "i1",
+                "waveform_id": "wave1",
+                "gps_block": "gps:5000:256",
+                "source_family": "BBH",
+                "vt_weight": 1.0,
+                "ranking_score": 0.9,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    injection_report = tmp_path / "injection-report.json"
+    injection_report.write_text(
+        json.dumps(
+            {
+                "status": "physical_network_injection_candidate_rankings",
+                "split": "val",
+                "manifest_path": str(injections),
+                "manifest_sha256": file_sha256(injections),
+                "reference_ifo": "H1",
+                "second_ifo": "L1",
+                "timing_calibration_consistent": True,
+                "candidate_scoring_provenance_consistent": True,
+                **identity,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_candidate_search_calibration(
+        slide_path,
+        injection_report,
+        target_far_per_year=1_000_000,
+        output=tmp_path / "calibration.json",
+        bootstrap_replicates=20,
+        seed=1,
+    )
+    assert result["publication_calibration_eligible"] is True
+    assert result["selection_data"] == ("validation_candidate_block_permutations_only")
+    assert result["slide_schedule_audit"]["schedule_kind"] == ("gps_block_permutation")
+    assert result["slide_schedule_audit"]["passed"] is True
 
 
 def test_locked_candidate_search_rejects_engineering_calibration_without_schedule(

@@ -78,6 +78,8 @@ gwyolo learned-deglitch apply frozen soft masks and measure injected-signal rete
 gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking triggers
 gwyolo candidate-extract retain every per-IFO temporal cluster from saved probability maps
 gwyolo candidate-time-slides form and cluster exact-time nonzero-shift network candidates
+gwyolo candidate-block-permutation-schedule-freeze plan score-blind fragmented-background exposure
+gwyolo candidate-block-permutations execute frozen relative-slot GPS-block background pairings
 gwyolo time-slide-background build split-safe nonzero time-slide background exposure
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain

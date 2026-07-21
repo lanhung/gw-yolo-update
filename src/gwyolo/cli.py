@@ -932,6 +932,29 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_slides.add_argument("--physical-delay-limit-seconds", type=float)
     candidate_slides.add_argument("--empirical-timing-uncertainty-seconds", type=float)
 
+    candidate_block_permutations = subparsers.add_parser("candidate-block-permutations")
+    candidate_block_permutations.add_argument("--candidates", required=True)
+    candidate_block_permutations.add_argument("--background-manifest", required=True)
+    candidate_block_permutations.add_argument("--schedule", required=True)
+    candidate_block_permutations.add_argument("--output-dir", required=True)
+    candidate_block_permutations.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    candidate_block_permutations.add_argument("--reference-ifo", default="H1")
+    candidate_block_permutations.add_argument("--shifted-ifo", default="L1")
+    candidate_block_permutations.add_argument(
+        "--coincidence-window-seconds", type=float, required=True
+    )
+    candidate_block_permutations.add_argument(
+        "--cluster-window-seconds", type=float, default=0.1
+    )
+    candidate_block_permutations.add_argument(
+        "--physical-delay-limit-seconds", type=float, required=True
+    )
+    candidate_block_permutations.add_argument(
+        "--empirical-timing-uncertainty-seconds", type=float, required=True
+    )
+
     candidate_slide_merge = subparsers.add_parser("candidate-time-slide-merge")
     candidate_slide_merge.add_argument("--report", action="append", required=True)
     candidate_slide_merge.add_argument("--output-dir", required=True)
@@ -981,6 +1004,24 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_slide_range_schedule.add_argument(
         "--zero-count-confidence", type=float, default=0.90
     )
+
+    candidate_block_schedule = subparsers.add_parser(
+        "candidate-block-permutation-schedule-freeze"
+    )
+    candidate_block_schedule.add_argument("--background-manifest", required=True)
+    candidate_block_schedule.add_argument("--output", required=True)
+    candidate_block_schedule.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    candidate_block_schedule.add_argument("--reference-ifo", default="H1")
+    candidate_block_schedule.add_argument("--shifted-ifo", default="L1")
+    candidate_block_schedule.add_argument(
+        "--target-far-per-year", type=float, required=True
+    )
+    candidate_block_schedule.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+    candidate_block_schedule.add_argument("--maximum-shifts", type=int)
 
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
@@ -2548,6 +2589,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.zero_count_confidence,
             )
         )
+    elif args.command == "candidate-block-permutations":
+        from .candidates import run_candidate_block_permutations
+
+        _print(
+            run_candidate_block_permutations(
+                args.candidates,
+                args.background_manifest,
+                args.schedule,
+                args.output_dir,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.coincidence_window_seconds,
+                args.cluster_window_seconds,
+                args.physical_delay_limit_seconds,
+                args.empirical_timing_uncertainty_seconds,
+            )
+        )
     elif args.command == "candidate-time-slide-range-schedule-freeze":
         from .exposure import freeze_candidate_time_slide_range_schedule
 
@@ -2563,6 +2622,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.slide_stop_index_exclusive,
                 args.target_far_per_year,
                 args.zero_count_confidence,
+            )
+        )
+    elif args.command == "candidate-block-permutation-schedule-freeze":
+        from .exposure import freeze_candidate_block_permutation_schedule
+
+        _print(
+            freeze_candidate_block_permutation_schedule(
+                args.background_manifest,
+                args.output,
+                args.split,
+                args.reference_ifo,
+                args.shifted_ifo,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+                args.maximum_shifts,
             )
         )
     elif args.command == "candidate-search-validation-pipeline":

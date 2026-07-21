@@ -263,6 +263,23 @@ insufficient it freezes every nonzero offset and records the shortfall rather th
 the FAR target. The scanned range, available exposure, required exposure, selection rule and the
 fact that candidate scores were not inspected are covered by the schema-v2 schedule ID.
 
+Absolute offsets remain inefficient when accepted observing time is split into many distant
+256-second GPS blocks. `candidate-block-permutation-schedule-freeze` instead orders the frozen GPS
+blocks and circularly pairs block `i` on the reference IFO with block `i+s` on the shifted IFO.
+Only equal relative eight-second slots are paired, and a slot contributes exposure only when the
+required detector is explicitly available on each side. The nonzero shifts enumerate every ordered
+cross-block pair once when the full `1..N-1` range is used. The planner reads no candidate scores and
+freezes the shortest shift prefix reaching the target exposure, or truthfully records that all
+available permutations are insufficient. This is a standard background-resampling exposure, not
+additional independent zero-lag strain.
+
+`candidate-block-permutations` re-hashes that immutable schedule and the background manifest,
+requires validation-calibrated candidate timing at <=10 ms resolution, applies the predeclared
+light-travel limit plus twice the empirical timing allowance to relative within-window peaks, and
+checks every executed shift's block/window exposure exactly against the score-blind plan. Its report
+uses the existing candidate-search calibration contract, while recording the distinct pairing
+method so an absolute slide cannot be substituted after threshold selection.
+
 ```bash
 python -m gwyolo.cli candidate-time-slides \
   --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
@@ -301,6 +318,20 @@ python -m gwyolo.cli candidate-time-slide-range-schedule-freeze \
   --slide-stop-index-exclusive 100001 --target-far-per-year 0.1
 ```
 
+For fragmented run-scale background:
+
+```bash
+python -m gwyolo.cli candidate-block-permutation-schedule-freeze \
+  --background-manifest val-background.jsonl --output val-block-schedule.json \
+  --split val --reference-ifo H1 --shifted-ifo L1 --target-far-per-year 0.1
+python -m gwyolo.cli candidate-block-permutations \
+  --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
+  --schedule val-block-schedule.json --output-dir val-block-background --split val \
+  --reference-ifo H1 --shifted-ifo L1 --physical-delay-limit-seconds 0.010 \
+  --empirical-timing-uncertainty-seconds 0.001 \
+  --coincidence-window-seconds 0.012
+```
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and
@@ -313,8 +344,8 @@ threshold above probability support; it can never turn score-zero injection miss
 Calibration from an unscheduled or exposure-insufficient slide report remains available as explicit
 engineering output, but is marked `publication_calibration_eligible=false`. The locked command now
 fails closed unless both validation and test reports re-hash a score-blind frozen schedule, execute
-every scheduled absolute offset, match the requested FAR, reproduce the schedule's equivalent live
-time and reach its predeclared zero-count exposure. A nominal threshold can therefore no longer
+every scheduled absolute offset or block permutation, match the requested FAR, reproduce the
+schedule's equivalent live time and reach its predeclared zero-count exposure. A nominal threshold can therefore no longer
 cross the paper boundary merely because its empirical surviving count is zero.
 
 The intended H1/L1 sequence is:

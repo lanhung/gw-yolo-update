@@ -8,7 +8,13 @@ from typing import Any, Iterable
 import numpy as np
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .exposure import candidate_slide_schedule_identity, normalize_candidate_slide_indices
+from .exposure import (
+    CANDIDATE_BLOCK_PERMUTATION_METHOD,
+    CANDIDATE_BLOCK_SELECTION_DATA,
+    candidate_block_schedule_identity,
+    candidate_slide_schedule_identity,
+    normalize_candidate_slide_indices,
+)
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -1712,6 +1718,362 @@ def run_candidate_time_slides(
         else None,
         "manifest_path": str(manifest_path),
         "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / f"{split}_candidate_time_slide_report.json", result)
+    return result
+
+
+def run_candidate_block_permutations(
+    candidates_path: str | Path,
+    background_manifest: str | Path,
+    schedule_path: str | Path,
+    output_dir: str | Path,
+    split: str,
+    reference_ifo: str,
+    shifted_ifo: str,
+    coincidence_window_seconds: float,
+    cluster_window_seconds: float,
+    physical_delay_limit_seconds: float,
+    empirical_timing_uncertainty_seconds: float,
+) -> dict[str, Any]:
+    """Execute a frozen circular GPS-block permutation background schedule."""
+
+    if reference_ifo == shifted_ifo:
+        raise ValueError("block permutations require different detectors")
+    if (
+        min(
+            coincidence_window_seconds,
+            cluster_window_seconds,
+            physical_delay_limit_seconds,
+        )
+        <= 0
+        or empirical_timing_uncertainty_seconds < 0
+    ):
+        raise ValueError("block permutation timing parameters are invalid")
+    expected_window = (
+        physical_delay_limit_seconds + 2 * empirical_timing_uncertainty_seconds
+    )
+    if not np.isclose(
+        coincidence_window_seconds, expected_window, rtol=0.0, atol=1e-12
+    ):
+        raise ValueError("block permutation coincidence window differs from physics")
+    with Path(schedule_path).open("r", encoding="utf-8") as handle:
+        schedule = json.load(handle)
+    if schedule.get("status") != "frozen_candidate_block_permutation_schedule":
+        raise ValueError("candidate block-permutation schedule has the wrong status")
+    if (
+        schedule.get("candidate_scores_inspected") is not False
+        or schedule.get("method") != CANDIDATE_BLOCK_PERMUTATION_METHOD
+        or schedule.get("selection_data") != CANDIDATE_BLOCK_SELECTION_DATA
+        or canonical_hash(candidate_block_schedule_identity(schedule), 32)
+        != schedule.get("schedule_id")
+    ):
+        raise ValueError("candidate block-permutation schedule identity differs")
+    if any(
+        schedule.get(field) != value
+        for field, value in {
+            "split": split,
+            "reference_ifo": reference_ifo,
+            "shifted_ifo": shifted_ifo,
+        }.items()
+    ):
+        raise ValueError("candidate block-permutation schedule contract differs")
+    if schedule.get("background_manifest_sha256") != file_sha256(background_manifest):
+        raise ValueError("candidate block schedule background hash differs")
+    shifts = [int(value) for value in schedule.get("shift_indices", [])]
+    if (
+        not shifts
+        or shifts != sorted(set(shifts))
+        or any(value <= 0 for value in shifts)
+        or len(shifts) != int(schedule.get("selected_shift_count", -1))
+        or canonical_hash(shifts, 64) != schedule.get("shift_indices_sha256")
+    ):
+        raise ValueError("candidate block schedule shift hash differs")
+    selected_shift_rows = schedule.get("selected_shifts", [])
+    expected_exposure = {int(row["shift_index"]): row for row in selected_shift_rows}
+    if (
+        len(selected_shift_rows) != len(shifts)
+        or len(expected_exposure) != len(shifts)
+        or set(expected_exposure) != set(shifts)
+    ):
+        raise ValueError("candidate block schedule exposure rows differ from shifts")
+
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        windows = [json.loads(line) for line in handle if line.strip()]
+    windows = [row for row in windows if str(row.get("split")) == split]
+    if not windows:
+        raise ValueError(f"no background windows for split {split}")
+    window_duration = float(schedule["window_duration_seconds"])
+    by_block: dict[str, dict[int, dict[str, Any]]] = {}
+    block_starts: dict[str, float] = {}
+    by_window: dict[str, dict[str, Any]] = {}
+    for row in windows:
+        block = str(row["gps_block"])
+        parts = block.split(":")
+        if len(parts) != 3 or parts[0] != "gps":
+            raise ValueError(f"unsupported GPS block identity: {block}")
+        block_start = float(parts[1])
+        offset = (float(row["gps_start"]) - block_start) / window_duration
+        slot = int(round(offset))
+        if not np.isclose(offset, slot, rtol=0.0, atol=1e-6):
+            raise ValueError("background window is not block-slot aligned")
+        if slot in by_block.setdefault(block, {}):
+            raise ValueError(f"GPS block {block} repeats slot {slot}")
+        by_block[block][slot] = row
+        block_starts[block] = block_start
+        window_id = str(row["window_id"])
+        if window_id in by_window:
+            raise ValueError("background window ID repeats")
+        by_window[window_id] = row
+    ordered = [str(value) for value in schedule["ordered_gps_blocks"]]
+    if set(ordered) != set(by_block) or len(ordered) != len(by_block):
+        raise ValueError("candidate block schedule GPS inventory differs")
+    if any(value >= len(ordered) for value in shifts):
+        raise ValueError("candidate block schedule shift exceeds the circular range")
+
+    with Path(candidates_path).open("r", encoding="utf-8") as handle:
+        candidates = [json.loads(line) for line in handle if line.strip()]
+    candidates_by_window: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    relevant = []
+    for row in candidates:
+        if str(row.get("split")) != split:
+            raise ValueError("candidate block input mixes data splits")
+        window_id = str(row["window_id"])
+        if window_id not in by_window:
+            raise ValueError("candidate block input references an unknown window")
+        ifo = str(row["ifo"])
+        if ifo not in _available_ifos(by_window[window_id]):
+            raise ValueError("candidate block input uses an unavailable detector")
+        candidates_by_window.setdefault(window_id, {}).setdefault(ifo, []).append(row)
+        if ifo in {reference_ifo, shifted_ifo}:
+            relevant.append(row)
+    if not relevant:
+        raise ValueError("candidate block input has no relevant detector candidates")
+    calibrated = all(bool(row.get("timing_empirically_calibrated")) for row in relevant)
+    uncertainties_match = calibrated and all(
+        np.isclose(
+            float(row["empirical_timing_uncertainty_seconds"]),
+            empirical_timing_uncertainty_seconds,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        for row in relevant
+    )
+    calibration_hashes = {
+        str(row.get("timing_calibration_report_sha256")) for row in relevant
+    }
+    checkpoint_hashes = {
+        str(row.get("candidate_checkpoint_sha256")) for row in relevant
+    }
+    config_hashes = {str(row.get("candidate_config_sha256")) for row in relevant}
+    code_commits = {str(row.get("candidate_code_commit")) for row in relevant}
+    timing_resolutions = [
+        float(row.get("timing_resolution_seconds", row["bin_width_seconds"]))
+        for row in relevant
+    ]
+    provenance_complete = all(
+        len(values) == 1 and None not in values and "None" not in values
+        for values in (
+            calibration_hashes,
+            checkpoint_hashes,
+            config_hashes,
+            code_commits,
+        )
+    )
+    timing_gate = bool(
+        calibrated
+        and uncertainties_match
+        and provenance_complete
+        and max(timing_resolutions) <= 0.01
+    )
+
+    output_rows = []
+    exposure_rows = []
+    for shift in shifts:
+        raw = []
+        paired_windows = 0
+        paired_blocks = 0
+        for index, reference_block in enumerate(ordered):
+            shifted_block = ordered[(index + shift) % len(ordered)]
+            common_slots = set(by_block[reference_block]) & set(by_block[shifted_block])
+            block_contributed = False
+            for slot in sorted(common_slots):
+                reference_window = by_block[reference_block][slot]
+                shifted_window = by_block[shifted_block][slot]
+                if reference_ifo not in _available_ifos(
+                    reference_window
+                ) or shifted_ifo not in _available_ifos(shifted_window):
+                    continue
+                paired_windows += 1
+                block_contributed = True
+                reference_candidates = candidates_by_window.get(
+                    str(reference_window["window_id"]), {}
+                ).get(reference_ifo, [])
+                shifted_candidates = candidates_by_window.get(
+                    str(shifted_window["window_id"]), {}
+                ).get(shifted_ifo, [])
+                for first in reference_candidates:
+                    first_relative = float(first["gps_peak"]) - float(
+                        reference_window["gps_start"]
+                    )
+                    for second in shifted_candidates:
+                        second_relative = float(second["gps_peak"]) - float(
+                            shifted_window["gps_start"]
+                        )
+                        separation = abs(first_relative - second_relative)
+                        if separation > coincidence_window_seconds:
+                            continue
+                        chirp_scores = {
+                            reference_ifo: float(first["chirp_score"]),
+                            shifted_ifo: float(second["chirp_score"]),
+                        }
+                        glitch_scores = {
+                            reference_ifo: float(first["glitch_score_at_peak"]),
+                            shifted_ifo: float(second["glitch_score_at_peak"]),
+                        }
+                        raw.append(
+                            {
+                                "candidate_id": "block-permutation-"
+                                + canonical_hash(
+                                    {
+                                        "shift": shift,
+                                        "first": first["candidate_id"],
+                                        "second": second["candidate_id"],
+                                    },
+                                    24,
+                                ),
+                                "slide_id": f"block-shift-{shift:06d}",
+                                "slide_index": shift,
+                                "split": split,
+                                "gps_peak": float(reference_window["gps_start"])
+                                + (first_relative + second_relative) / 2,
+                                "peak_separation_seconds": separation,
+                                "background_pairing_method": schedule["method"],
+                                "source_candidate_ids": {
+                                    reference_ifo: first["candidate_id"],
+                                    shifted_ifo: second["candidate_id"],
+                                },
+                                "source_window_ids": {
+                                    reference_ifo: reference_window["window_id"],
+                                    shifted_ifo: shifted_window["window_id"],
+                                },
+                                "source_gps_blocks": {
+                                    reference_ifo: reference_block,
+                                    shifted_ifo: shifted_block,
+                                },
+                                "relative_peak_seconds": {
+                                    reference_ifo: first_relative,
+                                    shifted_ifo: second_relative,
+                                },
+                                "chirp_scores": chirp_scores,
+                                "glitch_scores": glitch_scores,
+                                **network_ranking(
+                                    chirp_scores,
+                                    glitch_scores,
+                                    [reference_ifo, shifted_ifo],
+                                ),
+                            }
+                        )
+            paired_blocks += int(block_contributed)
+        clustered = _cluster_network_rows(raw, cluster_window_seconds)
+        output_rows.extend(clustered)
+        live_time = paired_windows * window_duration
+        expected = expected_exposure[shift]
+        if (
+            paired_windows != int(expected["paired_windows"])
+            or paired_blocks != int(expected["paired_blocks"])
+            or not np.isclose(
+                live_time, float(expected["live_time_seconds"]), rtol=0.0, atol=1e-9
+            )
+        ):
+            raise ValueError(
+                "executed block-permutation exposure differs from schedule"
+            )
+        exposure_rows.append(
+            {
+                "slide_index": shift,
+                "paired_blocks": paired_blocks,
+                "paired_windows": paired_windows,
+                "raw_coincidences": len(raw),
+                "clustered_candidates": len(clustered),
+                "live_time_seconds": live_time,
+            }
+        )
+    exposure_seconds = sum(row["live_time_seconds"] for row in exposure_rows)
+    if not np.isclose(
+        exposure_seconds,
+        float(schedule["selected_equivalent_live_time_seconds"]),
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise ValueError("executed block exposure differs from frozen total")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / f"{split}_candidate_block_permutation_background.jsonl"
+    atomic_write_text(
+        manifest, "".join(json.dumps(row, sort_keys=True) + "\n" for row in output_rows)
+    )
+    result = {
+        "status": "subwindow_clustered_time_slide_integration_only",
+        "background_pairing_method": schedule["method"],
+        "scientific_claim_allowed": False,
+        "split": split,
+        "reference_ifo": reference_ifo,
+        "shifted_ifo": shifted_ifo,
+        "slide_count": len(shifts),
+        "slide_indices": shifts,
+        "slide_indices_sha256": canonical_hash(shifts, 64),
+        "coincidence_window_seconds": coincidence_window_seconds,
+        "cluster_window_seconds": cluster_window_seconds,
+        "physical_delay_limit_seconds": physical_delay_limit_seconds,
+        "empirical_timing_uncertainty_seconds": empirical_timing_uncertainty_seconds,
+        "expected_coincidence_window_seconds": expected_window,
+        "coincidence_window_matches_physics": True,
+        "input_windows": len(windows),
+        "input_gps_blocks": ordered,
+        "input_zero_lag_live_time_seconds": _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in windows
+        ),
+        "input_candidates": len(candidates),
+        "background_rows": len(output_rows),
+        "slide_exposure": exposure_rows,
+        "equivalent_live_time_seconds": exposure_seconds,
+        "equivalent_live_time_years": exposure_seconds / SECONDS_PER_YEAR,
+        "maximum_bin_width_seconds": max(
+            float(row["bin_width_seconds"]) for row in relevant
+        ),
+        "maximum_timing_resolution_seconds": max(timing_resolutions),
+        "candidate_timing_empirically_calibrated": calibrated,
+        "timing_uncertainty_matches_candidates": uncertainties_match,
+        "timing_calibration_report_sha256": next(iter(calibration_hashes))
+        if len(calibration_hashes) == 1
+        else None,
+        "candidate_checkpoint_sha256": next(iter(checkpoint_hashes))
+        if len(checkpoint_hashes) == 1
+        else None,
+        "candidate_config_sha256": next(iter(config_hashes))
+        if len(config_hashes) == 1
+        else None,
+        "candidate_code_commit": next(iter(code_commits))
+        if len(code_commits) == 1
+        else None,
+        "publication_timing_gate_passed": timing_gate,
+        "candidate_manifest_sha256": file_sha256(candidates_path),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "slide_schedule_path": str(Path(schedule_path).resolve()),
+        "slide_schedule_sha256": file_sha256(schedule_path),
+        "slide_schedule_id": schedule["schedule_id"],
+        "slide_schedule_count": len(shifts),
+        "execution_schedule_complete": True,
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "scientific_blocker": (
+            "validation schedule executed; frozen threshold and locked test remain required"
+            if timing_gate and schedule.get("schedule_exposure_target_reached")
+            else "timing or exposure gate did not pass"
+        ),
         **execution_provenance(),
     }
     atomic_write_json(output / f"{split}_candidate_time_slide_report.json", result)
