@@ -27,7 +27,11 @@ AMPLFI_MODEL_METADATA_ARTIFACTS = (
     "native_prior",
     "prior_projection_report",
 )
-DINGO_MODEL_METADATA_ARTIFACTS = ("initialization_model",)
+DINGO_MODEL_METADATA_ARTIFACTS = (
+    "native_prior",
+    "prior_projection_report",
+    "initialization_model",
+)
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
@@ -260,6 +264,41 @@ def _audit_amplfi_prior_projection_metadata(
     return projection, failures
 
 
+def _audit_dingo_prior_projection_metadata(
+    artifacts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    failures: list[str] = []
+    projection_artifact = artifacts.get("prior_projection_report", {})
+    projection_path = Path(
+        str(projection_artifact.get("path") or "")
+    ).expanduser().resolve()
+    if not projection_path.is_file():
+        return {}, failures
+    try:
+        projection = load_yaml(projection_path)
+    except (OSError, ValueError) as error:
+        return {}, [f"cannot load DINGO prior projection report: {error}"]
+    if projection.get("status") != "passed" or projection.get("publication_ready") is not True:
+        failures.append("DINGO prior projection report did not pass")
+    if projection.get("failures") not in (None, []):
+        failures.append("DINGO prior projection report contains failures")
+    expected_hashes = {
+        "canonical_prior_sha256": artifacts.get("analysis_prior", {}).get(
+            "observed_sha256"
+        ),
+        "dingo_prior_config_sha256": artifacts.get("native_prior", {}).get(
+            "observed_sha256"
+        ),
+        "dingo_training_config_sha256": artifacts.get("training_config", {}).get(
+            "observed_sha256"
+        ),
+    }
+    for field, expected in expected_hashes.items():
+        if not _valid_sha256(expected) or projection.get(field) != expected:
+            failures.append(f"DINGO prior projection {field} does not match model metadata")
+    return projection, failures
+
+
 def _audit_model_metadata_semantics(
     name: str,
     metadata_path: str | None,
@@ -343,6 +382,11 @@ def _audit_model_metadata_semantics(
             verified_artifacts
         )
         failures.extend(projection_failures)
+    elif name == "DINGO":
+        prior_projection, projection_failures = _audit_dingo_prior_projection_metadata(
+            verified_artifacts
+        )
+        failures.extend(projection_failures)
     selection = verified_artifacts.get("selection_report", {})
     selection_path = selection.get("path")
     if selection_path and Path(selection_path).is_file():
@@ -363,7 +407,7 @@ def _audit_model_metadata_semantics(
                 failures.append("selection metric differs between report and model metadata")
     normalized = dict(metadata)
     normalized["verified_artifacts"] = verified_artifacts
-    if name == "AMPLFI":
+    if name in {"AMPLFI", "DINGO"}:
         normalized["verified_prior_projection"] = prior_projection
     return normalized, [f"{name}: {failure}" for failure in failures]
 
@@ -567,22 +611,19 @@ def freeze_pe_backend_model_metadata(
         "selection_report": Path(selection_report_path).resolve(),
         "native_conditioning_config": Path(native_conditioning_config_path).resolve(),
     }
-    amplfi_specific = (native_prior_path, prior_projection_report_path)
-    if normalized_backend == "AMPLFI":
-        if any(value is None for value in amplfi_specific):
-            raise ValueError(
-                "AMPLFI model metadata requires native prior and prior projection report"
-            )
-        paths.update(
-            {
-                "native_prior": Path(str(native_prior_path)).resolve(),
-                "prior_projection_report": Path(
-                    str(prior_projection_report_path)
-                ).resolve(),
-            }
+    prior_specific = (native_prior_path, prior_projection_report_path)
+    if any(value is None for value in prior_specific):
+        raise ValueError(
+            f"{normalized_backend} model metadata requires native prior and prior projection report"
         )
-    elif any(value is not None for value in amplfi_specific):
-        raise ValueError("native prior projection artifacts are AMPLFI-specific")
+    paths.update(
+        {
+            "native_prior": Path(str(native_prior_path)).resolve(),
+            "prior_projection_report": Path(
+                str(prior_projection_report_path)
+            ).resolve(),
+        }
+    )
     if normalized_backend == "DINGO":
         if initialization_model_path is None:
             raise ValueError("DINGO model metadata requires an initialization model")
@@ -606,16 +647,22 @@ def freeze_pe_backend_model_metadata(
     selection_metric = selection_report.get("selection_metric")
     if not isinstance(selection_metric, str) or not selection_metric:
         raise ValueError("selection report requires selection_metric")
-    if normalized_backend == "AMPLFI":
-        verified_artifacts = {
-            label: {
-                "path": str(path),
-                "sha256": file_sha256(path),
-                "observed_sha256": file_sha256(path),
-            }
-            for label, path in paths.items()
+    verified_artifacts = {
+        label: {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "observed_sha256": file_sha256(path),
         }
+        for label, path in paths.items()
+    }
+    if normalized_backend == "AMPLFI":
         _, projection_failures = _audit_amplfi_prior_projection_metadata(
+            verified_artifacts
+        )
+        if projection_failures:
+            raise ValueError("; ".join(projection_failures))
+    else:
+        _, projection_failures = _audit_dingo_prior_projection_metadata(
             verified_artifacts
         )
         if projection_failures:

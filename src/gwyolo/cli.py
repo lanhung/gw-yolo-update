@@ -1360,6 +1360,7 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_batch = subparsers.add_parser("dingo-common-batch")
     dingo_batch.add_argument("--native-manifest", required=True)
     dingo_batch.add_argument("--model-metadata", required=True)
+    dingo_batch.add_argument("--native-prior", required=True)
     dingo_batch.add_argument("--model-init", required=True)
     dingo_batch.add_argument("--python-executable", required=True)
     dingo_batch.add_argument("--runner-script", default="scripts/run_dingo_common_event.py")
@@ -1444,6 +1445,12 @@ def build_parser() -> argparse.ArgumentParser:
     amplfi_prior.add_argument("--amplfi-prior", required=True)
     amplfi_prior.add_argument("--training-config", required=True)
     amplfi_prior.add_argument("--output", required=True)
+
+    dingo_prior = subparsers.add_parser("dingo-common-prior-audit")
+    dingo_prior.add_argument("--canonical-prior", required=True)
+    dingo_prior.add_argument("--dingo-prior-config", required=True)
+    dingo_prior.add_argument("--training-config", required=True)
+    dingo_prior.add_argument("--output", required=True)
 
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
@@ -3150,6 +3157,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dingo_common_batch(
                 args.native_manifest,
                 args.model_metadata,
+                args.native_prior,
                 args.model_init,
                 args.python_executable,
                 args.runner_script,
@@ -3255,6 +3263,17 @@ def main(argv: list[str] | None = None) -> int:
             run_amplfi_common_prior_audit(
                 args.canonical_prior,
                 args.amplfi_prior,
+                args.training_config,
+                args.output,
+            )
+        )
+    elif args.command == "dingo-common-prior-audit":
+        from .dingo_adapter import run_dingo_common_prior_audit
+
+        _print(
+            run_dingo_common_prior_audit(
+                args.canonical_prior,
+                args.dingo_prior_config,
                 args.training_config,
                 args.output,
             )

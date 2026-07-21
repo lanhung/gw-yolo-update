@@ -663,10 +663,11 @@ will only freeze a checkpoint when a separate selection report has status
 `publication_eligible`, names the selection metric and contains the checkpoint's exact SHA-256. It
 also hashes the training
 configuration, training-data manifest, common analysis prior, selection report and backend-native
-conditioning configuration. For AMPLFI it additionally requires the exact native prior and the
-machine-readable `amplfi-common-prior-audit` report. The report must have passed and its canonical
-prior, native prior and training-configuration hashes must match the other frozen artifacts; copying
-a passed report from a different training run fails closed. The sidecar records the native and common analysis waveform
+conditioning configuration. Both backends additionally require their exact native prior settings
+and a machine-readable semantic projection report produced by `dingo-common-prior-audit` or
+`amplfi-common-prior-audit`. The report must have passed and its canonical-prior, native-prior and
+training-configuration hashes must match the other frozen artifacts; copying a passed report from a
+different training run fails closed. The sidecar records the native and common analysis waveform
 approximants, common source contract and inference parameters. The environment audit reloads and
 verifies every referenced artifact, then requires DINGO and AMPLFI to use the same analysis prior,
 analysis waveform and explicitly mapped common parameter set. Native output spaces may differ, but
@@ -698,6 +699,12 @@ python -m gwyolo.cli pe-lightning-checkpoint-select \
 ```
 
 ```bash
+python -m gwyolo.cli dingo-common-prior-audit \
+  --canonical-prior configs/pe_common_bbh_analysis_prior.yaml \
+  --dingo-prior-config artifacts/pe/dingo/model_settings.txt \
+  --training-config artifacts/pe/dingo/model_settings.txt \
+  --output artifacts/pe/dingo/prior_projection.json
+
 python -m gwyolo.cli pe-backend-model-freeze \
   --backend DINGO \
   --model artifacts/pe/dingo/model.pt \
@@ -705,6 +712,8 @@ python -m gwyolo.cli pe-backend-model-freeze \
   --training-config artifacts/pe/dingo/train.yaml \
   --training-data-manifest artifacts/pe/dingo/train.jsonl \
   --analysis-prior artifacts/pe/common/analysis_prior.yaml \
+  --native-prior artifacts/pe/dingo/model_settings.txt \
+  --prior-projection-report artifacts/pe/dingo/prior_projection.json \
   --selection-report artifacts/pe/dingo/selection.json \
   --native-conditioning-config artifacts/pe/dingo/conditioning.yaml \
   --source-sample-rate-hz 4096 \
@@ -826,9 +835,10 @@ model and time-initialization model hashes, loads upstream `EventDataset`, `GWSa
 latency. Backend import or model compatibility failures are explicit and non-zero; no synthetic
 posterior fallback exists. A resumed batch revalidates every posterior and native-result hash.
 The standardized metadata requires the time-initialization network as a DINGO-specific artifact;
-the batch executor also reopens every training-config, training-manifest, analysis-prior,
-selection-report and conditioning-config artifact, requires native rows to use that conditioning
-hash, and refuses a runtime initialization network whose bytes differ from metadata.
+the batch executor also reopens every training-config, training-manifest, analysis-prior, native
+prior, projection-report, selection-report and conditioning-config artifact. It requires native rows
+to use the frozen conditioning and common-prior hashes, requires `--native-prior` to match metadata,
+and refuses a runtime initialization network whose bytes differ from metadata.
 
 Real AMPLFI sampling follows the same fail-closed contract through `amplfi-common-batch` and
 `scripts/run_amplfi_common_event.py`. The pinned interpreter reconstructs the exact v0.6 NSF and

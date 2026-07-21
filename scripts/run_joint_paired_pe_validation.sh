@@ -11,6 +11,7 @@ required=(
   PE_INPUT_ROOT
   DINGO_PYTHON
   DINGO_MODEL_METADATA
+  DINGO_NATIVE_PRIOR
   DINGO_MODEL_INIT
   AMPLFI_PYTHON
   AMPLFI_MODEL_METADATA
@@ -32,6 +33,7 @@ for path in \
   "$DINGO_PYTHON" \
   "$AMPLFI_PYTHON" \
   "$DINGO_MODEL_METADATA" \
+  "$DINGO_NATIVE_PRIOR" \
   "$DINGO_MODEL_INIT" \
   "$AMPLFI_MODEL_METADATA" \
   "$AMPLFI_NATIVE_PRIOR" \
@@ -110,6 +112,7 @@ wait_for_idle_gpu
 "$TASK_PYTHON" -m gwyolo.cli dingo-common-batch \
   --native-manifest "${native_manifests[0]}" \
   --model-metadata "$DINGO_MODEL_METADATA" \
+  --native-prior "$DINGO_NATIVE_PRIOR" \
   --model-init "$DINGO_MODEL_INIT" \
   --python-executable "$DINGO_PYTHON" \
   --runner-script scripts/run_dingo_common_event.py \

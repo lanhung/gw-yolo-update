@@ -28,4 +28,6 @@ def test_joint_paired_pe_validation_uses_strict_joint_cli_and_validation_split()
     assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source
     assert "paired_pe_native_inputs_smoke_complete" in source
     assert "cross_backend_matched_input_gate" in source
+    assert "DINGO_NATIVE_PRIOR" in source
+    assert source.count("--native-prior") == 2
     assert "--required-split test" not in source

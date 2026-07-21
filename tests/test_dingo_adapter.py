@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gwyolo.dingo_adapter import run_dingo_common_batch
+from gwyolo.dingo_adapter import (
+    audit_dingo_common_prior_projection,
+    run_dingo_common_batch,
+    run_dingo_common_prior_audit,
+)
 from gwyolo.io import file_sha256
 from gwyolo.pe import PAIRED_PE_LATENCY_SCOPE_V1
 from gwyolo.pe_conditioning import materialize_native_pe_conditioning
@@ -65,8 +69,124 @@ pathlib.Path(a.report_output).write_text(json.dumps(r))
     )
 
 
+def _compatible_dingo_settings() -> dict:
+    return {
+        "dataset_settings": {
+            "intrinsic_prior": {
+                "chirp_mass": "bilby.core.prior.Uniform(minimum=15.0, maximum=100.0)",
+                "mass_ratio": "bilby.core.prior.Uniform(minimum=0.125, maximum=0.999)",
+                "phase": "default",
+                "a_1": "bilby.core.prior.Uniform(minimum=0.0, maximum=0.99)",
+                "a_2": "bilby.core.prior.Uniform(minimum=0.0, maximum=0.99)",
+                "tilt_1": "default",
+                "tilt_2": "default",
+                "phi_12": "default",
+                "phi_jl": "default",
+                "theta_jn": "default",
+                "luminosity_distance": 100.0,
+            }
+        },
+        "train_settings": {
+            "data": {
+                "detectors": ["H1", "L1"],
+                "extrinsic_prior": {
+                    "luminosity_distance": (
+                        "bilby.core.prior.Uniform(minimum=100.0, maximum=3100.0)"
+                    ),
+                    "ra": "default",
+                    "dec": "default",
+                    "psi": "default",
+                },
+                "inference_parameters": [
+                    "chirp_mass",
+                    "mass_ratio",
+                    "luminosity_distance",
+                    "theta_jn",
+                    "ra",
+                    "dec",
+                    "psi",
+                ],
+                "window": {"f_s": 4096, "T": 16.0},
+                "domain_update": {"f_min": 20.0, "f_max": 1024.0},
+            }
+        },
+    }
+
+
+def test_dingo_prior_audit_parses_model_inspection_and_rejects_official_mismatch(
+    tmp_path: Path,
+) -> None:
+    canonical = Path(__file__).parents[1] / "configs/pe_common_bbh_analysis_prior.yaml"
+    compatible = tmp_path / "compatible-settings.yaml"
+    compatible.write_text(
+        "Extracting information about torch model.\n\n"
+        "Version: dingo=0.9.8\n\n"
+        "Model metadata:\n"
+        + yaml.safe_dump(_compatible_dingo_settings(), sort_keys=False),
+        encoding="utf-8",
+    )
+    passed = audit_dingo_common_prior_projection(canonical, compatible, compatible)
+    assert passed["publication_ready"] is True
+    assert passed["failures"] == []
+    assert set(passed["checks"]) == {
+        "chirp_mass",
+        "mass_ratio",
+        "luminosity_distance",
+        "theta_jn",
+        "phase",
+        "a_1",
+        "a_2",
+        "tilt_1",
+        "tilt_2",
+        "phi_jl",
+        "phi_12",
+        "ra",
+        "dec",
+        "psi",
+    }
+
+    official = _compatible_dingo_settings()
+    intrinsic = official["dataset_settings"]["intrinsic_prior"]
+    intrinsic["mass_1"] = "bilby.core.prior.Constraint(minimum=10.0, maximum=120.0)"
+    intrinsic["mass_2"] = "bilby.core.prior.Constraint(minimum=10.0, maximum=120.0)"
+    intrinsic["chirp_mass"] = (
+        "bilby.gw.prior.UniformInComponentsChirpMass(minimum=15.0, maximum=150.0)"
+    )
+    intrinsic["mass_ratio"] = (
+        "bilby.gw.prior.UniformInComponentsMassRatio(minimum=0.125, maximum=1.0)"
+    )
+    extrinsic = official["train_settings"]["data"]["extrinsic_prior"]
+    extrinsic["luminosity_distance"] = (
+        "bilby.core.prior.Uniform(minimum=100.0, maximum=10000.0)"
+    )
+    extrinsic["geocent_time"] = (
+        "bilby.core.prior.Uniform(minimum=-0.10, maximum=0.10)"
+    )
+    official_path = tmp_path / "official-settings.yaml"
+    official_path.write_text(
+        "Extracting information about torch model.\n\n"
+        "Version: dingo=0.5.8\n\n"
+        "Model metadata:\n"
+        + yaml.safe_dump(official, sort_keys=False),
+        encoding="utf-8",
+    )
+    failed = audit_dingo_common_prior_projection(canonical, official_path, official_path)
+    assert failed["publication_ready"] is False
+    assert "mass_1" in failed["extra_native_constraints"]
+    assert failed["extra_native_stochastic_parameters"] == ["geocent_time"]
+    assert any("prior family mismatch for chirp_mass" == value for value in failed["failures"])
+    assert any("prior bounds mismatch for luminosity_distance" == value for value in failed["failures"])
+    output = tmp_path / "official-prior-audit.json"
+    with pytest.raises(RuntimeError, match="prior projection failed"):
+        run_dingo_common_prior_audit(canonical, official_path, official_path, output)
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["status"] == "failed"
+    assert persisted["dingo_prior_config_sha256"] == file_sha256(official_path)
+
+
 def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path) -> None:
     native, conditioning_config = _native_manifest(tmp_path)
+    native_rows = [json.loads(line) for line in native.read_text().splitlines()]
     model = tmp_path / "model.pt"
     model_init = tmp_path / "model-init.pt"
     model.write_bytes(b"model")
@@ -75,8 +195,23 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     training_config.write_text("backend: DINGO\n", encoding="utf-8")
     training_manifest = tmp_path / "training.jsonl"
     training_manifest.write_text('{"split":"train"}\n', encoding="utf-8")
-    analysis_prior = tmp_path / "analysis-prior.yaml"
-    analysis_prior.write_text("prior: common\n", encoding="utf-8")
+    analysis_prior = Path(native_rows[0]["common_prior_path"])
+    native_prior = tmp_path / "dingo-native-prior.yaml"
+    native_prior.write_text("native: dingo-prior\n", encoding="utf-8")
+    prior_projection = tmp_path / "dingo-prior-projection.json"
+    prior_projection.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "publication_ready": True,
+                "canonical_prior_sha256": file_sha256(analysis_prior),
+                "dingo_prior_config_sha256": file_sha256(native_prior),
+                "dingo_training_config_sha256": file_sha256(training_config),
+                "failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     selection_report = tmp_path / "selection.json"
     selection_report.write_text(
         json.dumps(
@@ -120,6 +255,14 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
                         "path": str(analysis_prior),
                         "sha256": file_sha256(analysis_prior),
                     },
+                    "native_prior": {
+                        "path": str(native_prior),
+                        "sha256": file_sha256(native_prior),
+                    },
+                    "prior_projection_report": {
+                        "path": str(prior_projection),
+                        "sha256": file_sha256(prior_projection),
+                    },
                     "selection_report": {
                         "path": str(selection_report),
                         "sha256": file_sha256(selection_report),
@@ -142,6 +285,7 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     kwargs = dict(
         native_manifest=native,
         model_metadata_path=metadata,
+        native_prior_path=native_prior,
         model_init_path=model_init,
         python_executable=sys.executable,
         runner_script=runner,
@@ -176,6 +320,10 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     )
     assert all(row["hardware"] == {"hostname": "gpu-node", "gpu": "RTX 4090"} for row in rows)
     assert all(file_sha256(row["posterior_path"]) == row["posterior_sha256"] for row in rows)
+    assert report["run_identity"]["native_prior_sha256"] == file_sha256(native_prior)
+    assert report["run_identity"]["prior_projection_report_sha256"] == file_sha256(
+        prior_projection
+    )
 
     resumed = run_dingo_common_batch(**kwargs)
     assert resumed["manifest_sha256"] == report["manifest_sha256"]
@@ -184,3 +332,8 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     other_init.write_bytes(b"changed-init")
     with pytest.raises(ValueError, match="runtime initialization model differs"):
         run_dingo_common_batch(**{**kwargs, "model_init_path": other_init})
+
+    other_prior = tmp_path / "other-prior.yaml"
+    other_prior.write_text("native: changed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime native prior differs"):
+        run_dingo_common_batch(**{**kwargs, "native_prior_path": other_prior})

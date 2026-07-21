@@ -87,6 +87,8 @@ gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes f
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain
 gwyolo injection-score score full-context-whitened physical injections with the frozen model
 gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
+gwyolo dingo-common-prior-audit prove or reject DINGO/common-prior equivalence before PE
+gwyolo pe-robustness-joint-evaluate join hash-matched DINGO/AMPLFI posterior batches
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
 
