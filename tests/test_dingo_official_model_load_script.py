@@ -31,6 +31,9 @@ def test_dingo_official_load_runner_is_dual_model_and_test_blind() -> None:
         "expected-model-init-sha256",
         "verified_official_dingo_dual_model_load",
         "model_acquisition_report_sha256",
+        "official_dingo_dual_model_load_failed",
+        "fallback_constraint",
+        "attempt_log_sha256",
         "test_rows_read",
     ):
         assert token in source
@@ -41,7 +44,7 @@ def test_dingo_official_load_embedded_python_compiles() -> None:
     snippets = re.findall(
         r"<<'PY'\n(.*?)\nPY", SCRIPT.read_text(encoding="utf-8"), flags=re.DOTALL
     )
-    assert len(snippets) == 2
+    assert len(snippets) == 3
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
 
@@ -168,7 +171,7 @@ def test_dingo_official_load_freezes_acquisition_and_dual_model_receipt(
         [
             sys.executable,
             "-c",
-            snippets[1],
+            snippets[2],
             str(config),
             str(acquisition),
             str(load),
@@ -193,3 +196,54 @@ def test_dingo_official_load_freezes_acquisition_and_dual_model_receipt(
     assert frozen["initialization_model_sha256"] == _digest(
         paths["time_initialization_model"]
     )
+
+
+def test_dingo_official_load_freezes_machine_readable_failure(tmp_path: Path) -> None:
+    config = tmp_path / "sources.yaml"
+    acquisition = tmp_path / "acquisition.json"
+    posterior = tmp_path / "posterior.pt"
+    initialization = tmp_path / "time.pt"
+    attempt_log = tmp_path / "attempt.log"
+    for path, content in (
+        (config, "schema_version: 1\n"),
+        (acquisition, "{}\n"),
+        (posterior, "posterior"),
+        (initialization, "initialization"),
+        (attempt_log, "compatibility error\n"),
+    ):
+        path.write_text(content, encoding="utf-8")
+    receipt = tmp_path / "failure.json"
+    snippets = re.findall(
+        r"<<'PY'\n(.*?)\nPY", SCRIPT.read_text(encoding="utf-8"), flags=re.DOTALL
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            snippets[1],
+            str(config),
+            str(acquisition),
+            str(posterior),
+            _digest(posterior),
+            str(initialization),
+            _digest(initialization),
+            "0.9.8",
+            "cuda",
+            sys.executable,
+            "test-commit",
+            str(attempt_log),
+            "17",
+            str(receipt),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    frozen = json.loads(receipt.read_text(encoding="utf-8"))
+    assert frozen["status"] == "official_dingo_dual_model_load_failed"
+    assert frozen["passed"] is False
+    assert frozen["fallback_allowed"] is False
+    assert frozen["exit_code"] == 17
+    assert frozen["attempt_log_sha256"] == _digest(attempt_log)
+    assert frozen["test_rows_read"] == 0

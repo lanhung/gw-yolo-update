@@ -136,6 +136,12 @@ fi
 
 mkdir -p "$OUTPUT_ROOT"
 load_report="$OUTPUT_ROOT/backend_model_load_report.json"
+failure_receipt="$OUTPUT_ROOT/official_dingo_model_load_failure.json"
+attempt_log="$OUTPUT_ROOT/backend_model_load_attempt.log"
+if [[ -s "$failure_receipt" && ! -s "$load_report" ]]; then
+  echo "an immutable DINGO model-load failure receipt already exists: $failure_receipt" >&2
+  exit 1
+fi
 if [[ ! -s "$load_report" ]]; then
   if [[ "$DEVICE" == cuda* ]]; then
     while :; do
@@ -145,7 +151,11 @@ if [[ ! -s "$load_report" ]]; then
       sleep 30
     done
   fi
-  (
+  if [[ -e "$attempt_log" || -e "$attempt_log.part" ]]; then
+    echo "DINGO model-load attempt log already exists: $attempt_log" >&2
+    exit 2
+  fi
+  if (
     cd "$TASK_CODE_DIR"
     "$DINGO_PYTHON" scripts/run_pe_model_load_smoke.py \
       --backend DINGO \
@@ -155,7 +165,98 @@ if [[ ! -s "$load_report" ]]; then
       --expected-model-init-sha256 "$initialization_sha256" \
       --output "$load_report" \
       --device "$DEVICE"
-  )
+  ) >"$attempt_log.part" 2>&1; then
+    load_status=0
+  else
+    load_status=$?
+  fi
+  mv "$attempt_log.part" "$attempt_log"
+  if (( load_status != 0 )); then
+    "$TASK_PYTHON" - \
+      "$MODEL_SOURCE_CONFIG" \
+      "$MODEL_ACQUISITION_REPORT" \
+      "$posterior_model" \
+      "$posterior_sha256" \
+      "$initialization_model" \
+      "$initialization_sha256" \
+      "$EXPECTED_DINGO_VERSION" \
+      "$DEVICE" \
+      "$DINGO_PYTHON" \
+      "$GWYOLO_CODE_COMMIT" \
+      "$attempt_log" \
+      "$load_status" \
+      "$failure_receipt" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with pathlib.Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+(
+    config_path,
+    acquisition_path,
+    posterior_path,
+    posterior_sha,
+    initialization_path,
+    initialization_sha,
+    expected_version,
+    device,
+    dingo_python,
+    code_commit,
+    attempt_log_path,
+    exit_code,
+    receipt_path,
+) = sys.argv[1:]
+result = {
+    "status": "official_dingo_dual_model_load_failed",
+    "passed": False,
+    "scientific_claim_allowed": False,
+    "scientific_blocker": "official DINGO models failed the pinned runtime model-load gate",
+    "fallback_allowed": False,
+    "fallback_constraint": (
+        "the attempt log must first be adjudicated as a version-compatibility failure; only "
+        "then may the predeclared native DINGO 0.5.8 environment be tried; model substitution "
+        "is forbidden"
+    ),
+    "failure_scope": "runtime_model_load",
+    "test_rows_read": 0,
+    "test_evaluation": None,
+    "backend": "DINGO",
+    "backend_version": expected_version,
+    "device": device,
+    "dingo_python": str(pathlib.Path(dingo_python).resolve()),
+    "model_source_config_path": str(pathlib.Path(config_path).resolve()),
+    "model_source_config_sha256": digest(config_path),
+    "model_acquisition_report_path": str(pathlib.Path(acquisition_path).resolve()),
+    "model_acquisition_report_sha256": digest(acquisition_path),
+    "posterior_model_path": str(pathlib.Path(posterior_path).resolve()),
+    "posterior_model_sha256": posterior_sha,
+    "initialization_model_path": str(pathlib.Path(initialization_path).resolve()),
+    "initialization_model_sha256": initialization_sha,
+    "attempt_log_path": str(pathlib.Path(attempt_log_path).resolve()),
+    "attempt_log_sha256": digest(attempt_log_path),
+    "exit_code": int(exit_code),
+    "code_commit": code_commit,
+}
+target = pathlib.Path(receipt_path)
+if target.exists():
+    raise SystemExit("official DINGO model-load failure receipt already exists")
+temporary = target.with_suffix(target.suffix + ".part")
+temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+temporary.replace(target)
+print(json.dumps(result, indent=2, sort_keys=True))
+PY
+    echo "official DINGO dual-model load failed; see $failure_receipt" >&2
+    exit "$load_status"
+  fi
 fi
 
 receipt="$OUTPUT_ROOT/official_dingo_model_load_receipt.json"
