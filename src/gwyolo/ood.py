@@ -134,6 +134,38 @@ def class_conditional_mahalanobis_scores(
     return np.maximum(scores, 0.0)
 
 
+def supervised_contrastive_loss(
+    embeddings: Any,
+    targets: Any,
+    temperature: float = 0.1,
+) -> Any:
+    """Supervised contrastive loss over normalized known-family embeddings."""
+    if torch is None:
+        raise RuntimeError("supervised contrastive loss requires torch")
+    if embeddings.ndim != 2 or targets.shape != (embeddings.shape[0],):
+        raise ValueError("contrastive loss requires [batch, features] and one target per row")
+    if embeddings.shape[0] < 2 or temperature <= 0:
+        raise ValueError("contrastive loss requires at least two rows and positive temperature")
+    normalized = torch_functional.normalize(embeddings, p=2, dim=1)
+    logits = normalized @ normalized.T / float(temperature)
+    identity = torch.eye(logits.shape[0], dtype=torch.bool, device=logits.device)
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    denominator_mask = ~identity
+    log_denominator = torch.logsumexp(
+        logits.masked_fill(~denominator_mask, -torch.inf), dim=1
+    )
+    positive_mask = targets[:, None].eq(targets[None, :]) & denominator_mask
+    positive_counts = positive_mask.sum(dim=1)
+    usable = positive_counts > 0
+    if not bool(usable.any()):
+        return embeddings.sum() * 0.0
+    mean_positive_log_probability = (
+        ((logits - log_denominator[:, None]) * positive_mask).sum(dim=1)
+        / positive_counts.clamp_min(1)
+    )
+    return -mean_positive_log_probability[usable].mean()
+
+
 def _rate(successes: int, total: int) -> dict[str, Any]:
     if total <= 0 or not 0 <= successes <= total:
         raise ValueError("OOD rate requires a valid non-empty binomial count")
@@ -611,9 +643,18 @@ def run_glitch_ood_embedding(
         weight_decay=float(settings["weight_decay"]),
     )
 
+    contrastive_weight = float(settings.get("supervised_contrastive_weight", 0.0))
+    contrastive_temperature = float(
+        settings.get("supervised_contrastive_temperature", 0.1)
+    )
+    if contrastive_weight < 0 or contrastive_temperature <= 0:
+        raise ValueError("supervised contrastive configuration is invalid")
+
     def epoch(loader: Any, training: bool) -> dict[str, float]:
         model.train(training)
         losses = []
+        cross_entropy_losses = []
+        contrastive_losses = []
         correct = total = 0
         for features, targets in loader:
             features = features.to(device)
@@ -621,17 +662,32 @@ def run_glitch_ood_embedding(
             if training:
                 optimizer.zero_grad(set_to_none=True)
             with torch.set_grad_enabled(training):
-                logits, _ = model(features)
-                loss = torch_functional.cross_entropy(
+                logits, embeddings = model(features)
+                cross_entropy = torch_functional.cross_entropy(
                     logits, targets, weight=class_weights
                 )
+                contrastive = (
+                    supervised_contrastive_loss(
+                        embeddings, targets, contrastive_temperature
+                    )
+                    if training and contrastive_weight > 0
+                    else embeddings.sum() * 0.0
+                )
+                loss = cross_entropy + contrastive_weight * contrastive
                 if training:
                     loss.backward()
                     optimizer.step()
             losses.append(float(loss.detach().cpu()))
+            cross_entropy_losses.append(float(cross_entropy.detach().cpu()))
+            contrastive_losses.append(float(contrastive.detach().cpu()))
             correct += int((logits.argmax(dim=1) == targets).sum().cpu())
             total += int(targets.numel())
-        return {"loss": float(np.mean(losses)), "accuracy": correct / total}
+        return {
+            "loss": float(np.mean(losses)),
+            "cross_entropy_loss": float(np.mean(cross_entropy_losses)),
+            "supervised_contrastive_loss": float(np.mean(contrastive_losses)),
+            "accuracy": correct / total,
+        }
 
     checkpoint_path = output / "best_glitch_ood_embedding.pt"
     history = []
@@ -770,6 +826,11 @@ def run_glitch_ood_embedding(
         "labels": labels,
         "label_counts": dict(sorted(counts.items())),
         "ood_score_method": score_method,
+        "supervised_contrastive": {
+            "weight": contrastive_weight,
+            "temperature": contrastive_temperature,
+            "training_only": True,
+        },
         "ood_score_fit": {
             "selection_data": "known_train_only",
             "known_train_rows": mahalanobis_fit["known_train_rows"],

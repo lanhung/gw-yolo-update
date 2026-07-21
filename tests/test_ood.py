@@ -9,6 +9,7 @@ from gwyolo.ood import (
     evaluate_frozen_ood_threshold,
     fit_class_conditional_mahalanobis,
     ood_auc,
+    supervised_contrastive_loss,
 )
 
 
@@ -74,6 +75,27 @@ def test_class_conditional_mahalanobis_rejects_missing_class() -> None:
             np.asarray([0, 0, 0]),
             class_count=2,
         )
+
+
+def test_supervised_contrastive_loss_by_hand() -> None:
+    torch = pytest.importorskip("torch")
+
+    embeddings = torch.tensor(
+        [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]
+    )
+    targets = torch.tensor([0, 0, 1, 1])
+    measured = supervised_contrastive_loss(embeddings, targets, temperature=1.0)
+    expected = torch.log(torch.exp(torch.tensor(1.0)) + 2.0) - 1.0
+    assert float(measured) == pytest.approx(float(expected), abs=1e-7)
+
+
+def test_supervised_contrastive_loss_ignores_anchors_without_positive_pairs() -> None:
+    torch = pytest.importorskip("torch")
+
+    embeddings = torch.eye(3)
+    targets = torch.tensor([0, 1, 2])
+    measured = supervised_contrastive_loss(embeddings, targets)
+    assert float(measured) == 0.0
 
 
 def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
