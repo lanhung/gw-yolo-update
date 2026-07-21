@@ -101,10 +101,13 @@ for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
 done
 
 merge_dir="$OUTPUT_ROOT/merged"
-"$TASK_PYTHON" -m gwyolo.cli background-stream-merge \
-  "${reports[@]}" \
-  --output-dir "$merge_dir"
+merge_report="$merge_dir/streamed_background_merge_report.json"
+if [[ ! -s "$merge_report" ]]; then
+  "$TASK_PYTHON" -m gwyolo.cli background-stream-merge \
+    "${reports[@]}" \
+    --output-dir "$merge_dir"
+fi
 "$TASK_PYTHON" -m gwyolo.cli background-morphology-calibrate \
-  --merge-report "$merge_dir/streamed_background_merge_report.json" \
+  --merge-report "$merge_report" \
   --target-rate-per-detector-year "$TARGET_RATE_PER_DETECTOR_YEAR" \
   --output "$OUTPUT_ROOT/morphology_candidate_rate.json"
