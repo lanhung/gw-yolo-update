@@ -216,6 +216,29 @@ checkpoint/config/commit/timing identities, or a calibrated-candidate hash misma
 distinguishes a complete parent plan from a partial exposure tranche before any time-slide command
 is allowed to consume the combined manifests.
 
+Large time-slide schedules are also resumable. `candidate-time-slides --slide-start-index S
+--slide-count N` evaluates the absolute half-open offset range `[S, S+N)`; candidate IDs and offsets
+retain those absolute indices. `candidate-time-slide-merge` verifies identical candidate/background
+hashes, detector/timing/model provenance and physics settings, rejects repeated offsets or candidate
+IDs, and combines exposure only after every shard manifest hash and row count passes. A gapped
+absolute offset range is retained as partial engineering evidence but cannot pass the merged
+publication timing gate.
+
+```bash
+python -m gwyolo.cli candidate-time-slides \
+  --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
+  --output-dir val-slides-0001 --split val --slide-start-index 1 --slide-count 512 \
+  --step-seconds 8 --coincidence-window-seconds 0.012
+python -m gwyolo.cli candidate-time-slides \
+  --candidates val-candidates.jsonl --background-manifest val-background.jsonl \
+  --output-dir val-slides-0513 --split val --slide-start-index 513 --slide-count 512 \
+  --step-seconds 8 --coincidence-window-seconds 0.012
+python -m gwyolo.cli candidate-time-slide-merge \
+  --report val-slides-0001/val_candidate_time_slide_report.json \
+  --report val-slides-0513/val_candidate_time_slide_report.json \
+  --output-dir val-slides-merged --split val
+```
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and

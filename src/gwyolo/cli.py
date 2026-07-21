@@ -868,11 +868,17 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_slides.add_argument("--reference-ifo", default="H1")
     candidate_slides.add_argument("--shifted-ifo", default="L1")
     candidate_slides.add_argument("--slide-count", type=int, required=True)
+    candidate_slides.add_argument("--slide-start-index", type=int, default=1)
     candidate_slides.add_argument("--step-seconds", type=float, required=True)
     candidate_slides.add_argument("--coincidence-window-seconds", type=float, required=True)
     candidate_slides.add_argument("--cluster-window-seconds", type=float, default=0.1)
     candidate_slides.add_argument("--physical-delay-limit-seconds", type=float)
     candidate_slides.add_argument("--empirical-timing-uncertainty-seconds", type=float)
+
+    candidate_slide_merge = subparsers.add_parser("candidate-time-slide-merge")
+    candidate_slide_merge.add_argument("--report", action="append", required=True)
+    candidate_slide_merge.add_argument("--output-dir", required=True)
+    candidate_slide_merge.add_argument("--split", choices=("val", "test"), required=True)
 
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
@@ -914,6 +920,7 @@ def build_parser() -> argparse.ArgumentParser:
     exposure_plan.add_argument("--reference-ifo", default="H1")
     exposure_plan.add_argument("--shifted-ifo", default="L1")
     exposure_plan.add_argument("--slide-count", type=int, required=True)
+    exposure_plan.add_argument("--slide-start-index", type=int, default=1)
     exposure_plan.add_argument("--step-seconds", type=float, required=True)
     exposure_plan.add_argument("--target-far-per-year", type=float, required=True)
     exposure_plan.add_argument("--zero-count-confidence", type=float, default=0.90)
@@ -2334,6 +2341,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.cluster_window_seconds,
                 args.physical_delay_limit_seconds,
                 args.empirical_timing_uncertainty_seconds,
+                args.slide_start_index,
             )
         )
     elif args.command == "candidate-search-validation-pipeline":
@@ -2368,6 +2376,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "candidate-time-slide-merge":
+        from .candidates import merge_candidate_time_slide_shards
+
+        _print(
+            merge_candidate_time_slide_shards(
+                args.report,
+                args.output_dir,
+                args.split,
+            )
+        )
     elif args.command == "candidate-exposure-plan":
         from .exposure import run_candidate_background_exposure_plan
 
@@ -2382,6 +2400,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.step_seconds,
                 args.target_far_per_year,
                 args.zero_count_confidence,
+                args.slide_start_index,
             )
         )
     elif args.command == "candidate-probability-evict":

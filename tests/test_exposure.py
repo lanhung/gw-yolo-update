@@ -58,3 +58,31 @@ def test_candidate_exposure_plan_excludes_missing_shifted_detector() -> None:
     )
     assert report["equivalent_live_time_seconds"] == 0
     assert report["zero_count_far_upper_per_year"] is None
+
+
+def test_candidate_exposure_plan_uses_absolute_slide_range() -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "val",
+            "gps_start": index * 8,
+            "gps_end": (index + 1) * 8,
+            "gps_block": "g",
+            "ifos": ["H1", "L1"],
+        }
+        for index in range(5)
+    ]
+    report = plan_candidate_background_exposure(
+        windows,
+        "val",
+        "H1",
+        "L1",
+        2,
+        8,
+        target_far_per_year=1.0,
+        slide_start_index=3,
+    )
+    assert report["slide_start_index"] == 3
+    assert report["slide_stop_index_exclusive"] == 5
+    assert [row["slide_index"] for row in report["nonzero_slide_exposure"]] == [3, 4]
+    assert [row["paired_windows"] for row in report["nonzero_slide_exposure"]] == [2, 1]

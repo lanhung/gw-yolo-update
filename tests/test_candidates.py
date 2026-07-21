@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -10,6 +13,8 @@ from gwyolo.candidates import (
     calibrate_candidate_timing_rows,
     candidate_proposal_coverage,
     extract_temporal_clusters,
+    merge_candidate_time_slide_shards,
+    run_candidate_time_slides,
     select_candidate_proposal_threshold,
 )
 
@@ -243,6 +248,153 @@ def test_candidate_time_slides_use_all_candidates_but_cluster_network_events() -
     assert len(rows) == 1
     assert rows[0]["ranking_score"] == 0.7
     assert rows[0]["peak_separation_seconds"] < 0.01
+
+
+def test_candidate_time_slide_runner_preserves_declared_parameters(
+    tmp_path: Path,
+) -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "val",
+            "gps_start": index * 8,
+            "gps_end": (index + 1) * 8,
+            "gps_block": f"b{index}",
+            "ifos": ["H1", "L1"],
+        }
+        for index in range(2)
+    ]
+    candidates = [
+        {
+            "candidate_id": "h1",
+            "window_id": "w0",
+            "split": "val",
+            "ifo": "H1",
+            "gps_peak": 1.0,
+            "chirp_score": 0.8,
+            "glitch_score_at_peak": 0.1,
+            "bin_width_seconds": 0.01,
+        },
+        {
+            "candidate_id": "l1",
+            "window_id": "w1",
+            "split": "val",
+            "ifo": "L1",
+            "gps_peak": 9.005,
+            "chirp_score": 0.7,
+            "glitch_score_at_peak": 0.2,
+            "bin_width_seconds": 0.01,
+        },
+    ]
+    candidate_path = tmp_path / "candidates.jsonl"
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in candidates), encoding="utf-8"
+    )
+    background_path = tmp_path / "background.jsonl"
+    background_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows), encoding="utf-8"
+    )
+    report = run_candidate_time_slides(
+        candidate_path,
+        background_path,
+        tmp_path / "slides",
+        "val",
+        "H1",
+        "L1",
+        1,
+        8.0,
+        0.03,
+        0.1,
+    )
+    assert report["slide_count"] == 1
+    assert report["slide_start_index"] == 1
+    assert report["slide_stop_index_exclusive"] == 2
+    assert report["step_seconds"] == 8.0
+    assert report["coincidence_window_seconds"] == 0.03
+    assert report["cluster_window_seconds"] == 0.1
+    assert report["background_rows"] == 1
+    assert Path(report["manifest_path"]).is_file()
+
+
+def test_candidate_time_slide_shards_merge_absolute_nonoverlapping_offsets(
+    tmp_path: Path,
+) -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "val",
+            "gps_start": index * 8,
+            "gps_end": (index + 1) * 8,
+            "gps_block": f"b{index}",
+            "ifos": ["H1", "L1"],
+        }
+        for index in range(3)
+    ]
+    candidates = [
+        {
+            "candidate_id": "h1",
+            "window_id": "w0",
+            "split": "val",
+            "ifo": "H1",
+            "gps_peak": 1.0,
+            "chirp_score": 0.8,
+            "glitch_score_at_peak": 0.1,
+            "bin_width_seconds": 0.01,
+        },
+        *[
+            {
+                "candidate_id": f"l1-{index}",
+                "window_id": f"w{index}",
+                "split": "val",
+                "ifo": "L1",
+                "gps_peak": index * 8 + 1.005,
+                "chirp_score": 0.7,
+                "glitch_score_at_peak": 0.2,
+                "bin_width_seconds": 0.01,
+            }
+            for index in (1, 2)
+        ],
+    ]
+    candidate_path = tmp_path / "candidates.jsonl"
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in candidates), encoding="utf-8"
+    )
+    background_path = tmp_path / "background.jsonl"
+    background_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows), encoding="utf-8"
+    )
+    reports = []
+    for slide_index in (1, 2):
+        output = tmp_path / f"shard-{slide_index}"
+        run_candidate_time_slides(
+            candidate_path,
+            background_path,
+            output,
+            "val",
+            "H1",
+            "L1",
+            1,
+            8.0,
+            0.03,
+            0.1,
+            slide_start_index=slide_index,
+        )
+        reports.append(output / "val_candidate_time_slide_report.json")
+    merged = merge_candidate_time_slide_shards(
+        reports, tmp_path / "merged", "val"
+    )
+    assert merged["slide_count"] == 2
+    assert merged["slide_start_index"] == 1
+    assert merged["slide_stop_index_exclusive"] == 3
+    assert merged["slide_indices_contiguous"] is True
+    assert merged["equivalent_live_time_seconds"] == 24
+    assert merged["background_rows"] == 2
+    assert [row["slide_index"] for row in merged["slide_exposure"]] == [1, 2]
+
+    with pytest.raises(ValueError, match="repeat offsets"):
+        merge_candidate_time_slide_shards(
+            [reports[0], reports[0]], tmp_path / "duplicate", "val"
+        )
 
 
 def test_candidate_slide_exposure_requires_the_contributing_ifos() -> None:

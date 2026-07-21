@@ -709,6 +709,14 @@ queued after all source files pass full-file verification. Raw pair count is not
 only DQ-valid validation windows and their realized non-cyclic positive-lag exposure determine
 whether the 0.1/year target becomes measurable.
 
+The candidate time-slide runner now supports absolute, non-overlapping offset shards and an
+immutable hash-verifying merge. This removes the previous all-or-nothing execution boundary for a
+large exposure schedule. The merger rejects mixed candidate/background hashes, physics or timing
+settings, duplicate offsets and duplicate candidates; missing offset shards remain explicit and
+cannot pass the merged publication timing gate. This is scalability infrastructure, not additional
+observed exposure—the 0.01145-year measurement above remains the current scientific evidence until
+new background shards actually finish.
+
 Commit `83ca695` adds the final bounded candidate-representation control: three differentiable
 log-STFT resolutions (64/128/256 samples with 8/16/32-sample hops) are interpolated onto a common
 numeric grid and processed by a shared per-IFO encoder. Its promotion thresholds were committed

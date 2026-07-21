@@ -1316,10 +1316,17 @@ def build_candidate_time_slides(
     cluster_window_seconds: float,
     physical_delay_limit_seconds: float | None = None,
     empirical_timing_uncertainty_seconds: float | None = None,
+    slide_start_index: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if reference_ifo == shifted_ifo:
         raise ValueError("reference and shifted IFOs must differ")
-    if min(slide_count, step_seconds, coincidence_window_seconds, cluster_window_seconds) <= 0:
+    if min(
+        slide_count,
+        slide_start_index,
+        step_seconds,
+        coincidence_window_seconds,
+        cluster_window_seconds,
+    ) <= 0:
         raise ValueError("slide, step, coincidence, and cluster values must be positive")
     windows = [row for row in background_windows if str(row["split"]) == split]
     if not windows:
@@ -1352,7 +1359,7 @@ def build_candidate_time_slides(
         maximum_bin_width = max(maximum_bin_width, float(row["bin_width_seconds"]))
     output = []
     slide_exposure = []
-    for slide_index in range(1, slide_count + 1):
+    for slide_index in range(slide_start_index, slide_start_index + slide_count):
         offset = slide_index * step_seconds
         offset_key = int(round(offset * 1e9))
         intervals = []
@@ -1551,6 +1558,8 @@ def build_candidate_time_slides(
         "reference_ifo": reference_ifo,
         "shifted_ifo": shifted_ifo,
         "slide_count": slide_count,
+        "slide_start_index": slide_start_index,
+        "slide_stop_index_exclusive": slide_start_index + slide_count,
         "step_seconds": step_seconds,
         "coincidence_window_seconds": coincidence_window_seconds,
         "cluster_window_seconds": cluster_window_seconds,
@@ -1611,6 +1620,7 @@ def run_candidate_time_slides(
     cluster_window_seconds: float,
     physical_delay_limit_seconds: float | None = None,
     empirical_timing_uncertainty_seconds: float | None = None,
+    slide_start_index: int = 1,
 ) -> dict[str, Any]:
     with Path(candidates_path).open("r", encoding="utf-8") as handle:
         candidates = [json.loads(line) for line in handle if line.strip()]
@@ -1628,6 +1638,7 @@ def run_candidate_time_slides(
         cluster_window_seconds,
         physical_delay_limit_seconds,
         empirical_timing_uncertainty_seconds,
+        slide_start_index,
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1644,4 +1655,177 @@ def run_candidate_time_slides(
         **execution_provenance(),
     }
     atomic_write_json(output / f"{split}_candidate_time_slide_report.json", result)
+    return result
+
+
+def merge_candidate_time_slide_shards(
+    report_paths: Iterable[str | Path],
+    output_dir: str | Path,
+    split: str,
+) -> dict[str, Any]:
+    paths = [Path(path).resolve() for path in report_paths]
+    if not paths:
+        raise ValueError("candidate time-slide merge requires at least one report")
+    reports = []
+    for path in paths:
+        with path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+        if report.get("status") != "subwindow_clustered_time_slide_integration_only":
+            raise ValueError(f"candidate time-slide shard has wrong status: {path}")
+        if str(report.get("split")) != split:
+            raise ValueError(f"candidate time-slide shard split differs from {split}: {path}")
+        reports.append(report)
+
+    common_fields = (
+        "reference_ifo",
+        "shifted_ifo",
+        "step_seconds",
+        "coincidence_window_seconds",
+        "cluster_window_seconds",
+        "physical_delay_limit_seconds",
+        "empirical_timing_uncertainty_seconds",
+        "expected_coincidence_window_seconds",
+        "coincidence_window_matches_physics",
+        "input_windows",
+        "input_gps_blocks",
+        "input_zero_lag_live_time_seconds",
+        "input_candidates",
+        "candidate_timing_empirically_calibrated",
+        "timing_uncertainty_matches_candidates",
+        "timing_calibration_report_sha256",
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "publication_timing_gate_passed",
+        "candidate_manifest_sha256",
+        "background_manifest_sha256",
+    )
+    first = reports[0]
+    for field in common_fields:
+        if any(report.get(field) != first.get(field) for report in reports[1:]):
+            raise ValueError(f"candidate time-slide shard field differs: {field}")
+
+    exposures: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    seen_slide_indices: set[int] = set()
+    seen_candidate_ids: set[str] = set()
+    source_ranges = []
+    for path, report in zip(paths, reports):
+        shard_exposures = report.get("slide_exposure")
+        if not isinstance(shard_exposures, list) or len(shard_exposures) != int(
+            report.get("slide_count", -1)
+        ):
+            raise ValueError(f"candidate time-slide shard exposure is incomplete: {path}")
+        shard_indices = {int(row["slide_index"]) for row in shard_exposures}
+        if len(shard_indices) != len(shard_exposures):
+            raise ValueError(f"candidate time-slide shard repeats an offset: {path}")
+        if (
+            int(report.get("slide_start_index", -1)) != min(shard_indices)
+            or int(report.get("slide_stop_index_exclusive", -1))
+            != max(shard_indices) + 1
+        ):
+            raise ValueError(f"candidate time-slide shard range metadata differs: {path}")
+        if any(
+            not np.isclose(
+                float(row["offset_seconds"]),
+                int(row["slide_index"]) * float(first["step_seconds"]),
+                rtol=0.0,
+                atol=1e-12,
+            )
+            for row in shard_exposures
+        ):
+            raise ValueError(f"candidate time-slide shard offset differs from index: {path}")
+        overlap = seen_slide_indices & shard_indices
+        if overlap:
+            raise ValueError(f"candidate time-slide shards repeat offsets: {sorted(overlap)}")
+        seen_slide_indices.update(shard_indices)
+        exposures.extend(shard_exposures)
+        manifest = Path(str(report["manifest_path"])).resolve()
+        if not manifest.is_file() or file_sha256(manifest) != str(report["manifest_sha256"]):
+            raise ValueError(f"candidate time-slide shard manifest hash mismatch: {path}")
+        with manifest.open("r", encoding="utf-8") as handle:
+            shard_rows = [json.loads(line) for line in handle if line.strip()]
+        if len(shard_rows) != int(report.get("background_rows", -1)):
+            raise ValueError(f"candidate time-slide shard row count mismatch: {path}")
+        if any(int(row["slide_index"]) not in shard_indices for row in shard_rows):
+            raise ValueError(f"candidate time-slide row lies outside its shard: {path}")
+        for row in shard_rows:
+            candidate_id = str(row["candidate_id"])
+            if candidate_id in seen_candidate_ids:
+                raise ValueError(f"candidate time-slide shards repeat candidate {candidate_id}")
+            seen_candidate_ids.add(candidate_id)
+        rows.extend(shard_rows)
+        source_ranges.append(
+            {
+                "report_path": str(path),
+                "report_sha256": file_sha256(path),
+                "slide_start_index": min(shard_indices),
+                "slide_stop_index_exclusive": max(shard_indices) + 1,
+                "slide_count": len(shard_indices),
+            }
+        )
+
+    ordered_indices = sorted(seen_slide_indices)
+    expected_indices = list(range(ordered_indices[0], ordered_indices[-1] + 1))
+    contiguous = ordered_indices == expected_indices
+    exposures.sort(key=lambda row: int(row["slide_index"]))
+    rows.sort(key=lambda row: (int(row["slide_index"]), float(row["gps_peak"])))
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_path = output / f"{split}_candidate_time_slide_background.jsonl"
+    report_path = output / f"{split}_candidate_time_slide_report.json"
+    if manifest_path.exists() or report_path.exists():
+        raise FileExistsError("merged candidate time-slide outputs are immutable")
+    atomic_write_text(
+        manifest_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    )
+    equivalent_seconds = sum(float(row["live_time_seconds"]) for row in exposures)
+    result = {
+        **{field: first.get(field) for field in common_fields},
+        "status": "subwindow_clustered_time_slide_integration_only",
+        "scientific_claim_allowed": False,
+        "split": split,
+        "slide_count": len(ordered_indices),
+        "slide_start_index": ordered_indices[0],
+        "slide_stop_index_exclusive": ordered_indices[-1] + 1,
+        "slide_indices_contiguous": contiguous,
+        "source_publication_timing_gate_passed": bool(
+            first.get("publication_timing_gate_passed")
+        ),
+        "publication_timing_gate_passed": bool(
+            first.get("publication_timing_gate_passed")
+        )
+        and contiguous,
+        "source_shards": sorted(source_ranges, key=lambda row: row["slide_start_index"]),
+        "background_rows": len(rows),
+        "slide_exposure": exposures,
+        "equivalent_live_time_seconds": equivalent_seconds,
+        "equivalent_live_time_years": equivalent_seconds / SECONDS_PER_YEAR,
+        "maximum_bin_width_seconds": max(
+            (
+                float(report["maximum_bin_width_seconds"])
+                for report in reports
+                if report.get("maximum_bin_width_seconds") is not None
+            ),
+            default=None,
+        ),
+        "maximum_timing_resolution_seconds": max(
+            (
+                float(report["maximum_timing_resolution_seconds"])
+                for report in reports
+                if report.get("maximum_timing_resolution_seconds") is not None
+            ),
+            default=None,
+        ),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "scientific_blocker": (
+            "merged slide indices contain gaps; complete the predeclared absolute offset range"
+            if not contiguous
+            else "adequate exposure, validation-only threshold freeze and locked-test evaluation "
+            "remain required"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
     return result

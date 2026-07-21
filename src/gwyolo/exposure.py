@@ -29,12 +29,13 @@ def plan_candidate_background_exposure(
     step_seconds: float,
     target_far_per_year: float,
     zero_count_confidence: float = 0.90,
+    slide_start_index: int = 1,
 ) -> dict[str, Any]:
     """Calculate exact candidate-slide exposure before expensive model scoring."""
 
     if reference_ifo == shifted_ifo:
         raise ValueError("exposure planning requires two different detectors")
-    if slide_count <= 0 or step_seconds <= 0 or target_far_per_year <= 0:
+    if slide_count <= 0 or slide_start_index <= 0 or step_seconds <= 0 or target_far_per_year <= 0:
         raise ValueError("slide count, step and target FAR must be positive")
     if not 0 < zero_count_confidence < 1:
         raise ValueError("zero-count confidence must be between zero and one")
@@ -52,7 +53,7 @@ def plan_candidate_background_exposure(
         raise ValueError("candidate exposure manifest repeats GPS starts")
     availability = {str(row["window_id"]): _ifos(row) for row in rows}
     per_slide = []
-    for index in range(1, slide_count + 1):
+    for index in range(slide_start_index, slide_start_index + slide_count):
         offset = index * step_seconds
         offset_key = int(round(offset * 1e9))
         intervals = []
@@ -111,6 +112,8 @@ def plan_candidate_background_exposure(
         "zero_lag_live_time_seconds": zero_lag_seconds,
         "zero_lag_live_time_days": zero_lag_seconds / 86400.0,
         "slide_count": slide_count,
+        "slide_start_index": slide_start_index,
+        "slide_stop_index_exclusive": slide_start_index + slide_count,
         "step_seconds": step_seconds,
         "evaluated_offsets": len(per_slide),
         "offsets_with_nonzero_exposure": len(nonzero_slides),
@@ -170,6 +173,7 @@ def run_candidate_background_exposure_plan(
     step_seconds: float,
     target_far_per_year: float,
     zero_count_confidence: float = 0.90,
+    slide_start_index: int = 1,
 ) -> dict[str, Any]:
     with Path(background_manifest).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -183,6 +187,7 @@ def run_candidate_background_exposure_plan(
             step_seconds,
             target_far_per_year,
             zero_count_confidence,
+            slide_start_index,
         ),
         "background_manifest_path": str(background_manifest),
         "background_manifest_sha256": file_sha256(background_manifest),
