@@ -1144,6 +1144,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-incomplete-provenance", action="store_true"
     )
 
+    pe_backend = subparsers.add_parser("pe-backend-lock-audit")
+    pe_backend.add_argument("--config", required=True)
+    pe_backend.add_argument("--output", required=True)
+    pe_backend.add_argument("--allow-incomplete", action="store_true")
+
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
     ood.add_argument("--evaluation-manifest", required=True)
@@ -2592,6 +2597,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+            )
+        )
+    elif args.command == "pe-backend-lock-audit":
+        from .pe_backend import run_pe_backend_lock_audit
+
+        _print(
+            run_pe_backend_lock_audit(
+                args.config,
+                args.output,
+                args.allow_incomplete,
             )
         )
     elif args.command == "ood-abstention-evaluate":

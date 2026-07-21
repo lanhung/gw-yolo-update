@@ -494,6 +494,36 @@ deterministic paired-bootstrap intervals
 for absolute-bias changes, credible-width ratios and cleaning latency, plus paired coverage
 transitions. Development manifests may omit the gate, but no paper comparison may do so.
 
+Before either backend can enter that evaluation, `pe-backend-lock-audit` enforces a separate
+readiness boundary. `configs/pe_backend_environment_lock.yaml` pins the upstream source tag and
+commit while machine paths are supplied through environment variables. The strict command verifies
+clean Git sources, distinct Python interpreters, compatible Python and installed distribution
+versions, CUDA visibility, and the SHA-256 of both the selected checkpoint and its training/model
+metadata. It also freezes a shared BBH, H1/L1, 2,048 Hz source-input contract with byte-identical
+clean, contaminated and mask-conditioned source artifacts across backends. Backend-native
+conditioning may differ only when its derived artifact and settings are separately recorded and
+hashed. The committed checkpoint hashes intentionally remain `UNRESOLVED`; therefore the strict
+gate fails until actual domain-compatible DINGO and AMPLFI models have been selected. A readiness
+diagnostic can be written without promotion using:
+
+```bash
+python -m gwyolo.cli pe-backend-lock-audit \
+  --config configs/pe_backend_environment_lock.yaml \
+  --output artifacts/pe/backend_lock_audit.json \
+  --allow-incomplete
+```
+
+Removing `--allow-incomplete` is the publication gate and must return non-zero while any environment,
+model, metadata or hash is missing. Installing the packages alone is not evidence that an actual
+backend comparison has run.
+
+`scripts/setup_pe_backends.sh` is the reproducible environment bootstrap. It requires explicit
+source, commit, tag, interpreter and output variables; refuses a shared DINGO/AMPLFI environment;
+refuses to run beside another active package installer; and writes sorted package plus CUDA runtime
+snapshots. Hermetic virtual environments are the default. A system-site-package overlay is available
+only as an explicit engineering option and its full observed package-set hash must still be frozen
+before publication.
+
 `gravityspy-glitch-finetune` is the bounded real-glitch training boundary. It accepts only a frozen
 train/validation pair with disjoint glitch and network-GPS-block identities, hash-verifies every
 numeric sample, and samples train labels with inverse-frequency weights. A checkpoint is eligible

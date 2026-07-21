@@ -1,0 +1,46 @@
+schema_version: 1
+
+comparison_contract:
+  population: BBH
+  source_ifos: [H1, L1]
+  source_sample_rate_hz: 2048
+  source_duration_seconds: 8
+  conditions: [clean, contaminated, mask_conditioned]
+  identical_source_bytes_across_backends: true
+  backend_native_conditioning_allowed: true
+  conditioning_artifact_hash_required: true
+
+# Machine paths are supplied only through environment variables. Model and metadata
+# hashes deliberately remain unresolved until usable, domain-compatible checkpoints
+# have been selected. The strict audit must fail until those immutable values replace
+# UNRESOLVED.
+backends:
+  DINGO:
+    source_repo_url: https://github.com/dingo-gw/dingo.git
+    source_path_env: DINGO_SOURCE_DIR
+    expected_git_tag: v0.9.8
+    expected_git_commit: f07ee8803241cb2fad5a1e59ad087e99ca7e84b9f
+    python_executable_env: DINGO_PYTHON
+    python_requires: ">=3.10,<3.14"
+    distribution: dingo-gw
+    expected_distribution_version: 0.9.8
+    environment_packages_sha256: UNRESOLVED
+    model_path_env: DINGO_MODEL
+    model_sha256: UNRESOLVED
+    model_metadata_path_env: DINGO_MODEL_METADATA
+    model_metadata_sha256: UNRESOLVED
+
+  AMPLFI:
+    source_repo_url: https://github.com/ML4GW/amplfi.git
+    source_path_env: AMPLFI_SOURCE_DIR
+    expected_git_tag: v0.6.0
+    expected_git_commit: 8dec8bfa7a57c09dbe8a702c259a74c31d4f5cfc
+    python_executable_env: AMPLFI_PYTHON
+    python_requires: ">=3.10,<3.13"
+    distribution: amplfi
+    expected_distribution_version: 0.6.0
+    environment_packages_sha256: UNRESOLVED
+    model_path_env: AMPLFI_MODEL
+    model_sha256: UNRESOLVED
+    model_metadata_path_env: AMPLFI_MODEL_METADATA
+    model_metadata_sha256: UNRESOLVED
