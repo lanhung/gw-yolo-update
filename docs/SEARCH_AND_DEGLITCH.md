@@ -957,9 +957,26 @@ injections and remains ineligible for a scientific claim.
 
 `scripts/run_promoted_paired_pe_smoke.sh` is the five-seed handoff. It resolves the selected
 checkpoint back to exactly one hash-listed finetune report, chooses the matching uniform or
-family-balanced configuration, and re-hashes the selected checkpoint, configuration, overlap
-validation manifest and clean validation manifest before invoking the paired smoke. It rejects a
-non-validation summary or an ambiguous report rather than guessing a champion path.
+family-balanced configuration, and re-hashes the selected checkpoint, configuration and the
+historical overlap/clean validation manifests that actually selected that model. Those two
+model-selection inputs are deliberately distinct from the subsequent paired-PE evaluation inputs.
+
+`scripts/run_independent_pe_overlap.sh` materializes the paired-PE validation overlap from the
+frozen GPS- and purpose-disjoint injection endpoint and the source-safe Gravity Spy validation
+manifest. It replays all six endpoint-component hashes, requires zero train/validation overlap in
+injection, waveform, glitch and GPS identities, and uses every detector-compatible validation
+glitch exactly once. A Gravity Spy H1/L1/V1 context is not paired with an H1/L1-only injection by
+zero filling; incompatible detector subsets are excluded explicitly and counted. The default gate
+requires at least 100 valid overlaps. Its immutable receipt binds the endpoint, injection arrivals,
+glitch corpus audit, materialization configuration, overlap report and joint train/validation audit.
+
+The promoted smoke requires that independent receipt and the frozen endpoint in addition to the
+model-selection inputs. It verifies that the evaluation overlap and injection manifests are the
+exact receipt-bound files and that the joint audit contains no leakage before invoking the generic
+paired-input pipeline. The resulting smoke summary records all five selection/evaluation source
+receipts and hashes. It rejects a non-validation summary, an ambiguous checkpoint report, a reused
+model-selection injection manifest or an unbound independent overlap rather than guessing a
+champion path.
 
 Before an event is admitted, `scripts/run_pe_model_load_smoke.py` verifies checkpoint/config hashes
 inside the pinned interpreter and loads both DINGO GNPE networks or the AMPLFI Lightning model,

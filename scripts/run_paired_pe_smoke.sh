@@ -149,6 +149,7 @@ if [[ ! -s "$amplfi/native_conditioning_report.json" ]]; then
 fi
 
 "$GWYOLO_PYTHON" - <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -165,9 +166,35 @@ reports = {
 missing = [str(path) for path in reports.values() if not path.is_file()]
 if missing:
     raise FileNotFoundError(f"paired PE smoke reports are missing: {missing}")
+receipt_variables = {
+    "model_selection_overlap_manifest": "GWYOLO_MODEL_SELECTION_OVERLAP_MANIFEST",
+    "model_selection_validation_manifest": "GWYOLO_MODEL_SELECTION_VALIDATION_MANIFEST",
+    "independent_validation_endpoint": "GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
+    "independent_pe_overlap": "GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT",
+    "independent_overlap_audit": "GWYOLO_INDEPENDENT_OVERLAP_AUDIT",
+}
+receipt_paths = {
+    label: os.environ.get(variable)
+    for label, variable in receipt_variables.items()
+}
+if any(receipt_paths.values()) and not all(receipt_paths.values()):
+    raise RuntimeError("promoted paired PE receipt environment is only partially populated")
+source_receipts = {}
+for label, value in receipt_paths.items():
+    if value is None:
+        continue
+    path = Path(value).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"paired PE source receipt is absent: {path}")
+    source_receipts[label] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 summary = {
     "status": "paired_pe_native_inputs_smoke_complete",
     "scientific_claim_allowed": False,
+    "test_rows_read": 0 if source_receipts else None,
+    "source_receipts": source_receipts,
     "reports": {
         name: json.loads(path.read_text(encoding="utf-8"))
         for name, path in reports.items()
