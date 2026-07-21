@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, file_sha256
+from .io import atomic_write_json, atomic_write_text, file_sha256
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -987,6 +987,128 @@ def run_pe_robustness_evaluation(
     report["manifest_sha256"] = file_sha256(manifest_path)
     report.update(execution_provenance())
     atomic_write_json(output_path, report)
+    return report
+
+
+def run_joint_pe_robustness_evaluation(
+    dingo_batch_report_path: str | Path,
+    amplfi_batch_report_path: str | Path,
+    manifest_output_path: str | Path,
+    output_path: str | Path,
+    credible_level: float = 0.9,
+    bootstrap_replicates: int = 2000,
+    bootstrap_seed: int = 20260720,
+) -> dict[str, Any]:
+    """Join hash-bound DINGO/AMPLFI batches and run the strict paired evaluation."""
+
+    specifications = {
+        "DINGO": (
+            Path(dingo_batch_report_path).resolve(),
+            "real_dingo_common_batch_complete",
+        ),
+        "AMPLFI": (
+            Path(amplfi_batch_report_path).resolve(),
+            "real_amplfi_common_batch_complete",
+        ),
+    }
+    if specifications["DINGO"][0] == specifications["AMPLFI"][0]:
+        raise ValueError("Joint PE evaluation requires distinct backend batch reports")
+    backend_rows: dict[str, list[dict[str, Any]]] = {}
+    source_reports: dict[str, dict[str, Any]] = {}
+    backend_keys: dict[str, set[tuple[str, str]]] = {}
+    for backend, (report_path, expected_status) in specifications.items():
+        if not report_path.is_file():
+            raise FileNotFoundError(f"{backend} PE batch report is absent: {report_path}")
+        batch_report = json.loads(report_path.read_text(encoding="utf-8"))
+        if batch_report.get("status") != expected_status:
+            raise ValueError(f"{backend} PE batch report has not completed successfully")
+        manifest = Path(str(batch_report.get("manifest_path", ""))).resolve()
+        if (
+            not manifest.is_file()
+            or file_sha256(manifest) != batch_report.get("manifest_sha256")
+        ):
+            raise ValueError(f"{backend} PE batch manifest hash mismatch")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(batch_report.get("rows", -1)) or not rows:
+            raise ValueError(f"{backend} PE batch row count differs from its report")
+        if any(str(row.get("backend", "")).upper() != backend for row in rows):
+            raise ValueError(f"{backend} PE batch manifest contains another backend")
+        keys = {
+            (str(row.get("injection_id", "")), str(row.get("condition", "")))
+            for row in rows
+        }
+        if any(not injection_id for injection_id, _ in keys):
+            raise ValueError(f"{backend} PE batch contains an empty injection ID")
+        if len(keys) != len(rows):
+            raise ValueError(f"{backend} PE batch repeats an injection condition")
+        injection_ids = {injection_id for injection_id, _ in keys}
+        expected_keys = {
+            (injection_id, condition)
+            for injection_id in injection_ids
+            for condition in ROBUSTNESS_CONDITIONS
+        }
+        if keys != expected_keys:
+            raise ValueError(f"{backend} PE batch lacks complete robustness triplets")
+        if int(batch_report.get("paired_injections", -1)) != len(injection_ids):
+            raise ValueError(f"{backend} PE paired-injection count differs from its report")
+        backend_rows[backend] = rows
+        backend_keys[backend] = keys
+        source_reports[backend] = {
+            "path": str(report_path),
+            "sha256": file_sha256(report_path),
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+        }
+    if backend_keys["DINGO"] != backend_keys["AMPLFI"]:
+        raise ValueError("DINGO and AMPLFI PE batches use different injection conditions")
+
+    condition_order = {condition: index for index, condition in enumerate(ROBUSTNESS_CONDITIONS)}
+    rows = sorted(
+        backend_rows["DINGO"] + backend_rows["AMPLFI"],
+        key=lambda row: (
+            str(row["injection_id"]),
+            condition_order[str(row["condition"])],
+            str(row["backend"]).upper(),
+        ),
+    )
+    manifest_output = Path(manifest_output_path).resolve()
+    report_output = Path(output_path).resolve()
+    protected_inputs = {
+        identity[field]
+        for identity in source_reports.values()
+        for field in ("path", "manifest_path")
+    }
+    if str(manifest_output) in protected_inputs or str(report_output) in protected_inputs:
+        raise ValueError("Joint PE outputs may not overwrite backend inputs")
+    if manifest_output == report_output:
+        raise ValueError("Joint PE manifest and report outputs must be distinct")
+    report = evaluate_pe_robustness_rows(
+        rows,
+        credible_level,
+        bootstrap_replicates,
+        bootstrap_seed,
+        True,
+    )
+    if not report["dingo_amplfi_joint_gate"] or not report[
+        "cross_backend_matched_input_gate"
+    ]:
+        raise AssertionError("Strict joint PE evaluation returned without its mandatory gates")
+    atomic_write_text(
+        manifest_output,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    report.update(
+        {
+            "status": "paired_dingo_amplfi_pe_robustness_evaluation_complete",
+            "rows": len(rows),
+            "manifest_path": str(manifest_output),
+            "manifest_sha256": file_sha256(manifest_output),
+            "source_batch_reports": source_reports,
+            **execution_provenance(),
+        }
+    )
+    atomic_write_json(report_output, report)
     return report
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import runpy
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from gwyolo.pe import (
     evaluate_pe_robustness_rows,
     posterior_sky_area_equal_solid_angle,
     posterior_truth_metrics,
+    run_joint_pe_robustness_evaluation,
     sky_area_estimator_identity,
     validate_paired_pe_latency,
 )
@@ -324,6 +326,45 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
     assert report["dingo_amplfi_joint_gate"] is True
     assert report["cross_backend_matched_input_gate"] is True
     assert report["common_injection_ids"] == ["i-1"]
+
+    batch_reports = {}
+    for backend, status in (
+        ("DINGO", "real_dingo_common_batch_complete"),
+        ("AMPLFI", "real_amplfi_common_batch_complete"),
+    ):
+        manifest = tmp_path / f"{backend.lower()}-batch.jsonl"
+        selected = [row for row in rows if row["backend"] == backend]
+        manifest.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+            encoding="utf-8",
+        )
+        batch_report = tmp_path / f"{backend.lower()}-batch-report.json"
+        batch_report.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "rows": len(selected),
+                    "paired_injections": 1,
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                }
+            ),
+            encoding="utf-8",
+        )
+        batch_reports[backend] = batch_report
+    joint = run_joint_pe_robustness_evaluation(
+        batch_reports["DINGO"],
+        batch_reports["AMPLFI"],
+        tmp_path / "joint.jsonl",
+        tmp_path / "joint-report.json",
+        credible_level=0.8,
+        bootstrap_replicates=20,
+    )
+    assert joint["status"] == "paired_dingo_amplfi_pe_robustness_evaluation_complete"
+    assert joint["rows"] == 6
+    assert joint["common_injection_count"] == 1
+    assert file_sha256(joint["manifest_path"]) == joint["manifest_sha256"]
+    assert set(joint["source_batch_reports"]) == {"DINGO", "AMPLFI"}
 
     mismatched = [dict(row) for row in rows]
     target = next(

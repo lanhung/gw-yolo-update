@@ -1317,6 +1317,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-incomplete-provenance", action="store_true"
     )
 
+    pe_joint = subparsers.add_parser("pe-robustness-joint-evaluate")
+    pe_joint.add_argument("--dingo-batch-report", required=True)
+    pe_joint.add_argument("--amplfi-batch-report", required=True)
+    pe_joint.add_argument("--manifest-output", required=True)
+    pe_joint.add_argument("--output", required=True)
+    pe_joint.add_argument("--credible-level", type=float, default=0.9)
+    pe_joint.add_argument("--bootstrap-replicates", type=int, default=2000)
+    pe_joint.add_argument("--bootstrap-seed", type=int, default=20260720)
+
     pe_inputs = subparsers.add_parser("pe-input-materialize")
     pe_inputs.add_argument("--clean-manifest", required=True)
     pe_inputs.add_argument("--contaminated-manifest", required=True)
@@ -3057,6 +3066,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+            )
+        )
+    elif args.command == "pe-robustness-joint-evaluate":
+        from .pe import run_joint_pe_robustness_evaluation
+
+        _print(
+            run_joint_pe_robustness_evaluation(
+                args.dingo_batch_report,
+                args.amplfi_batch_report,
+                args.manifest_output,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
             )
         )
     elif args.command == "pe-input-materialize":
