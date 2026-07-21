@@ -1212,6 +1212,8 @@ def build_parser() -> argparse.ArgumentParser:
     pe_model.add_argument("--analysis-prior", required=True)
     pe_model.add_argument("--selection-report", required=True)
     pe_model.add_argument("--native-conditioning-config", required=True)
+    pe_model.add_argument("--native-prior")
+    pe_model.add_argument("--prior-projection-report")
     pe_model.add_argument("--output", required=True)
     pe_model.add_argument("--population", default="BBH", choices=["BBH"])
     pe_model.add_argument("--source-ifos", nargs="+", default=["H1", "L1"])
@@ -2789,6 +2791,8 @@ def main(argv: list[str] | None = None) -> int:
                 analysis_prior_path=args.analysis_prior,
                 selection_report_path=args.selection_report,
                 native_conditioning_config_path=args.native_conditioning_config,
+                native_prior_path=args.native_prior,
+                prior_projection_report_path=args.prior_projection_report,
                 output_path=args.output,
                 population=args.population,
                 source_ifos=args.source_ifos,

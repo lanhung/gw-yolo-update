@@ -21,6 +21,10 @@ MODEL_METADATA_ARTIFACTS = (
     "selection_report",
     "native_conditioning_config",
 )
+AMPLFI_MODEL_METADATA_ARTIFACTS = (
+    "native_prior",
+    "prior_projection_report",
+)
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
@@ -218,6 +222,41 @@ def _verified_metadata_artifact(
     return result
 
 
+def _audit_amplfi_prior_projection_metadata(
+    artifacts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    failures: list[str] = []
+    projection_artifact = artifacts.get("prior_projection_report", {})
+    projection_path = Path(
+        str(projection_artifact.get("path") or "")
+    ).expanduser().resolve()
+    if not projection_path.is_file():
+        return {}, failures
+    try:
+        projection = load_yaml(projection_path)
+    except (OSError, ValueError) as error:
+        return {}, [f"cannot load AMPLFI prior projection report: {error}"]
+    if projection.get("status") != "passed" or projection.get("publication_ready") is not True:
+        failures.append("AMPLFI prior projection report did not pass")
+    if projection.get("failures") not in (None, []):
+        failures.append("AMPLFI prior projection report contains failures")
+    expected_hashes = {
+        "canonical_prior_sha256": artifacts.get("analysis_prior", {}).get(
+            "observed_sha256"
+        ),
+        "amplfi_prior_sha256": artifacts.get("native_prior", {}).get(
+            "observed_sha256"
+        ),
+        "amplfi_training_config_sha256": artifacts.get("training_config", {}).get(
+            "observed_sha256"
+        ),
+    }
+    for field, expected in expected_hashes.items():
+        if not _valid_sha256(expected) or projection.get(field) != expected:
+            failures.append(f"AMPLFI prior projection {field} does not match model metadata")
+    return projection, failures
+
+
 def _audit_model_metadata_semantics(
     name: str,
     metadata_path: str | None,
@@ -286,10 +325,19 @@ def _audit_model_metadata_semantics(
     if not isinstance(artifacts, dict):
         artifacts = {}
         failures.append("model metadata artifacts must be a mapping")
+    required_artifacts = MODEL_METADATA_ARTIFACTS
+    if name == "AMPLFI":
+        required_artifacts += AMPLFI_MODEL_METADATA_ARTIFACTS
     verified_artifacts = {
         label: _verified_metadata_artifact(name, label, artifacts.get(label), failures)
-        for label in MODEL_METADATA_ARTIFACTS
+        for label in required_artifacts
     }
+    prior_projection: dict[str, Any] = {}
+    if name == "AMPLFI":
+        prior_projection, projection_failures = _audit_amplfi_prior_projection_metadata(
+            verified_artifacts
+        )
+        failures.extend(projection_failures)
     selection = verified_artifacts.get("selection_report", {})
     selection_path = selection.get("path")
     if selection_path and Path(selection_path).is_file():
@@ -306,6 +354,8 @@ def _audit_model_metadata_semantics(
                 failures.append("selection metric differs between report and model metadata")
     normalized = dict(metadata)
     normalized["verified_artifacts"] = verified_artifacts
+    if name == "AMPLFI":
+        normalized["verified_prior_projection"] = prior_projection
     return normalized, [f"{name}: {failure}" for failure in failures]
 
 
@@ -466,6 +516,8 @@ def freeze_pe_backend_model_metadata(
     model_training_backend_version: str,
     native_inference_parameters: list[str],
     reported_parameter_mapping: list[str],
+    native_prior_path: str | Path | None = None,
+    prior_projection_report_path: str | Path | None = None,
 ) -> dict[str, Any]:
     normalized_backend = backend.upper()
     if normalized_backend not in REQUIRED_BACKENDS:
@@ -505,6 +557,22 @@ def freeze_pe_backend_model_metadata(
         "selection_report": Path(selection_report_path).resolve(),
         "native_conditioning_config": Path(native_conditioning_config_path).resolve(),
     }
+    amplfi_specific = (native_prior_path, prior_projection_report_path)
+    if normalized_backend == "AMPLFI":
+        if any(value is None for value in amplfi_specific):
+            raise ValueError(
+                "AMPLFI model metadata requires native prior and prior projection report"
+            )
+        paths.update(
+            {
+                "native_prior": Path(str(native_prior_path)).resolve(),
+                "prior_projection_report": Path(
+                    str(prior_projection_report_path)
+                ).resolve(),
+            }
+        )
+    elif any(value is not None for value in amplfi_specific):
+        raise ValueError("native prior projection artifacts are AMPLFI-specific")
     model = Path(model_path).resolve()
     for label, path in {"model": model, **paths}.items():
         if not path.is_file():
@@ -518,6 +586,20 @@ def freeze_pe_backend_model_metadata(
     selection_metric = selection_report.get("selection_metric")
     if not isinstance(selection_metric, str) or not selection_metric:
         raise ValueError("selection report requires selection_metric")
+    if normalized_backend == "AMPLFI":
+        verified_artifacts = {
+            label: {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "observed_sha256": file_sha256(path),
+            }
+            for label, path in paths.items()
+        }
+        _, projection_failures = _audit_amplfi_prior_projection_metadata(
+            verified_artifacts
+        )
+        if projection_failures:
+            raise ValueError("; ".join(projection_failures))
     metadata = {
         "schema_version": 1,
         "backend": normalized_backend,

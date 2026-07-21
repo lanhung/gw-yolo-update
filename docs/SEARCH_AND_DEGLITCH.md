@@ -528,7 +528,10 @@ Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-fr
 will only freeze a checkpoint when a separate selection report says `selection_split: validation`,
 names the selection metric and contains the checkpoint's exact SHA-256. It also hashes the training
 configuration, training-data manifest, common analysis prior, selection report and backend-native
-conditioning configuration. The sidecar records the native and common analysis waveform
+conditioning configuration. For AMPLFI it additionally requires the exact native prior and the
+machine-readable `amplfi-common-prior-audit` report. The report must have passed and its canonical
+prior, native prior and training-configuration hashes must match the other frozen artifacts; copying
+a passed report from a different training run fails closed. The sidecar records the native and common analysis waveform
 approximants, common source contract and inference parameters. The environment audit reloads and
 verifies every referenced artifact, then requires DINGO and AMPLFI to use the same analysis prior,
 analysis waveform and explicitly mapped common parameter set. Native output spaces may differ, but
@@ -554,6 +557,37 @@ python -m gwyolo.cli pe-backend-model-freeze \
   --reported-parameter-mapping chirp_mass=chirp_mass mass_ratio=mass_ratio \
     luminosity_distance=luminosity_distance theta_jn=theta_jn ra=ra dec=dec psi=psi \
   --output artifacts/pe/dingo/model_metadata.json
+```
+
+The AMPLFI invocation uses the same common fields and must also bind its native-prior projection:
+
+```bash
+python -m gwyolo.cli amplfi-common-prior-audit \
+  --canonical-prior configs/pe_common_bbh_analysis_prior.yaml \
+  --amplfi-prior configs/amplfi_common_bbh_training_prior.yaml \
+  --training-config configs/amplfi_common_bbh_publication.yaml \
+  --output artifacts/pe/amplfi/prior_projection.json
+
+python -m gwyolo.cli pe-backend-model-freeze \
+  --backend AMPLFI \
+  --model artifacts/pe/amplfi/model.ckpt \
+  --training-config configs/amplfi_common_bbh_publication.yaml \
+  --training-data-manifest artifacts/pe/amplfi/training_manifest.jsonl \
+  --analysis-prior configs/pe_common_bbh_analysis_prior.yaml \
+  --native-prior configs/amplfi_common_bbh_training_prior.yaml \
+  --prior-projection-report artifacts/pe/amplfi/prior_projection.json \
+  --selection-report artifacts/pe/amplfi/selection.json \
+  --native-conditioning-config configs/amplfi_common_native_conditioning.yaml \
+  --source-sample-rate-hz 4096 \
+  --source-duration-seconds 16 \
+  --source-post-trigger-seconds 2 \
+  --analysis-waveform-approximant IMRPhenomXPHM \
+  --native-model-waveform-approximant ml4gw.waveforms.IMRPhenomPv2 \
+  --model-training-backend-version 0.6.0 \
+  --native-inference-parameters chirp_mass mass_ratio distance phic inclination dec psi phi \
+  --reported-parameter-mapping chirp_mass=chirp_mass mass_ratio=mass_ratio \
+    luminosity_distance=distance theta_jn=inclination ra=phi dec=dec psi=psi \
+  --output artifacts/pe/amplfi/model_metadata.json
 ```
 
 The shared source artifact is deliberately a superset of backend-native conditioning. The selected

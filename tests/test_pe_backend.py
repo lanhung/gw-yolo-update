@@ -89,6 +89,31 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 )
             elif artifact != analysis_prior:
                 artifact.write_text(f"backend: {backend}\nartifact: {label}\n", encoding="utf-8")
+        if backend == "AMPLFI":
+            native_prior = tmp_path / "amplfi-native-prior.yaml"
+            native_prior.write_text("prior: native-amplfi\n", encoding="utf-8")
+            projection = tmp_path / "amplfi-prior-projection.json"
+            projection.write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "publication_ready": True,
+                        "canonical_prior_sha256": file_sha256(analysis_prior),
+                        "amplfi_prior_sha256": file_sha256(native_prior),
+                        "amplfi_training_config_sha256": file_sha256(
+                            artifacts["training_config"]
+                        ),
+                        "failures": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            artifacts.update(
+                {
+                    "native_prior": native_prior,
+                    "prior_projection_report": projection,
+                }
+            )
         metadata.write_text(
             yaml.safe_dump(
                 {
@@ -282,6 +307,118 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
             native_inference_parameters=["chirp_mass", "mass_ratio"],
             reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
         )
+
+
+def test_amplfi_model_freeze_binds_native_prior_projection(tmp_path: Path) -> None:
+    model = tmp_path / "amplfi.ckpt"
+    model.write_bytes(b"amplfi-weights")
+    training = tmp_path / "training.yaml"
+    training.write_text("backend: AMPLFI\n", encoding="utf-8")
+    manifest = tmp_path / "training.jsonl"
+    manifest.write_text('{"split":"train","gps_block":"gps:1:64"}\n', encoding="utf-8")
+    canonical_prior = tmp_path / "canonical-prior.yaml"
+    canonical_prior.write_text("prior: common\n", encoding="utf-8")
+    native_prior = tmp_path / "native-prior.yaml"
+    native_prior.write_text("prior: amplfi\n", encoding="utf-8")
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "selection_split": "validation",
+                "selection_metric": "validation_loss",
+                "selected_checkpoint_sha256": file_sha256(model),
+            }
+        ),
+        encoding="utf-8",
+    )
+    conditioning = tmp_path / "conditioning.yaml"
+    conditioning.write_text("backend: AMPLFI\n", encoding="utf-8")
+    projection = tmp_path / "projection.json"
+    projection.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "publication_ready": True,
+                "canonical_prior_sha256": file_sha256(canonical_prior),
+                "amplfi_prior_sha256": file_sha256(native_prior),
+                "amplfi_training_config_sha256": file_sha256(training),
+                "failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    kwargs = {
+        "backend": "AMPLFI",
+        "model_path": model,
+        "training_config_path": training,
+        "training_data_manifest_path": manifest,
+        "analysis_prior_path": canonical_prior,
+        "selection_report_path": selection,
+        "native_conditioning_config_path": conditioning,
+        "output_path": tmp_path / "metadata.json",
+        "population": "BBH",
+        "source_ifos": ["H1", "L1"],
+        "source_sample_rate_hz": 4096,
+        "source_duration_seconds": 16,
+        "source_post_trigger_seconds": 2,
+        "analysis_waveform_approximant": "IMRPhenomXPHM",
+        "native_model_waveform_approximant": "IMRPhenomXPHM",
+        "model_training_backend_version": "0.6.0",
+        "native_inference_parameters": ["chirp_mass", "distance"],
+        "reported_parameter_mapping": [
+            "chirp_mass=chirp_mass",
+            "luminosity_distance=distance",
+        ],
+    }
+    with pytest.raises(ValueError, match="requires native prior"):
+        freeze_pe_backend_model_metadata(**kwargs)
+
+    metadata = freeze_pe_backend_model_metadata(
+        **kwargs,
+        native_prior_path=native_prior,
+        prior_projection_report_path=projection,
+    )
+    assert metadata["artifacts"]["native_prior"]["sha256"] == file_sha256(
+        native_prior
+    )
+    assert metadata["artifacts"]["prior_projection_report"]["sha256"] == file_sha256(
+        projection
+    )
+
+    projection_report = json.loads(projection.read_text(encoding="utf-8"))
+    projection_report["canonical_prior_sha256"] = "0" * 64
+    projection.write_text(json.dumps(projection_report), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical_prior_sha256"):
+        freeze_pe_backend_model_metadata(
+            **kwargs,
+            native_prior_path=native_prior,
+            prior_projection_report_path=projection,
+        )
+
+
+def test_amplfi_backend_lock_rejects_prior_projection_hash_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _config(tmp_path, monkeypatch)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    metadata_path = Path(os.environ["TEST_AMPLFI_METADATA"])
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    projection_path = Path(metadata["artifacts"]["prior_projection_report"]["path"])
+    projection = json.loads(projection_path.read_text(encoding="utf-8"))
+    projection["amplfi_prior_sha256"] = "0" * 64
+    projection_path.write_text(json.dumps(projection), encoding="utf-8")
+    metadata["artifacts"]["prior_projection_report"]["sha256"] = file_sha256(
+        projection_path
+    )
+    metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+    config["backends"]["AMPLFI"]["model_metadata_sha256"] = file_sha256(metadata_path)
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    report = audit_pe_backend_lock(path)
+    assert report["publication_ready"] is False
+    assert any(
+        "amplfi_prior_sha256 does not match" in failure
+        for failure in report["failures"]
+    )
 
 
 def test_pe_backend_lock_rejects_different_reported_parameter_spaces(

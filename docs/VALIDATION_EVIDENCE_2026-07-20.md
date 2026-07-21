@@ -757,3 +757,10 @@ the checkpoint, training config, native prior, conditioning artifact and runner 
 the event/condition level. CPU tests exercise a fake subprocess only to validate orchestration and
 failure semantics; no AMPLFI scientific result exists until the queued common-domain training and
 real checkpoint-load smoke complete.
+
+The standardized checkpoint sidecar now closes the remaining AMPLFI prior-provenance gap. AMPLFI
+metadata cannot be frozen without both the native training-prior file and a passed semantic
+prior-projection report. The environment audit reloads that report and requires its canonical-prior,
+native-prior and training-configuration hashes to match the independently verified model artifacts.
+DINGO remains on the shared base contract because its native prior is embedded in the official model
+settings. This is an evidence-integrity gate only; it creates no posterior or performance claim.
