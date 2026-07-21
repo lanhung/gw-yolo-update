@@ -757,3 +757,113 @@ def run_candidate_block_permutation_capacity_forecast(
             f"candidate block capacity forecast failed; inspect {output_path}"
         )
     return report
+
+
+def freeze_candidate_block_capacity_extension_decision(
+    base_forecast_path: str | Path,
+    extended_plan_path: str | Path,
+    extended_forecast_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze why a score-blind parent plan was extended before candidate scoring."""
+
+    target = Path(output_path).resolve()
+    if target.exists():
+        raise FileExistsError("candidate background capacity decisions are immutable")
+    inputs = {}
+    for name, path_value in (
+        ("base_forecast", base_forecast_path),
+        ("extended_plan", extended_plan_path),
+        ("extended_forecast", extended_forecast_path),
+    ):
+        path = Path(path_value).resolve()
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must contain a JSON object")
+        inputs[name] = (path, value)
+    base_path, base = inputs["base_forecast"]
+    plan_path, plan = inputs["extended_plan"]
+    extended_path, extended = inputs["extended_forecast"]
+    if (
+        base.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or base.get("candidate_scores_inspected") is not False
+        or base.get("planned_pairs_satisfy_safety_forecast") is not False
+    ):
+        raise ValueError("base capacity forecast is not a score-blind failed safety gate")
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or plan.get("selection_rule") != "frozen_prefix_stratified_complement_v1"
+        or plan.get("candidate_scores_inspected") is not False
+    ):
+        raise ValueError("extended plan is not a score-blind frozen-prefix extension")
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    base_count = int(plan.get("base_selected_pairs", 0))
+    if (
+        not pairs
+        or len(pair_ids) != len(set(pair_ids))
+        or any(not pair_id for pair_id in pair_ids)
+        or int(plan.get("selected_pairs", -1)) != len(pairs)
+        or int(plan.get("extension_pairs", -1)) != len(pairs) - base_count
+        or canonical_hash(pair_ids[:base_count], 64)
+        != str(plan.get("base_pair_ids_hash", ""))
+        or str(plan.get("base_parent_plan_sha256", ""))
+        != str(base.get("planned_parent_plan_sha256", ""))
+        or base_count != int(base.get("planned_source_pairs", -1))
+    ):
+        raise ValueError("extended plan does not preserve the failed forecast parent exactly")
+    if (
+        extended.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or extended.get("candidate_scores_inspected") is not False
+        or extended.get("planned_pairs_satisfy_safety_forecast") is not True
+        or str(extended.get("planned_parent_plan_sha256", ""))
+        != file_sha256(plan_path)
+        or int(extended.get("planned_source_pairs", -1)) != len(pairs)
+    ):
+        raise ValueError("extended capacity forecast does not pass for the exact extended plan")
+    common_fields = (
+        "pilot_schedule_sha256",
+        "pilot_background_report_sha256",
+        "safety_factor",
+        "target_far_per_year",
+        "zero_count_confidence",
+        "required_equivalent_live_time_seconds",
+    )
+    if any(base.get(field) != extended.get(field) for field in common_fields):
+        raise ValueError("base and extended capacity forecasts changed the frozen target")
+    recommended_pairs = int(base.get("recommended_minimum_source_pairs", 0))
+    if recommended_pairs <= base_count or recommended_pairs != len(pairs):
+        raise ValueError("extended plan is not the failed forecast's exact minimum recommendation")
+    result = {
+        "status": "frozen_score_blind_background_capacity_extension_decision",
+        "scientific_claim_allowed": False,
+        "test_data_opened": False,
+        "candidate_scores_inspected": False,
+        "selection_data": CANDIDATE_BLOCK_SELECTION_DATA,
+        "decision": "freeze_extended_parent_for_validation_background",
+        "base_forecast_path": str(base_path),
+        "base_forecast_sha256": file_sha256(base_path),
+        "base_parent_plan_sha256": str(base["planned_parent_plan_sha256"]),
+        "base_source_pairs": base_count,
+        "extended_plan_path": str(plan_path),
+        "extended_plan_sha256": file_sha256(plan_path),
+        "extended_source_pairs": len(pairs),
+        "extension_source_pairs": len(pairs) - base_count,
+        "extended_forecast_path": str(extended_path),
+        "extended_forecast_sha256": file_sha256(extended_path),
+        "recommended_minimum_source_pairs": recommended_pairs,
+        "safety_factor": float(extended["safety_factor"]),
+        "target_far_per_year": float(extended["target_far_per_year"]),
+        "zero_count_confidence": float(extended["zero_count_confidence"]),
+        "projected_to_safety_required_ratio": float(
+            extended["projected_to_safety_required_ratio"]
+        ),
+        "scientific_blocker": (
+            "exact post-DQ schedule, frozen validation threshold and locked test remain required"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result

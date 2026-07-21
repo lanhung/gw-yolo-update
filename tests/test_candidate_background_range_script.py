@@ -58,9 +58,21 @@ def test_candidate_background_extension_requires_separate_base_root(
     assert aliased.returncode == 2
     assert "separate from the immutable base output" in aliased.stderr
 
+    environment["BASE_OUTPUT_ROOT"] = str(tmp_path / "base-output")
+    missing_decision = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing_decision.returncode == 2
+    assert "requires CAPACITY_EXTENSION_DECISION" in missing_decision.stderr
+
 
 def test_candidate_background_extension_binds_authoritative_parent() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert '--parent-plan "$PARENT_PLAN"' in source
+    assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source

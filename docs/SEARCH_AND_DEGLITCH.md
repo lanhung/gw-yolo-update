@@ -245,6 +245,7 @@ python -m gwyolo.cli gwosc-plan-extend \
   --output gwosc-o4a-plan880.json
 export PARENT_PLAN=gwosc-o4a-plan880.json
 export BASE_OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-full-800
+export CAPACITY_EXTENSION_DECISION=/artifacts/o4a-capacity-extension-decision.json
 export OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-extension-880
 export SHARD_START=200 SHARD_STOP_EXCLUSIVE=220 PAIRS_PER_SHARD=4
 bash scripts/run_candidate_background_range.sh
@@ -254,6 +255,12 @@ The extension merge re-hashes the root plan, verifies its exact prefix inside th
 checks every shard's pair-ID hash against the authoritative 880-pair order and rejects parent hashes
 outside that two-level lineage. The scoring commit and all model/split/timing fields must remain
 identical across base and reserve shards.
+
+`candidate-block-permutation-capacity-extension-freeze` closes the planning loop before execution.
+It requires a failed base safety forecast, the exact recommended minimum prefix extension and a
+passing forecast for that byte-identical extended plan. Both forecasts must retain the same pilot,
+FAR, confidence and safety factor. Its immutable decision report is the machine-readable authority
+for launching the reserve range; it still cannot claim achieved exposure.
 
 ```bash
 export TASK_PYTHON=/path/to/python

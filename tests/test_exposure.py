@@ -10,6 +10,7 @@ from gwyolo.background import SECONDS_PER_YEAR
 from gwyolo.exposure import (
     candidate_slide_schedule_identity,
     forecast_candidate_block_permutation_capacity,
+    freeze_candidate_block_capacity_extension_decision,
     freeze_candidate_time_slide_schedule,
     freeze_candidate_time_slide_range_schedule,
     freeze_candidate_block_permutation_schedule,
@@ -181,6 +182,125 @@ def test_block_capacity_forecast_matches_hand_calculated_quadratic_gate(
     with pytest.raises(ValueError, match="pair IDs must be nonempty and unique"):
         forecast_candidate_block_permutation_capacity(
             schedule_path, background, duplicate_plan, safety_factor=2
+        )
+
+
+def test_block_capacity_extension_decision_binds_failed_and_passing_forecasts(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "background.jsonl"
+    manifest.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "window_id": f"w-{block}-{slot}",
+                    "split": "val",
+                    "gps_start": 1000 + block * 256 + slot * 8,
+                    "gps_end": 1008 + block * 256 + slot * 8,
+                    "gps_block": f"gps:{1000 + block * 256}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+            + "\n"
+            for block in range(3)
+            for slot in range(2)
+        ),
+        encoding="utf-8",
+    )
+    schedule = tmp_path / "schedule.json"
+    freeze_candidate_block_permutation_schedule(
+        manifest,
+        schedule,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    background = tmp_path / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "scientific_claim_allowed": False,
+                "source_pairs": 3,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_plan = tmp_path / "base-plan.json"
+    base_pairs = [{"pair_id": f"p-{index}"} for index in range(3)]
+    base_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "selected_pairs": 3,
+                "aligned_pairs_available": 10,
+                "pairs": base_pairs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_forecast = tmp_path / "base-forecast.json"
+    run_candidate_block_permutation_capacity_forecast(
+        schedule,
+        background,
+        base_plan,
+        base_forecast,
+        safety_factor=2,
+        allow_insufficient=True,
+    )
+    extended_plan = tmp_path / "extended-plan.json"
+    extended_pairs = [*base_pairs, {"pair_id": "p-3"}]
+    extended_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "selected_pairs": 4,
+                "aligned_pairs_available": 10,
+                "pairs": extended_pairs,
+                "selection_rule": "frozen_prefix_stratified_complement_v1",
+                "candidate_scores_inspected": False,
+                "base_parent_plan_sha256": file_sha256(base_plan),
+                "base_selected_pairs": 3,
+                "base_pair_ids_hash": canonical_hash(["p-0", "p-1", "p-2"], 64),
+                "extension_pairs": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    extended_forecast = tmp_path / "extended-forecast.json"
+    run_candidate_block_permutation_capacity_forecast(
+        schedule,
+        background,
+        extended_plan,
+        extended_forecast,
+        safety_factor=2,
+    )
+    decision_path = tmp_path / "decision.json"
+    decision = freeze_candidate_block_capacity_extension_decision(
+        base_forecast, extended_plan, extended_forecast, decision_path
+    )
+    assert decision["base_source_pairs"] == 3
+    assert decision["extended_source_pairs"] == 4
+    assert decision["extension_source_pairs"] == 1
+    assert decision["candidate_scores_inspected"] is False
+    assert decision["test_data_opened"] is False
+
+    tampered = json.loads(extended_forecast.read_text())
+    tampered["safety_factor"] = 3
+    tampered_path = tmp_path / "tampered-forecast.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="changed the frozen target"):
+        freeze_candidate_block_capacity_extension_decision(
+            base_forecast,
+            extended_plan,
+            tampered_path,
+            tmp_path / "tampered-decision.json",
         )
 
 

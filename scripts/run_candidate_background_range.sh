@@ -27,6 +27,7 @@ done
 
 SHARD_START=${SHARD_START:-0}
 BASE_OUTPUT_ROOT=${BASE_OUTPUT_ROOT:-}
+CAPACITY_EXTENSION_DECISION=${CAPACITY_EXTENSION_DECISION:-}
 PAIRS_PER_SHARD=${PAIRS_PER_SHARD:-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.2}
 TEST_FRACTION=${TEST_FRACTION:-0}
@@ -59,6 +60,10 @@ if (( SHARD_START > 0 )) && [[ -z "$BASE_OUTPUT_ROOT" ]]; then
 fi
 if (( SHARD_START > 0 )) && [[ "$BASE_OUTPUT_ROOT" == "$OUTPUT_ROOT" ]]; then
   echo "extension output must be separate from the immutable base output" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ -z "$CAPACITY_EXTENSION_DECISION" ]]; then
+  echo "a nonzero extension range requires CAPACITY_EXTENSION_DECISION" >&2
   exit 2
 fi
 if [[ "$TEST_FRACTION" != "0" && "$TEST_FRACTION" != "0.0" ]]; then
@@ -114,6 +119,39 @@ for input in \
     exit 2
   fi
 done
+if (( SHARD_START > 0 )); then
+  if [[ ! -f "$CAPACITY_EXTENSION_DECISION" ]]; then
+    echo "capacity extension decision is absent: $CAPACITY_EXTENSION_DECISION" >&2
+    exit 2
+  fi
+  "$TASK_PYTHON" - \
+    "$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN" \
+    "$SHARD_START" "$SHARD_STOP_EXCLUSIVE" "$PAIRS_PER_SHARD" <<'PY'
+import hashlib
+import json
+import math
+import pathlib
+import sys
+
+decision_path, plan_path, start, stop, per_shard = sys.argv[1:]
+decision = json.loads(pathlib.Path(decision_path).read_text(encoding="utf-8"))
+plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
+plan_hash = hashlib.sha256(pathlib.Path(plan_path).read_bytes()).hexdigest()
+base_pairs = int(start) * int(per_shard)
+extended_pairs = int(plan.get("selected_pairs", -1))
+if (
+    decision.get("status")
+    != "frozen_score_blind_background_capacity_extension_decision"
+    or decision.get("candidate_scores_inspected") is not False
+    or decision.get("test_data_opened") is not False
+    or decision.get("extended_plan_sha256") != plan_hash
+    or int(decision.get("base_source_pairs", -1)) != base_pairs
+    or int(decision.get("extended_source_pairs", -1)) != extended_pairs
+    or math.ceil(extended_pairs / int(per_shard)) != int(stop)
+):
+    raise SystemExit("capacity extension decision does not authorize this shard range")
+PY
+fi
 
 preflight=$(
   "$TASK_PYTHON" - \

@@ -1039,6 +1039,14 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_block_capacity.add_argument("--safety-factor", type=float, default=1.5)
     candidate_block_capacity.add_argument("--allow-insufficient", action="store_true")
 
+    candidate_block_extension = subparsers.add_parser(
+        "candidate-block-permutation-capacity-extension-freeze"
+    )
+    candidate_block_extension.add_argument("--base-forecast", required=True)
+    candidate_block_extension.add_argument("--extended-plan", required=True)
+    candidate_block_extension.add_argument("--extended-forecast", required=True)
+    candidate_block_extension.add_argument("--output", required=True)
+
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
     candidate_pipeline.add_argument("--injection-manifest", required=True)
@@ -2722,6 +2730,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.safety_factor,
                 args.allow_insufficient,
+            )
+        )
+    elif args.command == "candidate-block-permutation-capacity-extension-freeze":
+        from .exposure import freeze_candidate_block_capacity_extension_decision
+
+        _print(
+            freeze_candidate_block_capacity_extension_decision(
+                args.base_forecast,
+                args.extended_plan,
+                args.extended_forecast,
+                args.output,
             )
         )
     elif args.command == "candidate-search-validation-pipeline":
