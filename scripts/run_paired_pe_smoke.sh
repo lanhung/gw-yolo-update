@@ -12,6 +12,7 @@ required=(
   GWYOLO_OVERLAP_MANIFEST
   GWYOLO_INJECTION_MANIFEST
   GWYOLO_MODEL_REPORT
+  GWYOLO_MODEL_CONFIG
 )
 for variable in "${required[@]}"; do
   if [[ -z "${!variable:-}" ]]; then
@@ -33,7 +34,8 @@ export GWYOLO_CODE_COMMIT="${GWYOLO_CODE_COMMIT:-$(git rev-parse --short=7 HEAD)
 for path in \
   "$GWYOLO_OVERLAP_MANIFEST" \
   "$GWYOLO_INJECTION_MANIFEST" \
-  "$GWYOLO_MODEL_REPORT"; do
+  "$GWYOLO_MODEL_REPORT" \
+  "$GWYOLO_MODEL_CONFIG"; do
   if [[ ! -s "$path" ]]; then
     echo "required paired-PE source is absent: $path" >&2
     exit 3
@@ -48,6 +50,16 @@ checkpoint=$(
 )
 if [[ ! -s "$checkpoint" ]]; then
   echo "validation-selected overlap checkpoint is absent: $checkpoint" >&2
+  exit 4
+fi
+expected_config_sha256=$(
+  "$GWYOLO_PYTHON" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["config_file_sha256"])' \
+    "$GWYOLO_MODEL_REPORT"
+)
+observed_config_sha256=$(sha256sum "$GWYOLO_MODEL_CONFIG" | awk '{print $1}')
+if [[ "$observed_config_sha256" != "$expected_config_sha256" ]]; then
+  echo "selected overlap model/config hash mismatch" >&2
   exit 4
 fi
 
@@ -84,7 +96,7 @@ if [[ "$scores_complete" != true ]]; then
   "$GWYOLO_PYTHON" -m gwyolo.cli injection-score \
     --manifest "$contamination/contaminated_injection_val.jsonl" \
     --checkpoint "$checkpoint" \
-    --config configs/physical_overlap_finetune.yaml \
+    --config "$GWYOLO_MODEL_CONFIG" \
     --output-dir "$scores" \
     --model-ifos H1 L1 V1 \
     --q-values 4 8 16 \

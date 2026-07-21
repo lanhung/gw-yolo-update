@@ -869,7 +869,10 @@ builds paired clean and real-glitch-contaminated overrides, scores every contami
 saved numeric chirp/glitch probabilities, applies the frozen mask policy, selects a bounded BBH
 subset before posterior results exist, and materializes both DINGO and AMPLFI native inputs. Each
 stage is resumable by its atomic report and all machine paths are explicit environment variables.
-The smoke defaults to three validation injections and remains ineligible for a scientific claim.
+`GWYOLO_MODEL_CONFIG` must be the exact selected overlap configuration: the script re-hashes it
+against `config_file_sha256` in the model report before scoring, so a family-balanced champion cannot
+silently be evaluated under the uniform-arm provenance. The smoke defaults to three validation
+injections and remains ineligible for a scientific claim.
 
 Before an event is admitted, `scripts/run_pe_model_load_smoke.py` verifies checkpoint/config hashes
 inside the pinned interpreter and loads both DINGO GNPE networks or the AMPLFI Lightning model,
