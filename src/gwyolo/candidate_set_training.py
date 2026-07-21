@@ -390,6 +390,133 @@ def run_candidate_pair_scaling_evaluation(
     return result
 
 
+def run_candidate_pair_representation_evaluation(
+    config_path: str | Path,
+    baseline_report_path: str | Path,
+    candidate_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Apply a frozen paired validation gate to a candidate-pair representation change."""
+    config = load_yaml(config_path)
+    settings = config["candidate_pair_representation_evaluation"]
+    paths = {
+        "baseline": Path(baseline_report_path),
+        "candidate": Path(candidate_report_path),
+    }
+    reports = {
+        name: json.loads(path.read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
+    for name, report in reports.items():
+        if report.get("status") != "validation_selection_candidate_pair_ranker":
+            raise ValueError(f"candidate pair {name} representation report is incomplete")
+        if report.get("test_evaluation") is not None:
+            raise ValueError("candidate pair representation gate cannot consume test results")
+        if report.get("budget_mode") != settings["expected_budget_mode"]:
+            raise ValueError("candidate pair representation budget mode differs")
+        if int(report.get("optimizer_updates", -1)) != int(
+            settings["expected_optimizer_updates"]
+        ):
+            raise ValueError("candidate pair representation update budget differs")
+    if reports["baseline"]["architecture"] != settings["baseline_architecture"]:
+        raise ValueError("candidate pair baseline architecture differs from preregistration")
+    if reports["candidate"]["architecture"] != settings["candidate_architecture"]:
+        raise ValueError("candidate pair candidate architecture differs from preregistration")
+    paired_identity_fields = (
+        "train_injection_manifest_sha256",
+        "train_candidate_manifest_sha256",
+        "validation_injection_manifest_sha256",
+        "validation_selection_candidate_manifest_sha256",
+        "seed",
+    )
+    identity_differences = {
+        field: [
+            reports["baseline"]["run_identity"].get(field),
+            reports["candidate"]["run_identity"].get(field),
+        ]
+        for field in paired_identity_fields
+        if reports["baseline"]["run_identity"].get(field)
+        != reports["candidate"]["run_identity"].get(field)
+    }
+    if identity_differences:
+        raise ValueError(
+            f"candidate pair representation reports are not paired: {identity_differences}"
+        )
+
+    def summarize(report: dict[str, Any]) -> dict[str, float]:
+        metrics = report["selected_validation_metrics"]
+        strata = report["selected_validation_strata"]
+        return {
+            "overall_top1": float(metrics["top1_padded_truth_pair_fraction"]),
+            "peak_p90_seconds": float(
+                metrics["top1_peak_error_seconds_quantiles"]["0.9"]
+            ),
+            "snr_8_15_top1": float(
+                strata["snr:snr_8_15"]["top1_padded_truth_pair_fraction"]
+            ),
+            "bns_top1": float(
+                strata["family:BNS"]["top1_padded_truth_pair_fraction"]
+            ),
+            "nsbh_top1": float(
+                strata["family:NSBH"]["top1_padded_truth_pair_fraction"]
+            ),
+        }
+
+    values = {name: summarize(report) for name, report in reports.items()}
+    delta = {
+        key: values["candidate"][key] - values["baseline"][key]
+        for key in values["baseline"]
+    }
+    checks = {
+        "minimum_overall_top1_gain": delta["overall_top1"]
+        >= float(settings["minimum_overall_top1_gain"]),
+        "minimum_snr_8_15_top1_gain": delta["snr_8_15_top1"]
+        >= float(settings["minimum_snr_8_15_top1_gain"]),
+        "minimum_peak_p90_reduction": -delta["peak_p90_seconds"]
+        >= float(settings["minimum_peak_p90_reduction_seconds"]),
+        "maximum_bns_top1_regression": delta["bns_top1"]
+        >= -float(settings["maximum_family_top1_regression"]),
+        "maximum_nsbh_top1_regression": delta["nsbh_top1"]
+        >= -float(settings["maximum_family_top1_regression"]),
+    }
+    run_identity = {
+        "config_sha256": file_sha256(config_path),
+        "baseline_report_sha256": file_sha256(baseline_report_path),
+        "candidate_report_sha256": file_sha256(candidate_report_path),
+        "code_commit": execution_provenance()["code_commit"],
+    }
+    target = Path(output_path)
+    if target.is_file():
+        completed = json.loads(target.read_text(encoding="utf-8"))
+        if completed.get("run_identity") != run_identity:
+            raise ValueError("completed representation evaluation has another identity")
+        return completed
+    result = {
+        "status": "validation_only_candidate_pair_representation_evaluation",
+        "scientific_claim_allowed": False,
+        "test_evaluation": None,
+        "run_identity": run_identity,
+        "paired_manifest_identity": {
+            field: reports["baseline"]["run_identity"].get(field)
+            for field in paired_identity_fields
+        },
+        "baseline": values["baseline"],
+        "candidate": values["candidate"],
+        "candidate_minus_baseline": delta,
+        "predeclared_checks": checks,
+        "representation_gate_passed": all(checks.values()),
+        "scale_to_5000_allowed": all(checks.values()),
+        "larger_scale_blocker": (
+            None
+            if all(checks.values())
+            else "all paired multi-resolution representation checks must pass"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def candidate_pair_feature_vector(
     first: dict[str, Any],
     second: dict[str, Any],
@@ -858,31 +985,52 @@ if nn is not None:
 
 
     class CandidatePairTimeFrequencyEncoder(nn.Module):
-        """Shared per-IFO STFT encoder with a symmetric pair-ranking head."""
+        """Shared per-IFO single- or multi-resolution STFT pair encoder."""
 
         def __init__(
             self,
             scalar_features: int,
             hidden_features: int,
             embedding_features: int,
-            stft_n_fft: int,
-            stft_hop_length: int,
+            stft_n_fft: int | tuple[int, ...],
+            stft_hop_length: int | tuple[int, ...],
+            output_frequency_bins: int = 64,
+            output_time_bins: int = 96,
         ):
             super().__init__()
+            n_ffts = (
+                (int(stft_n_fft),)
+                if isinstance(stft_n_fft, int)
+                else tuple(int(value) for value in stft_n_fft)
+            )
+            hop_lengths = (
+                (int(stft_hop_length),)
+                if isinstance(stft_hop_length, int)
+                else tuple(int(value) for value in stft_hop_length)
+            )
             if (
                 scalar_features <= 0
                 or hidden_features <= 0
                 or embedding_features <= 0
-                or stft_n_fft < 16
-                or stft_hop_length <= 0
-                or stft_hop_length > stft_n_fft
+                or not n_ffts
+                or len(n_ffts) != len(hop_lengths)
+                or any(value < 16 for value in n_ffts)
+                or any(
+                    hop <= 0 or hop > n_fft
+                    for n_fft, hop in zip(n_ffts, hop_lengths)
+                )
+                or output_frequency_bins < 4
+                or output_time_bins < 4
             ):
                 raise ValueError("candidate pair STFT encoder settings are invalid")
-            self.stft_n_fft = stft_n_fft
-            self.stft_hop_length = stft_hop_length
-            self.register_buffer("stft_window", torch.hann_window(stft_n_fft))
+            self.stft_n_ffts = n_ffts
+            self.stft_hop_lengths = hop_lengths
+            self.output_frequency_bins = int(output_frequency_bins)
+            self.output_time_bins = int(output_time_bins)
+            for index, n_fft in enumerate(n_ffts):
+                self.register_buffer(f"stft_window_{index}", torch.hann_window(n_fft))
             self.shared_encoder = nn.Sequential(
-                nn.Conv2d(1, 8, kernel_size=3, padding=1),
+                nn.Conv2d(len(n_ffts), 8, kernel_size=3, padding=1),
                 nn.GroupNorm(4, 8),
                 nn.SiLU(),
                 nn.MaxPool2d(2),
@@ -908,18 +1056,31 @@ if nn is not None:
                 raise ValueError("candidate pair STFT encoder expects [batch, 2, samples]")
             batch = strain_crops.shape[0]
             flattened = strain_crops.float().reshape(batch * 2, -1)
-            spectrum = torch.stft(
-                flattened,
-                n_fft=self.stft_n_fft,
-                hop_length=self.stft_hop_length,
-                window=self.stft_window,
-                center=False,
-                return_complex=True,
-            ).abs()
-            spectrum = torch.log1p(spectrum)
-            mean = spectrum.mean(dim=(-2, -1), keepdim=True)
-            scale = spectrum.std(dim=(-2, -1), keepdim=True).clamp_min(1e-4)
-            encoded = self.shared_encoder(((spectrum - mean) / scale)[:, None])
+            planes = []
+            for index, (n_fft, hop_length) in enumerate(
+                zip(self.stft_n_ffts, self.stft_hop_lengths)
+            ):
+                spectrum = torch.stft(
+                    flattened,
+                    n_fft=n_fft,
+                    hop_length=hop_length,
+                    window=getattr(self, f"stft_window_{index}"),
+                    center=False,
+                    return_complex=True,
+                ).abs()
+                spectrum = torch.log1p(spectrum)
+                mean = spectrum.mean(dim=(-2, -1), keepdim=True)
+                scale = spectrum.std(dim=(-2, -1), keepdim=True).clamp_min(1e-4)
+                normalized = ((spectrum - mean) / scale)[:, None]
+                if len(self.stft_n_ffts) > 1:
+                    normalized = torch_functional.interpolate(
+                        normalized,
+                        size=(self.output_frequency_bins, self.output_time_bins),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                planes.append(normalized)
+            encoded = self.shared_encoder(torch.cat(planes, dim=1))
             encoded = encoded.reshape(batch, 2, -1)
             first, second = encoded[:, 0], encoded[:, 1]
             pair = torch.cat(
@@ -1175,20 +1336,35 @@ def run_candidate_pair_ranker_training(
     if validation_examples["features"].shape[1] != input_features:
         raise ValueError("candidate pair train/validation features differ")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    multi_resolution_stft = bool(settings.get("stft_n_ffts"))
     architecture = (
-        "candidate_pair_trainable_stft_cnn_v3"
+        "candidate_pair_trainable_multi_resolution_stft_cnn_v4"
+        if use_time_frequency_encoder and multi_resolution_stft
+        else "candidate_pair_trainable_stft_cnn_v3"
         if use_time_frequency_encoder
         else "candidate_pair_mlp_strain_coherence_v2"
         if use_strain_features
         else "candidate_pair_mlp_v1"
     )
     if use_time_frequency_encoder:
+        stft_n_ffts = (
+            tuple(int(value) for value in settings["stft_n_ffts"])
+            if multi_resolution_stft
+            else (int(settings["stft_n_fft"]),)
+        )
+        stft_hop_lengths = (
+            tuple(int(value) for value in settings["stft_hop_lengths"])
+            if multi_resolution_stft
+            else (int(settings["stft_hop_length"]),)
+        )
         model = CandidatePairTimeFrequencyEncoder(
             input_features,
             int(settings["hidden_features"]),
             int(settings["embedding_features"]),
-            int(settings["stft_n_fft"]),
-            int(settings["stft_hop_length"]),
+            stft_n_ffts,
+            stft_hop_lengths,
+            int(settings.get("stft_output_frequency_bins", 64)),
+            int(settings.get("stft_output_time_bins", 96)),
         ).to(device)
     else:
         model = CandidatePairMLP(
@@ -1286,6 +1462,17 @@ def run_candidate_pair_ranker_training(
                     "model": model.state_dict(),
                     "input_features": input_features,
                     "hidden_features": int(settings["hidden_features"]),
+                    "embedding_features": int(settings.get("embedding_features", 0)),
+                    "stft_n_ffts": list(stft_n_ffts) if use_time_frequency_encoder else None,
+                    "stft_hop_lengths": (
+                        list(stft_hop_lengths) if use_time_frequency_encoder else None
+                    ),
+                    "stft_output_frequency_bins": int(
+                        settings.get("stft_output_frequency_bins", 64)
+                    ),
+                    "stft_output_time_bins": int(
+                        settings.get("stft_output_time_bins", 96)
+                    ),
                     "epoch": epoch,
                     "validation_selection_key": key,
                     "run_identity": identity,
@@ -1353,10 +1540,18 @@ def run_candidate_pair_ranker_training(
             else None
         ),
         "time_frequency_feature_definition": (
-            "shared-GPS aligned whitened H1/L1 crops, trainable log-STFT shared-IFO CNN, "
+            "shared-GPS aligned whitened H1/L1 crops, trainable multi-resolution log-STFT "
+            "shared-IFO CNN, "
+            "ordered detector embeddings, difference/product fusion and proposal geometry"
+            if use_time_frequency_encoder and multi_resolution_stft
+            else "shared-GPS aligned whitened H1/L1 crops, trainable log-STFT shared-IFO CNN, "
             "ordered detector embeddings, difference/product fusion and proposal geometry"
             if use_time_frequency_encoder
             else None
+        ),
+        "stft_n_ffts": list(stft_n_ffts) if use_time_frequency_encoder else None,
+        "stft_hop_lengths": (
+            list(stft_hop_lengths) if use_time_frequency_encoder else None
         ),
         "detector_pair": [first_ifo, second_ifo],
         "physical_delay_limit_seconds": common[2],

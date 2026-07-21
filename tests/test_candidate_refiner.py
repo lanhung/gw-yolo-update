@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from gwyolo.candidate_set_training import (
+    CandidatePairTimeFrequencyEncoder,
     candidate_pair_aligned_strain_crop,
     candidate_pair_feature_vector,
     candidate_pair_optimizer_budget,
@@ -11,6 +12,7 @@ from gwyolo.candidate_set_training import (
     candidate_parent_top1_metrics,
     run_candidate_pair_scaling_plan,
     run_candidate_pair_scaling_evaluation,
+    run_candidate_pair_representation_evaluation,
 )
 from gwyolo.candidate_refiner import (
     candidate_average_precision,
@@ -225,6 +227,24 @@ def test_candidate_pair_aligned_crop_uses_one_truth_free_gps_axis() -> None:
     assert np.array_equal(crop[1], 100 + np.arange(10, 30, dtype=np.float16))
 
 
+def test_candidate_pair_multi_resolution_encoder_preserves_pair_axis() -> None:
+    torch = pytest.importorskip("torch")
+
+    model = CandidatePairTimeFrequencyEncoder(
+        scalar_features=16,
+        hidden_features=16,
+        embedding_features=8,
+        stft_n_fft=(32, 64, 128),
+        stft_hop_length=(4, 8, 16),
+        output_frequency_bins=32,
+        output_time_bins=48,
+    )
+    logits = model(torch.zeros(3, 16), torch.randn(3, 2, 256))
+    assert logits.shape == (3,)
+    assert bool(torch.isfinite(logits).all())
+    assert model.shared_encoder[0].in_channels == 3
+
+
 def test_candidate_pair_scaling_plan_counts_physical_parents_not_candidates(
     tmp_path,
 ) -> None:
@@ -419,6 +439,71 @@ def test_candidate_parent_top1_metrics_include_missing_parent_by_hand() -> None:
     assert metrics["top1_padded_truth_pair_fraction"] == 0.5
     assert metrics["top1_exact_interval_truth_pair_fraction"] == 0.0
     assert metrics["top1_peak_error_seconds_quantiles"]["0.9"] == 0.2
+
+
+def test_candidate_pair_representation_gate_uses_paired_validation_deltas(
+    tmp_path,
+) -> None:
+    config = tmp_path / "gate.yaml"
+    config.write_text(
+        """candidate_pair_representation_evaluation:
+  baseline_architecture: baseline
+  candidate_architecture: candidate
+  expected_budget_mode: fixed_updates
+  expected_optimizer_updates: 900
+  minimum_overall_top1_gain: 0.05
+  minimum_snr_8_15_top1_gain: 0.03
+  minimum_peak_p90_reduction_seconds: 0.25
+  maximum_family_top1_regression: 0.02
+""",
+        encoding="utf-8",
+    )
+    common_identity = {
+        "train_injection_manifest_sha256": "train-parent",
+        "train_candidate_manifest_sha256": "train-candidate",
+        "validation_injection_manifest_sha256": "val-parent",
+        "validation_selection_candidate_manifest_sha256": "val-candidate",
+        "seed": 7,
+    }
+
+    def report(architecture, overall, p90, snr, bns, nsbh):
+        return {
+            "status": "validation_selection_candidate_pair_ranker",
+            "test_evaluation": None,
+            "architecture": architecture,
+            "budget_mode": "fixed_updates",
+            "optimizer_updates": 900,
+            "run_identity": common_identity,
+            "selected_validation_metrics": {
+                "top1_padded_truth_pair_fraction": overall,
+                "top1_peak_error_seconds_quantiles": {"0.9": p90},
+            },
+            "selected_validation_strata": {
+                "snr:snr_8_15": {"top1_padded_truth_pair_fraction": snr},
+                "family:BNS": {"top1_padded_truth_pair_fraction": bns},
+                "family:NSBH": {"top1_padded_truth_pair_fraction": nsbh},
+            },
+        }
+
+    baseline_path = tmp_path / "baseline.json"
+    candidate_path = tmp_path / "candidate.json"
+    baseline_path.write_text(
+        json.dumps(report("baseline", 0.30, 4.5, 0.60, 0.20, 0.25)),
+        encoding="utf-8",
+    )
+    candidate_path.write_text(
+        json.dumps(report("candidate", 0.36, 4.2, 0.64, 0.19, 0.24)),
+        encoding="utf-8",
+    )
+    result = run_candidate_pair_representation_evaluation(
+        config, baseline_path, candidate_path, tmp_path / "result.json"
+    )
+    assert result["representation_gate_passed"] is True
+    assert result["scale_to_5000_allowed"] is True
+    assert result["candidate_minus_baseline"]["overall_top1"] == pytest.approx(0.06)
+    assert result["candidate_minus_baseline"]["peak_p90_seconds"] == pytest.approx(
+        -0.3
+    )
 
 
 def test_candidate_local_refiner_preserves_time_bins_and_missing_ifo_mask() -> None:

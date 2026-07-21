@@ -520,6 +520,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_pair_scaling_evaluate.add_argument("--output", required=True)
 
+    candidate_pair_representation_evaluate = subparsers.add_parser(
+        "candidate-pair-representation-evaluate"
+    )
+    candidate_pair_representation_evaluate.add_argument("--config", required=True)
+    candidate_pair_representation_evaluate.add_argument(
+        "--baseline-report", required=True
+    )
+    candidate_pair_representation_evaluate.add_argument(
+        "--candidate-report", required=True
+    )
+    candidate_pair_representation_evaluate.add_argument("--output", required=True)
+
     detector_arrival_stratify = subparsers.add_parser(
         "detector-arrival-timing-validation-stratify"
     )
@@ -1667,6 +1679,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.scaling_plan_report,
                 args.fixed_update_report,
                 args.fixed_epoch_report,
+                args.output,
+            )
+        )
+    elif args.command == "candidate-pair-representation-evaluate":
+        from .candidate_set_training import (
+            run_candidate_pair_representation_evaluation,
+        )
+
+        _print(
+            run_candidate_pair_representation_evaluation(
+                args.config,
+                args.baseline_report,
+                args.candidate_report,
                 args.output,
             )
         )

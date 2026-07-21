@@ -1,0 +1,9 @@
+candidate_pair_representation_evaluation:
+  baseline_architecture: candidate_pair_trainable_stft_cnn_v3
+  candidate_architecture: candidate_pair_trainable_multi_resolution_stft_cnn_v4
+  expected_budget_mode: fixed_updates
+  expected_optimizer_updates: 900
+  minimum_overall_top1_gain: 0.05
+  minimum_snr_8_15_top1_gain: 0.03
+  minimum_peak_p90_reduction_seconds: 0.25
+  maximum_family_top1_regression: 0.02
