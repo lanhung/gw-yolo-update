@@ -252,6 +252,8 @@ def test_gravityspy_network_materialization_keeps_aligned_detector_planes(
         "nonfinite_strain_context": 1
     }
     row = json.loads(Path(report["manifest_path"]).read_text().strip())
+    assert set(row["network_strain_sources"]) == {"H1", "L1"}
+    assert set(row["planned_network_strain_sources"]) == {"H1", "L1", "V1"}
     with np.load(row["path"], allow_pickle=False) as arrays:
         assert arrays["features"].shape == (3, 1, 8, 8)
         assert arrays["raw_strain"].shape == (3, 128)
@@ -722,6 +724,63 @@ def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> 
     )
     assert nested["rows"] == 2
     assert nested["manifest_sha256"] == merged["manifest_sha256"]
+
+
+def test_network_numeric_merge_normalizes_legacy_runtime_downgrade(tmp_path) -> None:
+    sample = tmp_path / "network.npz"
+    np.savez(sample, detector_availability=np.asarray([1, 1, 0]))
+    sources = {
+        ifo: {"hdf5_url": f"https://example/{ifo}.hdf5"}
+        for ifo in ("H1", "L1", "V1")
+    }
+    manifest = tmp_path / "network.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "glitch_id": "legacy-runtime-downgrade",
+                "split": "train",
+                "network_gps_block": "O3b:block",
+                "ml_label": "Blip",
+                "observing_run": "O3b",
+                "ifo": "H1",
+                "planned_available_ifos": ["H1", "L1", "V1"],
+                "available_ifos": ["H1", "L1"],
+                "network_strain_sources": sources,
+                "data_quality": {
+                    "H1": {"usable": True, "reason": None},
+                    "L1": {"usable": True, "reason": None},
+                    "V1": {"usable": False, "reason": "nonfinite_strain_context"},
+                },
+                "aligned_network_context": True,
+                "human_pixel_mask": False,
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+            }
+        )
+        + "\n"
+    )
+    report = tmp_path / "network-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": 1,
+                "shard": 0,
+            }
+        )
+    )
+    merged = merge_gravityspy_network_numeric_manifests(
+        [report], tmp_path / "merged", "train"
+    )
+    assert merged["runtime_source_inventory_normalized_rows"] == 1
+    assert merged["unique_source_files"] == 2
+    assert merged["planned_unique_source_files"] == 3
+    row = json.loads(Path(merged["manifest_path"]).read_text().strip())
+    assert set(row["network_strain_sources"]) == {"H1", "L1"}
+    assert set(row["planned_network_strain_sources"]) == {"H1", "L1", "V1"}
+    assert row["runtime_source_inventory_normalized"] is True
 
 
 def test_network_numeric_resplit_keeps_source_components_disjoint(tmp_path) -> None:

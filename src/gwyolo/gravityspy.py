@@ -1445,10 +1445,16 @@ def materialize_gravityspy_network_strain(
             **row,
             "planned_available_ifos": list(row["available_ifos"]),
             "planned_detector_availability": planned_availability.tolist(),
+            "planned_network_strain_sources": dict(row["network_strain_sources"]),
             "available_ifos": [
                 ifo for ifo, value in zip(model_ifos, availability) if value
             ],
             "detector_availability": availability.tolist(),
+            "network_strain_sources": {
+                ifo: source
+                for ifo, source in row["network_strain_sources"].items()
+                if ifo in usable_ifos
+            },
             "single_ifo_numeric_path": row.get("path"),
             "single_ifo_numeric_sha256": row.get("sha256"),
             "path": str(sample_path),
@@ -2435,10 +2441,42 @@ def merge_gravityspy_network_numeric_manifests(
             ):
                 raise ValueError("Network Gravity Spy row lacks a companion detector")
             sources = row["network_strain_sources"]
-            if not isinstance(sources, dict) or set(sources) != set(available_ifos):
+            if not isinstance(sources, dict):
                 raise ValueError(
                     "Network Gravity Spy source inventory differs from detector availability"
                 )
+            source_ifos = set(sources)
+            available_ifo_set = set(available_ifos)
+            if source_ifos != available_ifo_set:
+                planned_available_ifos = {
+                    str(value) for value in row.get("planned_available_ifos", [])
+                }
+                data_quality = row.get("data_quality")
+                extra_ifos = source_ifos - available_ifo_set
+                legacy_runtime_downgrade = (
+                    available_ifo_set.issubset(source_ifos)
+                    and planned_available_ifos == source_ifos
+                    and isinstance(data_quality, dict)
+                    and all(
+                        isinstance(data_quality.get(ifo), dict)
+                        and not bool(data_quality[ifo].get("usable"))
+                        and bool(data_quality[ifo].get("reason"))
+                        for ifo in extra_ifos
+                    )
+                )
+                if not legacy_runtime_downgrade:
+                    raise ValueError(
+                        "Network Gravity Spy source inventory differs from detector availability"
+                    )
+                row = {
+                    **row,
+                    "planned_network_strain_sources": dict(sources),
+                    "network_strain_sources": {
+                        ifo: sources[ifo] for ifo in available_ifos
+                    },
+                    "runtime_source_inventory_normalized": True,
+                }
+                sources = row["network_strain_sources"]
             if any(not source.get("hdf5_url") for source in sources.values()):
                 raise ValueError("Network Gravity Spy source lacks its HDF5 URL")
             if str(row["ifo"]) not in set(available_ifos):
@@ -2505,6 +2543,19 @@ def merge_gravityspy_network_numeric_manifests(
                 str(source["hdf5_url"])
                 for row in rows
                 for source in row.get("network_strain_sources", {}).values()
+            }
+        ),
+        "runtime_source_inventory_normalized_rows": sum(
+            bool(row.get("runtime_source_inventory_normalized")) for row in rows
+        ),
+        "planned_unique_source_files": len(
+            {
+                str(source["hdf5_url"])
+                for row in rows
+                for source in row.get(
+                    "planned_network_strain_sources",
+                    row.get("network_strain_sources", {}),
+                ).values()
             }
         ),
         "human_pixel_masks": sum(bool(row.get("human_pixel_mask")) for row in rows),
