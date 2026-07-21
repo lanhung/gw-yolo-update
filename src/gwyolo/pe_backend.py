@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+import math
 import os
 import re
 import subprocess
@@ -349,6 +351,10 @@ def _audit_model_metadata_semantics(
         except (OSError, ValueError) as error:
             failures.append(f"cannot load selection report: {error}")
         else:
+            if selection_report.get("status") != "validation_selected_checkpoint":
+                failures.append("selection report status is not validation-selected")
+            if selection_report.get("publication_eligible") is not True:
+                failures.append("selection report is not publication eligible")
             if selection_report.get("selection_split") != "validation":
                 failures.append("selection report is not validation-only")
             if selection_report.get("selected_checkpoint_sha256") != model_sha256:
@@ -589,6 +595,10 @@ def freeze_pe_backend_model_metadata(
             raise FileNotFoundError(f"{label} artifact does not exist: {path}")
     model_hash = file_sha256(model)
     selection_report = load_yaml(paths["selection_report"])
+    if selection_report.get("status") != "validation_selected_checkpoint":
+        raise ValueError("selection report status must be validation_selected_checkpoint")
+    if selection_report.get("publication_eligible") is not True:
+        raise ValueError("selection report must be publication eligible")
     if selection_report.get("selection_split") != "validation":
         raise ValueError("selection report must use validation split")
     if selection_report.get("selected_checkpoint_sha256") != model_hash:
@@ -638,3 +648,149 @@ def freeze_pe_backend_model_metadata(
     }
     atomic_write_json(output_path, metadata)
     return metadata
+
+
+def select_lightning_validation_checkpoint(
+    *,
+    training_config_path: str | Path,
+    training_data_manifest_path: str | Path,
+    metrics_csv_path: str | Path,
+    checkpoint_index_path: str | Path,
+    output_path: str | Path,
+    selection_metric: str = "valid_loss",
+    selection_metric_mode: str = "min",
+    minimum_publication_epochs: int = 100,
+    minimum_validation_points: int = 50,
+) -> dict[str, Any]:
+    if selection_metric_mode not in {"min", "max"}:
+        raise ValueError("selection metric mode must be min or max")
+    if minimum_publication_epochs <= 0 or minimum_validation_points <= 0:
+        raise ValueError("publication epoch and validation-point minima must be positive")
+    output = Path(output_path).resolve()
+    if output.exists():
+        raise FileExistsError("validation checkpoint selection reports are immutable")
+    training_config = load_yaml(training_config_path)
+    try:
+        configured_max_epochs = int(training_config["trainer"]["max_epochs"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("training config requires trainer.max_epochs") from error
+    if configured_max_epochs <= 0:
+        raise ValueError("configured max epochs must be positive")
+
+    with Path(metrics_csv_path).open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        if selection_metric not in fieldnames or "epoch" not in fieldnames:
+            raise ValueError("metrics CSV lacks epoch or the configured validation metric")
+        rows = list(reader)
+    test_fields = [field for field in fieldnames if "test" in field.lower()]
+    if any(str(row.get(field, "")).strip() for row in rows for field in test_fields):
+        raise ValueError("checkpoint selection metrics include test-set values")
+    validation_rows = []
+    for row_number, row in enumerate(rows, start=2):
+        metric_value = str(row.get(selection_metric, "")).strip()
+        if not metric_value:
+            continue
+        try:
+            epoch = int(float(row["epoch"]))
+            step = int(float(row.get("step", epoch)))
+            value = float(metric_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid validation metric row {row_number}") from error
+        if epoch < 0 or step < 0 or not math.isfinite(value):
+            raise ValueError(f"invalid validation metric row {row_number}")
+        validation_rows.append(
+            {"epoch": epoch, "global_step": step, "value": value, "row": row_number}
+        )
+    if not validation_rows:
+        raise ValueError("metrics CSV contains no finite validation measurements")
+    keys = [(row["epoch"], row["global_step"]) for row in validation_rows]
+    if len(set(keys)) != len(keys):
+        raise ValueError("metrics CSV repeats a validation epoch/global-step identity")
+    best = min(
+        validation_rows,
+        key=lambda row: (
+            row["value"] if selection_metric_mode == "min" else -row["value"],
+            row["epoch"],
+            row["global_step"],
+        ),
+    )
+
+    index = load_yaml(checkpoint_index_path)
+    if index.get("status") != "indexed_lightning_checkpoints":
+        raise ValueError("checkpoint index has the wrong status")
+    checkpoints = index.get("checkpoints")
+    if not isinstance(checkpoints, list) or not checkpoints:
+        raise ValueError("checkpoint index is empty")
+    verified = []
+    for entry in checkpoints:
+        path = Path(str(entry.get("path", ""))).resolve()
+        if not path.is_file() or file_sha256(path) != entry.get("sha256"):
+            raise ValueError("checkpoint index artifact hash mismatch")
+        try:
+            epoch = int(entry["epoch"])
+            global_step = int(entry["global_step"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("checkpoint index lacks epoch/global_step") from error
+        verified.append({**entry, "path": str(path), "epoch": epoch, "global_step": global_step})
+    selectable = [entry for entry in verified if Path(entry["path"]).name != "last.ckpt"]
+    exact = [
+        entry
+        for entry in selectable
+        if entry["epoch"] == best["epoch"]
+        and entry["global_step"] == best["global_step"]
+    ]
+    if len(exact) == 1:
+        selected = exact[0]
+        match_rule = "exact_epoch_and_global_step"
+    else:
+        same_epoch = [entry for entry in selectable if entry["epoch"] == best["epoch"]]
+        if len(same_epoch) != 1:
+            raise ValueError("validation-selected checkpoint is absent or ambiguous")
+        selected = same_epoch[0]
+        match_rule = "unique_checkpoint_for_validation_epoch"
+
+    observed_epochs = sorted({row["epoch"] for row in validation_rows})
+    training_complete = observed_epochs[-1] + 1 >= configured_max_epochs
+    blockers = []
+    if not training_complete:
+        blockers.append("configured training budget is incomplete")
+    if configured_max_epochs < minimum_publication_epochs:
+        blockers.append("configured training budget is below the publication minimum")
+    if len(observed_epochs) < minimum_validation_points:
+        blockers.append("validation trajectory is below the publication minimum")
+    result = {
+        "status": "validation_selected_checkpoint",
+        "publication_eligible": not blockers,
+        "scientific_claim_allowed": False,
+        "selection_split": "validation",
+        "selection_metric": selection_metric,
+        "selection_metric_mode": selection_metric_mode,
+        "selected_metric_value": best["value"],
+        "selected_epoch": best["epoch"],
+        "selected_global_step": best["global_step"],
+        "checkpoint_match_rule": match_rule,
+        "selected_checkpoint_path": selected["path"],
+        "selected_checkpoint_sha256": selected["sha256"],
+        "configured_max_epochs": configured_max_epochs,
+        "observed_validation_epochs": observed_epochs,
+        "validation_points": len(validation_rows),
+        "training_complete": training_complete,
+        "minimum_publication_epochs": minimum_publication_epochs,
+        "minimum_validation_points": minimum_validation_points,
+        "selection_inputs_include_test_metrics": False,
+        "blockers": blockers,
+        "training_config_path": str(Path(training_config_path).resolve()),
+        "training_config_sha256": file_sha256(training_config_path),
+        "training_data_manifest_path": str(
+            Path(training_data_manifest_path).resolve()
+        ),
+        "training_data_manifest_sha256": file_sha256(training_data_manifest_path),
+        "metrics_csv_path": str(Path(metrics_csv_path).resolve()),
+        "metrics_csv_sha256": file_sha256(metrics_csv_path),
+        "checkpoint_index_path": str(Path(checkpoint_index_path).resolve()),
+        "checkpoint_index_sha256": file_sha256(checkpoint_index_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
+    return result

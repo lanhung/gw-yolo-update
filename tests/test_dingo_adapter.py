@@ -80,6 +80,8 @@ def test_dingo_common_batch_runs_and_resumes_real_runner_contract(tmp_path: Path
     selection_report.write_text(
         json.dumps(
             {
+                "status": "validation_selected_checkpoint",
+                "publication_eligible": True,
                 "selection_split": "validation",
                 "selection_metric": "validation_loss",
                 "selected_checkpoint_sha256": file_sha256(model),

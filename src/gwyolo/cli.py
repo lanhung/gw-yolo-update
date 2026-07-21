@@ -1257,6 +1257,17 @@ def build_parser() -> argparse.ArgumentParser:
     pe_model.add_argument("--native-inference-parameters", nargs="+", required=True)
     pe_model.add_argument("--reported-parameter-mapping", nargs="+", required=True)
 
+    pe_checkpoint = subparsers.add_parser("pe-lightning-checkpoint-select")
+    pe_checkpoint.add_argument("--training-config", required=True)
+    pe_checkpoint.add_argument("--training-data-manifest", required=True)
+    pe_checkpoint.add_argument("--metrics-csv", required=True)
+    pe_checkpoint.add_argument("--checkpoint-index", required=True)
+    pe_checkpoint.add_argument("--output", required=True)
+    pe_checkpoint.add_argument("--selection-metric", default="valid_loss")
+    pe_checkpoint.add_argument("--selection-metric-mode", choices=("min", "max"), default="min")
+    pe_checkpoint.add_argument("--minimum-publication-epochs", type=int, default=100)
+    pe_checkpoint.add_argument("--minimum-validation-points", type=int, default=50)
+
     pe_sources = subparsers.add_parser("pe-model-sources-acquire")
     pe_sources.add_argument("--config", required=True)
     pe_sources.add_argument("--output-dir", required=True)
@@ -2878,6 +2889,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 download=args.download,
                 minimum_free_bytes=args.minimum_free_bytes,
+            )
+        )
+    elif args.command == "pe-lightning-checkpoint-select":
+        from .pe_backend import select_lightning_validation_checkpoint
+
+        _print(
+            select_lightning_validation_checkpoint(
+                training_config_path=args.training_config,
+                training_data_manifest_path=args.training_data_manifest,
+                metrics_csv_path=args.metrics_csv,
+                checkpoint_index_path=args.checkpoint_index,
+                output_path=args.output,
+                selection_metric=args.selection_metric,
+                selection_metric_mode=args.selection_metric_mode,
+                minimum_publication_epochs=args.minimum_publication_epochs,
+                minimum_validation_points=args.minimum_validation_points,
             )
         )
     elif args.command == "amplfi-background-export":

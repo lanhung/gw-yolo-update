@@ -477,6 +477,8 @@ def run_amplfi_common_batch(
         raise ValueError("AMPLFI model hash differs from standardized metadata")
     artifacts = metadata.get("artifacts", {})
     training_identity = artifacts.get("training_config", {})
+    training_data_identity = artifacts.get("training_data_manifest", {})
+    selection_identity = artifacts.get("selection_report", {})
     conditioning_identity = artifacts.get("native_conditioning_config", {})
     analysis_prior_identity = artifacts.get("analysis_prior", {})
     native_prior_identity = artifacts.get("native_prior", {})
@@ -490,6 +492,8 @@ def run_amplfi_common_batch(
     native_prior = Path(native_prior_path).resolve()
     native_prior_sha = file_sha256(native_prior)
     verified_prior_artifacts = {
+        "training_data_manifest": training_data_identity,
+        "selection_report": selection_identity,
         "analysis_prior": analysis_prior_identity,
         "native_prior": native_prior_identity,
         "prior_projection_report": prior_projection_identity,
@@ -517,6 +521,15 @@ def run_amplfi_common_batch(
         != training_identity.get("sha256")
     ):
         raise ValueError("AMPLFI prior projection differs from model metadata")
+    selection = load_yaml(selection_identity["path"])
+    if (
+        selection.get("status") != "validation_selected_checkpoint"
+        or selection.get("publication_eligible") is not True
+        or selection.get("selection_split") != "validation"
+        or selection.get("selected_checkpoint_sha256") != metadata["model_sha256"]
+        or selection.get("selection_metric") != metadata.get("selection_metric")
+    ):
+        raise ValueError("AMPLFI validation selection report differs from metadata")
     python = Path(python_executable).resolve()
     runner = Path(runner_script).resolve()
     if not python.is_file() or not runner.is_file():
@@ -566,6 +579,8 @@ def run_amplfi_common_batch(
         "model_config_sha256": training_identity["sha256"],
         "native_prior_sha256": native_prior_sha,
         "analysis_prior_sha256": analysis_prior_identity["sha256"],
+        "training_data_manifest_sha256": training_data_identity["sha256"],
+        "selection_report_sha256": selection_identity["sha256"],
         "prior_projection_report_sha256": prior_projection_identity["sha256"],
         "python_executable": str(python),
         "runner_sha256": file_sha256(runner),

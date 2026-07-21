@@ -570,8 +570,10 @@ only as an explicit engineering option and its full observed package-set hash mu
 before publication.
 
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
-will only freeze a checkpoint when a separate selection report says `selection_split: validation`,
-names the selection metric and contains the checkpoint's exact SHA-256. It also hashes the training
+will only freeze a checkpoint when a separate selection report has status
+`validation_selected_checkpoint`, says `selection_split: validation`, is explicitly
+`publication_eligible`, names the selection metric and contains the checkpoint's exact SHA-256. It
+also hashes the training
 configuration, training-data manifest, common analysis prior, selection report and backend-native
 conditioning configuration. For AMPLFI it additionally requires the exact native prior and the
 machine-readable `amplfi-common-prior-audit` report. The report must have passed and its canonical
@@ -582,6 +584,30 @@ verifies every referenced artifact, then requires DINGO and AMPLFI to use the sa
 analysis waveform and explicitly mapped common parameter set. Native output spaces may differ, but
 every canonical paper parameter must map to a real native posterior field. This prevents an arbitrary downloaded checkpoint or
 a test-selected model from entering the paper table.
+
+For Lightning/AMPLFI runs, create the checkpoint index inside the pinned backend environment. The
+indexer deserializes trusted local checkpoints, records their epoch/global-step identities and
+hashes, and never selects a model itself. `pe-lightning-checkpoint-select` then reads the CSV
+validation trajectory, rejects any populated test-metric column, excludes `last.ckpt`, and matches
+the best validation row to exactly one indexed checkpoint. The configured training budget and
+observed validation trajectory must meet the predeclared publication minima; otherwise it writes a
+useful engineering selection report with `publication_eligible: false`, which cannot pass model
+freeze. In particular, the one-epoch AMPLFI smoke is a load/compatibility test only.
+
+```bash
+artifacts/pe/envs/amplfi/bin/python scripts/index_lightning_checkpoints.py \
+  --checkpoint-dir artifacts/pe/amplfi/checkpoints \
+  --output artifacts/pe/amplfi/checkpoint_index.json
+
+python -m gwyolo.cli pe-lightning-checkpoint-select \
+  --training-config configs/amplfi_common_bbh_publication.yaml \
+  --training-data-manifest artifacts/pe/amplfi/training_manifest.jsonl \
+  --metrics-csv artifacts/pe/amplfi/csv_logs/metrics.csv \
+  --checkpoint-index artifacts/pe/amplfi/checkpoint_index.json \
+  --selection-metric valid_loss --selection-metric-mode min \
+  --minimum-publication-epochs 100 --minimum-validation-points 50 \
+  --output artifacts/pe/amplfi/selection.json
+```
 
 ```bash
 python -m gwyolo.cli pe-backend-model-freeze \

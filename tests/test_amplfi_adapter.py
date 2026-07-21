@@ -158,6 +158,21 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
     model.write_bytes(b"model")
     training_config = tmp_path / "amplfi-training.yaml"
     training_config.write_text("model: frozen\n", encoding="utf-8")
+    training_manifest = tmp_path / "amplfi-training.jsonl"
+    training_manifest.write_text('{"split":"train"}\n', encoding="utf-8")
+    selection_report = tmp_path / "selection.json"
+    selection_report.write_text(
+        json.dumps(
+            {
+                "status": "validation_selected_checkpoint",
+                "publication_eligible": True,
+                "selection_split": "validation",
+                "selection_metric": "validation_loss",
+                "selected_checkpoint_sha256": file_sha256(model),
+            }
+        ),
+        encoding="utf-8",
+    )
     analysis_prior = tmp_path / "analysis-prior.yaml"
     analysis_prior.write_text("prior: common\n", encoding="utf-8")
     native_prior = tmp_path / "amplfi-prior.yaml"
@@ -192,6 +207,7 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
                     "post_trigger_seconds": 1,
                 },
                 "analysis_waveform_approximant": "IMRPhenomXPHM",
+                "selection_metric": "validation_loss",
                 "artifacts": {
                     "training_config": {
                         "path": str(training_config),
@@ -200,6 +216,14 @@ def test_amplfi_common_batch_runs_and_resumes_real_runner_contract(
                     "native_conditioning_config": {
                         "path": str(conditioning_config),
                         "sha256": file_sha256(conditioning_config),
+                    },
+                    "training_data_manifest": {
+                        "path": str(training_manifest),
+                        "sha256": file_sha256(training_manifest),
+                    },
+                    "selection_report": {
+                        "path": str(selection_report),
+                        "sha256": file_sha256(selection_report),
                     },
                     "analysis_prior": {
                         "path": str(analysis_prior),

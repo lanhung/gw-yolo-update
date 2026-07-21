@@ -107,7 +107,9 @@ def run_dingo_common_batch(
         raise ValueError("DINGO runtime initialization model differs from metadata")
     selection = load_yaml(verified_artifacts["selection_report"]["path"])
     if (
-        selection.get("selection_split") != "validation"
+        selection.get("status") != "validation_selected_checkpoint"
+        or selection.get("publication_eligible") is not True
+        or selection.get("selection_split") != "validation"
         or selection.get("selected_checkpoint_sha256") != metadata["model_sha256"]
         or selection.get("selection_metric") != metadata.get("selection_metric")
     ):

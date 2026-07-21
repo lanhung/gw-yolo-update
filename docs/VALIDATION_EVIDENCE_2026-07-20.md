@@ -820,3 +820,11 @@ backend it independently hash-verifies the metadata-bound canonical prior, nativ
 projection report; requires the command-line native prior to match; and rechecks all three hashes
 inside the passed projection. A changed runtime prior now fails before any posterior output or
 resume state is accepted. This is covered by a negative unit test and creates no new posterior.
+
+Checkpoint selection is now independently fail-closed as well. A Lightning checkpoint index binds
+trusted checkpoint bytes to epoch/global-step identities, while
+`pe-lightning-checkpoint-select` selects only from the validation CSV, refuses populated test
+metrics and excludes `last.ckpt`. Both AMPLFI and DINGO runtime adapters require a selection report
+with `validation_selected_checkpoint` status and `publication_eligible=true`; the model sidecar
+freezer enforces the same gate. A short smoke run may therefore demonstrate environment and model
+loading but cannot be promoted into the PE paper table.

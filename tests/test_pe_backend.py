@@ -80,6 +80,8 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 artifact.write_text(
                     json.dumps(
                         {
+                            "status": "validation_selected_checkpoint",
+                            "publication_eligible": True,
                             "selection_split": "validation",
                             "selection_metric": "validation_loss",
                             "selected_checkpoint_sha256": file_sha256(model),
@@ -255,6 +257,8 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
     selection.write_text(
         json.dumps(
             {
+                "status": "validation_selected_checkpoint",
+                "publication_eligible": True,
                 "selection_split": "validation",
                 "selection_metric": "validation_loss",
                 "selected_checkpoint_sha256": file_sha256(model),
@@ -332,6 +336,8 @@ def test_amplfi_model_freeze_binds_native_prior_projection(tmp_path: Path) -> No
     selection.write_text(
         json.dumps(
             {
+                "status": "validation_selected_checkpoint",
+                "publication_eligible": True,
                 "selection_split": "validation",
                 "selection_metric": "validation_loss",
                 "selected_checkpoint_sha256": file_sha256(model),
