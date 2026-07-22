@@ -108,6 +108,7 @@ def _locked_suite_config(path) -> None:
         "    bootstrap_replicates: 10000\n"
         "    bootstrap_seed: 20260722\n"
         "    pe_credible_level: 0.9\n"
+        "    uncertainty: gps_block_then_paired_injection_hierarchical_bootstrap_v1\n"
         "    background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1\n"
         "    catalog_search_arm: mask_candidate_search\n",
         encoding="utf-8",

@@ -226,6 +226,10 @@ publication_evidence:
         - {field: within_backend_provenance_gate, op: equals, value: true}
         - {field: paired_injections, op: at_least, value: 100}
         - {field: bootstrap_replicates, op: at_least, value: 10000}
+        - {field: pe_bootstrap_independence.status, op: equals, value: paired_pe_bootstrap_independence_audit_v1}
+        - {field: pe_bootstrap_independence.passed, op: equals, value: true}
+        - {field: pe_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: pe_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: artifacts.dingo_within_summary, op: nonempty}
         - {field: artifacts.amplfi_within_summary, op: nonempty}

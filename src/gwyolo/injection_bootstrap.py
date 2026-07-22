@@ -47,7 +47,7 @@ def hierarchical_injection_bootstrap(
     denominator = np.asarray(list(denominators), dtype=np.float64)
     if not records or len(numerator) != len(records) or len(denominator) != len(records):
         raise ValueError("hierarchical injection bootstrap arrays must align")
-    if bootstrap_replicates <= 0 or minimum_physical_groups < 2:
+    if bootstrap_replicates <= 0 or minimum_physical_groups < 1:
         raise ValueError("hierarchical injection bootstrap settings are invalid")
     if (
         not math.isfinite(output_scale)

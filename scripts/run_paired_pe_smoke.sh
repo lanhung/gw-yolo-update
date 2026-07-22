@@ -132,7 +132,8 @@ if [[ ! -s "$common/common_pe_inputs_report.json" ]]; then
     --source-post-trigger-seconds 2 \
     --analysis-high-frequency-hz 1024 \
     --limit "${GWYOLO_PE_SMOKE_LIMIT:-3}" \
-    --selection-seed "${GWYOLO_PE_SELECTION_SEED:-20260721}"
+    --selection-seed "${GWYOLO_PE_SELECTION_SEED:-20260721}" \
+    --minimum-selected-gps-blocks "${GWYOLO_PE_MINIMUM_GPS_BLOCKS:-1}"
 fi
 
 if [[ ! -s "$dingo/native_conditioning_report.json" ]]; then

@@ -132,6 +132,7 @@ reports = {
 }
 portfolio = reports["portfolio"]
 promotion = reports["promotion"]
+bootstrap_audit = portfolio.get("pe_bootstrap_independence", {})
 if (
     portfolio.get("status")
     != "paired_dingo_amplfi_within_backend_portfolio_complete"
@@ -146,6 +147,10 @@ if (
     or promotion.get("evidence_mode")
     != "matched_event_within_backend_portfolio"
     or promotion.get("absolute_cross_backend_comparison_allowed") is not False
+    or bootstrap_audit.get("status")
+    != "paired_pe_bootstrap_independence_audit_v1"
+    or bootstrap_audit.get("method")
+    != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
 ):
     raise SystemExit("paired PE portfolio violated its comparison boundary")
 paired_injections = int(portfolio["common_injection_count"])
@@ -183,6 +188,7 @@ result = {
     "within_backend_provenance_gate": True,
     "paired_injections": paired_injections,
     "bootstrap_replicates": bootstrap_replicates,
+    "pe_bootstrap_independence": bootstrap_audit,
     "test_rows_read": 0,
     "code_commit": commit,
     "artifacts": artifacts,

@@ -305,6 +305,8 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
             row = {
                 "backend": backend,
                 "injection_id": "i-1",
+                "waveform_id": "w-1",
+                "gps_block": "gps-1",
                 "split": "val",
                 "condition": condition,
                 "posterior_path": str(posterior),
@@ -354,11 +356,14 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
         rows,
         credible_level=0.8,
         bootstrap_replicates=20,
+        minimum_physical_groups=1,
         require_publication_provenance=True,
     )
     assert report["dingo_amplfi_joint_gate"] is True
     assert report["cross_backend_matched_input_gate"] is True
     assert report["common_injection_ids"] == ["i-1"]
+    assert report["pe_bootstrap_independence"]["passed"] is True
+    assert report["pe_bootstrap_independence"]["physical_groups"] == 1
 
     within = evaluate_pe_robustness_rows(
         [row for row in rows if row["backend"] == "DINGO"],
@@ -404,6 +409,7 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
         tmp_path / "joint-report.json",
         credible_level=0.8,
         bootstrap_replicates=20,
+        minimum_physical_groups=1,
     )
     assert joint["status"] == "paired_dingo_amplfi_pe_robustness_evaluation_complete"
     assert joint["rows"] == 6
@@ -417,6 +423,7 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
   required_parameters: [mass]
   minimum_paired_injections: 1
   minimum_bootstrap_replicates: 20
+  minimum_injection_gps_blocks: 1
   coverage_noninferiority_margin_vs_clean: 0.0
   coverage_noninferiority_margin_vs_contaminated: 0.0
   maximum_normalized_bias_regression_upper: 0.0
@@ -502,6 +509,7 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
         tmp_path / "portfolio.json",
         credible_level=0.8,
         bootstrap_replicates=20,
+        minimum_physical_groups=1,
     )
     assert portfolio["comparison_scope"] == "matched_event_within_backend_deltas_only"
     assert portfolio["absolute_cross_backend_comparison_allowed"] is False
@@ -573,6 +581,7 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
 
     locked_endpoints = {
         "minimum_paired_pe_injections": 1,
+        "minimum_injection_gps_blocks": 1,
         "pe_credible_level": 0.8,
         "bootstrap_replicates": 20,
         "bootstrap_seed": 20260720,

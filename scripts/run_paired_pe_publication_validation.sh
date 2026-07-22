@@ -103,6 +103,7 @@ PY
 cd "$TASK_CODE_DIR"
 PE_SMOKE_LIMIT="$validation_limit" \
 PE_SELECTION_SEED="${PE_SELECTION_SEED:-20260726}" \
+GWYOLO_PE_MINIMUM_GPS_BLOCKS=25 \
 OUTPUT_ROOT="$PE_INPUT_OUTPUT_ROOT" \
   bash scripts/run_promoted_paired_pe_smoke.sh
 

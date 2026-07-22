@@ -1856,6 +1856,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe_inputs.add_argument("--asd-guard-seconds", type=float, default=2.0)
     pe_inputs.add_argument("--limit", type=int)
     pe_inputs.add_argument("--selection-seed", type=int, default=20260721)
+    pe_inputs.add_argument("--minimum-selected-gps-blocks", type=int, default=1)
 
     pe_conditioning = subparsers.add_parser("pe-native-condition")
     pe_conditioning.add_argument("--source-manifest", required=True)
@@ -4330,6 +4331,7 @@ def main(argv: list[str] | None = None) -> int:
                 asd_guard_seconds=args.asd_guard_seconds,
                 limit=args.limit,
                 selection_seed=args.selection_seed,
+                minimum_selected_gps_blocks=args.minimum_selected_gps_blocks,
             )
         )
     elif args.command == "pe-backend-lock-audit":

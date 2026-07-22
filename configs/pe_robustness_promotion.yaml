@@ -10,6 +10,7 @@ pe_robustness_promotion:
     - psi
   minimum_paired_injections: 100
   minimum_bootstrap_replicates: 10000
+  minimum_injection_gps_blocks: 25
   coverage_noninferiority_margin_vs_clean: 0.05
   coverage_noninferiority_margin_vs_contaminated: 0.02
   maximum_normalized_bias_regression_upper: 0.10

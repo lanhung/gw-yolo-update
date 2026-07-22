@@ -137,6 +137,10 @@ publication_evidence:
         - {field: bias, op: nonempty}
         - {field: posterior_width, op: nonempty}
         - {field: latency, op: nonempty}
+        - {field: pe_bootstrap_independence.status, op: equals, value: paired_pe_bootstrap_independence_audit_v1}
+        - {field: pe_bootstrap_independence.passed, op: equals, value: true}
+        - {field: pe_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: pe_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: locked_suite_access.output_key, op: equals, value: paired_pe_portfolio}
       replay_artifacts:
         - {path_field: dingo_batch.path, sha256_field: dingo_batch.sha256}

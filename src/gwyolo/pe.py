@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
@@ -59,6 +60,8 @@ PUBLICATION_INPUT_FIELDS = (
 )
 
 PUBLICATION_SHARED_BACKEND_FIELDS = (
+    "waveform_id",
+    "gps_block",
     "prior_hash",
     "waveform_approximant",
     "detector_set",
@@ -187,9 +190,13 @@ def sky_area_estimator_identity(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _paired_mean_bootstrap(
-    values: list[float], replicates: int, seed: int
+    values: list[float],
+    replicates: int,
+    seed: int,
+    event_rows: list[dict[str, Any]] | None = None,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
-    """Summarize a paired per-event delta with a deterministic percentile bootstrap."""
+    """Summarize a paired event delta with auditable physical-noise resampling."""
     if not values:
         raise ValueError("paired bootstrap requires at least one value")
     if replicates <= 0:
@@ -197,22 +204,43 @@ def _paired_mean_bootstrap(
     array = np.asarray(values, dtype=np.float64)
     if not np.isfinite(array).all():
         raise ValueError("paired bootstrap values must be finite")
-    rng = np.random.default_rng(seed)
-    means = np.empty(replicates, dtype=np.float64)
-    for start in range(0, replicates, 256):
-        stop = min(start + 256, replicates)
-        indices = rng.integers(0, array.size, size=(stop - start, array.size))
-        means[start:stop] = array[indices].mean(axis=1)
+    records = event_rows if event_rows is not None else [{} for _ in values]
+    if len(records) != len(values):
+        raise ValueError("paired bootstrap event rows must align with values")
+    bootstrap = hierarchical_injection_bootstrap(
+        records,
+        array,
+        np.ones(array.size, dtype=np.float64),
+        replicates,
+        seed,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     return {
         "count": int(array.size),
         "mean": float(array.mean()),
         "median": float(np.median(array)),
-        "paired_bootstrap_95": [
-            float(np.percentile(means, 2.5)),
-            float(np.percentile(means, 97.5)),
-        ],
+        "paired_bootstrap_95": bootstrap["interval_95"],
         "bootstrap_replicates": replicates,
         "bootstrap_seed": seed,
+        "bootstrap_independence": bootstrap["independence_audit"],
+    }
+
+
+def _combine_pe_bootstrap_audits(
+    audits: dict[str, dict[str, Any]], minimum_physical_groups: int
+) -> dict[str, Any]:
+    if not audits:
+        raise ValueError("PE bootstrap audit requires at least one backend")
+    methods = {str(value.get("method")) for value in audits.values()}
+    physical_groups = [int(value.get("physical_groups", 0)) for value in audits.values()]
+    return {
+        "status": "paired_pe_bootstrap_independence_audit_v1",
+        "passed": all(value.get("passed") is True for value in audits.values())
+        and len(methods) == 1,
+        "method": next(iter(methods)) if len(methods) == 1 else "inconsistent",
+        "minimum_physical_groups": minimum_physical_groups,
+        "physical_groups": min(physical_groups),
+        "backend_audits": dict(sorted(audits.items())),
     }
 
 
@@ -471,6 +499,7 @@ def evaluate_pe_rows(
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260719,
     require_publication_provenance: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     if not rows:
         raise ValueError("PE manifest cannot be empty")
@@ -511,6 +540,13 @@ def evaluate_pe_rows(
         cleaned = pair["cleaned"]
         if raw["truth"] != cleaned["truth"]:
             raise ValueError(f"Truth mismatch for {backend}/{injection_id}")
+        if any(
+            raw.get(field) != cleaned.get(field)
+            for field in ("waveform_id", "gps_block")
+        ):
+            raise ValueError(
+                f"Physical event identity mismatch for {backend}/{injection_id}"
+            )
         if require_publication_provenance:
             inconsistent = [
                 field
@@ -544,6 +580,8 @@ def evaluate_pe_rows(
             {
                 "backend": backend,
                 "injection_id": injection_id,
+                "waveform_id": raw.get("waveform_id"),
+                "gps_block": raw.get("gps_block"),
                 "event_id": raw.get("event_id"),
                 "raw_latency_seconds": float(raw["latency_seconds"]),
                 "cleaned_latency_seconds": float(cleaned["latency_seconds"]),
@@ -581,10 +619,13 @@ def evaluate_pe_rows(
         )
         parameter_summaries = {}
         for parameter_index, parameter in enumerate(parameter_names):
-            parameter_rows = [
-                row["parameters"][parameter]
+            parameter_comparisons = [
+                row
                 for row in backend_comparisons
                 if parameter in row["parameters"]
+            ]
+            parameter_rows = [
+                row["parameters"][parameter] for row in parameter_comparisons
             ]
             seed_offset = bootstrap_seed + 10_000 * backend_index + 100 * parameter_index
             parameter_summaries[parameter] = {
@@ -592,6 +633,8 @@ def evaluate_pe_rows(
                     [row["absolute_bias_change_cleaned_minus_raw"] for row in parameter_rows],
                     bootstrap_replicates,
                     seed_offset,
+                    parameter_comparisons,
+                    minimum_physical_groups,
                 ),
                 "credible_width_ratio_cleaned_over_raw": _paired_mean_bootstrap(
                     [
@@ -601,6 +644,14 @@ def evaluate_pe_rows(
                     ],
                     bootstrap_replicates,
                     seed_offset + 1,
+                    [
+                        comparison
+                        for comparison, row in zip(
+                            parameter_comparisons, parameter_rows
+                        )
+                        if row["credible_width_ratio_cleaned_over_raw"] is not None
+                    ],
+                    minimum_physical_groups,
                 ),
                 "coverage_transitions": dict(
                     sorted(
@@ -617,9 +668,17 @@ def evaluate_pe_rows(
                 [row["cleaning_latency_overhead_seconds"] for row in backend_comparisons],
                 bootstrap_replicates,
                 bootstrap_seed + 10_000 * backend_index + 9_999,
+                backend_comparisons,
+                minimum_physical_groups,
             ),
             "parameters": parameter_summaries,
         }
+    bootstrap_audits = {
+        backend: summary["cleaning_latency_overhead_seconds"][
+            "bootstrap_independence"
+        ]
+        for backend, summary in paired_summaries.items()
+    }
     return {
         "protocol": "paired raw/cleaned posterior evaluation on identical injections and truth",
         "credible_level": credible_level,
@@ -628,6 +687,9 @@ def evaluate_pe_rows(
         "backend_counts": dict(sorted(Counter(row["backend"] for row in evaluated_rows).items())),
         "coverage": coverage,
         "paired_summaries": paired_summaries,
+        "pe_bootstrap_independence": _combine_pe_bootstrap_audits(
+            bootstrap_audits, minimum_physical_groups
+        ),
         "publication_provenance_required": require_publication_provenance,
         "publication_provenance_fields": list(PUBLICATION_PROVENANCE_FIELDS),
         "comparisons": comparisons,
@@ -655,6 +717,7 @@ def evaluate_pe_robustness_rows(
     bootstrap_seed: int = 20260720,
     require_publication_provenance: bool = True,
     require_cross_backend_join: bool = True,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     """Evaluate clean/contaminated/mask-conditioned PE triplets without changing priors."""
     if not require_cross_backend_join and not require_publication_provenance:
@@ -731,6 +794,19 @@ def evaluate_pe_robustness_rows(
         masked = triplet["mask_conditioned"]
         if not (clean["truth"] == contaminated["truth"] == masked["truth"]):
             raise ValueError(f"PE robustness truth mismatch for {backend}/{injection_id}")
+        if any(
+            len(
+                {
+                    str(triplet[condition].get(field, ""))
+                    for condition in ROBUSTNESS_CONDITIONS
+                }
+            )
+            != 1
+            for field in ("waveform_id", "gps_block")
+        ):
+            raise ValueError(
+                f"PE robustness physical identity mismatch for {backend}/{injection_id}"
+            )
         if require_publication_provenance:
             inconsistent = [
                 field
@@ -859,6 +935,8 @@ def evaluate_pe_robustness_rows(
             {
                 "backend": backend,
                 "injection_id": injection_id,
+                "waveform_id": clean.get("waveform_id"),
+                "gps_block": clean.get("gps_block"),
                 "event_id": clean.get("event_id"),
                 "contamination_stratum": contaminated.get("contamination_stratum", "all"),
                 "parameters": parameters,
@@ -987,7 +1065,12 @@ def evaluate_pe_robustness_rows(
                     "coverage_mask_minus_clean",
                 )
             ):
-                values = [row[metric] for row in parameter_rows if row[metric] is not None]
+                selected = [
+                    (comparison, row[metric])
+                    for comparison, row in zip(backend_comparisons, parameter_rows)
+                    if row[metric] is not None
+                ]
+                values = [float(value) for _, value in selected]
                 parameter_summaries[parameter][metric] = (
                     _paired_mean_bootstrap(
                         values,
@@ -996,6 +1079,8 @@ def evaluate_pe_robustness_rows(
                         + backend_index * 100_000
                         + parameter_index * 100
                         + metric_index,
+                        [comparison for comparison, _ in selected],
+                        minimum_physical_groups,
                     )
                     if values
                     else None
@@ -1012,22 +1097,36 @@ def evaluate_pe_robustness_rows(
                 "sky_area_contaminated_over_clean",
             )
         ):
-            values = [row[metric] for row in backend_comparisons if row[metric] is not None]
+            selected = [
+                (row, row[metric])
+                for row in backend_comparisons
+                if row[metric] is not None
+            ]
+            values = [float(value) for _, value in selected]
             resource_summaries[metric] = (
                 _paired_mean_bootstrap(
                     values,
                     bootstrap_replicates,
                     bootstrap_seed + backend_index * 100_000 + 90_000 + metric_index,
+                    [row for row, _ in selected],
+                    minimum_physical_groups,
                 )
                 if values
                 else None
             )
         paired_summaries[backend] = {
             "paired_injections": len(backend_comparisons),
+            "bootstrap_independence": resource_summaries[
+                "latency_mask_minus_contaminated_seconds"
+            ]["bootstrap_independence"],
             "parameters": parameter_summaries,
             "resources": resource_summaries,
         }
     backend_names = sorted(paired_summaries)
+    bootstrap_audits = {
+        backend: paired_summaries[backend]["bootstrap_independence"]
+        for backend in backend_names
+    }
     return {
         "status": "paired_pe_contamination_mask_robustness",
         "scientific_claim_allowed": False,
@@ -1058,6 +1157,9 @@ def evaluate_pe_robustness_rows(
         "triplets": len(comparisons),
         "coverage": coverage,
         "paired_summaries": paired_summaries,
+        "pe_bootstrap_independence": _combine_pe_bootstrap_audits(
+            bootstrap_audits, minimum_physical_groups
+        ),
         "comparisons": comparisons,
         "publication_provenance_required": require_publication_provenance,
         "publication_provenance_fields": list(PUBLICATION_PROVENANCE_FIELDS),
@@ -1076,6 +1178,7 @@ def run_pe_robustness_evaluation(
     bootstrap_seed: int = 20260720,
     require_publication_provenance: bool = True,
     require_cross_backend_join: bool = True,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -1086,6 +1189,7 @@ def run_pe_robustness_evaluation(
         bootstrap_seed,
         require_publication_provenance,
         require_cross_backend_join,
+        minimum_physical_groups,
     )
     report["manifest_path"] = str(manifest_path)
     report["manifest_sha256"] = file_sha256(manifest_path)
@@ -1102,6 +1206,7 @@ def run_joint_pe_robustness_evaluation(
     credible_level: float = 0.9,
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260720,
+    minimum_physical_groups: int = 25,
 ) -> dict[str, Any]:
     """Join hash-bound DINGO/AMPLFI batches and run the strict paired evaluation."""
 
@@ -1193,6 +1298,8 @@ def run_joint_pe_robustness_evaluation(
         bootstrap_replicates,
         bootstrap_seed,
         True,
+        True,
+        minimum_physical_groups,
     )
     if not report["dingo_amplfi_joint_gate"] or not report[
         "cross_backend_matched_input_gate"
@@ -1227,6 +1334,7 @@ def run_within_backend_pe_robustness_portfolio(
     bootstrap_replicates: int = 10000,
     bootstrap_seed: int = 20260721,
     required_split: str = "val",
+    minimum_physical_groups: int = 25,
 ) -> dict[str, Any]:
     """Join matched events while retaining only within-backend PE deltas.
 
@@ -1317,6 +1425,7 @@ def run_within_backend_pe_robustness_portfolio(
             bootstrap_seed,
             True,
             False,
+            minimum_physical_groups,
         )
         prior_hashes = {str(row["prior_hash"]) for row in rows}
         waveforms = {str(row["waveform_approximant"]) for row in rows}
@@ -1349,6 +1458,8 @@ def run_within_backend_pe_robustness_portfolio(
     if backend_keys["DINGO"] != backend_keys["AMPLFI"]:
         raise ValueError("PE portfolio backends use different injection conditions")
     shared_fields = (
+        "waveform_id",
+        "gps_block",
         "source_event_hash",
         "analysis_input_sha256",
         "base_injection_manifest_sha256",
@@ -1440,6 +1551,13 @@ def run_within_backend_pe_robustness_portfolio(
             backend: evaluation["paired_summaries"][backend]
             for backend, evaluation in backend_evaluations.items()
         },
+        "pe_bootstrap_independence": _combine_pe_bootstrap_audits(
+            {
+                backend: evaluation["pe_bootstrap_independence"]
+                for backend, evaluation in backend_evaluations.items()
+            },
+            minimum_physical_groups,
+        ),
         "source_batch_reports": source_batch_reports,
         "source_within_backend_reports": source_within_reports,
         **execution_provenance(),
@@ -1749,6 +1867,8 @@ def run_locked_joint_pe_robustness_evaluation(
         int(endpoints["bootstrap_replicates"]),
         int(endpoints["bootstrap_seed"]),
         True,
+        True,
+        int(endpoints["minimum_injection_gps_blocks"]),
     )
     paired_injections = int(report["common_injection_count"])
     if paired_injections < int(endpoints["minimum_paired_pe_injections"]):
@@ -1887,6 +2007,7 @@ def run_locked_paired_pe_robustness_portfolio(
             int(suite_access["endpoints"]["bootstrap_seed"]),
             True,
             False,
+            int(suite_access["endpoints"]["minimum_injection_gps_blocks"]),
         )
         rows_by_backend[backend] = rows
         keys_by_backend[backend] = keys
@@ -1907,6 +2028,8 @@ def run_locked_paired_pe_robustness_portfolio(
         for backend, rows in rows_by_backend.items()
     }
     shared_fields = (
+        "waveform_id",
+        "gps_block",
         "source_event_hash",
         "analysis_input_sha256",
         "base_injection_manifest_sha256",
@@ -1978,6 +2101,13 @@ def run_locked_paired_pe_robustness_portfolio(
             )
             for backend, evaluation in evaluations.items()
         },
+        "pe_bootstrap_independence": _combine_pe_bootstrap_audits(
+            {
+                backend: evaluation["pe_bootstrap_independence"]
+                for backend, evaluation in evaluations.items()
+            },
+            int(suite_access["endpoints"]["minimum_injection_gps_blocks"]),
+        ),
         "dingo_batch": source_reports["DINGO"],
         "amplfi_batch": source_reports["AMPLFI"],
         "validation_promotion_report": {
@@ -2062,6 +2192,7 @@ def promote_pe_robustness_validation(
         raise ValueError("PE promotion must predeclare DINGO, AMPLFI and paper parameters")
     minimum_injections = int(settings["minimum_paired_injections"])
     minimum_bootstraps = int(settings["minimum_bootstrap_replicates"])
+    minimum_physical_groups = int(settings.get("minimum_injection_gps_blocks", 25))
     clean_coverage_margin = float(settings["coverage_noninferiority_margin_vs_clean"])
     contaminated_coverage_margin = float(
         settings["coverage_noninferiority_margin_vs_contaminated"]
@@ -2081,6 +2212,7 @@ def promote_pe_robustness_validation(
     if (
         minimum_injections <= 0
         or minimum_bootstraps <= 0
+        or minimum_physical_groups < 1
         or not 0 <= clean_coverage_margin < 1
         or not 0 <= contaminated_coverage_margin < 1
         or maximum_bias_regression < 0
@@ -2111,6 +2243,24 @@ def promote_pe_robustness_validation(
             "passed": int(report.get("bootstrap_replicates", -1)) >= minimum_bootstraps,
         },
         "validation_only": {"passed": True},
+        "physical_injection_bootstrap": {
+            "observed": report.get("pe_bootstrap_independence"),
+            "minimum_injection_gps_blocks": minimum_physical_groups,
+            "passed": bool(
+                report.get("pe_bootstrap_independence", {}).get("status")
+                == "paired_pe_bootstrap_independence_audit_v1"
+                and report.get("pe_bootstrap_independence", {}).get("passed")
+                is True
+                and report.get("pe_bootstrap_independence", {}).get("method")
+                == "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+                and int(
+                    report.get("pe_bootstrap_independence", {}).get(
+                        "physical_groups", 0
+                    )
+                )
+                >= minimum_physical_groups
+            ),
+        },
         "input_scope_gate": {
             "mode": evidence_mode,
             "passed": True,
@@ -2254,6 +2404,7 @@ def promote_pe_robustness_validation(
         "config_sha256": file_sha256(config_path),
         "required_backends": required_backends,
         "required_parameters": required_parameters,
+        "pe_bootstrap_independence": report["pe_bootstrap_independence"],
         "global_checks": global_checks,
         "backend_checks": backend_checks,
         **execution_provenance(),

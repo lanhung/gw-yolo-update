@@ -175,6 +175,11 @@ def freeze_locked_evaluation_suite_plan(
         != "physical_block_x_block_x_offset_pigeonhole_v1"
     ):
         raise ValueError("Locked suite must predeclare clustered background uncertainty")
+    if (
+        endpoints.get("uncertainty")
+        != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+    ):
+        raise ValueError("Locked suite must predeclare physical injection uncertainty")
     if endpoints.get("catalog_search_arm") not in {
         "raw_candidate_search",
         "mask_candidate_search",

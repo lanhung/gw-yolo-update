@@ -63,7 +63,7 @@ locked_evaluation_suite:
     bootstrap_replicates: 10000
     bootstrap_seed: 20260722
     pe_credible_level: 0.9
-    uncertainty: paired_nonparametric_bootstrap_95
+    uncertainty: gps_block_then_paired_injection_hierarchical_bootstrap_v1
     background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1
     minimum_background_gps_blocks: 25
     minimum_background_shifts: 25

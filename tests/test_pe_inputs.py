@@ -154,6 +154,9 @@ def test_common_pe_inputs_are_paired_backend_neutral_and_resumable(tmp_path: Pat
     report = materialize_common_pe_inputs(**kwargs)
     assert report["paired_injections"] == 1
     assert report["rows"] == 3
+    assert report["selection_method"] == "gps_block_first_then_hash_rank_v1"
+    assert report["selected_unique_gps_blocks"] == 1
+    assert report["selected_unique_waveforms"] == 1
     assert report["bandlimited_upsampling_used"] is True
     assert report["input_population_matches_analysis_prior_distribution"] is False
 
@@ -181,6 +184,13 @@ def test_common_pe_inputs_are_paired_backend_neutral_and_resumable(tmp_path: Pat
 
     resumed = materialize_common_pe_inputs(**kwargs)
     assert resumed["manifest_sha256"] == report["manifest_sha256"]
+
+    insufficient = {**kwargs, "output_dir": tmp_path / "insufficient"}
+    with pytest.raises(ValueError, match="has 1 GPS blocks; requires 2"):
+        materialize_common_pe_inputs(
+            **insufficient,
+            minimum_selected_gps_blocks=2,
+        )
 
 
 def test_common_pe_inputs_reject_mismatched_mask_lineage(tmp_path: Path) -> None:
