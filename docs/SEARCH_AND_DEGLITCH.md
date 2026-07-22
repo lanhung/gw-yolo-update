@@ -390,6 +390,14 @@ python -m gwyolo.cli candidate-block-permutations \
   --coincidence-window-seconds 0.012
 ```
 
+Publication-scale execution through `scripts/run_candidate_background_range.sh` additionally
+requires `INDEPENDENT_VALIDATION_ENDPOINT_REPORT`, `VALIDATION_PURPOSE_AUDIT` and
+`CAPACITY_FORECAST`. Before any shard is downloaded or scored, the runner replays the endpoint
+contract, binds both reports to the exact parent-plan SHA-256, requires zero pair/GPS overlap and
+checks that the planned source-pair count satisfies the declared FAR/confidence/safety forecast.
+The bounded shard range must cover that parent plan exactly. A plan made before the endpoint was
+partitioned may be retained as a diagnostic, but it cannot be used for publication calibration.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and

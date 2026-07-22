@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -20,7 +22,10 @@ def _minimum_environment(tmp_path: Path) -> dict[str, str]:
         "SCORING_CODE_COMMIT",
         "PROMOTION_REPORT",
         "PROMOTED_PIPELINE_REPORT",
+        "INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
         "PARENT_PLAN",
+        "VALIDATION_PURPOSE_AUDIT",
+        "CAPACITY_FORECAST",
         "EVENT_EXCLUSIONS",
         "COHERENCE_CONFIG",
         "TIMING_CALIBRATION_REPORT",
@@ -75,6 +80,12 @@ def test_candidate_background_extension_requires_separate_base_root(
 def test_candidate_background_extension_binds_authoritative_parent() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert '--parent-plan "$PARENT_PLAN"' in source
+    assert '"$INDEPENDENT_VALIDATION_ENDPOINT_REPORT"' in source
+    assert '"$VALIDATION_PURPOSE_AUDIT"' in source
+    assert '"$CAPACITY_FORECAST"' in source
+    assert 'audit.get("plan", {}).get("sha256") != plan_hash' in source
+    assert 'forecast.get("planned_parent_plan_sha256") != plan_hash' in source
+    assert 'int(endpoint.get("rows", -1)) < 3000' in source
     assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source
@@ -89,6 +100,93 @@ def test_candidate_background_embedded_python_compiles() -> None:
     assert len(snippets) >= 4
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
+
+
+def test_candidate_background_rejects_audit_for_another_plan(tmp_path: Path) -> None:
+    environment = _minimum_environment(tmp_path)
+    environment.update(
+        {
+            "TASK_PYTHON": sys.executable,
+            "CHECKPOINT": str(tmp_path / "checkpoint.pt"),
+            "CONFIG": str(tmp_path / "config.yaml"),
+            "SHARD_STOP_EXCLUSIVE": "1",
+        }
+    )
+    for name in ("task_code_dir", "scoring_code_dir"):
+        (tmp_path / name / "src" / "gwyolo").mkdir(parents=True)
+    for name in (
+        "promotion_report",
+        "promoted_pipeline_report",
+        "event_exclusions",
+        "checkpoint.pt",
+        "config.yaml",
+        "coherence_config",
+        "timing_calibration_report",
+        "validation_injection_ranking_report",
+    ):
+        (tmp_path / name).write_text("{}\n", encoding="utf-8")
+
+    purpose_hash = "a" * 64
+    endpoint = {
+        "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+        "passed": True,
+        "rows": 3000,
+        "candidate_calibration_unique_gps_blocks": 25,
+        "injection_validation_unique_gps_blocks": 25,
+        "purpose_gps_block_overlap": 0,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "component_reports": {"purpose_partition": {"sha256": purpose_hash}},
+    }
+    plan = {
+        "selected_pairs": 4,
+        "candidate_scores_inspected": False,
+        "test_data_opened": False,
+    }
+    endpoint_path = Path(environment["INDEPENDENT_VALIDATION_ENDPOINT_REPORT"])
+    plan_path = Path(environment["PARENT_PLAN"])
+    endpoint_path.write_text(json.dumps(endpoint), encoding="utf-8")
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    plan_hash = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    audit = {
+        "status": "verified_gwosc_plan_validation_purpose_disjointness",
+        "passed": True,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "overlap_pair_ids": [],
+        "overlap_gps_blocks": [],
+        "plan": {"sha256": "b" * 64},
+        "purpose_partition": {"sha256": purpose_hash},
+    }
+    forecast = {
+        "status": "score_blind_candidate_block_capacity_forecast",
+        "forecast_only": True,
+        "candidate_scores_inspected": False,
+        "planned_pairs_satisfy_safety_forecast": True,
+        "recommendation_fits_available_pairs": True,
+        "planned_parent_plan_sha256": plan_hash,
+        "planned_source_pairs": 4,
+        "recommended_minimum_source_pairs": 4,
+        "safety_factor": 1.5,
+        "target_far_per_year": 0.1,
+        "zero_count_confidence": 0.9,
+    }
+    Path(environment["VALIDATION_PURPOSE_AUDIT"]).write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+    Path(environment["CAPACITY_FORECAST"]).write_text(
+        json.dumps(forecast), encoding="utf-8"
+    )
+
+    completed = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "validation-purpose audit does not authorize" in completed.stderr
 
 
 def test_candidate_background_propagates_five_seed_selector_failure(
