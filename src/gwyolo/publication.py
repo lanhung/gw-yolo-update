@@ -21,6 +21,7 @@ _OPERATORS = {
     "nonempty",
     "length_at_least",
     "all_empty",
+    "path_absent",
 }
 
 
@@ -74,6 +75,8 @@ def _check(observed: Any, operation: str, expected: Any) -> bool:
         if not isinstance(observed, dict):
             return False
         return all(not value for value in observed.values())
+    if operation == "path_absent":
+        return isinstance(observed, str) and bool(observed) and not Path(observed).exists()
     raise AssertionError(operation)
 
 
@@ -116,7 +119,7 @@ def _validate_protocol(config: dict[str, Any]) -> tuple[dict[str, Any], list[dic
             operation = check.get("op")
             if operation not in _OPERATORS:
                 raise ValueError(f"Unsupported evidence operator for {identifier}: {operation}")
-            if operation not in {"nonempty", "all_empty"} and "value" not in check:
+            if operation not in {"nonempty", "all_empty", "path_absent"} and "value" not in check:
                 raise ValueError(f"Evidence check {identifier}.{check['field']} lacks a value")
         replay = requirement.get("replay_artifacts", [])
         if not isinstance(replay, list):

@@ -30,6 +30,14 @@ strain, candidate tables and PE samples locked until the following items are fro
 Aggregate published population facts may be used now to design coverage strata. Event names,
 event-level parameters, candidate ranks and O4b strain may not be used to choose the model.
 
+The unopened inventory contract must be produced by `gwtc5-locked-corpus-freeze`, not the generic
+evaluation-corpus freezer. It binds the exact `locked_suite_v2` configuration, GWTC-5.0/O4b/test
+identity, at least 3,000 unique injections and waveforms, every required detector subset, source
+family and stress stratum, while rejecting score/result fields. The freeze reads score-blind
+manifest metadata only and records zero strain rows read. The validation ledger also checks that
+the predeclared access-log path is still absent at audit time; a stale unopened report cannot pass
+after the one-time opening.
+
 ## Predeclared GWTC-5 endpoints
 
 The primary search claim is not catalog-image hit rate. It is paired raw-versus-mask-cleaned

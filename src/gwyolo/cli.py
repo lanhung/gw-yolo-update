@@ -1560,6 +1560,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat to freeze physical group counts; defaults to injection/waveform/GPS/family",
     )
 
+    gwtc5_freeze = subparsers.add_parser("gwtc5-locked-corpus-freeze")
+    gwtc5_freeze.add_argument("--manifest", required=True)
+    gwtc5_freeze.add_argument("--suite-config", required=True)
+    gwtc5_freeze.add_argument("--output", required=True)
+    gwtc5_freeze.add_argument("--access-log", required=True)
+
     locked_suite_freeze = subparsers.add_parser("locked-evaluation-suite-freeze")
     locked_suite_freeze.add_argument("--validation-evidence-report", required=True)
     locked_suite_freeze.add_argument("--config", required=True)
@@ -3837,6 +3843,17 @@ def main(argv: list[str] | None = None) -> int:
                     "gps_block",
                     "source_family",
                 ),
+            )
+        )
+    elif args.command == "gwtc5-locked-corpus-freeze":
+        from .evaluation_lock import freeze_gwtc5_locked_corpus_contract
+
+        _print(
+            freeze_gwtc5_locked_corpus_contract(
+                args.manifest,
+                args.suite_config,
+                args.output,
+                args.access_log,
             )
         )
     elif args.command == "locked-evaluation-suite-freeze":

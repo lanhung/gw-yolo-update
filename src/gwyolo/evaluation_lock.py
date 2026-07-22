@@ -686,3 +686,192 @@ def freeze_evaluation_corpus(
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(target, report)
     return report
+
+
+def freeze_gwtc5_locked_corpus_contract(
+    manifest_path: str | Path,
+    suite_config_path: str | Path,
+    output_path: str | Path,
+    access_log_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze the exact score-blind GWTC-5/O4b test inventory without opening strain."""
+
+    manifest = Path(manifest_path).resolve()
+    config_path = Path(suite_config_path).resolve()
+    target = Path(output_path).resolve()
+    access_log = Path(access_log_path).resolve()
+    if not manifest.is_file() or not config_path.is_file():
+        raise FileNotFoundError("GWTC-5 corpus freeze inputs are absent")
+    if target == access_log or access_log.exists():
+        raise FileExistsError("GWTC-5 access log exists before corpus freezing")
+    config = load_yaml(config_path)
+    settings = config.get("locked_evaluation_suite")
+    if (
+        not isinstance(settings, dict)
+        or settings.get("schema") != "locked_suite_v2"
+        or settings.get("corpus_label") != "GWTC-5.0_O4b_locked_suite_v2"
+        or settings.get("required_split") != "test"
+        or settings.get("observing_runs") != ["O4b"]
+        or settings.get("catalog_release") != "GWTC-5.0"
+    ):
+        raise ValueError("GWTC-5 corpus freeze requires the exact locked suite v2 identity")
+    endpoints = settings.get("endpoints", {})
+    minimum_rows = endpoints.get("minimum_test_injections")
+    required_detector_subsets = settings.get("endpoints", {}).get(
+        "required_detector_subsets"
+    )
+    required_source_families = settings.get("endpoints", {}).get(
+        "required_source_families"
+    )
+    required_stress_strata = settings.get("endpoints", {}).get(
+        "required_stress_strata"
+    )
+    if (
+        isinstance(minimum_rows, bool)
+        or not isinstance(minimum_rows, int)
+        or minimum_rows < 3000
+        or not isinstance(required_detector_subsets, list)
+        or not required_detector_subsets
+        or not isinstance(required_source_families, list)
+        or not required_source_families
+        or not isinstance(required_stress_strata, list)
+        or not required_stress_strata
+    ):
+        raise ValueError("GWTC-5 suite lacks required frozen corpus strata")
+    rows = _load_jsonl(manifest)
+    if len(rows) < minimum_rows:
+        raise ValueError("GWTC-5 locked corpus is below the predeclared injection floor")
+    required_fields = {
+        "split",
+        "injection_id",
+        "waveform_id",
+        "gps_block",
+        "source_family",
+        "observing_run",
+        "detector_subset",
+        "catalog_release",
+        "stress_strata",
+    }
+    missing = [index for index, row in enumerate(rows) if required_fields - set(row)]
+    if missing:
+        raise ValueError(f"GWTC-5 locked corpus rows lack frozen strata: {missing[:10]}")
+    if any(str(row["split"]) != "test" for row in rows):
+        raise ValueError("GWTC-5 locked corpus mixes data outside the test split")
+    if any(str(row["observing_run"]) != "O4b" for row in rows):
+        raise ValueError("GWTC-5 locked corpus contains a non-O4b row")
+    if any(str(row["catalog_release"]) != "GWTC-5.0" for row in rows):
+        raise ValueError("GWTC-5 locked corpus contains another catalog release")
+    for identity_field in ("injection_id", "waveform_id"):
+        identities = [str(row[identity_field]) for row in rows]
+        if len(set(identities)) != len(identities):
+            raise ValueError(f"GWTC-5 locked corpus repeats {identity_field}")
+    forbidden_fields = {
+        "candidate_score",
+        "ranking_statistic",
+        "posterior_samples",
+        "model_prediction",
+        "selected_threshold",
+        "test_metric",
+        "recovered",
+        "far",
+        "ifar",
+        "strain",
+        "time_series",
+        "q_transform",
+        "features",
+    }
+    exposed = sorted(
+        {
+            field
+            for row in rows
+            for field in forbidden_fields
+            if field in row
+        }
+    )
+    if exposed:
+        raise ValueError(f"GWTC-5 freeze manifest exposes selection/result fields: {exposed}")
+    observed_detector_subsets = {str(row["detector_subset"]) for row in rows}
+    observed_source_families = {str(row["source_family"]) for row in rows}
+    observed_stress_strata: set[str] = set()
+    for index, row in enumerate(rows):
+        strata = row["stress_strata"]
+        if (
+            not isinstance(strata, list)
+            or not strata
+            or any(not isinstance(value, str) or not value for value in strata)
+        ):
+            raise ValueError(f"GWTC-5 stress strata are invalid at row {index}")
+        observed_stress_strata.update(strata)
+    detector_coverage = set(map(str, required_detector_subsets)) <= observed_detector_subsets
+    family_coverage = set(map(str, required_source_families)) <= observed_source_families
+    stress_coverage = set(map(str, required_stress_strata)) <= observed_stress_strata
+    if not detector_coverage or not family_coverage or not stress_coverage:
+        raise ValueError("GWTC-5 locked corpus does not cover every predeclared stratum")
+
+    group_fields = [
+        "injection_id",
+        "waveform_id",
+        "gps_block",
+        "source_family",
+        "observing_run",
+        "detector_subset",
+    ]
+    identity = {
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": file_sha256(config_path),
+        "access_log_path": str(access_log),
+        "corpus_label": settings["corpus_label"],
+        "expected_split": "test",
+        "minimum_rows": minimum_rows,
+        "group_fields": group_fields,
+    }
+    if target.is_file():
+        completed = json.loads(target.read_text(encoding="utf-8"))
+        if completed.get("freeze_identity") != identity:
+            raise ValueError("existing GWTC-5 freeze report has another identity")
+        return completed
+    report = {
+        "status": "locked_evaluation_corpus_unopened",
+        "locked_suite_schema": "locked_suite_v2",
+        "corpus_label": settings["corpus_label"],
+        "catalog_release": "GWTC-5.0",
+        "observing_runs": ["O4b"],
+        "expected_split": "test",
+        "scientific_claim_allowed": False,
+        "evaluation_opened": False,
+        "test_metrics": None,
+        "candidate_scores_inspected": False,
+        "test_strain_rows_read": 0,
+        "test_manifest_metadata_rows_read": len(rows),
+        "selection_or_result_fields_present": False,
+        "freeze_identity": identity,
+        "rows": len(rows),
+        "minimum_test_injections": minimum_rows,
+        "manifest_path": str(manifest),
+        "manifest_sha256": identity["manifest_sha256"],
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": identity["suite_config_sha256"],
+        "access_log_path": str(access_log),
+        "access_log_exists": False,
+        "required_detector_subsets_covered": detector_coverage,
+        "required_source_families_covered": family_coverage,
+        "required_stress_strata_covered": stress_coverage,
+        "observed_detector_subsets": sorted(observed_detector_subsets),
+        "observed_source_families": sorted(observed_source_families),
+        "observed_stress_strata": sorted(observed_stress_strata),
+        "unique_group_counts": {
+            field: len({str(row[field]) for row in rows}) for field in group_fields
+        },
+        "manifest_fields_used_for_freeze": sorted(required_fields),
+        "opening_requirements": [
+            "validation evidence ledger at 10/10",
+            "frozen suite plan and analysis artifact hashes",
+            "exclusive one-time access log immediately before strain scoring",
+        ],
+        **execution_provenance(),
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(target, report)
+    return report

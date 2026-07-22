@@ -208,10 +208,25 @@ publication_evidence:
       description: O4b/GWTC-5 corpus frozen and still unopened before the final one-time evaluation.
       checks:
         - {field: status, op: equals, value: locked_evaluation_corpus_unopened}
+        - {field: locked_suite_schema, op: equals, value: locked_suite_v2}
+        - {field: corpus_label, op: equals, value: GWTC-5.0_O4b_locked_suite_v2}
+        - {field: catalog_release, op: equals, value: GWTC-5.0}
+        - {field: observing_runs, op: equals, value: [O4b]}
+        - {field: expected_split, op: equals, value: test}
+        - {field: rows, op: at_least, value: 3000}
+        - {field: minimum_test_injections, op: at_least, value: 3000}
+        - {field: required_detector_subsets_covered, op: equals, value: true}
+        - {field: required_source_families_covered, op: equals, value: true}
+        - {field: required_stress_strata_covered, op: equals, value: true}
         - {field: evaluation_opened, op: equals, value: false}
         - {field: access_log_exists, op: equals, value: false}
+        - {field: access_log_path, op: path_absent}
+        - {field: candidate_scores_inspected, op: equals, value: false}
+        - {field: test_strain_rows_read, op: equals, value: 0}
+        - {field: selection_or_result_fields_present, op: equals, value: false}
         - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: test_metrics, op: equals, value: null}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
         - {path_field: manifest_path, sha256_field: manifest_sha256}
+        - {path_field: suite_config_path, sha256_field: suite_config_sha256}
