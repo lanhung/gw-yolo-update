@@ -34,6 +34,7 @@ DOWNLOAD_WORKERS=${DOWNLOAD_WORKERS:-2}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
 TARGET_FAR_PER_YEAR=${TARGET_FAR_PER_YEAR:-0.1}
 ZERO_COUNT_CONFIDENCE=${ZERO_COUNT_CONFIDENCE:-0.9}
+MINIMUM_MASK_EFFICIENCY_GAIN=${MINIMUM_MASK_EFFICIENCY_GAIN:-0.05}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
 RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-120}
 CHECKPOINT=${CHECKPOINT:-}
@@ -349,6 +350,26 @@ PY
   fi
 done
 
+paired_comparison="$OUTPUT_ROOT/paired_validation_candidate_comparison.json"
+if [[ ! -s "$paired_comparison" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT
+    "$TASK_PYTHON" -m gwyolo.cli candidate-search-raw-mask-compare \
+      --raw-calibration-report \
+        "$OUTPUT_ROOT/raw/frozen_validation_candidate_search_calibration.json" \
+      --mask-calibration-report \
+        "$OUTPUT_ROOT/mask/frozen_validation_candidate_search_calibration.json" \
+      --mask-validation-receipt "$MASK_VALIDATION_RECEIPT" \
+      --mask-timing-receipt "$MASK_TIMING_RECEIPT" \
+      --minimum-absolute-weighted-efficiency-gain \
+        "$MINIMUM_MASK_EFFICIENCY_GAIN" \
+      --bootstrap-replicates 10000 \
+      --seed 20260720 \
+      --output "$paired_comparison"
+  )
+fi
+
 "$TASK_PYTHON" - \
   "$merge_report" \
   "$MASK_VALIDATION_RECEIPT" \
@@ -361,6 +382,7 @@ done
   "$schedule" \
   "$OUTPUT_ROOT/raw/frozen_validation_candidate_search_calibration.json" \
   "$OUTPUT_ROOT/mask/frozen_validation_candidate_search_calibration.json" \
+  "$paired_comparison" \
   "$GWYOLO_CODE_COMMIT" \
   "$OUTPUT_ROOT/raw_mask_background_validation_receipt.json" <<'PY'
 import hashlib
@@ -387,9 +409,10 @@ def digest(path):
     schedule_path,
     raw_path,
     mask_path,
-) = map(pathlib.Path, sys.argv[1:12])
-code_commit = sys.argv[12]
-output = pathlib.Path(sys.argv[13])
+    comparison_path,
+) = map(pathlib.Path, sys.argv[1:13])
+code_commit = sys.argv[13]
+output = pathlib.Path(sys.argv[14])
 if output.exists():
     raise SystemExit("raw/mask background validation receipts are immutable")
 merge = json.loads(merge_path.read_text(encoding="utf-8"))
@@ -398,6 +421,7 @@ calibrations = {
     "raw": json.loads(raw_path.read_text(encoding="utf-8")),
     "mask": json.loads(mask_path.read_text(encoding="utf-8")),
 }
+comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
 if (
     merge.get("status")
     != "verified_merged_streamed_raw_mask_candidate_background"
@@ -412,6 +436,15 @@ if (
     or merge.get("common_gate_identity", {}).get("coherence_config_sha256")
     != digest(coherence_path)
     or timing.get("coherent_background_scale_allowed") is not True
+    or comparison.get("status")
+    != "validation_only_paired_raw_mask_candidate_calibration_comparison"
+    or comparison.get("scientific_claim_allowed") is not False
+    or comparison.get("locked_test_allowed") is not False
+    or comparison.get("test_rows_read") != 0
+    or comparison.get("raw_calibration_report", {}).get("sha256")
+    != digest(raw_path)
+    or comparison.get("mask_calibration_report", {}).get("sha256")
+    != digest(mask_path)
     or any(
         report.get("status") != "frozen_validation_candidate_search_calibration"
         or report.get("publication_calibration_eligible") is not True
@@ -429,6 +462,9 @@ receipt = {
     "continuous_background_search_claim_allowed": False,
     "locked_test_open_allowed": False,
     "locked_test_prerequisites_satisfied": False,
+    "mask_locked_test_arm_eligible": comparison.get(
+        "mask_locked_test_arm_eligible"
+    ) is True,
     "code_commit": code_commit,
     "merge_report": {"path": str(merge_path), "sha256": digest(merge_path)},
     "mask_validation_receipt": {
@@ -462,6 +498,10 @@ receipt = {
     "calibrations": {
         "raw": {"path": str(raw_path), "sha256": digest(raw_path)},
         "mask": {"path": str(mask_path), "sha256": digest(mask_path)},
+    },
+    "paired_validation_comparison": {
+        "path": str(comparison_path),
+        "sha256": digest(comparison_path),
     },
     "environment": {
         "python": platform.python_version(),

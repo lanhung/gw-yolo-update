@@ -14,6 +14,7 @@ from gwyolo.search import (
     evaluate_search,
     far_upper_limit_zero_count,
     paired_vt_comparison,
+    run_paired_raw_mask_candidate_calibration_comparison,
     run_frozen_search_evaluation,
     run_candidate_search_calibration,
     run_frozen_candidate_search_evaluation,
@@ -292,6 +293,198 @@ def test_candidate_search_calibration_accepts_frozen_block_permutations(
     assert result["selection_data"] == ("validation_candidate_block_permutations_only")
     assert result["slide_schedule_audit"]["schedule_kind"] == ("gps_block_permutation")
     assert result["slide_schedule_audit"]["passed"] is True
+
+
+def test_paired_raw_mask_calibration_comparison_has_hand_calculated_vt_gain(
+    tmp_path,
+) -> None:
+    pipeline = tmp_path / "pipeline.json"
+    pipeline.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_end_to_end_mask_search_pipeline",
+                "development_gates_passed": True,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "comparison": {
+                    "gates": {
+                        "clean_noninferiority": {"passed": True},
+                        "contaminated_material_gain": {"passed": True},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    validation = tmp_path / "mask-validation.json"
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_mask_deglitch_gate",
+                "execution_passed": True,
+                "development_gates_passed": True,
+                "scientific_claim_allowed": False,
+                "locked_test_allowed": False,
+                "test_rows_read": 0,
+                "artifacts": {
+                    "pipeline_report": {
+                        "path": str(pipeline),
+                        "sha256": file_sha256(pipeline),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    common_rows = [
+        {
+            "split": "val",
+            "injection_id": "i1",
+            "waveform_id": "w1",
+            "source_family": "BBH",
+            "stratum": "overlap",
+            "gps_block": "g1",
+            "gps_time": 100.0,
+            "vt_weight": 2.0,
+            "vt_weight_unit": "Mpc^3 yr",
+        },
+        {
+            "split": "val",
+            "injection_id": "i2",
+            "waveform_id": "w2",
+            "source_family": "BBH",
+            "stratum": "overlap",
+            "gps_block": "g2",
+            "gps_time": 200.0,
+            "vt_weight": 1.0,
+            "vt_weight_unit": "Mpc^3 yr",
+        },
+    ]
+    identity = {
+        "candidate_checkpoint_sha256": "a" * 64,
+        "candidate_config_sha256": "b" * 64,
+        "candidate_code_commit": "commit",
+        "physical_delay_limit_seconds": 0.01,
+        "reference_ifo": "H1",
+        "second_ifo": "L1",
+    }
+    rankings = {}
+    calibrations = {}
+    for arm, scores, timing_hash in (
+        ("raw", [0.1, 0.2], "c" * 64),
+        ("mask", [0.9, 0.8], "d" * 64),
+    ):
+        manifest = tmp_path / f"{arm}-rankings.jsonl"
+        manifest.write_text(
+            "".join(
+                json.dumps({**row, "ranking_score": score}) + "\n"
+                for row, score in zip(common_rows, scores)
+            ),
+            encoding="utf-8",
+        )
+        ranking = tmp_path / f"{arm}-ranking-report.json"
+        ranking.write_text(
+            json.dumps(
+                {
+                    "status": "physical_network_injection_candidate_rankings",
+                    "split": "val",
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "timing_calibration_report_sha256": timing_hash,
+                }
+            ),
+            encoding="utf-8",
+        )
+        rankings[arm] = ranking
+        slide = tmp_path / f"{arm}-slide.json"
+        slide.write_text(
+            json.dumps(
+                {
+                    "status": "subwindow_clustered_time_slide_integration_only",
+                    "background_manifest_sha256": "e" * 64,
+                    "background_pairing_method": "gps_block_derangement_v1",
+                    "equivalent_live_time_years": 20.0,
+                    "input_gps_blocks": ["background-1", "background-2"],
+                    "reference_ifo": "H1",
+                    "shifted_ifo": "L1",
+                    "slide_schedule_sha256": "f" * 64,
+                    "slide_schedule_id": "schedule",
+                    "slide_count": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+        calibration = tmp_path / f"{arm}-calibration.json"
+        calibration.write_text(
+            json.dumps(
+                {
+                    "status": "frozen_validation_candidate_search_calibration",
+                    "scientific_claim_allowed": False,
+                    "selection_data": "validation_candidate_block_permutations_only",
+                    "test_evaluation": None,
+                    "publication_calibration_eligible": True,
+                    "slide_schedule_audit": {"passed": True},
+                    "target_far_per_year": 0.1,
+                    "identity": {
+                        **identity,
+                        "timing_calibration_report_sha256": timing_hash,
+                        "empirical_timing_uncertainty_seconds": 0.005,
+                    },
+                    "calibration": {"threshold": 0.5},
+                    "validation_injection_diagnostic": {"arm": arm},
+                    "validation_time_slide_report_path": str(slide),
+                    "validation_time_slide_report_sha256": file_sha256(slide),
+                    "validation_injection_ranking_report_path": str(ranking),
+                    "validation_injection_ranking_report_sha256": file_sha256(
+                        ranking
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+        calibrations[arm] = calibration
+    timing = tmp_path / "mask-timing.json"
+    timing.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_mask_timing_gate",
+                "coherent_background_scale_allowed": True,
+                "raw_timing_gate_passed": True,
+                "mask_timing_gate_passed": True,
+                "test_rows_read": 0,
+                "locked_test_allowed": False,
+                "mask_validation_receipt_path": str(validation),
+                "mask_validation_receipt_sha256": file_sha256(validation),
+                "injection_ranking_reports": {
+                    arm: {"path": str(path), "sha256": file_sha256(path)}
+                    for arm, path in rankings.items()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_paired_raw_mask_candidate_calibration_comparison(
+        calibrations["raw"],
+        calibrations["mask"],
+        validation,
+        timing,
+        tmp_path / "comparison.json",
+        minimum_absolute_weighted_efficiency_gain=0.5,
+        bootstrap_replicates=200,
+        seed=1,
+    )
+
+    assert result["paired_injections"] == 2
+    assert result["total_vt_weight"] == 3.0
+    assert result["paired_vt"]["method_a"]["recovered_vt"] == 0.0
+    assert result["paired_vt"]["method_b"]["recovered_vt"] == 3.0
+    assert result["paired_vt"]["delta_recovered_vt_b_minus_a"] == 3.0
+    assert result["continuous_background_mask_gain_gate"][
+        "observed_absolute_weighted_efficiency_gain"
+    ] == 1.0
+    assert result["mask_locked_test_arm_eligible"] is True
+    assert result["locked_test_prerequisites_satisfied"] is False
 
 
 def test_locked_candidate_search_rejects_engineering_calibration_without_schedule(

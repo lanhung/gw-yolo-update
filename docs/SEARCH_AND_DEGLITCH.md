@@ -671,10 +671,20 @@ HDF5 files are deleted only after their downstream reports and hashes exist.
 The paired merge independently replays the ordinary continuous-background merge for both arms and
 requires identical pair ranges, GPS blocks, detector availability, observing-run counts, live time
 and background-manifest hash. One common block-permutation schedule is then used to freeze separate
-raw and mask validation FAR thresholds. The final receipt remains
+raw and mask validation FAR thresholds. `candidate-search-raw-mask-compare` replays those two
+calibrations, the six-arm clean non-inferiority receipt and both injection-timing rankings. It then
+joins exact injection/waveform/GPS/weight identities and reports the paired recovered-`<VT>` delta,
+relative change, strata and paired-bootstrap interval without retuning either threshold. A positive
+validation arm requires both the predeclared absolute weighted-efficiency gain and a strictly
+positive lower 95% paired-`<VT>` bound. The final receipt remains
 `scientific_claim_allowed=false`, `locked_test_open_allowed=false` and
 `locked_test_prerequisites_satisfied=false`: it freezes development calibration but cannot by
 itself authorize O4b/GWTC-5 or support a search-sensitivity claim.
+
+If the raw/mask background range was started from an older immutable checkout,
+`scripts/run_raw_mask_candidate_comparison_queue.sh` waits for that checkout's final receipt,
+hash-replays both calibration identities, and runs only this read-only comparison from a newer
+immutable checkout. It neither rescans strain nor opens any locked evaluation rows.
 
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ

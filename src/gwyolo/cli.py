@@ -25,6 +25,7 @@ from .search import (
     run_search_benchmark,
     run_search_calibration,
     run_search_comparison,
+    run_paired_raw_mask_candidate_calibration_comparison,
     run_validation_injection_diagnostic,
 )
 from .scaling import run_curve_fit, run_scale_plan
@@ -113,6 +114,20 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_calibrate.add_argument("--output", required=True)
     candidate_search_calibrate.add_argument("--bootstrap-replicates", type=int, default=2000)
     candidate_search_calibrate.add_argument("--seed", type=int, default=20260720)
+
+    raw_mask_calibration = subparsers.add_parser(
+        "candidate-search-raw-mask-compare"
+    )
+    raw_mask_calibration.add_argument("--raw-calibration-report", required=True)
+    raw_mask_calibration.add_argument("--mask-calibration-report", required=True)
+    raw_mask_calibration.add_argument("--mask-validation-receipt", required=True)
+    raw_mask_calibration.add_argument("--mask-timing-receipt", required=True)
+    raw_mask_calibration.add_argument("--output", required=True)
+    raw_mask_calibration.add_argument(
+        "--minimum-absolute-weighted-efficiency-gain", type=float, default=0.05
+    )
+    raw_mask_calibration.add_argument("--bootstrap-replicates", type=int, default=10000)
+    raw_mask_calibration.add_argument("--seed", type=int, default=20260720)
 
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
@@ -1797,6 +1812,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_injection_ranking_report,
                 args.target_far_per_year,
                 args.output,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-compare":
+        _print(
+            run_paired_raw_mask_candidate_calibration_comparison(
+                args.raw_calibration_report,
+                args.mask_calibration_report,
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.output,
+                args.minimum_absolute_weighted_efficiency_gain,
                 args.bootstrap_replicates,
                 args.seed,
             )

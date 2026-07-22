@@ -874,6 +874,15 @@ permutations. Cross-commit reuse is fail-closed behind a normalized implementati
 recoverable probability/override/source arrays have hash-bound eviction receipts to keep the
 800/880-pair run within bounded storage.
 
+The paired validation endpoint now has an explicit comparison rather than two unrelated calibration
+files. It requires one target FAR and one physical block-permutation exposure, independently frozen
+raw/mask thresholds, identical injection/waveform/GPS/`vt_weight` rows, the earlier clean
+non-inferiority gate and separate timing receipts. Its output retains the raw and mask recovered
+`<VT>`, paired delta, relative delta, strata and paired-bootstrap interval. This is still a
+validation promotion diagnostic; even a positive result sets
+`locked_test_prerequisites_satisfied=false` until the remaining OOD, background and access gates
+close.
+
 The new code passed the complete CPU test suite from an in-memory pytest base directory, the 21
 focused mask/streaming/compatibility regressions, full Ruff lint, every shell syntax check and
 `git diff --check`. No raw/mask continuous-background result exists yet: the executor is queued

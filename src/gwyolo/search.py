@@ -627,6 +627,261 @@ def run_candidate_search_calibration(
     atomic_write_json(output, result)
     return result
 
+
+def run_paired_raw_mask_candidate_calibration_comparison(
+    raw_calibration_report: str | Path,
+    mask_calibration_report: str | Path,
+    mask_validation_receipt: str | Path,
+    mask_timing_receipt: str | Path,
+    output: str | Path,
+    minimum_absolute_weighted_efficiency_gain: float = 0.05,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Compare raw/mask validation rankings at independently frozen common-FAR thresholds."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("paired raw/mask calibration comparisons are immutable")
+    if not 0 <= minimum_absolute_weighted_efficiency_gain < 1:
+        raise ValueError("minimum raw/mask weighted-efficiency gain must be in [0, 1)")
+    if bootstrap_replicates <= 0:
+        raise ValueError("bootstrap_replicates must be positive")
+
+    validation_path = Path(mask_validation_receipt).resolve()
+    timing_path = Path(mask_timing_receipt).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    timing = json.loads(timing_path.read_text(encoding="utf-8"))
+    pipeline_identity = validation.get("artifacts", {}).get("pipeline_report", {})
+    pipeline_path = Path(str(pipeline_identity.get("path", ""))).resolve()
+    if (
+        validation.get("status") != "completed_validation_only_mask_deglitch_gate"
+        or validation.get("execution_passed") is not True
+        or validation.get("development_gates_passed") is not True
+        or validation.get("scientific_claim_allowed") is not False
+        or validation.get("locked_test_allowed") is not False
+        or validation.get("test_rows_read") != 0
+        or not pipeline_path.is_file()
+        or pipeline_identity.get("sha256") != file_sha256(pipeline_path)
+    ):
+        raise ValueError("paired raw/mask comparison requires a passing six-arm receipt")
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    six_arm = pipeline.get("comparison", {})
+    clean_gate = six_arm.get("gates", {}).get("clean_noninferiority", {})
+    contaminated_gate = six_arm.get("gates", {}).get(
+        "contaminated_material_gain", {}
+    )
+    if (
+        pipeline.get("status") != "validation_only_end_to_end_mask_search_pipeline"
+        or pipeline.get("development_gates_passed") is not True
+        or pipeline.get("test_rows_read") != 0
+        or pipeline.get("test_evaluation") is not None
+        or clean_gate.get("passed") is not True
+        or contaminated_gate.get("passed") is not True
+    ):
+        raise ValueError("six-arm pipeline does not prove clean non-inferiority and mask gain")
+    if (
+        timing.get("status") != "completed_validation_only_mask_timing_gate"
+        or timing.get("coherent_background_scale_allowed") is not True
+        or timing.get("raw_timing_gate_passed") is not True
+        or timing.get("mask_timing_gate_passed") is not True
+        or timing.get("test_rows_read") != 0
+        or timing.get("locked_test_allowed") is not False
+        or Path(str(timing.get("mask_validation_receipt_path", ""))).resolve()
+        != validation_path
+        or timing.get("mask_validation_receipt_sha256")
+        != file_sha256(validation_path)
+    ):
+        raise ValueError("paired raw/mask comparison requires a passing timing receipt")
+
+    def load_arm(
+        arm: str, calibration_value: str | Path
+    ) -> tuple[Path, dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        calibration_path = Path(calibration_value).resolve()
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        ranking_path = Path(
+            str(calibration.get("validation_injection_ranking_report_path", ""))
+        ).resolve()
+        slide_path = Path(
+            str(calibration.get("validation_time_slide_report_path", ""))
+        ).resolve()
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("scientific_claim_allowed") is not False
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("publication_calibration_eligible") is not True
+            or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+            or not str(calibration.get("selection_data", "")).startswith("validation_")
+            or not ranking_path.is_file()
+            or calibration.get("validation_injection_ranking_report_sha256")
+            != file_sha256(ranking_path)
+            or not slide_path.is_file()
+            or calibration.get("validation_time_slide_report_sha256")
+            != file_sha256(slide_path)
+        ):
+            raise ValueError(f"{arm} candidate calibration failed replay")
+        timing_ranking = timing.get("injection_ranking_reports", {}).get(arm, {})
+        if (
+            Path(str(timing_ranking.get("path", ""))).resolve() != ranking_path
+            or timing_ranking.get("sha256") != file_sha256(ranking_path)
+        ):
+            raise ValueError(f"{arm} calibration differs from the timing-gate rankings")
+        ranking, rows = _verified_candidate_search_artifact(
+            ranking_path,
+            "physical_network_injection_candidate_rankings",
+            "val",
+        )
+        slide = json.loads(slide_path.read_text(encoding="utf-8"))
+        if slide.get("status") != "subwindow_clustered_time_slide_integration_only":
+            raise ValueError(f"{arm} calibration uses an invalid block-background report")
+        return calibration_path, calibration, ranking, rows, slide
+
+    arms = {
+        "raw": load_arm("raw", raw_calibration_report),
+        "mask": load_arm("mask", mask_calibration_report),
+    }
+    raw_path, raw, raw_ranking, raw_rows, raw_slide = arms["raw"]
+    mask_path, mask, mask_ranking, mask_rows, mask_slide = arms["mask"]
+    if not np.isclose(
+        float(raw["target_far_per_year"]),
+        float(mask["target_far_per_year"]),
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("raw/mask candidate calibrations use different target FARs")
+    common_identity_fields = (
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "physical_delay_limit_seconds",
+        "reference_ifo",
+        "second_ifo",
+    )
+    if any(
+        raw.get("identity", {}).get(field) != mask.get("identity", {}).get(field)
+        for field in common_identity_fields
+    ):
+        raise ValueError("raw/mask candidate calibrations differ in their model/physics identity")
+    common_background_fields = (
+        "background_manifest_sha256",
+        "background_pairing_method",
+        "equivalent_live_time_years",
+        "input_gps_blocks",
+        "reference_ifo",
+        "shifted_ifo",
+        "slide_schedule_sha256",
+        "slide_schedule_id",
+        "slide_count",
+    )
+    if any(raw_slide.get(field) != mask_slide.get(field) for field in common_background_fields):
+        raise ValueError("raw/mask calibrations do not use identical physical background exposure")
+    raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
+    mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
+    if (
+        len(raw_by_id) != len(raw_rows)
+        or len(mask_by_id) != len(mask_rows)
+        or set(raw_by_id) != set(mask_by_id)
+    ):
+        raise ValueError("raw/mask calibration rankings do not share unique injection IDs")
+    joined = []
+    identity_fields = (
+        "waveform_id",
+        "source_family",
+        "stratum",
+        "gps_block",
+        "gps_time",
+        "vt_weight",
+        "vt_weight_unit",
+    )
+    for injection_id in sorted(raw_by_id):
+        raw_row = raw_by_id[injection_id]
+        mask_row = mask_by_id[injection_id]
+        if any(raw_row.get(field) != mask_row.get(field) for field in identity_fields):
+            raise ValueError(f"raw/mask physical injection identity differs: {injection_id}")
+        joined.append(
+            {
+                **raw_row,
+                "raw_score": float(raw_row["ranking_score"]),
+                "mask_score": float(mask_row["ranking_score"]),
+            }
+        )
+    raw_threshold = float(raw["calibration"]["threshold"])
+    mask_threshold = float(mask["calibration"]["threshold"])
+    paired = paired_vt_comparison(
+        joined,
+        raw_threshold,
+        mask_threshold,
+        "raw_score",
+        "mask_score",
+        bootstrap_replicates,
+        seed,
+    )
+    total_vt = float(sum(float(row["vt_weight"]) for row in joined))
+    delta_vt = float(paired["delta_recovered_vt_b_minus_a"])
+    absolute_gain = delta_vt / total_vt
+    gain_gate = {
+        "minimum_absolute_weighted_efficiency_gain": (
+            minimum_absolute_weighted_efficiency_gain
+        ),
+        "observed_absolute_weighted_efficiency_gain": absolute_gain,
+        "paired_delta_recovered_vt_lower_95": float(paired["paired_bootstrap_95"][0]),
+        "passed": bool(
+            absolute_gain >= minimum_absolute_weighted_efficiency_gain
+            and float(paired["paired_bootstrap_95"][0]) > 0
+        ),
+    }
+    result = {
+        "status": "validation_only_paired_raw_mask_candidate_calibration_comparison",
+        "scientific_claim_allowed": False,
+        "locked_test_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "protocol": (
+            "raw and mask thresholds independently frozen at one validation target FAR; "
+            "paired contaminated injections compared without threshold retuning"
+        ),
+        "target_far_per_year": float(raw["target_far_per_year"]),
+        "paired_injections": len(joined),
+        "total_vt_weight": total_vt,
+        "raw_validation_diagnostic": raw["validation_injection_diagnostic"],
+        "mask_validation_diagnostic": mask["validation_injection_diagnostic"],
+        "paired_vt": paired,
+        "six_arm_clean_noninferiority_gate": clean_gate,
+        "six_arm_contaminated_gain_gate": contaminated_gate,
+        "continuous_background_mask_gain_gate": gain_gate,
+        "mask_locked_test_arm_eligible": gain_gate["passed"],
+        "locked_test_prerequisites_satisfied": False,
+        "raw_calibration_report": {
+            "path": str(raw_path),
+            "sha256": file_sha256(raw_path),
+        },
+        "mask_calibration_report": {
+            "path": str(mask_path),
+            "sha256": file_sha256(mask_path),
+        },
+        "mask_validation_receipt": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "mask_timing_receipt": {
+            "path": str(timing_path),
+            "sha256": file_sha256(timing_path),
+        },
+        "raw_timing_calibration_report_sha256": raw_ranking[
+            "timing_calibration_report_sha256"
+        ],
+        "mask_timing_calibration_report_sha256": mask_ranking[
+            "timing_calibration_report_sha256"
+        ],
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_frozen_candidate_search_evaluation(
     calibration_report: str | Path,
     test_time_slide_report: str | Path,
