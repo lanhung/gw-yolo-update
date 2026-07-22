@@ -13,6 +13,7 @@ from gwyolo.ood import (
     fit_class_conditional_mahalanobis,
     freeze_ood_held_family_protocol,
     ood_auc,
+    run_frozen_glitch_ood_scoring,
     run_locked_ood_transfer_evaluation,
     supervised_contrastive_loss,
 )
@@ -155,12 +156,15 @@ def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
     monkeypatch.setattr(
         "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access", binding
     )
-    monkeypatch.setattr(
-        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
-        lambda _plan, input_key, input_path: {
+    def input_binding(_plan, input_key, input_path):
+        return {
             "input_key": input_key,
             "input_path": str(Path(input_path).resolve()),
-        },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        input_binding,
     )
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"checkpoint")
@@ -228,12 +232,54 @@ def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
     locked.write_text(
         "".join(json.dumps(row) + "\n" for row in locked_rows), encoding="utf-8"
     )
+    source = tmp_path / "locked-source.jsonl"
+    source.write_text(locked.read_text(encoding="utf-8"), encoding="utf-8")
+    score_report = tmp_path / "locked-score-report.json"
+    result_path = tmp_path / "result.json"
+    score_suite_inputs = {
+        "source_manifest": input_binding(
+            None, "locked_ood_source_manifest", source
+        ),
+        "score_manifest": input_binding(
+            None, "locked_ood_score_manifest", locked
+        ),
+        "score_report": input_binding(
+            None, "locked_ood_score_report", score_report
+        ),
+    }
+    score_report.write_text(
+        json.dumps(
+            {
+                "status": "frozen_glitch_ood_scores_complete",
+                "selection_data": "validation_model_only",
+                "test_scores_used_for_model_threshold_or_method_selection": False,
+                "required_split": "test",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "rows": 4,
+                "manifest_path": str(locked),
+                "manifest_sha256": file_sha256(locked),
+                "validation_ood_report_path": str(validation),
+                "validation_ood_report_sha256": file_sha256(validation),
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "source_manifest_path": str(source),
+                "source_manifest_sha256": file_sha256(source),
+                "locked_suite_access": binding(
+                    None, None, "locked_ood_transfer", result_path
+                ),
+                "locked_suite_inputs": score_suite_inputs,
+            }
+        ),
+        encoding="utf-8",
+    )
     result = run_locked_ood_transfer_evaluation(
         validation,
+        score_report,
         locked,
         tmp_path / "plan.json",
         tmp_path / "access.json",
-        tmp_path / "result.json",
+        result_path,
     )
     assert result["threshold"] == 0.4
     assert result["threshold_refits_on_test"] == 0
@@ -314,6 +360,153 @@ def test_detector_set_ood_dataset_requires_matching_explicit_availability(
     dataset.cache = [None]
     with pytest.raises(ValueError, match="row/array detector availability differs"):
         dataset[0]
+
+
+def test_frozen_detector_set_ood_scorer_replays_checkpoint_without_selection(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    np = pytest.importorskip("numpy")
+    torch = pytest.importorskip("torch")
+
+    from gwyolo.io import canonical_hash, file_sha256, load_yaml
+    from gwyolo.numeric import DetectorSetGlitchEmbeddingNet
+
+    config = tmp_path / "ood.yaml"
+    config.write_text(
+        """glitch_ood_embedding:
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8]
+  batch_size: 2
+  cache_in_memory: true
+""",
+        encoding="utf-8",
+    )
+    parsed = load_yaml(config)
+    run_identity = {
+        "config_hash": canonical_hash(parsed),
+        "config_file_sha256": file_sha256(config),
+    }
+    labels = ["KnownA", "KnownB"]
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=3,
+        q_count=2,
+        class_count=2,
+        base_channels=4,
+        embedding_dim=4,
+    )
+    checkpoint = tmp_path / "ood.pt"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "run_identity": run_identity,
+            "architecture": "detector_set",
+            "labels": labels,
+            "model_ifos": ["H1", "L1", "V1"],
+            "q_values": [4.0, 8.0],
+            "base_channels": 4,
+            "embedding_dim": 4,
+        },
+        checkpoint,
+    )
+    validation = tmp_path / "validation.json"
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "known_family_embedding_heldout_ood_validation",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "test_evaluation": None,
+                "run_identity": run_identity,
+                "labels": labels,
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_ood_output = tmp_path / "locked-ood-final.json"
+    suite_plan = tmp_path / "suite-plan.json"
+    suite_plan.write_text(
+        json.dumps({"outputs": {"locked_ood_transfer": str(final_ood_output)}}),
+        encoding="utf-8",
+    )
+
+    def access_binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(Path(output_path).resolve()),
+            "frozen_artifacts": {
+                "validation_ood_report": {
+                    "path": str(validation.resolve()),
+                    "sha256": file_sha256(validation),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access",
+        access_binding,
+    )
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        lambda _plan, input_key, input_path: {
+            "input_key": input_key,
+            "input_path": str(Path(input_path).resolve()),
+        },
+    )
+    availability = np.asarray([1, 1, 0], dtype=np.uint8)
+    rows = []
+    for index, (family, unknown) in enumerate((("KnownA", False), ("New", True))):
+        sample = tmp_path / f"sample-{index}.npz"
+        features = np.zeros((3, 2, 8, 8), dtype=np.float32)
+        features[:2] = index + 1
+        np.savez_compressed(
+            sample,
+            features=features,
+            detector_availability=availability,
+            ifos=np.asarray(["H1", "L1", "V1"]),
+            q_values=np.asarray([4.0, 8.0], dtype=np.float32),
+        )
+        rows.append(
+            {
+                "split": "test",
+                "glitch_id": f"g{index}",
+                "gps_block": f"b{index}",
+                "glitch_family": family,
+                "observing_run": "O4b",
+                "is_unknown": unknown,
+                "aligned_network_context": True,
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+                "detector_availability": availability.tolist(),
+                "available_ifos": ["H1", "L1"],
+                "ifo": "H1",
+            }
+        )
+    source = tmp_path / "locked-source.jsonl"
+    source.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = run_frozen_glitch_ood_scoring(
+        config,
+        validation,
+        source,
+        tmp_path / "scores.jsonl",
+        tmp_path / "score-report.json",
+        locked_suite_plan=suite_plan,
+        access_log=tmp_path / "access.json",
+    )
+    assert report["status"] == "frozen_glitch_ood_scores_complete"
+    assert report["test_scores_used_for_model_threshold_or_method_selection"] is False
+    scored = [
+        json.loads(line)
+        for line in (tmp_path / "scores.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(scored) == 2
+    assert all(row["ood_score_method"] == "logit_energy" for row in scored)
+    assert all(row["embedding_checkpoint_sha256"] == file_sha256(checkpoint) for row in scored)
 
 
 def test_held_family_freeze_is_score_blind_and_excludes_opened_families(

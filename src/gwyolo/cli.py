@@ -1794,11 +1794,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     locked_ood = subparsers.add_parser("ood-abstention-evaluate-locked")
     locked_ood.add_argument("--validation-ood-report", required=True)
+    locked_ood.add_argument("--locked-score-report", required=True)
     locked_ood.add_argument("--locked-score-manifest", required=True)
     locked_ood.add_argument("--locked-suite-plan", required=True)
     locked_ood.add_argument("--access-log", required=True)
     locked_ood.add_argument("--output", required=True)
     locked_ood.add_argument("--score-field", default="ood_score")
+
+    frozen_ood_score = subparsers.add_parser("glitch-ood-score-frozen")
+    frozen_ood_score.add_argument("--config", required=True)
+    frozen_ood_score.add_argument("--validation-ood-report", required=True)
+    frozen_ood_score.add_argument("--evaluation-manifest", required=True)
+    frozen_ood_score.add_argument("--output-manifest", required=True)
+    frozen_ood_score.add_argument("--output-report", required=True)
+    frozen_ood_score.add_argument("--required-split", default="test")
+    frozen_ood_score.add_argument("--locked-suite-plan")
+    frozen_ood_score.add_argument("--access-log")
 
     ood_split = subparsers.add_parser("gravityspy-ood-split")
     ood_split.add_argument("--train-manifest", required=True)
@@ -4086,11 +4097,27 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             run_locked_ood_transfer_evaluation(
                 args.validation_ood_report,
+                args.locked_score_report,
                 args.locked_score_manifest,
                 args.locked_suite_plan,
                 args.access_log,
                 args.output,
                 args.score_field,
+            )
+        )
+    elif args.command == "glitch-ood-score-frozen":
+        from .ood import run_frozen_glitch_ood_scoring
+
+        _print(
+            run_frozen_glitch_ood_scoring(
+                args.config,
+                args.validation_ood_report,
+                args.evaluation_manifest,
+                args.output_manifest,
+                args.output_report,
+                args.required_split,
+                args.locked_suite_plan,
+                args.access_log,
             )
         )
     elif args.command == "gravityspy-ood-split":

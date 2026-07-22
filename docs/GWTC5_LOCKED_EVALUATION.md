@@ -89,6 +89,11 @@ report whose known-only threshold, checkpoint and score manifests replay by hash
 O4b glitch/GPS overlap with either OOD validation role, requires explicit detector availability,
 and reports known false abstention and unknown false acceptance overall and by family, run and
 detector subset without refitting the threshold.
+`glitch-ood-score-frozen` is the only locked score producer: it reloads the exact validation
+checkpoint/config, preserves explicit H1/L1/V1 availability, writes no threshold, and records that
+test scores were not used for model, threshold or score-method selection. The source manifest,
+score manifest and score report are all separately predeclared and automated by
+[`scripts/run_locked_ood_endpoint.sh`](../scripts/run_locked_ood_endpoint.sh).
 
 For PE, `pe-backend-bind-locked` accepts completed DINGO or AMPLFI test batches only after the
 validation promotion report passes. It requires the locked batch to preserve the validation-fixed

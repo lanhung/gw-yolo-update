@@ -14,7 +14,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+    load_yaml,
+)
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -319,8 +325,230 @@ def run_ood_abstention_evaluation(
     return result
 
 
+def run_frozen_glitch_ood_scoring(
+    config_path: str | Path,
+    validation_ood_report: str | Path,
+    evaluation_manifest: str | Path,
+    output_manifest: str | Path,
+    output_report: str | Path,
+    required_split: str = "test",
+    locked_suite_plan: str | Path | None = None,
+    access_log: str | Path | None = None,
+) -> dict[str, Any]:
+    """Score a new detector-set corpus with one validation-frozen OOD model."""
+
+    if torch is None:
+        raise RuntimeError("frozen glitch OOD scoring requires torch")
+    from .numeric import DetectorSetGlitchEmbeddingNet
+
+    manifest_output = Path(output_manifest).resolve()
+    report_output = Path(output_report).resolve()
+    if report_output.exists():
+        raise FileExistsError("frozen OOD score reports are immutable")
+    if manifest_output == report_output or not required_split:
+        raise ValueError("frozen OOD score output paths and split are invalid")
+    suite_values = (locked_suite_plan, access_log)
+    if any(value is not None for value in suite_values) and not all(
+        value is not None for value in suite_values
+    ):
+        raise ValueError("locked suite plan and access log must be supplied together")
+    locked_suite_access = None
+    locked_suite_inputs = None
+    if required_split == "test":
+        if locked_suite_plan is None:
+            raise ValueError("test OOD scoring requires the one-time locked suite receipt")
+        from .evaluation_lock import (
+            validate_locked_evaluation_suite_access,
+            validate_locked_evaluation_suite_input,
+        )
+
+        plan = json.loads(Path(locked_suite_plan).read_text(encoding="utf-8"))
+        locked_suite_access = validate_locked_evaluation_suite_access(
+            locked_suite_plan,
+            access_log,
+            "locked_ood_transfer",
+            plan.get("outputs", {}).get("locked_ood_transfer", ""),
+        )
+        locked_suite_inputs = {
+            "source_manifest": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_source_manifest",
+                evaluation_manifest,
+            ),
+            "score_manifest": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_score_manifest",
+                manifest_output,
+            ),
+            "score_report": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_score_report",
+                report_output,
+            ),
+        }
+    validation_path = Path(validation_ood_report).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    if locked_suite_access is not None:
+        validation_identity = locked_suite_access["frozen_artifacts"].get(
+            "validation_ood_report", {}
+        )
+        if (
+            Path(str(validation_identity.get("path", ""))).resolve()
+            != validation_path
+            or validation_identity.get("sha256") != file_sha256(validation_path)
+        ):
+            raise ValueError("test OOD scorer validation model differs from the access receipt")
+    config_file = Path(config_path).resolve()
+    config = load_yaml(config_file)
+    settings = config.get("glitch_ood_embedding")
+    if not isinstance(settings, dict):
+        raise ValueError("frozen OOD scoring requires glitch_ood_embedding settings")
+    checkpoint_path = Path(str(validation.get("checkpoint_path", ""))).resolve()
+    if (
+        validation.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or validation.get("architecture") != "detector_set"
+        or validation.get("ood_score_method") != "logit_energy"
+        or validation.get("test_evaluation") is not None
+        or validation.get("run_identity", {}).get("config_hash")
+        != canonical_hash(config)
+        or validation.get("run_identity", {}).get("config_file_sha256")
+        != file_sha256(config_file)
+        or not checkpoint_path.is_file()
+        or validation.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+    ):
+        raise ValueError("frozen OOD scorer requires an exact detector-set validation model")
+    source_path = Path(evaluation_manifest).resolve()
+    with source_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    required_fields = {
+        "glitch_id",
+        "gps_block",
+        "glitch_family",
+        "observing_run",
+        "is_unknown",
+        "available_ifos",
+        "split",
+        "aligned_network_context",
+        "path",
+        "sha256",
+        "detector_availability",
+        "ifo",
+    }
+    missing = [index for index, row in enumerate(rows) if required_fields - set(row)]
+    if not rows or missing:
+        raise ValueError(f"frozen OOD scoring rows are empty or incomplete: {missing[:10]}")
+    if any(str(row["split"]) != required_split for row in rows):
+        raise ValueError("frozen OOD scoring manifest mixes data outside the required split")
+    if len({str(row["glitch_id"]) for row in rows}) != len(rows):
+        raise ValueError("frozen OOD scoring requires unique glitch IDs")
+
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    labels = [str(value) for value in validation.get("labels", [])]
+    if len(labels) < 2:
+        raise ValueError("frozen OOD validation report has too few known labels")
+    label_to_index = {label: index for index, label in enumerate(labels)}
+    dataset = DetectorSetGlitchOODDataset(
+        rows,
+        model_ifos,
+        q_values,
+        label_to_index,
+        allow_unknown=True,
+        cache_in_memory=bool(settings.get("cache_in_memory", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
+    selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if (
+        selected.get("run_identity") != validation.get("run_identity")
+        or selected.get("architecture") != "detector_set"
+        or [str(value) for value in selected.get("labels", [])] != labels
+        or tuple(str(value) for value in selected.get("model_ifos", ())) != model_ifos
+        or tuple(float(value) for value in selected.get("q_values", ())) != q_values
+    ):
+        raise ValueError("frozen OOD checkpoint metadata differs from its validation report")
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=len(model_ifos),
+        q_count=len(q_values),
+        class_count=len(labels),
+        base_channels=int(selected["base_channels"]),
+        embedding_dim=int(selected["embedding_dim"]),
+    ).to(device)
+    model.load_state_dict(selected["model"])
+    model.eval()
+    score_values = []
+    predicted_indices = []
+    confidences = []
+    with torch.no_grad():
+        for features, availability, _ in loader:
+            logits, _ = model(features.to(device), availability.to(device))
+            probabilities = torch.softmax(logits, dim=1)
+            score_values.extend((-torch.logsumexp(logits, dim=1)).cpu().tolist())
+            predicted_indices.extend(logits.argmax(dim=1).cpu().tolist())
+            confidences.extend(probabilities.max(dim=1).values.cpu().tolist())
+    if len(score_values) != len(rows):
+        raise AssertionError("frozen OOD scorer returned an incomplete batch")
+    scored_rows = [
+        {
+            **row,
+            "ood_score": float(score_values[index]),
+            "ood_score_method": "logit_energy",
+            "predicted_known_family": labels[int(predicted_indices[index])],
+            "known_classifier_confidence": float(confidences[index]),
+            "embedding_checkpoint_sha256": file_sha256(checkpoint_path),
+            "ood_validation_report_sha256": file_sha256(validation_path),
+            "ood_config_sha256": file_sha256(config_file),
+        }
+        for index, row in enumerate(rows)
+    ]
+    rendered_manifest = "".join(
+        json.dumps(row, sort_keys=True) + "\n" for row in scored_rows
+    )
+    if manifest_output.exists():
+        if manifest_output.read_text(encoding="utf-8") != rendered_manifest:
+            raise ValueError("existing frozen OOD score manifest differs from deterministic replay")
+    else:
+        atomic_write_text(manifest_output, rendered_manifest)
+    result = {
+        "status": "frozen_glitch_ood_scores_complete",
+        "scientific_claim_allowed": False,
+        "selection_data": "validation_model_only",
+        "test_scores_used_for_model_threshold_or_method_selection": False,
+        "required_split": required_split,
+        "rows": len(scored_rows),
+        "architecture": "detector_set",
+        "ood_score_method": "logit_energy",
+        "manifest_path": str(manifest_output),
+        "manifest_sha256": file_sha256(manifest_output),
+        "source_manifest_path": str(source_path),
+        "source_manifest_sha256": file_sha256(source_path),
+        "validation_ood_report_path": str(validation_path),
+        "validation_ood_report_sha256": file_sha256(validation_path),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "config_path": str(config_file),
+        "config_sha256": file_sha256(config_file),
+        "device": str(device),
+        "locked_suite_access": locked_suite_access,
+        "locked_suite_inputs": locked_suite_inputs,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_output, result)
+    return result
+
+
 def run_locked_ood_transfer_evaluation(
     validation_ood_report: str | Path,
+    locked_score_report: str | Path,
     locked_score_manifest: str | Path,
     locked_suite_plan: str | Path,
     access_log: str | Path,
@@ -340,11 +568,18 @@ def run_locked_ood_transfer_evaluation(
     suite_access = validate_locked_evaluation_suite_access(
         locked_suite_plan, access_log, "locked_ood_transfer", output_path
     )
-    suite_input = validate_locked_evaluation_suite_input(
-        locked_suite_plan,
-        "locked_ood_score_manifest",
-        locked_score_manifest,
-    )
+    suite_inputs = {
+        "score_report": validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            "locked_ood_score_report",
+            locked_score_report,
+        ),
+        "score_manifest": validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            "locked_ood_score_manifest",
+            locked_score_manifest,
+        ),
+    }
     validation_path = Path(validation_ood_report).resolve()
     validation_identity = suite_access["frozen_artifacts"].get(
         "validation_ood_report", {}
@@ -389,6 +624,39 @@ def run_locked_ood_transfer_evaluation(
     ):
         raise ValueError("locked OOD endpoint requires a replayable detector-set validation gate")
 
+    score_report_path = Path(locked_score_report).resolve()
+    score_report = json.loads(score_report_path.read_text(encoding="utf-8"))
+    locked_path = Path(locked_score_manifest).resolve()
+    source_path = Path(str(score_report.get("source_manifest_path", ""))).resolve()
+    suite_inputs["source_manifest"] = validate_locked_evaluation_suite_input(
+        locked_suite_plan,
+        "locked_ood_source_manifest",
+        source_path,
+    )
+    if (
+        score_report.get("status") != "frozen_glitch_ood_scores_complete"
+        or score_report.get("selection_data") != "validation_model_only"
+        or score_report.get("test_scores_used_for_model_threshold_or_method_selection")
+        is not False
+        or score_report.get("required_split") != "test"
+        or score_report.get("architecture") != "detector_set"
+        or score_report.get("ood_score_method") != "logit_energy"
+        or Path(str(score_report.get("manifest_path", ""))).resolve() != locked_path
+        or score_report.get("manifest_sha256") != file_sha256(locked_path)
+        or Path(str(score_report.get("validation_ood_report_path", ""))).resolve()
+        != validation_path
+        or score_report.get("validation_ood_report_sha256")
+        != file_sha256(validation_path)
+        or Path(str(score_report.get("checkpoint_path", ""))).resolve()
+        != checkpoint_path
+        or score_report.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+        or not source_path.is_file()
+        or score_report.get("source_manifest_sha256") != file_sha256(source_path)
+        or score_report.get("locked_suite_access") != suite_access
+        or score_report.get("locked_suite_inputs") != suite_inputs
+    ):
+        raise ValueError("locked OOD score report failed frozen-model replay")
+
     def load(path: Path) -> list[dict[str, Any]]:
         with path.open("r", encoding="utf-8") as handle:
             rows = [json.loads(line) for line in handle if line.strip()]
@@ -398,8 +666,9 @@ def run_locked_ood_transfer_evaluation(
 
     calibration_rows = load(calibration_path)
     heldout_rows = load(heldout_path)
-    locked_path = Path(locked_score_manifest).resolve()
     locked_rows = load(locked_path)
+    if len(locked_rows) != int(score_report.get("rows", -1)):
+        raise ValueError("locked OOD score row count differs from its report")
     if len(locked_rows) < int(suite_access["endpoints"]["minimum_locked_ood_rows"]):
         raise ValueError("locked OOD transfer set is smaller than the predeclared minimum")
     required = {
@@ -522,7 +791,11 @@ def run_locked_ood_transfer_evaluation(
             "sha256": file_sha256(checkpoint_path),
         },
         "locked_suite_access": suite_access,
-        "locked_suite_input": suite_input,
+        "locked_suite_inputs": suite_inputs,
+        "locked_score_report": {
+            "path": str(score_report_path),
+            "sha256": file_sha256(score_report_path),
+        },
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)

@@ -37,6 +37,8 @@ locked_evaluation_suite:
     raw_test_injection_ranking_report: inputs/search/raw_test_injection_rankings.json
     mask_test_injection_ranking_report: inputs/search/mask_test_injection_rankings.json
     locked_ood_score_manifest: inputs/robustness/locked_ood_scores.jsonl
+    locked_ood_score_report: inputs/robustness/locked_ood_score_report.json
+    locked_ood_source_manifest: inputs/robustness/locked_ood_source.jsonl
     dingo_locked_source_batch_report: inputs/pe/dingo_locked_source_batch.json
     amplfi_locked_source_batch_report: inputs/pe/amplfi_locked_source_batch.json
     catalog_prediction_manifest: inputs/catalog/gwtc5_predictions.jsonl
