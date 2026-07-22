@@ -672,7 +672,9 @@ gain without this human-consensus endpoint is diagnostic only and cannot satisfy
 `run_human_mask_publication_evidence.sh` automates audit evaluation, consensus materialization,
 model prediction, 10,000-bootstrap segmentation evaluation and final endpoint binding after three
 independent human annotations per task are available. Human annotations are intentionally not
-fabricated or replaced by model pseudo-labels.
+fabricated or replaced by model pseudo-labels. `run_human_mask_publication_queue.sh` waits without
+GPU use for the completed annotation manifest, promoted model and functional raw/mask endpoint,
+then waits for GPU idle and resumes the complete immutable evidence chain.
 
 ## Group-safe chirp+glitch overlap scaling curve
 

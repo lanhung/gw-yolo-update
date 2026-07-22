@@ -27,3 +27,14 @@ def test_human_mask_publication_chain_orders_all_evidence_before_binding() -> No
     assert "COMPLETED_ANNOTATION_MANIFEST" in script
     assert "MASK_BOOTSTRAP_REPLICATES:-10000" in script
     assert "report.get(\"passed\") is not True" in script
+
+
+def test_human_mask_publication_queue_waits_for_annotations_and_gpu() -> None:
+    script = (ROOT / "scripts" / "run_human_mask_publication_queue.sh").read_text()
+    annotation = script.index('"$COMPLETED_ANNOTATION_MANIFEST"')
+    model = script.index('"$MODEL_SELECTION_REPORT"', annotation)
+    raw_endpoint = script.index('"$RAW_MASK_ENDPOINT"', model)
+    execute = script.index("run_human_mask_publication_evidence.sh")
+    assert annotation < model < raw_endpoint < execute
+    assert "nvidia-smi --query-compute-apps=pid" in script
+    assert 'exec bash "$TASK_CODE_DIR/scripts/run_human_mask_publication_evidence.sh"' in script
