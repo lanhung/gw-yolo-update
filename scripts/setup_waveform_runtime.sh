@@ -24,10 +24,12 @@ mkdir -p "$output_dir"
 if [[ ! -x "$runtime_python" ]]; then
   "$base_python" -m venv "$venv_dir"
 fi
-if ! "$runtime_python" -c 'import lal, lalsimulation, pycbc' >/dev/null 2>&1; then
-  "$runtime_python" -m pip install --upgrade pip setuptools wheel >>"$install_log" 2>&1
-  "$runtime_python" -m pip install --requirement "$requirements" >>"$install_log" 2>&1
-fi
+"$runtime_python" -m pip install --upgrade \
+  pip==26.1.2 setuptools==80.9.0 wheel==0.47.0 >>"$install_log" 2>&1
+"$runtime_python" -m pip install --requirement "$requirements" >>"$install_log" 2>&1
+"$runtime_python" -c \
+  'import lal, lalsimulation, pycbc; from pycbc.waveform import get_fd_waveform, get_td_waveform' \
+  >>"$install_log" 2>&1
 
 code_commit=$(git -C "$code_dir" rev-parse HEAD)
 "$runtime_python" - "$requirements" "$receipt" "$code_commit" <<'PY'
@@ -53,11 +55,33 @@ approximants = [
     "IMRPhenomNSBH",
     "SEOBNRv5_ROM",
     "SEOBNRv5HM_ROM",
-    "SEOBNRv5PHM",
+    "IMRPhenomPv3HM",
     "IMRPhenomD_NRTidalv2",
     "SEOBNRv4_ROM_NRTidalv2_NSBH",
 ]
-resolved = {name: int(lalsimulation.GetApproximantFromString(name)) for name in approximants}
+resolved = {}
+for name in approximants:
+    approximant = int(lalsimulation.GetApproximantFromString(name))
+    roundtrip = str(lalsimulation.GetStringFromApproximant(approximant))
+    if roundtrip != name:
+        raise RuntimeError(
+            f"LALSimulation approximant did not round-trip: {name!r} -> "
+            f"{approximant} -> {roundtrip!r}"
+        )
+    fd_implemented = bool(
+        lalsimulation.SimInspiralImplementedFDApproximants(approximant)
+    )
+    td_implemented = bool(
+        lalsimulation.SimInspiralImplementedTDApproximants(approximant)
+    )
+    if not (fd_implemented or td_implemented):
+        raise RuntimeError(f"LALSimulation cannot generate approximant {name!r}")
+    resolved[name] = {
+        "enum": approximant,
+        "roundtrip": roundtrip,
+        "fd_implemented": fd_implemented,
+        "td_implemented": td_implemented,
+    }
 freeze = subprocess.check_output(
     [sys.executable, "-m", "pip", "freeze", "--all"], text=True
 )

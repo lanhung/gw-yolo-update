@@ -237,6 +237,7 @@ publication_evidence:
         - {path_field: manifest_path, sha256_field: manifest_sha256}
         - {path_field: inventory_report_path, sha256_field: inventory_report_sha256}
         - {path_field: waveform_validation_report_path, sha256_field: waveform_validation_report_sha256}
+        - {path_field: waveform_runtime_receipt_path, sha256_field: waveform_runtime_receipt_sha256}
         - {path_field: availability_manifest_path, sha256_field: availability_manifest_sha256}
         - {path_field: availability_report_path, sha256_field: availability_report_sha256}
         - {path_field: population_config_path, sha256_field: population_config_sha256}

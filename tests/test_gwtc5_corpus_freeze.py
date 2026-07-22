@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -104,6 +105,27 @@ def planned_inventory(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
             strata[f"{family}:alternative:{alternative}"] = 3
             approximants.add(alternative)
     waveform_report = root / "waveform-validation.json"
+    runtime_requirements = root / "waveform-requirements.txt"
+    runtime_requirements.write_text("pycbc==test\nlalsuite==test\n", encoding="utf-8")
+    frozen_packages = ["lalsuite==test", "pycbc==test"]
+    frozen_text = "\n".join(frozen_packages) + "\n"
+    runtime_receipt = root / "waveform-runtime-receipt.json"
+    atomic_write_json(
+        runtime_receipt,
+        {
+            "status": "verified_isolated_waveform_runtime",
+            "passed": True,
+            "code_commit": "frozen-commit",
+            "python_executable": "/test/waveform/python",
+            "requirements_path": str(runtime_requirements.resolve()),
+            "requirements_sha256": file_sha256(runtime_requirements),
+            "pycbc_version": "test",
+            "lalsuite_version": "test",
+            "approximants": {name: {} for name in sorted(approximants)},
+            "pip_freeze": frozen_packages,
+            "pip_freeze_sha256": hashlib.sha256(frozen_text.encode()).hexdigest(),
+        },
+    )
     cases = [
         {
             "source_family": key.split(":", 2)[0],
@@ -127,6 +149,13 @@ def planned_inventory(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
             "selected_cases": len(cases),
             "case_strata": dict(sorted(strata.items())),
             "versions": {"pycbc": "test", "lalsuite": "test"},
+            "runtime_receipt_bound": True,
+            "runtime_receipt_path": str(runtime_receipt.resolve()),
+            "runtime_receipt_sha256": file_sha256(runtime_receipt),
+            "requirements_sha256": file_sha256(runtime_requirements),
+            "pip_freeze_sha256": hashlib.sha256(frozen_text.encode()).hexdigest(),
+            "code_commit": "frozen-commit",
+            "environment": {"python_executable": "/test/waveform/python"},
             "cases": cases,
         },
     )
@@ -173,7 +202,7 @@ def test_gwtc5_freeze_binds_physical_producer_and_live_access_log(
         row for row in first["requirements"] if row["id"] == "locked_corpus_unopened"
     )
     assert gate["state"] == "passed"
-    assert len(gate["artifact_replay"]) == 7
+    assert len(gate["artifact_replay"]) == 8
 
     access.write_text(json.dumps({"status": "opened"}), encoding="utf-8")
     try:

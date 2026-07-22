@@ -79,7 +79,12 @@ gwtc5_locked_injection_population:
       alternative_by_primary:
         IMRPhenomXAS: SEOBNRv5_ROM
         IMRPhenomXHM: SEOBNRv5HM_ROM
-        IMRPhenomXPHM: SEOBNRv5PHM
+        # SEOBNRv5PHM is the native DINGO model label but is not a canonical
+        # LALSimulation approximant in the frozen runtime, while SEOBNRv4PHM
+        # fails the high-total-mass 20 Hz domain.  Use the preceding Phenom
+        # precessing higher-mode generation and report this honestly as a
+        # within-family waveform-systematics stratum.
+        IMRPhenomXPHM: IMRPhenomPv3HM
         IMRPhenomXAS_NRTidalv3: IMRPhenomD_NRTidalv2
         IMRPhenomNSBH: SEOBNRv4_ROM_NRTidalv2_NSBH
     high_mass_unequal_mass:

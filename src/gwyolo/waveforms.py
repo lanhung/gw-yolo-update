@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -334,8 +335,9 @@ def validate_waveform_backend(
     maximum_epoch_error_seconds: float = 1e-9,
     selection_mode: str = "family",
     include_alternatives: bool = False,
+    runtime_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Validate PyCBC parameter routing against the direct LALSimulation FD API."""
+    """Validate PyCBC parameter routing against the matching direct LALSimulation API."""
     if sample_rate <= 0 or reference_duration <= 0 or per_family <= 0:
         raise ValueError("sample rate, reference duration and per-family count must be positive")
     if selection_mode not in {"family", "family_approximant"}:
@@ -345,7 +347,7 @@ def validate_waveform_backend(
     try:
         import lal
         import lalsimulation
-        from pycbc.waveform import get_fd_waveform
+        from pycbc.waveform import get_fd_waveform, get_td_waveform
     except ImportError as exc:
         raise RuntimeError("Waveform validation requires PyCBC and LALSuite") from exc
 
@@ -385,25 +387,41 @@ def validate_waveform_backend(
     f_max = sample_rate / 2.0
     cases = []
     for recipe, approximant, waveform_role in selected:
-        pycbc_plus, pycbc_cross = get_fd_waveform(
-            approximant=approximant,
-            mass1=float(recipe["mass_1_detector_msun"]),
-            mass2=float(recipe["mass_2_detector_msun"]),
-            spin1x=float(recipe.get("spin_1x", 0.0)),
-            spin1y=float(recipe.get("spin_1y", 0.0)),
-            spin1z=float(recipe["spin_1z"]),
-            spin2x=float(recipe.get("spin_2x", 0.0)),
-            spin2y=float(recipe.get("spin_2y", 0.0)),
-            spin2z=float(recipe["spin_2z"]),
-            lambda1=float(recipe.get("lambda_1", 0.0)),
-            lambda2=float(recipe.get("lambda_2", 0.0)),
-            inclination=float(recipe["inclination"]),
-            coa_phase=float(recipe["coalescence_phase"]),
-            distance=float(recipe["luminosity_distance_mpc"]),
-            delta_f=delta_f,
-            f_lower=float(recipe["f_lower_hz"]),
-            f_final=f_max,
+        approximant_enum = int(lalsimulation.GetApproximantFromString(approximant))
+        roundtrip_approximant = str(
+            lalsimulation.GetStringFromApproximant(approximant_enum)
         )
+        if roundtrip_approximant != approximant:
+            raise ValueError(
+                "LALSimulation approximant did not round-trip: "
+                f"{approximant!r} -> {approximant_enum} -> {roundtrip_approximant!r}"
+            )
+        fd_implemented = bool(
+            lalsimulation.SimInspiralImplementedFDApproximants(approximant_enum)
+        )
+        td_implemented = bool(
+            lalsimulation.SimInspiralImplementedTDApproximants(approximant_enum)
+        )
+        if not (fd_implemented or td_implemented):
+            raise ValueError(f"LALSimulation cannot generate approximant {approximant!r}")
+
+        waveform_arguments = {
+            "approximant": approximant,
+            "mass1": float(recipe["mass_1_detector_msun"]),
+            "mass2": float(recipe["mass_2_detector_msun"]),
+            "spin1x": float(recipe.get("spin_1x", 0.0)),
+            "spin1y": float(recipe.get("spin_1y", 0.0)),
+            "spin1z": float(recipe["spin_1z"]),
+            "spin2x": float(recipe.get("spin_2x", 0.0)),
+            "spin2y": float(recipe.get("spin_2y", 0.0)),
+            "spin2z": float(recipe["spin_2z"]),
+            "lambda1": float(recipe.get("lambda_1", 0.0)),
+            "lambda2": float(recipe.get("lambda_2", 0.0)),
+            "inclination": float(recipe["inclination"]),
+            "coa_phase": float(recipe["coalescence_phase"]),
+            "distance": float(recipe["luminosity_distance_mpc"]),
+            "f_lower": float(recipe["f_lower_hz"]),
+        }
         parameters = lal.CreateDict()
         lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1(
             parameters, float(recipe.get("lambda_1", 0.0))
@@ -411,7 +429,7 @@ def validate_waveform_backend(
         lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2(
             parameters, float(recipe.get("lambda_2", 0.0))
         )
-        reference_plus, reference_cross = lalsimulation.SimInspiralChooseFDWaveform(
+        lal_arguments = (
             float(recipe["mass_1_detector_msun"]) * lal.MSUN_SI,
             float(recipe["mass_2_detector_msun"]) * lal.MSUN_SI,
             float(recipe.get("spin_1x", 0.0)),
@@ -426,13 +444,42 @@ def validate_waveform_backend(
             0.0,
             0.0,
             0.0,
-            delta_f,
-            float(recipe["f_lower_hz"]),
-            f_max,
-            0.0,
-            parameters,
-            lalsimulation.GetApproximantFromString(approximant),
         )
+        if fd_implemented:
+            waveform_domain = "frequency"
+            pycbc_plus, pycbc_cross = get_fd_waveform(
+                **waveform_arguments,
+                delta_f=delta_f,
+                f_final=f_max,
+            )
+            reference_plus, reference_cross = (
+                lalsimulation.SimInspiralChooseFDWaveform(
+                    *lal_arguments,
+                    delta_f,
+                    float(recipe["f_lower_hz"]),
+                    f_max,
+                    0.0,
+                    parameters,
+                    approximant_enum,
+                )
+            )
+        else:
+            waveform_domain = "time"
+            delta_t = 1.0 / sample_rate
+            pycbc_plus, pycbc_cross = get_td_waveform(
+                **waveform_arguments,
+                delta_t=delta_t,
+            )
+            reference_plus, reference_cross = (
+                lalsimulation.SimInspiralChooseTDWaveform(
+                    *lal_arguments,
+                    delta_t,
+                    float(recipe["f_lower_hz"]),
+                    0.0,
+                    parameters,
+                    approximant_enum,
+                )
+            )
         polarizations = {
             "plus": waveform_equivalence_metrics(
                 pycbc_plus.numpy(),
@@ -460,17 +507,66 @@ def validate_waveform_backend(
                 "injection_id": recipe["injection_id"],
                 "source_family": recipe["source_family"],
                 "approximant": approximant,
+                "approximant_enum": approximant_enum,
+                "approximant_roundtrip": roundtrip_approximant,
                 "waveform_role": waveform_role,
+                "waveform_domain": waveform_domain,
                 "polarizations": polarizations,
                 "passed": passed,
             }
         )
     passed = bool(cases) and all(case["passed"] for case in cases)
+    runtime_provenance: dict[str, Any] = {"runtime_receipt_bound": False}
+    if runtime_receipt_path is not None:
+        runtime_receipt_file = Path(runtime_receipt_path).resolve()
+        if not runtime_receipt_file.is_file():
+            raise FileNotFoundError("Waveform runtime receipt is absent")
+        runtime_receipt = json.loads(runtime_receipt_file.read_text(encoding="utf-8"))
+        runtime_requirements = Path(
+            str(runtime_receipt.get("requirements_path", ""))
+        ).resolve()
+        frozen_packages = runtime_receipt.get("pip_freeze")
+        frozen_text = (
+            "\n".join(map(str, frozen_packages)) + "\n"
+            if isinstance(frozen_packages, list)
+            else ""
+        )
+        selected_approximants = {value for _, value, _ in selected}
+        if (
+            runtime_receipt.get("status") != "verified_isolated_waveform_runtime"
+            or runtime_receipt.get("passed") is not True
+            or Path(str(runtime_receipt.get("python_executable", ""))).resolve()
+            != Path(sys.executable).resolve()
+            or runtime_receipt.get("pycbc_version") != version("pycbc")
+            or runtime_receipt.get("lalsuite_version") != version("lalsuite")
+            or not runtime_requirements.is_file()
+            or runtime_receipt.get("requirements_sha256")
+            != file_sha256(runtime_requirements)
+            or not frozen_text
+            or runtime_receipt.get("pip_freeze_sha256")
+            != hashlib.sha256(frozen_text.encode()).hexdigest()
+            or not selected_approximants
+            <= set(runtime_receipt.get("approximants", {}))
+            or (
+                os.environ.get("GWYOLO_CODE_COMMIT")
+                and runtime_receipt.get("code_commit")
+                != os.environ["GWYOLO_CODE_COMMIT"]
+            )
+        ):
+            raise ValueError("Waveform runtime receipt does not bind this execution")
+        runtime_provenance = {
+            "runtime_receipt_bound": True,
+            "runtime_receipt_path": str(runtime_receipt_file),
+            "runtime_receipt_sha256": file_sha256(runtime_receipt_file),
+            "requirements_path": str(runtime_requirements),
+            "requirements_sha256": runtime_receipt["requirements_sha256"],
+            "pip_freeze_sha256": runtime_receipt["pip_freeze_sha256"],
+        }
     report = {
         "passed": passed,
         "validation_scope": "external_reference_waveform_equivalence",
-        "wrapper_backend": "pycbc_get_fd_waveform",
-        "reference_backend": "direct_lalsimulation_SimInspiralChooseFDWaveform",
+        "wrapper_backend": "pycbc_get_fd_or_td_waveform",
+        "reference_backend": "direct_lalsimulation_matching_domain_api",
         "limitation": (
             "This validates parameter routing, complex strain, amplitude and epoch against the "
             "direct LALSimulation API; detector projection and astrophysical population validity "
@@ -500,12 +596,14 @@ def validate_waveform_backend(
             "maximum_epoch_error_seconds": maximum_epoch_error_seconds,
         },
         "versions": {"pycbc": version("pycbc"), "lalsuite": version("lalsuite")},
+        **runtime_provenance,
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "environment": {
             "hostname": platform.node(),
             "platform": platform.platform(),
             "python": platform.python_version(),
+            "python_executable": str(Path(sys.executable).resolve()),
             "numpy": np.__version__,
         },
         "cases": cases,

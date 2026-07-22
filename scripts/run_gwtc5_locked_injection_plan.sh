@@ -15,6 +15,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 code_dir=$(cd "$script_dir/.." && pwd)
 task_python=${TASK_PYTHON:-python}
 waveform_python=${WAVEFORM_PYTHON:-$task_python}
+waveform_runtime_receipt=${WAVEFORM_RUNTIME_RECEIPT:-}
 availability_manifest="$availability_dir/gwtc5_o4b_availability.jsonl"
 availability_report="$availability_dir/gwtc5_o4b_availability_report.json"
 plan_dir="$output_dir/injection-plan"
@@ -38,6 +39,11 @@ if [[ -e "$access_log" ]]; then
   echo "locked access log already exists: $access_log" >&2
   exit 3
 fi
+if [[ -z "$waveform_runtime_receipt" || ! -s "$waveform_runtime_receipt" ]]; then
+  echo "WAVEFORM_RUNTIME_RECEIPT must name a verified isolated runtime receipt" >&2
+  exit 2
+fi
+waveform_runtime_receipt=$(realpath "$waveform_runtime_receipt")
 
 code_commit=$(git -C "$code_dir" rev-parse HEAD)
 (
@@ -59,7 +65,8 @@ code_commit=$(git -C "$code_dir" rev-parse HEAD)
       --reference-duration 128 \
       --per-family 3 \
       --selection-mode family_approximant \
-      --include-alternatives
+      --include-alternatives \
+      --runtime-receipt "$waveform_runtime_receipt"
   fi
   "$task_python" -m gwyolo.cli gwtc5-locked-corpus-freeze \
     --manifest "$inventory_manifest" \
@@ -117,7 +124,8 @@ if (
     or freeze.get("waveform_runtime_validation_bound") is not True
     or freeze.get("code_commit") != code_commit
     or gate.get("state") != "passed"
-    or len(gate.get("artifact_replay", [])) != 7
+    or waveform.get("runtime_receipt_bound") is not True
+    or len(gate.get("artifact_replay", [])) != 8
     or access_log.exists()
 ):
     raise SystemExit("GWTC-5 physical locked-injection replay failed")

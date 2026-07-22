@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -843,6 +844,23 @@ def freeze_gwtc5_locked_corpus_contract(
     waveform_validation = json.loads(
         waveform_validation_file.read_text(encoding="utf-8")
     )
+    waveform_runtime_receipt_file = Path(
+        str(waveform_validation.get("runtime_receipt_path", ""))
+    ).resolve()
+    if not waveform_runtime_receipt_file.is_file():
+        raise ValueError("GWTC-5 waveform runtime receipt is absent")
+    waveform_runtime_receipt = json.loads(
+        waveform_runtime_receipt_file.read_text(encoding="utf-8")
+    )
+    runtime_requirements_path = Path(
+        str(waveform_runtime_receipt.get("requirements_path", ""))
+    ).resolve()
+    frozen_packages = waveform_runtime_receipt.get("pip_freeze")
+    frozen_text = (
+        "\n".join(map(str, frozen_packages)) + "\n"
+        if isinstance(frozen_packages, list)
+        else ""
+    )
     expected_waveform_strata: Counter[str] = Counter()
     expected_approximants: set[str] = set()
     for row in rows:
@@ -875,6 +893,39 @@ def freeze_gwtc5_locked_corpus_contract(
         or not waveform_validation.get("versions", {}).get("lalsuite")
         or not waveform_validation.get("cases")
         or any(case.get("passed") is not True for case in waveform_validation["cases"])
+        or waveform_validation.get("runtime_receipt_bound") is not True
+        or waveform_validation.get("runtime_receipt_sha256")
+        != file_sha256(waveform_runtime_receipt_file)
+        or waveform_runtime_receipt.get("status")
+        != "verified_isolated_waveform_runtime"
+        or waveform_runtime_receipt.get("passed") is not True
+        or waveform_runtime_receipt.get("pycbc_version")
+        != waveform_validation.get("versions", {}).get("pycbc")
+        or waveform_runtime_receipt.get("lalsuite_version")
+        != waveform_validation.get("versions", {}).get("lalsuite")
+        or waveform_runtime_receipt.get("code_commit")
+        != waveform_validation.get("code_commit")
+        or (
+            os.environ.get("GWYOLO_CODE_COMMIT")
+            and waveform_runtime_receipt.get("code_commit")
+            != os.environ["GWYOLO_CODE_COMMIT"]
+        )
+        or Path(str(waveform_runtime_receipt.get("python_executable", ""))).resolve()
+        != Path(
+            str(waveform_validation.get("environment", {}).get("python_executable", ""))
+        ).resolve()
+        or not runtime_requirements_path.is_file()
+        or waveform_runtime_receipt.get("requirements_sha256")
+        != file_sha256(runtime_requirements_path)
+        or waveform_validation.get("requirements_sha256")
+        != waveform_runtime_receipt.get("requirements_sha256")
+        or not frozen_text
+        or waveform_runtime_receipt.get("pip_freeze_sha256")
+        != hashlib.sha256(frozen_text.encode()).hexdigest()
+        or waveform_validation.get("pip_freeze_sha256")
+        != waveform_runtime_receipt.get("pip_freeze_sha256")
+        or not expected_approximants
+        <= set(waveform_runtime_receipt.get("approximants", {}))
     ):
         raise ValueError("GWTC-5 waveform runtime validation is incomplete")
     observed_detector_subsets = {str(row["detector_subset"]) for row in rows}
@@ -926,6 +977,10 @@ def freeze_gwtc5_locked_corpus_contract(
         "inventory_report_sha256": file_sha256(inventory_report_file),
         "waveform_validation_report_path": str(waveform_validation_file),
         "waveform_validation_report_sha256": file_sha256(waveform_validation_file),
+        "waveform_runtime_receipt_path": str(waveform_runtime_receipt_file),
+        "waveform_runtime_receipt_sha256": file_sha256(
+            waveform_runtime_receipt_file
+        ),
         "suite_config_path": str(config_path),
         "suite_config_sha256": file_sha256(config_path),
         "access_log_path": str(access_log),
@@ -969,6 +1024,10 @@ def freeze_gwtc5_locked_corpus_contract(
         "waveform_validation_report_path": str(waveform_validation_file),
         "waveform_validation_report_sha256": identity[
             "waveform_validation_report_sha256"
+        ],
+        "waveform_runtime_receipt_path": str(waveform_runtime_receipt_file),
+        "waveform_runtime_receipt_sha256": identity[
+            "waveform_runtime_receipt_sha256"
         ],
         "availability_manifest_path": str(availability_manifest_path),
         "availability_manifest_sha256": file_sha256(availability_manifest_path),

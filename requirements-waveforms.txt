@@ -1,2 +1,10 @@
 # Frozen physical waveform runtime used by the locked GWTC-5 inventory gate.
+# PyCBC 2.9.0 has unconstrained upper bounds that currently admit Astropy 8,
+# where astropy.cosmology.core no longer exists.  Pin the numerical/runtime
+# stack so a future resolver cannot recreate that incompatible environment.
+numpy==1.26.4
+scipy==1.13.1
+astropy==6.1.7
+lalsuite==7.26.15
+setuptools==80.9.0
 pycbc==2.9.0

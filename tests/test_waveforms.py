@@ -44,8 +44,16 @@ def test_waveform_validation_covers_primary_alternative_and_in_plane_spins(
         calls.append(("pycbc", kwargs))
         return Series(), Series()
 
+    def get_td_waveform(**kwargs):
+        calls.append(("pycbc_td", kwargs))
+        return Series(), Series()
+
     def choose_fd(*args):
         calls.append(("lal", args))
+        return Reference(), Reference()
+
+    def choose_td(*args):
+        calls.append(("lal_td", args))
         return Reference(), Reference()
 
     lal = types.ModuleType("lal")
@@ -56,10 +64,19 @@ def test_waveform_validation_covers_primary_alternative_and_in_plane_spins(
     lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1 = lambda *_: None
     lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2 = lambda *_: None
     lalsimulation.SimInspiralChooseFDWaveform = choose_fd
-    lalsimulation.GetApproximantFromString = lambda value: value
+    lalsimulation.SimInspiralChooseTDWaveform = choose_td
+    approximant_ids = {"AlternativeP": 1, "PrimaryP": 2, "PrimaryT": 3}
+    approximant_names = {value: key for key, value in approximant_ids.items()}
+    lalsimulation.GetApproximantFromString = lambda value: approximant_ids[value]
+    lalsimulation.GetStringFromApproximant = lambda value: approximant_names[value]
+    lalsimulation.SimInspiralImplementedFDApproximants = (
+        lambda value: value != approximant_ids["AlternativeP"]
+    )
+    lalsimulation.SimInspiralImplementedTDApproximants = lambda _value: True
     pycbc = types.ModuleType("pycbc")
     pycbc_waveform = types.ModuleType("pycbc.waveform")
     pycbc_waveform.get_fd_waveform = get_fd_waveform
+    pycbc_waveform.get_td_waveform = get_td_waveform
     monkeypatch.setitem(sys.modules, "lal", lal)
     monkeypatch.setitem(sys.modules, "lalsimulation", lalsimulation)
     monkeypatch.setitem(sys.modules, "pycbc", pycbc)
@@ -112,11 +129,16 @@ def test_waveform_validation_covers_primary_alternative_and_in_plane_spins(
         "BBH:primary:PrimaryP",
         "BNS:primary:PrimaryT",
     }
-    pycbc_calls = [value for role, value in calls if role == "pycbc"]
+    pycbc_calls = [
+        value for role, value in calls if role in {"pycbc", "pycbc_td"}
+    ]
     assert all(value["spin1x"] == 0.6 for value in pycbc_calls)
     assert all(value["spin1y"] == 0.2 for value in pycbc_calls)
-    lal_calls = [value for role, value in calls if role == "lal"]
+    lal_calls = [value for role, value in calls if role in {"lal", "lal_td"}]
     assert all(value[2:8] == (0.6, 0.2, 0.3, 0.1, 0.0, -0.2) for value in lal_calls)
+    by_approximant = {case["approximant"]: case for case in report["cases"]}
+    assert by_approximant["AlternativeP"]["waveform_domain"] == "time"
+    assert by_approximant["PrimaryP"]["waveform_domain"] == "frequency"
 
 
 def test_detector_arrivals_use_geometric_delay_not_waveform_array_end() -> None:

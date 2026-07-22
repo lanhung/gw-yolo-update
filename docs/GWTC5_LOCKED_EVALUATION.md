@@ -77,7 +77,8 @@ volume/source-frame-time proposal density. DQ-invalid attempts are retained and 
 Availability counts alone are therefore never reported as injection count or analyzed live time.
 
 Before the unopened report can pass, all primary and alternative approximants are sampled by
-family/approximant stratum and compared between PyCBC and the direct LALSimulation FD API, including
+family/approximant stratum and compared between PyCBC and the matching direct LALSimulation FD/TD
+API, including
 the three-dimensional spins used by the precessing stratum. The isolated runtime is pinned by
 [`requirements-waveforms.txt`](../requirements-waveforms.txt); its setup receipt records the exact
 requirements hash, PyCBC/LALSuite versions and complete `pip freeze` hash.
@@ -87,6 +88,7 @@ scripts/setup_waveform_runtime.sh /path/to/base/python /artifacts/waveform-runti
 
 TASK_PYTHON=/path/to/control/python \
 WAVEFORM_PYTHON=/artifacts/waveform-runtime/venv/bin/python \
+WAVEFORM_RUNTIME_RECEIPT=/artifacts/waveform-runtime/waveform_runtime_receipt.json \
 scripts/run_gwtc5_locked_injection_plan.sh \
   /artifacts/gwtc5-score-blind-availability \
   configs/locked_evaluation_suite_gwtc5.yaml \
@@ -95,10 +97,10 @@ scripts/run_gwtc5_locked_injection_plan.sh \
   /artifacts/gwtc5-locked-injection-contract
 ```
 
-The final freeze replays seven artifacts: injection manifest, its producer report, waveform runtime
-validation, availability manifest/report, population config and suite config. Any file mutation,
-fabricated stress label, premature `<VT>` weight, post-DQ replacement policy or live access-log path
-makes `locked_corpus_unopened` fail.
+The final freeze replays eight artifacts: injection manifest, its producer report, waveform runtime
+validation, the exact isolated-runtime receipt, availability manifest/report, population config and
+suite config. Any file mutation, fabricated stress label, premature `<VT>` weight, post-DQ
+replacement policy or live access-log path makes `locked_corpus_unopened` fail.
 
 ## Predeclared GWTC-5 endpoints
 

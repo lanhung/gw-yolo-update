@@ -1657,6 +1657,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="family",
     )
     waveform_validate.add_argument("--include-alternatives", action="store_true")
+    waveform_validate.add_argument("--runtime-receipt")
 
     snr_annotate = subparsers.add_parser("injection-snr-annotate")
     snr_annotate.add_argument("--manifest", required=True)
@@ -3999,6 +4000,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.per_family,
                 selection_mode=args.selection_mode,
                 include_alternatives=args.include_alternatives,
+                runtime_receipt_path=args.runtime_receipt,
             )
         )
     elif args.command == "injection-snr-annotate":
