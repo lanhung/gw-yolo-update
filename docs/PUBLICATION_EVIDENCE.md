@@ -15,6 +15,12 @@ DINGO/AMPLFI PE portfolio and the
 still-unopened locked corpus. Missing bindings remain `pending`; malformed reports, failed
 predicates and changed replay artifacts become `failed`.
 
+The data-scaling requirement accepts only the hard-endpoint-bound result. A same-bank mask-IoU
+summary is diagnostic: it must be joined to the score-blind four-stratum validation hard subset,
+all fixed-epoch/fixed-update scale/seed cells and their immutable bundle. Either a positive or a
+negative continuation decision can pass evidence completeness; the decision direction is retained
+and cannot be used to omit a completed null result.
+
 Run an incremental audit without authorizing locked access:
 
 ```bash

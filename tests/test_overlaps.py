@@ -11,6 +11,7 @@ from gwyolo.overlaps import (
     _fft_upsample,
     audit_physical_overlap_manifests,
     build_contaminated_injection_overrides,
+    freeze_physical_overlap_scaling_hard_subset,
     freeze_physical_overlap_scaling_subsets,
     materialize_physical_overlaps,
     pair_overlap_rows,
@@ -416,3 +417,76 @@ def test_overlap_scaling_subsets_are_nested_group_safe_and_hash_verified(
             [2],
             tmp_path / "tampered-scales",
         )
+
+
+def test_overlap_scaling_hard_subset_freezes_four_score_blind_strata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "a" * 40)
+    corpus = tmp_path / "hard-corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+                "passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    corpus_sha = file_sha256(corpus)
+    rows = []
+    for index in range(100):
+        artifact = tmp_path / f"hard-{index}.npz"
+        artifact.write_bytes(f"hard-{index}".encode())
+        rows.append(
+            {
+                "split": "val",
+                "mixture_id": f"m-{index}",
+                "injection_id": f"i-{index}",
+                "waveform_id": f"w-{index}",
+                "glitch_id": f"g-{index}",
+                "injection_gps_block": f"ib-{index}",
+                "network_gps_block": f"gb-{index}",
+                "observing_run": "O3b",
+                "ml_label": f"family-{index % 10}",
+                "available_ifos": ["H1", "L1"],
+                "optimal_snr_by_ifo": {"H1": 3.0, "L1": 4.0},
+                "path": str(artifact),
+                "sha256": file_sha256(artifact),
+                "gravityspy_corpus_audit_sha256": corpus_sha,
+            }
+        )
+    validation = tmp_path / "hard-validation.jsonl"
+    _write_jsonl(validation, rows)
+    config = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "physical_overlap_scaling_hard_subset.yaml"
+    )
+
+    result = freeze_physical_overlap_scaling_hard_subset(
+        validation,
+        corpus,
+        config,
+        tmp_path / "hard-subset",
+    )
+
+    assert result["rows"] == 100
+    assert result["candidate_scores_inspected"] is False
+    assert result["model_outputs_inspected"] is False
+    assert result["test_rows_read"] == 0
+    assert set(result["strata"]) == {
+        "low_network_snr",
+        "missing_detector",
+        "o3b_transfer",
+        "rare_glitch_family",
+    }
+    assert all(value["rows"] == 100 for value in result["strata"].values())
+    frozen_rows = [
+        json.loads(line)
+        for line in Path(result["hard_subset_manifest_path"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert frozen_rows[0]["hard_subset_network_snr"] == pytest.approx(5.0)
+    assert len(frozen_rows[0]["hard_subset_strata"]) == 4

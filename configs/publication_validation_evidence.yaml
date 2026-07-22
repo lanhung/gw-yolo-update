@@ -66,10 +66,19 @@ publication_evidence:
         - {field: paired_seeds, op: length_at_least, value: 5}
         - {field: promotion_checks.fixed_epochs, op: nonempty}
         - {field: promotion_checks.fixed_optimizer_updates, op: nonempty}
+        - {field: hard_endpoint_binding.passed, op: equals, value: true}
+        - {field: hard_endpoint_binding.all_scaling_cells_replayed, op: equals, value: true}
+        - {field: hard_endpoint_binding.required_strata, op: length_at_least, value: 4}
+        - {field: hard_endpoint_kind, op: equals, value: predeclared_validation_hard_subset}
+        - {field: scale_promotion_authorized, op: in, value: [true, false]}
+        - {field: diagnosis, op: nonempty}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
         - {path_field: subset_report_path, sha256_field: subset_report_sha256}
+        - {path_field: scaling_diagnostic.path, sha256_field: scaling_diagnostic.sha256}
+        - {path_field: hard_subset.path, sha256_field: hard_subset.sha256}
+        - {path_field: hard_endpoint_bundle.path, sha256_field: hard_endpoint_bundle.sha256}
 
     - id: continuous_candidate_calibration
       group: search

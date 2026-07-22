@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -897,6 +898,516 @@ def summarize_physical_overlap_data_scaling(
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)
+    return result
+
+
+def _require_publication_commit() -> dict[str, Any]:
+    provenance = execution_provenance(torch)
+    commit = provenance.get("code_commit")
+    if not isinstance(commit, str) or re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit
+    ) is None:
+        raise ValueError("Scaling hard endpoints require a full GWYOLO_CODE_COMMIT hash")
+    return provenance
+
+
+def run_physical_overlap_scaling_hard_endpoint_cell(
+    config_path: str | Path,
+    subset_report_path: str | Path,
+    hard_subset_report_path: str | Path,
+    finetune_report_path: str | Path,
+    scale: int,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Evaluate one scale/control/seed on a predeclared hard subset without refitting."""
+
+    _require_torch()
+    provenance = _require_publication_commit()
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError("Scaling hard-endpoint cell outputs are immutable")
+    subset_path = Path(subset_report_path).resolve()
+    subset_report = json.loads(subset_path.read_text(encoding="utf-8"))
+    if (
+        subset_report.get("status")
+        != "frozen_group_safe_physical_overlap_scaling_subsets"
+        or subset_report.get("passed") is not True
+        or subset_report.get("test_rows_read") != 0
+    ):
+        raise ValueError("Scaling subset report did not pass")
+    subset_identity = next(
+        (
+            row
+            for row in subset_report.get("subsets", [])
+            if int(row.get("scale", -1)) == int(scale)
+        ),
+        None,
+    )
+    if subset_identity is None:
+        raise ValueError("Hard-endpoint cell scale is not declared")
+    subset_manifest = Path(str(subset_identity.get("manifest_path", "")))
+    if (
+        not subset_manifest.is_file()
+        or file_sha256(subset_manifest) != subset_identity.get("manifest_sha256")
+    ):
+        raise ValueError("Hard-endpoint cell training subset failed replay")
+
+    hard_path = Path(hard_subset_report_path).resolve()
+    hard = json.loads(hard_path.read_text(encoding="utf-8"))
+    if (
+        hard.get("status")
+        != "frozen_score_blind_physical_overlap_scaling_hard_subset"
+        or hard.get("passed") is not True
+        or hard.get("candidate_scores_inspected") is not False
+        or hard.get("model_outputs_inspected") is not False
+        or hard.get("test_rows_read") != 0
+        or hard.get("validation_manifest_sha256")
+        != subset_report.get("validation_manifest_sha256")
+    ):
+        raise ValueError("Scaling hard-subset report failed its score-blind gate")
+    hard_manifest = Path(str(hard.get("hard_subset_manifest_path", "")))
+    if (
+        not hard_manifest.is_file()
+        or file_sha256(hard_manifest) != hard.get("hard_subset_manifest_sha256")
+    ):
+        raise ValueError("Scaling hard-subset manifest failed replay")
+    hard_rows = _read_rows(hard_manifest)
+    required_strata = [str(value) for value in hard.get("required_strata", [])]
+    if any(row.get("split") != "val" for row in hard_rows) or any(
+        not set(row.get("hard_subset_strata", [])) <= set(required_strata)
+        or not row.get("hard_subset_strata")
+        for row in hard_rows
+    ):
+        raise ValueError("Scaling hard-subset rows are not valid frozen validation rows")
+
+    finetune_path = Path(finetune_report_path).resolve()
+    finetune = json.loads(finetune_path.read_text(encoding="utf-8"))
+    if (
+        finetune.get("status") != "validation_selected_real_glitch_overlap_finetune"
+        or finetune.get("overlap_train_manifest_sha256")
+        != subset_identity.get("manifest_sha256")
+        or finetune.get("overlap_validation_manifest_sha256")
+        != subset_report.get("validation_manifest_sha256")
+        or finetune.get("test_evaluation") is not None
+        or finetune.get("search_claim_allowed") is not False
+    ):
+        raise ValueError("Scaling hard-endpoint cell finetune report failed replay")
+    if file_sha256(config_path) != finetune.get("config_file_sha256"):
+        raise ValueError("Scaling hard-endpoint config differs from the finetune report")
+    checkpoint_path = Path(str(finetune.get("checkpoint_path", "")))
+    if (
+        not checkpoint_path.is_file()
+        or file_sha256(checkpoint_path) != finetune.get("checkpoint_sha256")
+    ):
+        raise ValueError("Scaling hard-endpoint checkpoint failed replay")
+
+    config = load_yaml(config_path)
+    settings = config.get("overlap_training")
+    if not isinstance(settings, dict):
+        raise ValueError("Scaling hard endpoint requires overlap_training config")
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    tensor = settings["tensor"]
+    batch_size = int(settings["batch_size"])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model, architecture = model_from_checkpoint(checkpoint, model_ifos, q_values)
+    if architecture != "detector_set":
+        raise ValueError("Scaling hard endpoint requires the detector-set model")
+    model = model.to(device)
+    thresholds = finetune.get("validation_selected_thresholds", {})
+    frozen_thresholds = (float(thresholds["chirp"]), float(thresholds["glitch"]))
+
+    def evaluate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        dataset = PhysicalOverlapDataset(
+            rows,
+            model_ifos,
+            q_values,
+            int(tensor["frequency_bins"]),
+            int(tensor["time_bins"]),
+            bool(settings.get("cache_in_memory", False)),
+        )
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+        return _overlap_epoch(
+            model,
+            loader,
+            device,
+            len(q_values),
+            tuple(float(value) for value in settings["positive_weights"]),
+            tuple(float(value) for value in settings["class_weights"]),
+            float(settings.get("focal_gamma", 0.0)),
+            frozen_thresholds,
+            [str(row["ml_label"]) for row in rows],
+        )
+
+    overall = evaluate(hard_rows)
+    stratum_metrics = {}
+    for stratum in required_strata:
+        selected = [
+            row for row in hard_rows if stratum in row.get("hard_subset_strata", [])
+        ]
+        expected = int(hard.get("strata", {}).get(stratum, {}).get("rows", -1))
+        if len(selected) != expected or len(selected) < 25:
+            raise ValueError("Scaling hard-endpoint stratum count differs from its freeze")
+        metrics = evaluate(selected)
+        stratum_metrics[stratum] = {
+            "rows": len(selected),
+            "unique_glitches": len({str(row["glitch_id"]) for row in selected}),
+            "glitch_iou": float(metrics["glitch"]["iou"]),
+            "chirp_iou": float(metrics["chirp"]["iou"]),
+            "mean_iou": float(metrics["mean_iou"]),
+        }
+
+    selected_history = [
+        row
+        for row in finetune.get("history", [])
+        if int(row.get("epoch", -1)) == int(finetune.get("best_epoch", -2))
+    ]
+    if len(selected_history) != 1 or selected_history[0].get(
+        "checkpoint_eligible"
+    ) is not True:
+        raise ValueError("Scaling hard endpoint lacks a clean-eligible selected epoch")
+    clean_retention = float(selected_history[0]["clean_chirp_iou_retention"])
+    minimum_retention = float(finetune["minimum_clean_chirp_iou_retention"])
+    result = {
+        "status": "completed_validation_only_physical_overlap_scaling_hard_endpoint_cell",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "threshold_refits": 0,
+        "endpoint_partition": "validation_only_predeclared_hard_subset",
+        "training_control": str(finetune["training_control"]["control"]),
+        "scale": int(scale),
+        "seed": int(finetune["seed"]),
+        "primary_metric": {
+            "name": "hard_subset_glitch_iou_at_validation_frozen_threshold",
+            "value": float(overall["glitch"]["iou"]),
+        },
+        "overall_metrics": overall,
+        "strata": stratum_metrics,
+        "clean_noninferiority": {
+            "passed": clean_retention >= minimum_retention,
+            "retention": clean_retention,
+            "minimum_retention": minimum_retention,
+        },
+        "frozen_thresholds": {
+            "chirp": frozen_thresholds[0],
+            "glitch": frozen_thresholds[1],
+        },
+        "subset_report": {"path": str(subset_path), "sha256": file_sha256(subset_path)},
+        "hard_subset": {"path": str(hard_path), "sha256": file_sha256(hard_path)},
+        "finetune_report": {
+            "path": str(finetune_path),
+            "sha256": file_sha256(finetune_path),
+        },
+        "checkpoint": {
+            "path": str(checkpoint_path.resolve()),
+            "sha256": file_sha256(checkpoint_path),
+        },
+        **provenance,
+    }
+    atomic_write_json(output, result)
+    return result
+
+
+def bind_physical_overlap_scaling_hard_endpoints(
+    scaling_summary_path: str | Path,
+    hard_subset_report_path: str | Path,
+    hard_endpoint_report_paths: list[str | Path],
+    output_path: str | Path,
+    next_scale: int,
+) -> dict[str, Any]:
+    """Authorize one next scale only when both controls improve a frozen hard endpoint."""
+
+    provenance = _require_publication_commit()
+    output = Path(output_path)
+    bundle_path = output.with_name(f"{output.stem}_hard_endpoint_bundle.json")
+    if output.exists() or bundle_path.exists():
+        raise FileExistsError("Bound overlap scaling outputs are immutable")
+    summary_path = Path(scaling_summary_path).resolve()
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if (
+        summary.get("status")
+        != "completed_group_safe_physical_overlap_data_scaling_curve"
+        or summary.get("passed") is not True
+        or summary.get("test_rows_read") != 0
+        or summary.get("test_evaluation") is not None
+        or len(summary.get("paired_seeds", [])) < 5
+    ):
+        raise ValueError("Overlap scaling diagnostic is incomplete")
+    subset_path = Path(str(summary.get("subset_report_path", ""))).resolve()
+    if (
+        not subset_path.is_file()
+        or file_sha256(subset_path) != summary.get("subset_report_sha256")
+    ):
+        raise ValueError("Overlap scaling subset report changed")
+    subset = json.loads(subset_path.read_text(encoding="utf-8"))
+    subset_by_hash = {
+        str(row["manifest_sha256"]): int(row["scale"])
+        for row in subset.get("subsets", [])
+    }
+
+    hard_path = Path(hard_subset_report_path).resolve()
+    hard = json.loads(hard_path.read_text(encoding="utf-8"))
+    if (
+        hard.get("status")
+        != "frozen_score_blind_physical_overlap_scaling_hard_subset"
+        or hard.get("passed") is not True
+        or hard.get("candidate_scores_inspected") is not False
+        or hard.get("model_outputs_inspected") is not False
+        or hard.get("test_rows_read") != 0
+        or hard.get("validation_manifest_sha256")
+        != subset.get("validation_manifest_sha256")
+    ):
+        raise ValueError("Overlap scaling hard-subset freeze failed replay")
+    hard_config_path = Path(str(hard.get("config", {}).get("path", "")))
+    if (
+        not hard_config_path.is_file()
+        or file_sha256(hard_config_path) != hard.get("config", {}).get("sha256")
+    ):
+        raise ValueError("Overlap scaling hard-subset config changed")
+    hard_settings = load_yaml(hard_config_path).get(
+        "physical_overlap_scaling_hard_subset", {}
+    )
+    minimum_gain = float(hard_settings.get("minimum_material_primary_gain", 0.0))
+    minimum_retention = float(
+        hard_settings.get("minimum_clean_chirp_iou_retention", 0.0)
+    )
+    bootstrap_replicates = int(hard_settings.get("bootstrap_replicates", 0))
+    bootstrap_seed = int(hard_settings.get("bootstrap_seed", 0))
+    primary_metric_name = str(hard_settings.get("primary_metric", ""))
+    if (
+        minimum_gain <= 0
+        or not 0 < minimum_retention <= 1
+        or bootstrap_replicates < 1000
+        or not primary_metric_name
+    ):
+        raise ValueError("Overlap scaling hard-endpoint decision config is invalid")
+
+    expected: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for identity in summary.get("finetune_reports", []):
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or file_sha256(path) != identity.get("sha256"):
+            raise ValueError("Overlap scaling finetune report changed")
+        report = json.loads(path.read_text(encoding="utf-8"))
+        scale = subset_by_hash.get(str(report.get("overlap_train_manifest_sha256")))
+        key = (
+            str(report.get("training_control", {}).get("control")),
+            int(scale) if scale is not None else -1,
+            int(report.get("seed", -1)),
+        )
+        if key in expected or key[0] not in {
+            "fixed_epochs",
+            "fixed_optimizer_updates",
+        } or key[1] < 1 or key[2] < 0:
+            raise ValueError("Overlap scaling diagnostic cell identity is invalid")
+        expected[key] = {
+            "finetune": {"path": str(path), "sha256": file_sha256(path)},
+            "checkpoint_sha256": str(report.get("checkpoint_sha256")),
+        }
+
+    observed: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for raw_path in hard_endpoint_report_paths:
+        path = Path(raw_path).resolve()
+        cell = json.loads(path.read_text(encoding="utf-8"))
+        key = (
+            str(cell.get("training_control")),
+            int(cell.get("scale", -1)),
+            int(cell.get("seed", -1)),
+        )
+        if key not in expected or key in observed:
+            raise ValueError("Hard-endpoint cell is missing, duplicate or undeclared")
+        checkpoint_path = Path(str(cell.get("checkpoint", {}).get("path", "")))
+        if (
+            cell.get("status")
+            != "completed_validation_only_physical_overlap_scaling_hard_endpoint_cell"
+            or cell.get("passed") is not True
+            or cell.get("test_rows_read") != 0
+            or cell.get("test_evaluation") is not None
+            or cell.get("threshold_refits") != 0
+            or cell.get("endpoint_partition")
+            != "validation_only_predeclared_hard_subset"
+            or cell.get("hard_subset")
+            != {"path": str(hard_path), "sha256": file_sha256(hard_path)}
+            or cell.get("subset_report")
+            != {"path": str(subset_path), "sha256": file_sha256(subset_path)}
+            or cell.get("finetune_report") != expected[key]["finetune"]
+            or cell.get("checkpoint", {}).get("sha256")
+            != expected[key]["checkpoint_sha256"]
+            or not checkpoint_path.is_file()
+            or file_sha256(checkpoint_path)
+            != cell.get("checkpoint", {}).get("sha256")
+            or cell.get("primary_metric", {}).get("name") != primary_metric_name
+        ):
+            raise ValueError("Hard-endpoint cell failed frozen artifact replay")
+        metric = float(cell.get("primary_metric", {}).get("value"))
+        retention = float(cell.get("clean_noninferiority", {}).get("retention"))
+        if not np.isfinite(metric) or not np.isfinite(retention):
+            raise ValueError("Hard-endpoint cell metrics must be finite")
+        if set(cell.get("strata", {})) != set(hard.get("required_strata", [])):
+            raise ValueError("Hard-endpoint cell omitted a required robustness stratum")
+        for stratum, values in cell["strata"].items():
+            if (
+                int(values.get("rows", 0))
+                != int(hard["strata"][stratum]["rows"])
+                or int(values.get("unique_glitches", 0))
+                != int(hard["strata"][stratum]["unique_glitches"])
+                or not np.isfinite(float(values.get("glitch_iou")))
+            ):
+                raise ValueError("Hard-endpoint stratum failed count/metric replay")
+        observed[key] = {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "metric": metric,
+            "retention": retention,
+            "clean_passed": cell.get("clean_noninferiority", {}).get("passed") is True,
+            "report": cell,
+        }
+    if set(observed) != set(expected):
+        raise ValueError("Hard-endpoint reports do not cover every scaling cell")
+
+    lower, upper = (int(value) for value in summary["promotion_data_doubling"])
+    declared_scales = [int(value) for value in summary["scales"]]
+    if (
+        lower not in declared_scales
+        or upper not in declared_scales
+        or upper / lower < 1.8
+        or next_scale <= max(declared_scales)
+        or next_scale > int(2.5 * upper)
+    ):
+        raise ValueError("Requested next scale is not one bounded continuation step")
+    paired_seeds = [int(value) for value in summary["paired_seeds"]]
+    rng = np.random.default_rng(bootstrap_seed)
+    comparisons = {}
+    checks = {}
+    for control in ("fixed_epochs", "fixed_optimizer_updates"):
+        deltas = np.asarray(
+            [
+                observed[(control, upper, seed)]["metric"]
+                - observed[(control, lower, seed)]["metric"]
+                for seed in paired_seeds
+            ],
+            dtype=np.float64,
+        )
+        sampled = deltas[
+            rng.integers(0, len(deltas), size=(bootstrap_replicates, len(deltas)))
+        ].mean(axis=1)
+        interval = np.quantile(sampled, [0.025, 0.975])
+        clean_passed = all(
+            observed[(control, upper, seed)]["clean_passed"]
+            and observed[(control, upper, seed)]["retention"] >= minimum_retention
+            for seed in paired_seeds
+        )
+        material_gain = bool(deltas.mean() >= minimum_gain and interval[0] > 0)
+        comparisons[control] = {
+            "lower_scale": lower,
+            "upper_scale": upper,
+            "paired_seed_deltas": {
+                str(seed): float(delta)
+                for seed, delta in zip(paired_seeds, deltas)
+            },
+            "mean_primary_metric_delta": float(deltas.mean()),
+            "paired_bootstrap_95_interval": [float(interval[0]), float(interval[1])],
+        }
+        checks[control] = {
+            "material_hard_endpoint_gain": material_gain,
+            "clean_noninferiority": clean_passed,
+        }
+    authorized = all(all(value.values()) for value in checks.values())
+    raw_in_domain_gain = bool(summary.get("promote_more_same_distribution_data"))
+    if authorized:
+        diagnosis = "data_limited_on_predeclared_hard_endpoint"
+    elif any(not value["clean_noninferiority"] for value in checks.values()):
+        diagnosis = "clean_noninferiority_failed_do_not_scale"
+    elif checks["fixed_epochs"]["material_hard_endpoint_gain"] and not checks[
+        "fixed_optimizer_updates"
+    ]["material_hard_endpoint_gain"]:
+        diagnosis = "optimization_budget_limited_do_not_scale"
+    elif raw_in_domain_gain:
+        diagnosis = "domain_transfer_limited_do_not_scale_same_distribution"
+    else:
+        diagnosis = "representation_or_label_limited_do_not_scale_same_distribution"
+
+    ordered_observed = sorted(observed.items())
+    bundle = {
+        "status": "frozen_physical_overlap_scaling_hard_endpoint_bundle",
+        "schema": "physical_overlap_scaling_hard_endpoint_bundle_v1",
+        "test_rows_read": 0,
+        "source_scaling_summary": {
+            "path": str(summary_path),
+            "sha256": file_sha256(summary_path),
+        },
+        "hard_subset": {"path": str(hard_path), "sha256": file_sha256(hard_path)},
+        "cells": [
+            {
+                "identity": {
+                    "training_control": key[0],
+                    "scale": key[1],
+                    "seed": key[2],
+                },
+                "source": {"path": value["path"], "sha256": value["sha256"]},
+                "report": value["report"],
+            }
+            for key, value in ordered_observed
+        ],
+        **provenance,
+    }
+    atomic_write_json(bundle_path, bundle)
+    result = {
+        "status": "completed_group_safe_physical_overlap_data_scaling_curve",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation hard-subset scaling cannot replace continuous-background FAR/IFAR/<VT> "
+            "or the one-time locked evaluation"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "hard_endpoint_binding": {
+            "passed": True,
+            "endpoint_partition": "validation_only_predeclared_hard_subset",
+            "required_strata": list(hard["required_strata"]),
+            "all_scaling_cells_replayed": len(observed) == len(expected),
+        },
+        "hard_endpoint_kind": "predeclared_validation_hard_subset",
+        "primary_metric": primary_metric_name,
+        "scales": declared_scales,
+        "paired_seeds": paired_seeds,
+        "minimum_seeds": len(paired_seeds),
+        "promotion_data_doubling": [lower, upper],
+        "promotion_checks": checks,
+        "hard_endpoint_comparisons": comparisons,
+        "scale_promotion_authorized": authorized,
+        "authorized_next_physical_scale": next_scale if authorized else None,
+        "diagnosis": diagnosis,
+        "raw_in_domain_mask_diagnostic": {
+            "promote_more_same_distribution_data": raw_in_domain_gain,
+            "diagnosis": summary.get("diagnosis"),
+        },
+        "minimum_material_primary_gain": minimum_gain,
+        "minimum_clean_chirp_iou_retention": minimum_retention,
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": bootstrap_seed,
+        "subset_report_path": str(subset_path),
+        "subset_report_sha256": file_sha256(subset_path),
+        "scaling_diagnostic": {
+            "path": str(summary_path),
+            "sha256": file_sha256(summary_path),
+        },
+        "hard_subset": {"path": str(hard_path), "sha256": file_sha256(hard_path)},
+        "hard_endpoint_bundle": {
+            "path": str(bundle_path.resolve()),
+            "sha256": file_sha256(bundle_path),
+        },
+        "hard_endpoint_reports": [
+            {"path": value["path"], "sha256": value["sha256"]}
+            for _, value in ordered_observed
+        ],
+        "common_artifact_hashes": summary.get("common_artifact_hashes", {}),
+        **provenance,
+    }
+    atomic_write_json(output, result)
     return result
 
 

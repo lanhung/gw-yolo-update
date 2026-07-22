@@ -502,3 +502,79 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
     )
     assert gate["state"] == "passed"
     assert len(gate["artifact_replay"]) == 11
+
+
+def test_official_validation_protocol_requires_hard_endpoint_scaling_binding(
+    tmp_path: Path,
+) -> None:
+    protocol = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "publication_validation_evidence.yaml"
+    )
+    evidence = tmp_path / "scaling.json"
+    raw = {
+        "status": "completed_group_safe_physical_overlap_data_scaling_curve",
+        "passed": True,
+        "minimum_seeds": 5,
+        "paired_seeds": [1, 2, 3, 4, 5],
+        "promotion_checks": {
+            "fixed_epochs": {"material_positive_gain": True},
+            "fixed_optimizer_updates": {"material_positive_gain": True},
+        },
+        "test_rows_read": 0,
+        "code_commit": "diagnostic-only",
+    }
+    evidence.write_text(json.dumps(raw), encoding="utf-8")
+    failed = run_publication_evidence_audit(
+        protocol,
+        [f"group_safe_data_scaling={evidence}"],
+        tmp_path / "raw-scaling-audit.json",
+    )
+    gate = next(
+        row
+        for row in failed["requirements"]
+        if row["id"] == "group_safe_data_scaling"
+    )
+    assert gate["state"] == "failed"
+
+    artifacts = {}
+    for label in ("subset", "diagnostic", "hard-subset", "hard-bundle"):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        artifacts[label] = {"path": str(path), "sha256": file_sha256(path)}
+    bound = {
+        **raw,
+        "code_commit": "bound-hard-endpoint",
+        "hard_endpoint_binding": {
+            "passed": True,
+            "all_scaling_cells_replayed": True,
+            "required_strata": [
+                "low_network_snr",
+                "missing_detector",
+                "o3b_transfer",
+                "rare_glitch_family",
+            ],
+        },
+        "hard_endpoint_kind": "predeclared_validation_hard_subset",
+        "scale_promotion_authorized": False,
+        "diagnosis": "domain_transfer_limited_do_not_scale_same_distribution",
+        "subset_report_path": artifacts["subset"]["path"],
+        "subset_report_sha256": artifacts["subset"]["sha256"],
+        "scaling_diagnostic": artifacts["diagnostic"],
+        "hard_subset": artifacts["hard-subset"],
+        "hard_endpoint_bundle": artifacts["hard-bundle"],
+    }
+    evidence.write_text(json.dumps(bound), encoding="utf-8")
+    passed = run_publication_evidence_audit(
+        protocol,
+        [f"group_safe_data_scaling={evidence}"],
+        tmp_path / "bound-scaling-audit.json",
+    )
+    gate = next(
+        row
+        for row in passed["requirements"]
+        if row["id"] == "group_safe_data_scaling"
+    )
+    assert gate["state"] == "passed"
+    assert len(gate["artifact_replay"]) == 4

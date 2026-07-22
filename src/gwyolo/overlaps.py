@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -680,6 +681,220 @@ def freeze_physical_overlap_scaling_subsets(
         **execution_provenance(),
     }
     atomic_write_json(output / "physical_overlap_scaling_subsets.json", report)
+    return report
+
+
+def freeze_physical_overlap_scaling_hard_subset(
+    validation_manifest: str | Path,
+    gravityspy_corpus_audit: str | Path,
+    config_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Freeze a score-blind validation hard subset before scaling results exist."""
+
+    output = Path(output_dir)
+    provenance = execution_provenance()
+    commit = provenance.get("code_commit")
+    if not isinstance(commit, str) or re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit
+    ) is None:
+        raise ValueError("Scaling hard-subset freeze requires full commit provenance")
+    report_path = output / "physical_overlap_scaling_hard_subset_report.json"
+    manifest_path = output / "physical_overlap_scaling_hard_subset.jsonl"
+    if report_path.exists() or manifest_path.exists():
+        raise FileExistsError("Physical overlap scaling hard-subset outputs are immutable")
+    config = load_yaml(config_path)
+    settings = config.get("physical_overlap_scaling_hard_subset")
+    if not isinstance(settings, dict) or settings.get("schema") != (
+        "physical_overlap_scaling_hard_subset_v1"
+    ):
+        raise ValueError("Unsupported physical overlap scaling hard-subset config")
+    if settings.get("policy") != "score_blind_validation_metadata_v1":
+        raise ValueError("Hard-subset policy must be score blind")
+    required_strata = [str(value) for value in settings.get("required_strata", [])]
+    allowed_strata = {
+        "low_network_snr",
+        "missing_detector",
+        "o3b_transfer",
+        "rare_glitch_family",
+    }
+    if (
+        not required_strata
+        or len(set(required_strata)) != len(required_strata)
+        or set(required_strata) != allowed_strata
+    ):
+        raise ValueError("Hard-subset config must declare all four frozen strata")
+    minimum_rows = int(settings.get("minimum_rows_per_stratum", 0))
+    minimum_glitches = int(settings.get("minimum_unique_glitches_per_stratum", 0))
+    low_snr_max = float(settings.get("low_network_snr_max", 0.0))
+    full_detector_count = int(settings.get("full_detector_count", 0))
+    transfer_runs = {str(value) for value in settings.get("transfer_observing_runs", [])}
+    rare_fraction = float(settings.get("rare_glitch_family_max_fraction", 0.0))
+    if (
+        minimum_rows < 25
+        or minimum_glitches < 25
+        or low_snr_max <= 0
+        or full_detector_count < 2
+        or not transfer_runs
+        or not 0 < rare_fraction < 0.5
+    ):
+        raise ValueError("Hard-subset thresholds do not meet publication minima")
+
+    corpus_path = Path(gravityspy_corpus_audit).resolve()
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus_sha = file_sha256(corpus_path)
+    if (
+        corpus.get("status") != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or corpus.get("passed") is not True
+    ):
+        raise ValueError("Hard-subset Gravity Spy corpus audit did not pass")
+    rows = _read_jsonl(validation_manifest)
+    required_split = str(settings.get("required_split"))
+    if required_split != "val" or any(row.get("split") != required_split for row in rows):
+        raise ValueError("Hard subset must use validation rows only")
+    required_fields = (
+        "mixture_id",
+        "injection_id",
+        "waveform_id",
+        "glitch_id",
+        "network_gps_block",
+        "observing_run",
+        "ml_label",
+        "available_ifos",
+        "optimal_snr_by_ifo",
+        "path",
+        "sha256",
+        "gravityspy_corpus_audit_sha256",
+    )
+    for row in rows:
+        missing = [field for field in required_fields if field not in row]
+        if missing:
+            raise ValueError(f"Hard-subset validation row lacks metadata: {missing}")
+        artifact = Path(str(row["path"]))
+        if not artifact.is_file() or file_sha256(artifact) != row["sha256"]:
+            raise ValueError("Hard-subset validation artifact hash mismatch")
+        if row["gravityspy_corpus_audit_sha256"] != corpus_sha:
+            raise ValueError("Hard-subset row differs from the corpus audit")
+    _require_unique(
+        rows,
+        ("mixture_id", "injection_id", "waveform_id", "glitch_id"),
+        "hard-subset validation bank",
+    )
+
+    family_counts = Counter(str(row["ml_label"]) for row in rows)
+    rare_families = {
+        family
+        for family, count in family_counts.items()
+        if count / len(rows) <= rare_fraction
+    }
+    if not rare_families:
+        raise ValueError("Hard-subset policy found no predeclared rare glitch families")
+
+    selected = []
+    stratum_counts: Counter[str] = Counter()
+    stratum_glitches: dict[str, set[str]] = {
+        stratum: set() for stratum in required_strata
+    }
+    for row in rows:
+        available_ifos = row["available_ifos"]
+        if not isinstance(available_ifos, list) or not available_ifos:
+            raise ValueError("Hard-subset detector availability is invalid")
+        observed_ifos = [str(value) for value in available_ifos]
+        if len(set(observed_ifos)) != len(observed_ifos):
+            raise ValueError("Hard-subset detector availability contains duplicates")
+        raw_snr = row["optimal_snr_by_ifo"]
+        if not isinstance(raw_snr, dict) or not raw_snr:
+            raise ValueError("Hard-subset row lacks per-IFO optimal SNR")
+        snr_values = []
+        if any(ifo not in raw_snr for ifo in observed_ifos):
+            raise ValueError("Hard-subset observed detector lacks optimal SNR")
+        for ifo in observed_ifos:
+            value = raw_snr[ifo]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("Hard-subset per-IFO SNR must be numeric")
+            snr_values.append(float(value))
+        network_snr = float(np.sqrt(np.sum(np.square(snr_values))))
+        if not np.isfinite(network_snr):
+            raise ValueError("Hard-subset network SNR must be finite")
+        strata = []
+        if network_snr <= low_snr_max:
+            strata.append("low_network_snr")
+        if len(observed_ifos) < full_detector_count:
+            strata.append("missing_detector")
+        if str(row["observing_run"]) in transfer_runs:
+            strata.append("o3b_transfer")
+        if str(row["ml_label"]) in rare_families:
+            strata.append("rare_glitch_family")
+        if not strata:
+            continue
+        record = dict(row)
+        record["hard_subset_strata"] = sorted(strata)
+        record["hard_subset_network_snr"] = network_snr
+        selected.append(record)
+        for stratum in strata:
+            stratum_counts[stratum] += 1
+            stratum_glitches[stratum].add(str(row["glitch_id"]))
+
+    failures = {
+        stratum: {
+            "rows": int(stratum_counts[stratum]),
+            "unique_glitches": len(stratum_glitches[stratum]),
+        }
+        for stratum in required_strata
+        if stratum_counts[stratum] < minimum_rows
+        or len(stratum_glitches[stratum]) < minimum_glitches
+    }
+    if failures:
+        raise ValueError(f"Hard-subset strata are undersized: {failures}")
+    selected.sort(key=lambda row: str(row["mixture_id"]))
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+    )
+    report = {
+        "status": "frozen_score_blind_physical_overlap_scaling_hard_subset",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "model_outputs_inspected": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "policy": str(settings["policy"]),
+        "required_split": required_split,
+        "rows": len(selected),
+        "validation_rows_considered": len(rows),
+        "required_strata": required_strata,
+        "strata": {
+            stratum: {
+                "rows": int(stratum_counts[stratum]),
+                "unique_glitches": len(stratum_glitches[stratum]),
+            }
+            for stratum in required_strata
+        },
+        "rare_glitch_families": sorted(rare_families),
+        "hard_subset_manifest_path": str(manifest_path.resolve()),
+        "hard_subset_manifest_sha256": file_sha256(manifest_path),
+        "validation_manifest_path": str(Path(validation_manifest).resolve()),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "gravityspy_corpus_audit": {
+            "path": str(corpus_path),
+            "sha256": corpus_sha,
+        },
+        "config": {
+            "path": str(Path(config_path).resolve()),
+            "sha256": file_sha256(config_path),
+        },
+        "selection_thresholds": {
+            "minimum_rows_per_stratum": minimum_rows,
+            "minimum_unique_glitches_per_stratum": minimum_glitches,
+            "low_network_snr_max": low_snr_max,
+            "full_detector_count": full_detector_count,
+            "transfer_observing_runs": sorted(transfer_runs),
+            "rare_glitch_family_max_fraction": rare_fraction,
+        },
+        **provenance,
+    }
+    atomic_write_json(report_path, report)
     return report
 
 

@@ -688,3 +688,28 @@ replace continuous-background FAR/IFAR/`<VT>` evidence.
 `scripts/run_physical_overlap_data_scaling.sh` freezes the subsets and executes the complete
 two-control, five-seed matrix resumably. It is artifact-gated behind the completed source-safe
 overlap bank and must not open O4b/GWTC-5.
+
+The same-bank mask-IoU curve is now explicitly diagnostic and cannot by itself authorize a larger
+data scale or satisfy the publication ledger. Before reading any cell metric,
+`physical-overlap-scale-hard-subset-freeze` deterministically freezes a score-blind validation
+subset from metadata only. The four required strata are low network SNR, a missing detector, O3b
+transfer and rare glitch families; each requires at least 25 physical rows and 25 unique glitches.
+The manifest, source corpus audit, selection config and every numeric artifact are hashed, while
+candidate scores and model outputs remain unread.
+
+`physical-overlap-scale-hard-endpoint-cell` then evaluates every scale/control/seed checkpoint on
+that same subset using its already selected validation thresholds. Threshold refits are forbidden.
+It reports overall and per-stratum chirp/glitch IoU plus the original clean-chirp retention gate.
+`physical-overlap-scale-hard-endpoint-bind` requires exact coverage of the complete paired matrix,
+replays every checkpoint and report, and bootstraps the most recent approximately doubled step.
+The next bounded physical scale is authorized only when both fixed-epoch and fixed-update controls
+show at least 0.01 hard-subset glitch-IoU gain with a positive lower 95% bound and clean retention
+of at least 0.95 for every upper-scale seed.
+
+If same-bank IoU improves but the hard subset does not, the result is classified as domain-transfer
+limited and more same-distribution data is refused. Fixed-epoch-only hard-subset improvement is
+optimization-budget limited. Failure of both controls is classified as representation/label
+limited, while clean regression has its own non-inferiority failure. The complete cell reports are
+embedded in one immutable bundle so negative decisions cannot be dropped from the paper table.
+`scripts/run_physical_overlap_scaling_hard_endpoint.sh` is the fail-closed successor that performs
+the freeze, all cell evaluations and the final binding without opening test data.

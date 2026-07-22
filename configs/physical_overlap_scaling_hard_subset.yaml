@@ -1,0 +1,20 @@
+physical_overlap_scaling_hard_subset:
+  schema: physical_overlap_scaling_hard_subset_v1
+  policy: score_blind_validation_metadata_v1
+  required_split: val
+  required_strata:
+    - low_network_snr
+    - missing_detector
+    - o3b_transfer
+    - rare_glitch_family
+  minimum_rows_per_stratum: 25
+  minimum_unique_glitches_per_stratum: 25
+  low_network_snr_max: 6.0
+  full_detector_count: 3
+  transfer_observing_runs: [O3b]
+  rare_glitch_family_max_fraction: 0.10
+  primary_metric: hard_subset_glitch_iou_at_validation_frozen_threshold
+  minimum_material_primary_gain: 0.01
+  minimum_clean_chirp_iou_retention: 0.95
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260728

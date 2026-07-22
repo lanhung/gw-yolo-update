@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from gwyolo.io import file_sha256
+from gwyolo.numeric import DetectorSetQNet
 from gwyolo.overlap_training import (
     PhysicalOverlapDataset,
     _train_epoch,
+    bind_physical_overlap_scaling_hard_endpoints,
     glitch_family_sampling_weights,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
     resolve_overlap_training_control,
+    run_physical_overlap_scaling_hard_endpoint_cell,
     summarize_overlap_five_seed_promotion,
     summarize_glitch_family_counts,
     summarize_physical_overlap_data_scaling,
@@ -274,6 +278,363 @@ def test_overlap_data_scaling_requires_paired_gain_under_both_controls(
         assert comparison["paired_bootstrap_95_interval"] == pytest.approx(
             [0.03, 0.03]
         )
+
+
+def test_hard_endpoint_scaling_binder_authorizes_hand_calculated_joint_gain(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "b" * 40)
+    subset_manifests = {}
+    subsets = []
+    for scale in (10, 20):
+        path = tmp_path / f"subset-{scale}.jsonl"
+        path.write_text(json.dumps({"scale": scale}) + "\n", encoding="utf-8")
+        subset_manifests[scale] = path
+        subsets.append(
+            {
+                "scale": scale,
+                "manifest_path": str(path),
+                "manifest_sha256": file_sha256(path),
+            }
+        )
+    subset_report = tmp_path / "subset-report.json"
+    subset_report.write_text(
+        json.dumps(
+            {
+                "status": "frozen_group_safe_physical_overlap_scaling_subsets",
+                "passed": True,
+                "test_rows_read": 0,
+                "validation_manifest_sha256": "validation-hash",
+                "subsets": subsets,
+            }
+        ),
+        encoding="utf-8",
+    )
+    hard_config = tmp_path / "hard-config.yaml"
+    hard_config.write_text(
+        """
+physical_overlap_scaling_hard_subset:
+  primary_metric: hard_subset_glitch_iou_at_validation_frozen_threshold
+  minimum_material_primary_gain: 0.01
+  minimum_clean_chirp_iou_retention: 0.95
+  bootstrap_replicates: 1000
+  bootstrap_seed: 9
+""".lstrip(),
+        encoding="utf-8",
+    )
+    required_strata = [
+        "low_network_snr",
+        "missing_detector",
+        "o3b_transfer",
+        "rare_glitch_family",
+    ]
+    hard_subset = tmp_path / "hard-subset-report.json"
+    hard_subset.write_text(
+        json.dumps(
+            {
+                "status": "frozen_score_blind_physical_overlap_scaling_hard_subset",
+                "passed": True,
+                "candidate_scores_inspected": False,
+                "model_outputs_inspected": False,
+                "test_rows_read": 0,
+                "validation_manifest_sha256": "validation-hash",
+                "required_strata": required_strata,
+                "strata": {
+                    stratum: {"rows": 25, "unique_glitches": 25}
+                    for stratum in required_strata
+                },
+                "config": {
+                    "path": str(hard_config),
+                    "sha256": file_sha256(hard_config),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    finetune_identities = []
+    cells = []
+    for control in ("fixed_epochs", "fixed_optimizer_updates"):
+        for scale, metric in ((10, 0.20), (20, 0.23)):
+            for seed in range(5):
+                checkpoint = tmp_path / f"checkpoint-{control}-{scale}-{seed}.pt"
+                checkpoint.write_bytes(f"{control}-{scale}-{seed}".encode())
+                finetune = tmp_path / f"finetune-{control}-{scale}-{seed}.json"
+                finetune.write_text(
+                    json.dumps(
+                        {
+                            "training_control": {"control": control},
+                            "overlap_train_manifest_sha256": file_sha256(
+                                subset_manifests[scale]
+                            ),
+                            "seed": seed,
+                            "checkpoint_path": str(checkpoint),
+                            "checkpoint_sha256": file_sha256(checkpoint),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                finetune_identity = {
+                    "path": str(finetune.resolve()),
+                    "sha256": file_sha256(finetune),
+                }
+                finetune_identities.append(finetune_identity)
+                cell = tmp_path / f"hard-cell-{control}-{scale}-{seed}.json"
+                cell.write_text(
+                    json.dumps(
+                        {
+                            "status": (
+                                "completed_validation_only_physical_overlap_scaling_"
+                                "hard_endpoint_cell"
+                            ),
+                            "passed": True,
+                            "test_rows_read": 0,
+                            "test_evaluation": None,
+                            "threshold_refits": 0,
+                            "endpoint_partition": (
+                                "validation_only_predeclared_hard_subset"
+                            ),
+                            "training_control": control,
+                            "scale": scale,
+                            "seed": seed,
+                            "hard_subset": {
+                                "path": str(hard_subset.resolve()),
+                                "sha256": file_sha256(hard_subset),
+                            },
+                            "subset_report": {
+                                "path": str(subset_report.resolve()),
+                                "sha256": file_sha256(subset_report),
+                            },
+                            "finetune_report": finetune_identity,
+                            "checkpoint": {
+                                "path": str(checkpoint),
+                                "sha256": file_sha256(checkpoint),
+                            },
+                            "primary_metric": {
+                                "name": (
+                                    "hard_subset_glitch_iou_at_validation_frozen_"
+                                    "threshold"
+                                ),
+                                "value": metric + seed * 0.001,
+                            },
+                            "clean_noninferiority": {
+                                "passed": True,
+                                "retention": 0.97,
+                            },
+                            "strata": {
+                                stratum: {
+                                    "rows": 25,
+                                    "unique_glitches": 25,
+                                    "glitch_iou": metric,
+                                }
+                                for stratum in required_strata
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                cells.append(cell)
+    scaling_summary = tmp_path / "scaling-diagnostic.json"
+    scaling_summary.write_text(
+        json.dumps(
+            {
+                "status": "completed_group_safe_physical_overlap_data_scaling_curve",
+                "passed": True,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "paired_seeds": list(range(5)),
+                "scales": [10, 20],
+                "promotion_data_doubling": [10, 20],
+                "promote_more_same_distribution_data": True,
+                "diagnosis": "data_limited_at_frozen_overlap_endpoint",
+                "subset_report_path": str(subset_report),
+                "subset_report_sha256": file_sha256(subset_report),
+                "finetune_reports": finetune_identities,
+                "common_artifact_hashes": {"validation": "hash"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = bind_physical_overlap_scaling_hard_endpoints(
+        scaling_summary,
+        hard_subset,
+        cells,
+        tmp_path / "bound-scaling.json",
+        next_scale=40,
+    )
+
+    assert result["scale_promotion_authorized"] is True
+    assert result["authorized_next_physical_scale"] == 40
+    assert result["diagnosis"] == "data_limited_on_predeclared_hard_endpoint"
+    for control in ("fixed_epochs", "fixed_optimizer_updates"):
+        comparison = result["hard_endpoint_comparisons"][control]
+        assert comparison["mean_primary_metric_delta"] == pytest.approx(0.03)
+        assert comparison["paired_bootstrap_95_interval"] == pytest.approx(
+            [0.03, 0.03]
+        )
+    bundle = result["hard_endpoint_bundle"]
+    assert file_sha256(bundle["path"]) == bundle["sha256"]
+    bundle_report = json.loads(Path(bundle["path"]).read_text(encoding="utf-8"))
+    assert len(bundle_report["cells"]) == 20
+
+
+@pytest.mark.skipif(torch is None, reason="PyTorch is not installed")
+def test_hard_endpoint_cell_uses_frozen_threshold_without_refit(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "c" * 40)
+    config = tmp_path / "cell-config.yaml"
+    config.write_text(
+        """
+overlap_training:
+  batch_size: 5
+  positive_weights: [1.0, 1.0]
+  class_weights: [1.0, 1.0]
+  focal_gamma: 0.0
+  cache_in_memory: false
+  model_ifos: [H1, L1]
+  q_values: [4]
+  tensor:
+    frequency_bins: 16
+    time_bins: 16
+""".lstrip(),
+        encoding="utf-8",
+    )
+    model = DetectorSetQNet(2, 1, 2)
+    for parameter in model.parameters():
+        torch.nn.init.zeros_(parameter)
+    checkpoint = tmp_path / "cell-checkpoint.pt"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "architecture": "detector_set",
+            "model_ifos": ["H1", "L1"],
+            "q_values": [4.0],
+            "input_channels": 2,
+            "base_channels": 2,
+        },
+        checkpoint,
+    )
+    strata = [
+        "low_network_snr",
+        "missing_detector",
+        "o3b_transfer",
+        "rare_glitch_family",
+    ]
+    hard_rows = []
+    for index in range(25):
+        sample = tmp_path / f"cell-sample-{index}.npz"
+        np.savez(
+            sample,
+            features=np.zeros((2, 1, 16, 16), dtype=np.float32),
+            chirp_mask=np.zeros((2, 1, 16, 16), dtype=np.uint8),
+            glitch_mask=np.ones((2, 1, 16, 16), dtype=np.uint8),
+            detector_availability=np.ones(2, dtype=np.uint8),
+            ifos=np.asarray(["H1", "L1"]),
+            q_values=np.asarray([4.0], dtype=np.float32),
+        )
+        hard_rows.append(
+            {
+                "split": "val",
+                "mixture_id": f"m-{index}",
+                "glitch_id": f"g-{index}",
+                "ml_label": "Blip",
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+                "hard_subset_strata": strata,
+            }
+        )
+    hard_manifest = tmp_path / "cell-hard.jsonl"
+    hard_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in hard_rows), encoding="utf-8"
+    )
+    train_manifest = tmp_path / "cell-train.jsonl"
+    train_manifest.write_text('{"split":"train"}\n', encoding="utf-8")
+    subset_report = tmp_path / "cell-subsets.json"
+    subset_report.write_text(
+        json.dumps(
+            {
+                "status": "frozen_group_safe_physical_overlap_scaling_subsets",
+                "passed": True,
+                "test_rows_read": 0,
+                "validation_manifest_sha256": "validation-hash",
+                "subsets": [
+                    {
+                        "scale": 10,
+                        "manifest_path": str(train_manifest),
+                        "manifest_sha256": file_sha256(train_manifest),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    hard_report = tmp_path / "cell-hard-report.json"
+    hard_report.write_text(
+        json.dumps(
+            {
+                "status": "frozen_score_blind_physical_overlap_scaling_hard_subset",
+                "passed": True,
+                "candidate_scores_inspected": False,
+                "model_outputs_inspected": False,
+                "test_rows_read": 0,
+                "validation_manifest_sha256": "validation-hash",
+                "hard_subset_manifest_path": str(hard_manifest),
+                "hard_subset_manifest_sha256": file_sha256(hard_manifest),
+                "required_strata": strata,
+                "strata": {
+                    stratum: {"rows": 25, "unique_glitches": 25}
+                    for stratum in strata
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    finetune = tmp_path / "cell-finetune.json"
+    finetune.write_text(
+        json.dumps(
+            {
+                "status": "validation_selected_real_glitch_overlap_finetune",
+                "search_claim_allowed": False,
+                "test_evaluation": None,
+                "overlap_train_manifest_sha256": file_sha256(train_manifest),
+                "overlap_validation_manifest_sha256": "validation-hash",
+                "config_file_sha256": file_sha256(config),
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "training_control": {"control": "fixed_epochs"},
+                "seed": 7,
+                "validation_selected_thresholds": {"chirp": 0.4, "glitch": 0.4},
+                "best_epoch": 2,
+                "minimum_clean_chirp_iou_retention": 0.95,
+                "history": [
+                    {
+                        "epoch": 2,
+                        "checkpoint_eligible": True,
+                        "clean_chirp_iou_retention": 0.97,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_physical_overlap_scaling_hard_endpoint_cell(
+        config,
+        subset_report,
+        hard_report,
+        finetune,
+        10,
+        tmp_path / "cell-result.json",
+    )
+
+    assert result["threshold_refits"] == 0
+    assert result["frozen_thresholds"] == {"chirp": 0.4, "glitch": 0.4}
+    assert result["primary_metric"]["value"] == pytest.approx(1.0)
+    assert all(
+        values["glitch_iou"] == pytest.approx(1.0)
+        for values in result["strata"].values()
+    )
 
 
 def test_glitch_family_metrics_use_hand_calculated_pixel_counts() -> None:

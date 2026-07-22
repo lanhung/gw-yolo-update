@@ -867,6 +867,14 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_scaling.add_argument("--seed", type=int, default=20260728)
     physical_overlap_scaling.add_argument("--include-full", action="store_true")
 
+    overlap_hard_subset = subparsers.add_parser(
+        "physical-overlap-scale-hard-subset-freeze"
+    )
+    overlap_hard_subset.add_argument("--validation-manifest", required=True)
+    overlap_hard_subset.add_argument("--gravityspy-corpus-audit", required=True)
+    overlap_hard_subset.add_argument("--config", required=True)
+    overlap_hard_subset.add_argument("--output-dir", required=True)
+
     physical_overlap_contamination = subparsers.add_parser(
         "physical-overlap-contamination"
     )
@@ -921,6 +929,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overlap_scaling_summary.add_argument("--bootstrap-replicates", type=int, default=2000)
     overlap_scaling_summary.add_argument("--bootstrap-seed", type=int, default=20260728)
+
+    overlap_hard_cell = subparsers.add_parser(
+        "physical-overlap-scale-hard-endpoint-cell"
+    )
+    overlap_hard_cell.add_argument("--config", required=True)
+    overlap_hard_cell.add_argument("--subset-report", required=True)
+    overlap_hard_cell.add_argument("--hard-subset-report", required=True)
+    overlap_hard_cell.add_argument("--finetune-report", required=True)
+    overlap_hard_cell.add_argument("--scale", required=True, type=int)
+    overlap_hard_cell.add_argument("--output", required=True)
+
+    overlap_hard_bind = subparsers.add_parser(
+        "physical-overlap-scale-hard-endpoint-bind"
+    )
+    overlap_hard_bind.add_argument("--scaling-summary", required=True)
+    overlap_hard_bind.add_argument("--hard-subset-report", required=True)
+    overlap_hard_bind.add_argument("--hard-endpoint-report", action="append", required=True)
+    overlap_hard_bind.add_argument("--next-scale", required=True, type=int)
+    overlap_hard_bind.add_argument("--output", required=True)
 
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
@@ -3046,6 +3073,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.include_full,
             )
         )
+    elif args.command == "physical-overlap-scale-hard-subset-freeze":
+        from .overlaps import freeze_physical_overlap_scaling_hard_subset
+
+        _print(
+            freeze_physical_overlap_scaling_hard_subset(
+                args.validation_manifest,
+                args.gravityspy_corpus_audit,
+                args.config,
+                args.output_dir,
+            )
+        )
     elif args.command == "physical-overlap-sampling-promote":
         from .overlap_training import promote_overlap_sampling_arm
 
@@ -3081,6 +3119,33 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_clean_chirp_iou_retention,
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
+            )
+        )
+    elif args.command == "physical-overlap-scale-hard-endpoint-cell":
+        from .overlap_training import (
+            run_physical_overlap_scaling_hard_endpoint_cell,
+        )
+
+        _print(
+            run_physical_overlap_scaling_hard_endpoint_cell(
+                args.config,
+                args.subset_report,
+                args.hard_subset_report,
+                args.finetune_report,
+                args.scale,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-scale-hard-endpoint-bind":
+        from .overlap_training import bind_physical_overlap_scaling_hard_endpoints
+
+        _print(
+            bind_physical_overlap_scaling_hard_endpoints(
+                args.scaling_summary,
+                args.hard_subset_report,
+                args.hard_endpoint_report,
+                args.output,
+                args.next_scale,
             )
         )
     elif args.command == "physical-overlap-contamination":
