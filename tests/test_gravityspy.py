@@ -878,6 +878,61 @@ def test_network_source_selection_adds_new_gps_components_by_label_deficit(
     assert selected == {"new-a", "new-b1", "new-b2"}
 
 
+def test_network_source_selection_targets_family_and_separate_exclusions(
+    tmp_path,
+) -> None:
+    def row(glitch_id: str, label: str, component: str) -> dict:
+        return {
+            "glitch_id": glitch_id,
+            "split": "train",
+            "ml_label": label,
+            "network_gps_block": f"block-{component}",
+            "observing_run": "O3a",
+            "ifo": "H1",
+            "available_ifos": ["H1", "L1"],
+            "network_strain_sources": {
+                "H1": {"hdf5_url": f"https://example/{component}-h1.hdf5"},
+                "L1": {"hdf5_url": f"https://example/{component}-l1.hdf5"},
+            },
+        }
+
+    candidates = tmp_path / "target-candidates.jsonl"
+    candidates.write_text(
+        "".join(
+            json.dumps(value) + "\n"
+            for value in (
+                row("h0", "Helix", "h0"),
+                row("h1", "Helix", "h1"),
+                row("h2", "Helix", "h2"),
+                row("b0", "Blip", "b0"),
+                row("b1", "Blip", "b1"),
+            )
+        )
+    )
+    exclusion = tmp_path / "exclusion.jsonl"
+    exclusion.write_text(json.dumps(row("old", "Helix", "h0")) + "\n")
+
+    result = select_gravityspy_network_source_components(
+        candidates,
+        tmp_path / "target-selection",
+        per_label=2,
+        maximum_source_files=4,
+        seed=3,
+        target_labels=["Helix"],
+        exclusion_manifest_paths=[exclusion],
+    )
+
+    assert result["target_met"]
+    assert result["target_labels"] == ["Helix"]
+    assert result["selected_label_counts"] == {"Helix": 2}
+    assert result["selected_source_files"] == 4
+    selected = {
+        json.loads(line)["glitch_id"]
+        for line in Path(result["manifest_path"]).read_text().splitlines()
+    }
+    assert selected == {"h1", "h2"}
+
+
 def test_network_numeric_merge_requires_aligned_hash_verified_rows(tmp_path) -> None:
     reports = []
     for index in range(2):

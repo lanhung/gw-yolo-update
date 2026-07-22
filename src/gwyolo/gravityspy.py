@@ -869,6 +869,8 @@ def select_gravityspy_network_source_components(
     maximum_source_files: int,
     seed: int = 20260720,
     existing_manifest_path: str | Path | None = None,
+    target_labels: Iterable[str] = (),
+    exclusion_manifest_paths: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Select new aligned source components against label deficits and GPS diversity."""
 
@@ -878,6 +880,13 @@ def select_gravityspy_network_source_components(
         rows = [json.loads(line) for line in handle if line.strip()]
     if not rows:
         raise ValueError("Network source selection requires a non-empty plan")
+    requested_labels = tuple(dict.fromkeys(str(label) for label in target_labels))
+    if requested_labels:
+        available_labels = {str(row["ml_label"]) for row in rows}
+        missing_labels = sorted(set(requested_labels) - available_labels)
+        if missing_labels:
+            raise ValueError(f"Network source selection labels are absent: {missing_labels}")
+        rows = [row for row in rows if str(row["ml_label"]) in requested_labels]
     splits = {str(row["split"]) for row in rows}
     if len(splits) != 1:
         raise ValueError("Network source selection cannot mix data splits")
@@ -895,15 +904,27 @@ def select_gravityspy_network_source_components(
         if any(str(row.get("split")) != split for row in existing_rows):
             raise ValueError("Existing network Gravity Spy rows belong to another split")
         existing_hash = file_sha256(existing_path)
-    existing_ids = {str(row["glitch_id"]) for row in existing_rows}
-    existing_blocks = {str(row["network_gps_block"]) for row in existing_rows}
+    exclusion_rows = list(existing_rows)
+    exclusion_evidence = []
+    for raw_path in exclusion_manifest_paths:
+        path = Path(raw_path)
+        with path.open("r", encoding="utf-8") as handle:
+            values = [json.loads(line) for line in handle if line.strip()]
+        if not values:
+            raise ValueError("Network source exclusion manifest cannot be empty")
+        exclusion_rows.extend(values)
+        exclusion_evidence.append(
+            {"path": str(path.resolve()), "sha256": file_sha256(path), "rows": len(values)}
+        )
+    existing_ids = {str(row["glitch_id"]) for row in exclusion_rows}
+    existing_blocks = {str(row["network_gps_block"]) for row in exclusion_rows}
     existing_sources = {
         str(source["hdf5_url"])
-        for row in existing_rows
+        for row in exclusion_rows
         for source in row.get("network_strain_sources", {}).values()
     }
     existing_counts = Counter(str(row["ml_label"]) for row in existing_rows)
-    labels = sorted({str(row["ml_label"]) for row in rows} | set(existing_counts))
+    labels = sorted(requested_labels or {str(row["ml_label"]) for row in rows})
     deficits = {label: max(0, per_label - existing_counts[label]) for label in labels}
     candidate_rows = [
         row
@@ -1001,6 +1022,7 @@ def select_gravityspy_network_source_components(
         "scientific_claim_allowed": False,
         "split": split,
         "seed": seed,
+        "target_labels": labels,
         "per_label_target": per_label,
         "maximum_source_files": maximum_source_files,
         "target_met": not underfilled,
@@ -1011,7 +1033,9 @@ def select_gravityspy_network_source_components(
         if existing_manifest_path is not None
         else None,
         "existing_manifest_sha256": existing_hash,
+        "exclusion_manifests": exclusion_evidence,
         "existing_rows": len(existing_rows),
+        "exclusion_rows_before_identity_deduplication": len(exclusion_rows),
         "existing_label_counts": dict(sorted(existing_counts.items())),
         "excluded_existing_glitch_ids": len(existing_ids),
         "excluded_existing_gps_blocks": len(existing_blocks),

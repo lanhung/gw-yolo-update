@@ -786,6 +786,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gravityspy_network_select.add_argument("--seed", type=int, default=20260720)
     gravityspy_network_select.add_argument("--existing-manifest")
+    gravityspy_network_select.add_argument("--target-label", action="append", default=[])
+    gravityspy_network_select.add_argument(
+        "--exclusion-manifest", action="append", default=[]
+    )
 
     gravityspy_network_shard = subparsers.add_parser("gravityspy-network-strain-shard")
     gravityspy_network_shard.add_argument("--manifest", required=True)
@@ -3045,6 +3049,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.maximum_source_files,
                 args.seed,
                 args.existing_manifest,
+                args.target_label,
+                args.exclusion_manifest,
             )
         )
     elif args.command == "gravityspy-strain-shard":
