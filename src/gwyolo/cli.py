@@ -9,6 +9,7 @@ from .config import load_config
 from .data import audit_and_split, scan_sources
 from .factory import run_data_factory
 from .gwosc import (
+    audit_gwosc_plan_against_validation_purposes,
     run_gwosc_batch_download,
     run_gwosc_event_exclusions,
     run_gwosc_pilot,
@@ -19,6 +20,7 @@ from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
 from .search import (
+    bind_candidate_search_calibration_to_independent_endpoint,
     run_candidate_search_calibration,
     run_frozen_candidate_search_evaluation,
     run_frozen_search_evaluation,
@@ -131,6 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_calibrate.add_argument("--output", required=True)
     candidate_search_calibrate.add_argument("--bootstrap-replicates", type=int, default=2000)
     candidate_search_calibrate.add_argument("--seed", type=int, default=20260720)
+
+    candidate_search_bind = subparsers.add_parser(
+        "candidate-search-calibration-endpoint-bind"
+    )
+    candidate_search_bind.add_argument(
+        "--independent-validation-endpoint", required=True
+    )
+    candidate_search_bind.add_argument("--candidate-pipeline-report", required=True)
+    candidate_search_bind.add_argument("--calibration-report", required=True)
+    candidate_search_bind.add_argument("--output", required=True)
+    candidate_search_bind.add_argument(
+        "--expected-target-far-per-year", type=float, default=0.1
+    )
+    candidate_search_bind.add_argument(
+        "--minimum-bootstrap-replicates", type=int, default=10000
+    )
 
     raw_mask_calibration = subparsers.add_parser(
         "candidate-search-raw-mask-compare"
@@ -387,6 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_plan_disjoint.add_argument("--target-pairs", type=int, required=True)
     gwosc_plan_disjoint.add_argument("--seed", type=int, default=20260727)
     gwosc_plan_disjoint.add_argument("--output", required=True)
+
+    gwosc_plan_purpose_audit = subparsers.add_parser("gwosc-plan-purpose-audit")
+    gwosc_plan_purpose_audit.add_argument("--plan", required=True)
+    gwosc_plan_purpose_audit.add_argument("--purpose-partition-report", required=True)
+    gwosc_plan_purpose_audit.add_argument("--output", required=True)
 
     gwosc_plan_shard = subparsers.add_parser("gwosc-plan-shard")
     gwosc_plan_shard.add_argument("--plan", required=True)
@@ -1997,6 +2020,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "candidate-search-calibration-endpoint-bind":
+        _print(
+            bind_candidate_search_calibration_to_independent_endpoint(
+                args.independent_validation_endpoint,
+                args.candidate_pipeline_report,
+                args.calibration_report,
+                args.output,
+                args.expected_target_far_per_year,
+                args.minimum_bootstrap_replicates,
+            )
+        )
     elif args.command == "candidate-search-raw-mask-compare":
         _print(
             run_paired_raw_mask_candidate_calibration_comparison(
@@ -2303,6 +2337,14 @@ def main(argv: list[str] | None = None) -> int:
                 target_pairs=args.target_pairs,
                 sample_rate_khz=args.sample_rate_khz,
                 seed=args.seed,
+            )
+        )
+    elif args.command == "gwosc-plan-purpose-audit":
+        _print(
+            audit_gwosc_plan_against_validation_purposes(
+                args.plan,
+                args.purpose_partition_report,
+                args.output,
             )
         )
     elif args.command == "gwosc-batch-download":

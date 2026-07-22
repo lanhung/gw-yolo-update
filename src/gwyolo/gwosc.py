@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import tempfile
 import time
 import urllib.request
@@ -432,6 +433,134 @@ def run_disjoint_gwosc_run_plan(
     }
     atomic_write_json(target, result)
     return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
+
+
+def audit_gwosc_plan_against_validation_purposes(
+    plan_path: str | Path,
+    purpose_partition_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Fail closed when a background acquisition plan reuses validation-purpose GPS."""
+
+    target = Path(output_path).resolve()
+    if target.exists():
+        raise FileExistsError("GWOSC purpose-disjoint plan audits are immutable")
+    plan_file = Path(plan_path).resolve()
+    purpose_file = Path(purpose_partition_report_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    purpose = json.loads(purpose_file.read_text(encoding="utf-8"))
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or str(plan.get("run")) != "O4a"
+        or plan.get("candidate_scores_inspected") is not False
+        or not pairs
+        or any(not value for value in pair_ids)
+        or len(pair_ids) != len(set(pair_ids))
+        or int(plan.get("selected_pairs", -1)) != len(pairs)
+    ):
+        raise ValueError("purpose-disjoint audit requires a score-blind O4a plan")
+    purposes = purpose.get("purposes", {})
+    if (
+        purpose.get("status") != "verified_validation_gps_purpose_partition"
+        or purpose.get("passed") is not True
+        or int(purpose.get("purpose_gps_block_overlap", -1)) != 0
+        or purpose.get("complete_source_gps_block_coverage") is not True
+        or set(purposes) != {"candidate_calibration", "injection_validation"}
+    ):
+        raise ValueError("validation purpose partition is invalid")
+
+    plan_intervals = []
+    for pair in pairs:
+        starts = {int(source.get("gps_start", -1)) for source in pair["detectors"].values()}
+        durations = set()
+        for source in pair["detectors"].values():
+            match = re.search(r"-(\d+)-(\d+)\.hdf5$", urlparse(source["hdf5_url"]).path)
+            if match is None or int(match.group(1)) != int(pair["gps_start"]):
+                raise ValueError("GWOSC plan source filename does not bind its GPS interval")
+            durations.add(int(match.group(2)))
+        if starts != {int(pair["gps_start"])} or len(durations) != 1:
+            raise ValueError("GWOSC plan detectors disagree about their GPS interval")
+        duration = next(iter(durations))
+        plan_intervals.append(
+            (int(pair["gps_start"]), int(pair["gps_start"]) + duration, str(pair["pair_id"]))
+        )
+
+    role_summaries = {}
+    overlap_pair_ids: set[str] = set()
+    overlap_blocks: set[str] = set()
+    for role in ("candidate_calibration", "injection_validation"):
+        identity = purposes[role]
+        manifest = Path(str(identity.get("manifest_path", ""))).resolve()
+        report = Path(str(identity.get("report_path", ""))).resolve()
+        if (
+            not manifest.is_file()
+            or identity.get("manifest_sha256") != file_sha256(manifest)
+            or not report.is_file()
+            or identity.get("report_sha256") != file_sha256(report)
+        ):
+            raise ValueError("validation purpose artifact replay failed")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        blocks = {}
+        row_pair_ids = set()
+        for row in rows:
+            block = str(row.get("gps_block", ""))
+            match = re.fullmatch(r"gps:(\d+):(\d+)", block)
+            if match is None or str(row.get("split")) != "val":
+                raise ValueError("validation purpose rows have invalid split/GPS identity")
+            start, duration = int(match.group(1)), int(match.group(2))
+            blocks[block] = (start, start + duration)
+            row_pair_ids.add(str(row.get("pair_id", "")))
+        direct = sorted(set(pair_ids) & row_pair_ids)
+        interval_hits = {
+            (block, pair_id)
+            for block, (block_start, block_end) in blocks.items()
+            for pair_start, pair_end, pair_id in plan_intervals
+            if max(block_start, pair_start) < min(block_end, pair_end)
+        }
+        overlap_pair_ids.update(direct)
+        overlap_pair_ids.update(pair_id for _, pair_id in interval_hits)
+        overlap_blocks.update(block for block, _ in interval_hits)
+        role_summaries[role] = {
+            "rows": len(rows),
+            "unique_gps_blocks": len(blocks),
+            "unique_source_pairs": len(row_pair_ids),
+            "direct_pair_id_overlaps": direct,
+            "gps_interval_overlap_count": len(interval_hits),
+            "gps_interval_overlap_samples": [
+                {"gps_block": block, "pair_id": pair_id}
+                for block, pair_id in sorted(interval_hits)[:20]
+            ],
+            "manifest": {"path": str(manifest), "sha256": file_sha256(manifest)},
+            "report": {"path": str(report), "sha256": file_sha256(report)},
+        }
+    passed = not overlap_pair_ids and not overlap_blocks
+    result = {
+        "status": "verified_gwosc_plan_validation_purpose_disjointness",
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "candidate_scores_inspected": False,
+        "plan": {"path": str(plan_file), "sha256": file_sha256(plan_file)},
+        "purpose_partition": {
+            "path": str(purpose_file),
+            "sha256": file_sha256(purpose_file),
+        },
+        "planned_pairs": len(pairs),
+        "roles": role_summaries,
+        "overlap_pair_ids": sorted(overlap_pair_ids),
+        "overlap_gps_blocks": sorted(overlap_blocks),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    if not passed:
+        raise RuntimeError(
+            "GWOSC acquisition plan overlaps validation-purpose source/GPS blocks"
+        )
+    return result
 
 
 def run_gwosc_plan_shard(

@@ -11,6 +11,7 @@ from gwyolo.candidate_pipeline import (
     validate_candidate_model_selection,
 )
 from gwyolo.io import file_sha256
+from gwyolo.search import bind_candidate_search_calibration_to_independent_endpoint
 
 
 def test_candidate_pipeline_selects_only_calibrated_local_cluster_method() -> None:
@@ -69,6 +70,140 @@ def test_candidate_pipeline_binds_five_seed_model_and_config(tmp_path) -> None:
     checkpoint.write_bytes(b"changed")
     with pytest.raises(ValueError, match="differs"):
         validate_candidate_model_selection(selection, checkpoint, config)
+
+
+def test_continuous_calibration_binds_independent_endpoint_and_model(tmp_path) -> None:
+    components = {}
+    for label in (
+        "purpose_partition",
+        "injection_plan",
+        "waveform_validation",
+        "materialization",
+        "snr_annotation",
+        "arrival_annotation",
+    ):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        components[label] = {"path": str(path), "sha256": file_sha256(path)}
+    endpoint_background = tmp_path / "endpoint-background.jsonl"
+    endpoint_injections = tmp_path / "endpoint-injections.jsonl"
+    endpoint_background.write_text('{"gps_block":"calibration"}\n', encoding="utf-8")
+    endpoint_injections.write_text('{"gps_block":"injection"}\n', encoding="utf-8")
+    endpoint = tmp_path / "endpoint.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "rows": 3000,
+                "candidate_calibration_unique_gps_blocks": 25,
+                "injection_validation_unique_gps_blocks": 25,
+                "purpose_gps_block_overlap": 0,
+                "component_reports": components,
+                "candidate_calibration_background_manifest_path": str(
+                    endpoint_background
+                ),
+                "candidate_calibration_background_manifest_sha256": file_sha256(
+                    endpoint_background
+                ),
+                "injection_arrival_manifest_path": str(endpoint_injections),
+                "injection_arrival_manifest_sha256": file_sha256(endpoint_injections),
+            }
+        ),
+        encoding="utf-8",
+    )
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "status": "completed_five_seed_source_safe_overlap_validation",
+                "passed": True,
+                "test_data_opened": False,
+                "selected_checkpoint_sha256": "checkpoint",
+                "common_artifact_hashes": {"config_file_sha256": "config"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    ranking = tmp_path / "injection-ranking.json"
+    ranking.write_text(json.dumps({"status": "ranked"}), encoding="utf-8")
+    slides = tmp_path / "time-slides.json"
+    slides.write_text(json.dumps({"status": "slides"}), encoding="utf-8")
+    pipeline = tmp_path / "pipeline.json"
+    pipeline.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_clustered_candidate_search_pipeline",
+                "scientific_claim_allowed": False,
+                "test_evaluation": None,
+                "run_identity": {
+                    "injection_manifest_sha256": file_sha256(endpoint_injections),
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "model_selection_report_sha256": file_sha256(selection),
+                },
+                "model_selection": {
+                    "model_selection_report_path": str(selection),
+                    "model_selection_report_sha256": file_sha256(selection),
+                },
+                "injection_ranking_report_sha256": file_sha256(ranking),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calibration = tmp_path / "calibration.json"
+
+    def write_calibration(injection_blocks: list[str]) -> None:
+        calibration.write_text(
+            json.dumps(
+                {
+                    "status": "frozen_validation_candidate_search_calibration",
+                    "scientific_claim_allowed": False,
+                    "test_evaluation": None,
+                    "selection_data": "validation_candidate_block_permutations_only",
+                    "publication_calibration_eligible": True,
+                    "target_far_has_at_least_one_expected_background_count": True,
+                    "target_far_per_year": 0.1,
+                    "bootstrap_replicates": 10000,
+                    "slide_schedule_audit": {
+                        "passed": True,
+                        "schedule_kind": "gps_block_permutation",
+                    },
+                    "validation_background_gps_blocks": ["background-block"],
+                    "validation_injection_gps_blocks": injection_blocks,
+                    "validation_injection_diagnostic": {"injections": 3000},
+                    "validation_time_slide_report_path": str(slides),
+                    "validation_time_slide_report_sha256": file_sha256(slides),
+                    "validation_injection_ranking_report_path": str(ranking),
+                    "validation_injection_ranking_report_sha256": file_sha256(ranking),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_calibration(["injection-block"])
+    result = bind_candidate_search_calibration_to_independent_endpoint(
+        endpoint,
+        pipeline,
+        calibration,
+        tmp_path / "binding.json",
+    )
+    assert result["passed"]
+    assert result["validation_purpose_gps_block_overlap"] == 0
+    assert result["target_far_per_year"] == 0.1
+    assert result["independent_validation_rows"] == 3000
+
+    write_calibration(["background-block"])
+    with pytest.raises(ValueError, match="purpose safe"):
+        bind_candidate_search_calibration_to_independent_endpoint(
+            endpoint,
+            pipeline,
+            calibration,
+            tmp_path / "overlap-binding.json",
+        )
 
 
 def test_candidate_validation_comparison_uses_paired_injections(tmp_path) -> None:

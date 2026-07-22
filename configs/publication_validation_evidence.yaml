@@ -75,15 +75,28 @@ publication_evidence:
       group: search
       description: Frozen validation threshold with target continuous-background exposure.
       checks:
-        - {field: status, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: status, op: equals, value: frozen_validation_candidate_search_calibration_endpoint_bound}
+        - {field: passed, op: equals, value: true}
         - {field: publication_calibration_eligible, op: equals, value: true}
         - {field: slide_schedule_audit.passed, op: equals, value: true}
+        - {field: slide_schedule_audit.schedule_kind, op: equals, value: gps_block_permutation}
+        - {field: target_far_per_year, op: equals, value: 0.1}
+        - {field: target_far_has_at_least_one_expected_background_count, op: equals, value: true}
+        - {field: bootstrap_replicates, op: at_least, value: 10000}
+        - {field: validation_purpose_gps_block_overlap, op: equals, value: 0}
+        - {field: independent_validation_rows, op: equals, value: 3000}
+        - {field: test_rows_read, op: equals, value: 0}
         - {field: test_evaluation, op: equals, value: null}
         - {field: validation_injection_diagnostic, op: nonempty}
+        - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
-        - {path_field: validation_time_slide_report_path, sha256_field: validation_time_slide_report_sha256}
-        - {path_field: validation_injection_ranking_report_path, sha256_field: validation_injection_ranking_report_sha256}
+        - {path_field: independent_validation_endpoint.path, sha256_field: independent_validation_endpoint.sha256}
+        - {path_field: candidate_pipeline.path, sha256_field: candidate_pipeline.sha256}
+        - {path_field: calibration.path, sha256_field: calibration.sha256}
+        - {path_field: validation_time_slide.path, sha256_field: validation_time_slide.sha256}
+        - {path_field: validation_injection_ranking.path, sha256_field: validation_injection_ranking.sha256}
+        - {path_field: model_selection.path, sha256_field: model_selection.sha256}
 
     - id: paired_raw_mask_vt
       group: search

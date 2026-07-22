@@ -20,6 +20,7 @@ from gwyolo.gwosc import (
     _whiten_with_reference,
     _remote_size,
     _urlopen_metadata,
+    audit_gwosc_plan_against_validation_purposes,
     download_resumable,
     extend_gwosc_run_plan,
     event_strain_files,
@@ -254,6 +255,103 @@ def test_disjoint_gwosc_plan_excludes_frozen_source_pairs(tmp_path: Path) -> Non
     assert report["candidate_scores_inspected"] is False
     assert report["test_data_opened"] is False
     assert report["exclusion_plans"][0]["sha256"] == file_sha256(exclusion)
+
+
+def test_gwosc_plan_purpose_audit_retains_overlap_and_passes_disjoint_plan(
+    tmp_path: Path,
+) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}-4096.hdf5",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    manifests = {}
+    reports = {}
+    for role, gps in (("candidate_calibration", 1000), ("injection_validation", 6000)):
+        manifest = tmp_path / f"{role}.jsonl"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "window_id": role,
+                    "split": "val",
+                    "gps_block": f"gps:{gps}:256",
+                    "pair_id": f"O4a-{gps}-H1-L1",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report = tmp_path / f"{role}.json"
+        report.write_text(json.dumps({"role": role}), encoding="utf-8")
+        manifests[role] = manifest
+        reports[role] = report
+    purpose = tmp_path / "purpose.json"
+    purpose.write_text(
+        json.dumps(
+            {
+                "status": "verified_validation_gps_purpose_partition",
+                "passed": True,
+                "purpose_gps_block_overlap": 0,
+                "complete_source_gps_block_coverage": True,
+                "purposes": {
+                    role: {
+                        "manifest_path": str(manifests[role]),
+                        "manifest_sha256": file_sha256(manifests[role]),
+                        "report_path": str(reports[role]),
+                        "report_sha256": file_sha256(reports[role]),
+                    }
+                    for role in manifests
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def write_plan(path: Path, pairs: list[dict]) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "development_acquisition_plan",
+                    "locked_evaluation_data": False,
+                    "run": "O4a",
+                    "candidate_scores_inspected": False,
+                    "selected_pairs": len(pairs),
+                    "pairs": pairs,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    overlapping = tmp_path / "overlapping.json"
+    write_plan(overlapping, [pair(1000), pair(9000)])
+    failed_output = tmp_path / "failed.json"
+    with pytest.raises(RuntimeError, match="overlaps validation-purpose"):
+        audit_gwosc_plan_against_validation_purposes(
+            overlapping, purpose, failed_output
+        )
+    failed = json.loads(failed_output.read_text(encoding="utf-8"))
+    assert failed["passed"] is False
+    assert failed["overlap_pair_ids"] == ["O4a-1000-H1-L1"]
+
+    disjoint = tmp_path / "disjoint.json"
+    write_plan(disjoint, [pair(12000), pair(18000)])
+    passed = audit_gwosc_plan_against_validation_purposes(
+        disjoint, purpose, tmp_path / "passed.json"
+    )
+    assert passed["passed"] is True
+    assert passed["overlap_pair_ids"] == []
+    assert passed["overlap_gps_blocks"] == []
 
 
 def test_reference_whitening_is_linear_for_signal_component() -> None:

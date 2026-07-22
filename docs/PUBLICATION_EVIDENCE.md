@@ -30,6 +30,13 @@ Add `--require-ready` only at the validation-freeze boundary. The report is writ
 before a non-ready audit exits nonzero, so failures are retained. Outputs are immutable and must
 use a new path for a later snapshot.
 
+The continuous-search entry must be the output of
+`candidate-search-calibration-endpoint-bind`, not a standalone threshold report. The binding
+replays the 3,000-row purpose-disjoint endpoint, five-seed selection, candidate pipeline,
+injection rankings, continuous block-permutation background and calibration. It also requires no
+GPS-block overlap between threshold background and injection validation, exactly the predeclared
+0.1/year FAR target and at least 10,000 bootstrap replicates.
+
 `publication_ready=true` in the validation protocol means only that the predeclared inputs needed
 to freeze and authorize the one-time locked evaluation are present. It deliberately keeps
 `scientific_claim_allowed=false`. A separate `locked_final` protocol, populated only after the

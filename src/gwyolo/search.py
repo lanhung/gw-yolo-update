@@ -628,6 +628,207 @@ def run_candidate_search_calibration(
     return result
 
 
+def bind_candidate_search_calibration_to_independent_endpoint(
+    independent_validation_endpoint: str | Path,
+    candidate_pipeline_report: str | Path,
+    calibration_report: str | Path,
+    output: str | Path,
+    expected_target_far_per_year: float = 0.1,
+    minimum_bootstrap_replicates: int = 10_000,
+) -> dict[str, Any]:
+    """Bind continuous calibration to the frozen injection endpoint and selected model."""
+
+    target = Path(output)
+    if target.exists():
+        raise FileExistsError("candidate calibration endpoint bindings are immutable")
+    if expected_target_far_per_year <= 0 or minimum_bootstrap_replicates < 1:
+        raise ValueError("candidate calibration endpoint binding settings are invalid")
+    endpoint_path = Path(independent_validation_endpoint).resolve()
+    pipeline_path = Path(candidate_pipeline_report).resolve()
+    calibration_path = Path(calibration_report).resolve()
+    endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+
+    component_labels = {
+        "purpose_partition",
+        "injection_plan",
+        "waveform_validation",
+        "materialization",
+        "snr_annotation",
+        "arrival_annotation",
+    }
+    components = endpoint.get("component_reports", {})
+    if (
+        endpoint.get("status")
+        != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+        or endpoint.get("passed") is not True
+        or endpoint.get("scientific_claim_allowed") is not False
+        or endpoint.get("test_rows_read") != 0
+        or endpoint.get("test_evaluation") is not None
+        or int(endpoint.get("rows", -1)) != 3000
+        or int(endpoint.get("candidate_calibration_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("injection_validation_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        or set(components) != component_labels
+    ):
+        raise ValueError("candidate calibration requires the frozen independent endpoint")
+    for item in components.values():
+        path = Path(str(item.get("path", ""))).resolve()
+        if not path.is_file() or item.get("sha256") != file_sha256(path):
+            raise ValueError("independent endpoint component replay failed")
+    endpoint_injections = Path(
+        str(endpoint.get("injection_arrival_manifest_path", ""))
+    ).resolve()
+    endpoint_background = Path(
+        str(endpoint.get("candidate_calibration_background_manifest_path", ""))
+    ).resolve()
+    if (
+        not endpoint_injections.is_file()
+        or endpoint.get("injection_arrival_manifest_sha256")
+        != file_sha256(endpoint_injections)
+        or not endpoint_background.is_file()
+        or endpoint.get("candidate_calibration_background_manifest_sha256")
+        != file_sha256(endpoint_background)
+    ):
+        raise ValueError("independent endpoint manifest replay failed")
+
+    run_identity = pipeline.get("run_identity", {})
+    selection_identity = pipeline.get("model_selection")
+    if (
+        pipeline.get("status") != "validation_only_clustered_candidate_search_pipeline"
+        or pipeline.get("scientific_claim_allowed") is not False
+        or pipeline.get("test_evaluation") is not None
+        or not isinstance(selection_identity, dict)
+        or run_identity.get("injection_manifest_sha256")
+        != endpoint.get("injection_arrival_manifest_sha256")
+    ):
+        raise ValueError("candidate pipeline is not bound to the independent endpoint")
+    selection_path = Path(
+        str(selection_identity.get("model_selection_report_path", ""))
+    ).resolve()
+    if (
+        not selection_path.is_file()
+        or selection_identity.get("model_selection_report_sha256")
+        != file_sha256(selection_path)
+        or run_identity.get("model_selection_report_sha256")
+        != file_sha256(selection_path)
+    ):
+        raise ValueError("candidate pipeline model-selection report failed replay")
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if (
+        selection.get("status")
+        != "completed_five_seed_source_safe_overlap_validation"
+        or selection.get("passed") is not True
+        or selection.get("test_data_opened") is not False
+        or selection.get("selected_checkpoint_sha256")
+        != run_identity.get("checkpoint_sha256")
+        or selection.get("common_artifact_hashes", {}).get("config_file_sha256")
+        != run_identity.get("config_sha256")
+    ):
+        raise ValueError("candidate calibration model selection is invalid")
+
+    slide_path = Path(
+        str(calibration.get("validation_time_slide_report_path", ""))
+    ).resolve()
+    ranking_path = Path(
+        str(calibration.get("validation_injection_ranking_report_path", ""))
+    ).resolve()
+    background_blocks = {
+        str(value) for value in calibration.get("validation_background_gps_blocks", [])
+    }
+    injection_blocks = {
+        str(value) for value in calibration.get("validation_injection_gps_blocks", [])
+    }
+    overlap = sorted(background_blocks & injection_blocks)
+    if (
+        calibration.get("status") != "frozen_validation_candidate_search_calibration"
+        or calibration.get("scientific_claim_allowed") is not False
+        or calibration.get("test_evaluation") is not None
+        or calibration.get("selection_data")
+        != "validation_candidate_block_permutations_only"
+        or calibration.get("publication_calibration_eligible") is not True
+        or calibration.get("target_far_has_at_least_one_expected_background_count")
+        is not True
+        or not np.isclose(
+            float(calibration.get("target_far_per_year", -1)),
+            expected_target_far_per_year,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or int(calibration.get("bootstrap_replicates", -1))
+        < minimum_bootstrap_replicates
+        or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+        or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
+        != "gps_block_permutation"
+        or not background_blocks
+        or not injection_blocks
+        or overlap
+        or not slide_path.is_file()
+        or calibration.get("validation_time_slide_report_sha256")
+        != file_sha256(slide_path)
+        or not ranking_path.is_file()
+        or calibration.get("validation_injection_ranking_report_sha256")
+        != file_sha256(ranking_path)
+        or pipeline.get("injection_ranking_report_sha256")
+        != file_sha256(ranking_path)
+    ):
+        raise ValueError(
+            "continuous candidate calibration is not endpoint/model/purpose safe"
+        )
+
+    result = {
+        "status": "frozen_validation_candidate_search_calibration_endpoint_bound",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation threshold and endpoint are frozen; locked background and injections "
+            "remain unopened"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "target_far_per_year": float(calibration["target_far_per_year"]),
+        "bootstrap_replicates": int(calibration["bootstrap_replicates"]),
+        "publication_calibration_eligible": True,
+        "target_far_has_at_least_one_expected_background_count": True,
+        "slide_schedule_audit": calibration["slide_schedule_audit"],
+        "validation_injection_diagnostic": calibration[
+            "validation_injection_diagnostic"
+        ],
+        "validation_purpose_gps_block_overlap": 0,
+        "validation_background_unique_gps_blocks": len(background_blocks),
+        "validation_injection_unique_gps_blocks": len(injection_blocks),
+        "independent_validation_rows": int(endpoint["rows"]),
+        "independent_validation_endpoint": {
+            "path": str(endpoint_path),
+            "sha256": file_sha256(endpoint_path),
+        },
+        "candidate_pipeline": {
+            "path": str(pipeline_path),
+            "sha256": file_sha256(pipeline_path),
+        },
+        "calibration": {
+            "path": str(calibration_path),
+            "sha256": file_sha256(calibration_path),
+        },
+        "validation_time_slide": {
+            "path": str(slide_path),
+            "sha256": file_sha256(slide_path),
+        },
+        "validation_injection_ranking": {
+            "path": str(ranking_path),
+            "sha256": file_sha256(ranking_path),
+        },
+        "model_selection": {
+            "path": str(selection_path),
+            "sha256": file_sha256(selection_path),
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def run_paired_raw_mask_candidate_calibration_comparison(
     raw_calibration_report: str | Path,
     mask_calibration_report: str | Path,
