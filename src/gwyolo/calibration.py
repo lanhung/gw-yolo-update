@@ -419,3 +419,493 @@ def apply_frequency_dependent_calibration_response(
     if not np.isfinite(transformed).all():
         raise ValueError("Calibration perturbation produced non-finite strain")
     return transformed
+
+
+def _load_bound_json(path: str | Path) -> tuple[Path, dict[str, Any]]:
+    resolved = Path(path).resolve()
+    if not resolved.is_file():
+        raise ValueError(f"Required calibration artifact is missing: {resolved}")
+    value = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"Calibration artifact is not a JSON object: {resolved}")
+    return resolved, value
+
+
+def _artifact(path: Path) -> dict[str, str]:
+    return {"path": str(path), "sha256": file_sha256(path)}
+
+
+def freeze_calibration_perturbation_scenario_result(
+    plan_path: str | Path,
+    background_score_report_path: str | Path,
+    injection_score_report_path: str | Path,
+    background_timing_application_report_path: str | Path,
+    injection_timing_application_report_path: str | Path,
+    background_search_report_path: str | Path,
+    injection_ranking_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze one replayable calibration-stress candidate-search chain."""
+
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("Calibration scenario receipts are immutable")
+    plan_file, plan = _load_bound_json(plan_path)
+    if (
+        plan.get("status") != "frozen_validation_calibration_perturbation_plan"
+        or plan.get("passed") is not True
+        or plan.get("test_rows_read") != 0
+        or plan.get("candidate_scores_inspected") is not False
+    ):
+        raise ValueError("Scenario receipt requires a frozen validation perturbation plan")
+    inputs = {
+        "background_score": _load_bound_json(background_score_report_path),
+        "injection_score": _load_bound_json(injection_score_report_path),
+        "background_timing": _load_bound_json(background_timing_application_report_path),
+        "injection_timing": _load_bound_json(injection_timing_application_report_path),
+        "background_search": _load_bound_json(background_search_report_path),
+        "injection_ranking": _load_bound_json(injection_ranking_report_path),
+    }
+    expected_statuses = {
+        "background_score": "real_o4a_domain_transfer_diagnostic",
+        "injection_score": "physical_waveform_real_noise_domain_transfer_diagnostic",
+        "background_timing": "candidate_timing_calibration_applied",
+        "injection_timing": "candidate_timing_calibration_applied",
+        "background_search": "subwindow_clustered_time_slide_integration_only",
+        "injection_ranking": "physical_network_injection_candidate_rankings",
+    }
+    for name, (_, report) in inputs.items():
+        if report.get("status") != expected_statuses[name]:
+            raise ValueError(f"Calibration scenario {name} has the wrong status")
+
+    plan_sha = file_sha256(plan_file)
+    score_reports = {name: inputs[name][1] for name in ("background_score", "injection_score")}
+    roles = {"background_score": "background", "injection_score": "injection"}
+    scenario_ids: set[str] = set()
+    for name, report in score_reports.items():
+        perturbation = report.get("calibration_perturbation")
+        role = roles[name]
+        if (
+            not isinstance(perturbation, dict)
+            or perturbation.get("plan_sha256") != plan_sha
+            or perturbation.get("role") != role
+            or perturbation.get("manifest_sha256")
+            != plan.get("manifests", {}).get(role, {}).get("sha256")
+            or report.get("required_split") != "val"
+            or report.get("observed_splits") != ["val"]
+            or report.get("physical_time_domain_perturbation") is not True
+            or report.get("fresh_time_frequency_transform") is not True
+            or int(report.get("failed_windows", report.get("failed_injections", -1))) != 0
+            or file_sha256(report["triggers_path"]) != report.get("triggers_sha256")
+        ):
+            raise ValueError(f"Calibration scenario {name} is not a complete physical replay")
+        scenario_ids.add(str(perturbation.get("scenario_id", "")))
+    if len(scenario_ids) != 1 or next(iter(scenario_ids)) not in plan.get("scenario_ids", []):
+        raise ValueError("Background and injection scores use different frozen scenarios")
+    scenario_id = next(iter(scenario_ids))
+    identity_fields = ("checkpoint_sha256", "config_sha256", "code_commit")
+    if any(
+        score_reports["background_score"].get(field) != score_reports["injection_score"].get(field)
+        for field in identity_fields
+    ):
+        raise ValueError("Calibration scenario background/injection model identity differs")
+
+    for role in ("background", "injection"):
+        score_name = f"{role}_score"
+        timing_name = f"{role}_timing"
+        score_path, score = inputs[score_name]
+        _, timing = inputs[timing_name]
+        scoring = timing.get("candidate_extraction_provenance", {}).get("scoring", {})
+        if (
+            timing.get("uncalibrated_candidates") != 0
+            or timing.get("scoring_provenance_matches") is not True
+            or scoring.get("score_report_sha256") != file_sha256(score_path)
+            or scoring.get("trigger_manifest_sha256") != score.get("triggers_sha256")
+            or timing.get("output_sha256") != file_sha256(timing["output_path"])
+        ):
+            raise ValueError(f"Calibration scenario {role} candidate/timing chain is invalid")
+    background_timing = inputs["background_timing"][1]
+    injection_timing = inputs["injection_timing"][1]
+    timing_sha = background_timing.get("calibration_report_sha256")
+    if not timing_sha or timing_sha != injection_timing.get("calibration_report_sha256"):
+        raise ValueError("Calibration scenario must reuse one frozen timing calibration")
+
+    _, background = inputs["background_search"]
+    _, ranking = inputs["injection_ranking"]
+    if (
+        background.get("split") != "val"
+        or background.get("publication_timing_gate_passed") is not True
+        or background.get("candidate_timing_empirically_calibrated") is not True
+        or background.get("timing_calibration_report_sha256") != timing_sha
+        or background.get("candidate_manifest_sha256") != background_timing.get("output_sha256")
+        or background.get("background_manifest_sha256")
+        != plan.get("manifests", {}).get("background", {}).get("sha256")
+        or file_sha256(background["manifest_path"]) != background.get("manifest_sha256")
+        or float(background.get("equivalent_live_time_years", 0)) <= 0
+    ):
+        raise ValueError("Calibration scenario background search chain is invalid")
+    if (
+        ranking.get("split") != "val"
+        or ranking.get("timing_calibration_consistent") is not True
+        or ranking.get("candidate_scoring_provenance_consistent") is not True
+        or ranking.get("timing_calibration_report_sha256") != timing_sha
+        or ranking.get("candidate_manifest_sha256") != injection_timing.get("output_sha256")
+        or ranking.get("injection_trigger_manifest_sha256")
+        != score_reports["injection_score"].get("triggers_sha256")
+        or file_sha256(ranking["manifest_path"]) != ranking.get("manifest_sha256")
+    ):
+        raise ValueError("Calibration scenario injection ranking chain is invalid")
+    candidate_identity_fields = {
+        "checkpoint_sha256": "candidate_checkpoint_sha256",
+        "config_sha256": "candidate_config_sha256",
+        "code_commit": "candidate_code_commit",
+    }
+    final_identity = {
+        candidate_field: background.get(candidate_field)
+        for candidate_field in candidate_identity_fields.values()
+    } | {
+        "timing_calibration_report_sha256": background.get("timing_calibration_report_sha256"),
+        "physical_delay_limit_seconds": background.get("physical_delay_limit_seconds"),
+        "empirical_timing_uncertainty_seconds": background.get(
+            "empirical_timing_uncertainty_seconds"
+        ),
+        "reference_ifo": background.get("reference_ifo"),
+        "second_ifo": background.get("shifted_ifo"),
+    }
+    if any(
+        final_identity[candidate_field] != score_reports["background_score"].get(score_field)
+        or ranking.get(candidate_field) != final_identity[candidate_field]
+        for score_field, candidate_field in candidate_identity_fields.items()
+    ):
+        raise ValueError("Calibration scenario final candidate identity differs from scores")
+    if (
+        any(
+            final_identity[field] is None
+            for field in (
+                "timing_calibration_report_sha256",
+                "physical_delay_limit_seconds",
+                "empirical_timing_uncertainty_seconds",
+                "reference_ifo",
+                "second_ifo",
+            )
+        )
+        or any(
+            ranking.get(field) != final_identity[field]
+            for field in (
+                "timing_calibration_report_sha256",
+                "physical_delay_limit_seconds",
+                "empirical_timing_uncertainty_seconds",
+                "reference_ifo",
+            )
+        )
+        or ranking.get("second_ifo") != final_identity["second_ifo"]
+    ):
+        raise ValueError("Calibration scenario final timing/detector identity differs")
+
+    result = {
+        "status": "frozen_validation_calibration_perturbation_scenario_result",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "locked_test_allowed": False,
+        "test_rows_read": 0,
+        "threshold_fitted_or_selected": False,
+        "scenario_id": scenario_id,
+        "plan": _artifact(plan_file),
+        "model_identity": final_identity,
+        "timing_calibration_report_sha256": timing_sha,
+        "background_exposure": {
+            "equivalent_live_time_years": float(background["equivalent_live_time_years"]),
+            "background_pairing_method": background.get("background_pairing_method"),
+            "slide_schedule_id": background.get("slide_schedule_id"),
+            "slide_schedule_sha256": background.get("slide_schedule_sha256"),
+            "manifest_sha256": background.get("manifest_sha256"),
+        },
+        "artifacts": {name: _artifact(path) for name, (path, _) in inputs.items()},
+        "physical_time_domain_perturbation": True,
+        "fresh_time_frequency_transform": True,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def evaluate_calibration_perturbation_robustness(
+    plan_path: str | Path,
+    baseline_calibration_report_path: str | Path,
+    scenario_receipt_paths: list[str | Path],
+    config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Evaluate all frozen stresses at one unchanged validation FAR threshold."""
+
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("Calibration robustness evaluations are immutable")
+    plan_file, plan = _load_bound_json(plan_path)
+    baseline_file, baseline = _load_bound_json(baseline_calibration_report_path)
+    if (
+        plan.get("status") != "frozen_validation_calibration_perturbation_plan"
+        or plan.get("passed") is not True
+        or baseline.get("status") != "frozen_validation_candidate_search_calibration"
+        or baseline.get("publication_calibration_eligible") is not True
+        or baseline.get("slide_schedule_audit", {}).get("passed") is not True
+        or baseline.get("scientific_claim_allowed") is not False
+        or baseline.get("test_evaluation") is not None
+    ):
+        raise ValueError("Calibration robustness requires eligible validation-only baselines")
+    settings = load_yaml(config_path).get("calibration_robustness")
+    if not isinstance(settings, dict):
+        raise ValueError("Configuration requires calibration_robustness")
+    minimum_scenarios = int(settings.get("minimum_scenarios", 0))
+    maximum_loss = float(settings.get("maximum_absolute_weighted_efficiency_loss", -1))
+    maximum_far_multiplier = float(settings.get("maximum_far_multiplier_of_target", 0))
+    bootstrap_replicates = int(settings.get("bootstrap_replicates", 0))
+    seed = int(settings.get("seed", 0))
+    if (
+        minimum_scenarios < 1
+        or not 0 <= maximum_loss < 1
+        or maximum_far_multiplier < 1
+        or bootstrap_replicates < 1
+        or seed < 1
+    ):
+        raise ValueError("Calibration robustness policy is invalid")
+    expected_ids = list(plan.get("scenario_ids", []))
+    if len(expected_ids) < minimum_scenarios:
+        raise ValueError("Frozen calibration plan has too few scenarios for the policy")
+
+    baseline_ranking_path = Path(
+        str(baseline.get("validation_injection_ranking_report_path", ""))
+    ).resolve()
+    baseline_background_path = Path(
+        str(baseline.get("validation_time_slide_report_path", ""))
+    ).resolve()
+    if file_sha256(baseline_ranking_path) != baseline.get(
+        "validation_injection_ranking_report_sha256"
+    ) or file_sha256(baseline_background_path) != baseline.get(
+        "validation_time_slide_report_sha256"
+    ):
+        raise ValueError("Baseline calibration artifact hashes do not replay")
+    baseline_ranking = json.loads(baseline_ranking_path.read_text(encoding="utf-8"))
+    baseline_background = json.loads(baseline_background_path.read_text(encoding="utf-8"))
+    if file_sha256(baseline_ranking["manifest_path"]) != baseline_ranking.get(
+        "manifest_sha256"
+    ) or file_sha256(baseline_background["manifest_path"]) != baseline_background.get(
+        "manifest_sha256"
+    ):
+        raise ValueError("Baseline candidate manifests changed after calibration")
+    baseline_rows = _read_jsonl(baseline_ranking["manifest_path"])
+    baseline_by_id = {str(row["injection_id"]): row for row in baseline_rows}
+    if len(baseline_by_id) != len(baseline_rows):
+        raise ValueError("Baseline injection ranking IDs are not unique")
+    threshold = float(baseline.get("calibration", {}).get("threshold"))
+    target_far = float(baseline.get("target_far_per_year"))
+    if not math.isfinite(threshold) or not math.isfinite(target_far) or target_far <= 0:
+        raise ValueError("Baseline calibration threshold or target FAR is invalid")
+    plan_sha = file_sha256(plan_file)
+    receipts: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for value in scenario_receipt_paths:
+        receipt_path, receipt = _load_bound_json(value)
+        scenario_id = str(receipt.get("scenario_id", ""))
+        if scenario_id in receipts:
+            raise ValueError("Calibration robustness has duplicate scenario receipts")
+        if (
+            receipt.get("status") != "frozen_validation_calibration_perturbation_scenario_result"
+            or receipt.get("passed") is not True
+            or receipt.get("test_rows_read") != 0
+            or receipt.get("threshold_fitted_or_selected") is not False
+            or receipt.get("plan", {}).get("sha256") != plan_sha
+            or receipt.get("model_identity") != baseline.get("identity")
+        ):
+            raise ValueError("Calibration scenario receipt does not match the baseline")
+        receipts[scenario_id] = (receipt_path, receipt)
+    if set(receipts) != set(expected_ids):
+        raise ValueError("Calibration robustness requires every frozen scenario exactly once")
+
+    baseline_schedule = {
+        field: baseline_background.get(field)
+        for field in (
+            "background_manifest_sha256",
+            "background_pairing_method",
+            "equivalent_live_time_years",
+            "input_gps_blocks",
+            "slide_schedule_id",
+            "slide_schedule_sha256",
+            "slide_count",
+        )
+    }
+    baseline_weights = np.asarray(
+        [float(row.get("vt_weight", row.get("weight", 1.0))) for row in baseline_rows],
+        dtype=np.float64,
+    )
+    baseline_recovered = np.asarray(
+        [float(row["ranking_score"]) >= threshold for row in baseline_rows],
+        dtype=np.float64,
+    )
+    if (
+        not np.isfinite(baseline_weights).all()
+        or np.any(baseline_weights < 0)
+        or float(baseline_weights.sum()) <= 0
+    ):
+        raise ValueError("Baseline calibration injection weights are invalid")
+    baseline_efficiency = float(
+        (baseline_weights * baseline_recovered).sum() / baseline_weights.sum()
+    )
+    reported_efficiency = float(
+        baseline.get("validation_injection_diagnostic", {}).get("weighted_efficiency")
+    )
+    if not np.isclose(baseline_efficiency, reported_efficiency, rtol=0.0, atol=1e-12):
+        raise ValueError("Baseline calibration diagnostic does not replay at its threshold")
+    scenario_results = []
+    detector_strata: dict[str, dict[str, Any]] = {}
+    for scenario_index, scenario_id in enumerate(expected_ids):
+        receipt_path, receipt = receipts[scenario_id]
+        background_report_path = Path(receipt["artifacts"]["background_search"]["path"]).resolve()
+        ranking_report_path = Path(receipt["artifacts"]["injection_ranking"]["path"]).resolve()
+        injection_score_path = Path(receipt["artifacts"]["injection_score"]["path"]).resolve()
+        for name, artifact_path in (
+            ("background_search", background_report_path),
+            ("injection_ranking", ranking_report_path),
+            ("injection_score", injection_score_path),
+        ):
+            if file_sha256(artifact_path) != receipt["artifacts"][name]["sha256"]:
+                raise ValueError(f"Calibration scenario {scenario_id} artifact changed")
+        background_report = json.loads(background_report_path.read_text(encoding="utf-8"))
+        ranking_report = json.loads(ranking_report_path.read_text(encoding="utf-8"))
+        injection_score = json.loads(injection_score_path.read_text(encoding="utf-8"))
+        if (
+            file_sha256(background_report["manifest_path"])
+            != background_report.get("manifest_sha256")
+            or file_sha256(ranking_report["manifest_path"]) != ranking_report.get("manifest_sha256")
+            or file_sha256(injection_score["triggers_path"])
+            != injection_score.get("triggers_sha256")
+        ):
+            raise ValueError(f"Calibration scenario {scenario_id} manifest changed")
+        scenario_schedule = {field: background_report.get(field) for field in baseline_schedule}
+        if scenario_schedule != baseline_schedule:
+            raise ValueError("Calibration scenarios must use identical frozen background exposure")
+        background_rows = _read_jsonl(background_report["manifest_path"])
+        ranking_rows = _read_jsonl(ranking_report["manifest_path"])
+        scenario_by_id = {str(row["injection_id"]): row for row in ranking_rows}
+        if len(scenario_by_id) != len(ranking_rows) or set(scenario_by_id) != set(baseline_by_id):
+            raise ValueError("Calibration scenario does not share baseline injection IDs")
+        scored_injections = {
+            str(row["injection_id"]): row for row in _read_jsonl(injection_score["triggers_path"])
+        }
+        weights = []
+        contributions = []
+        joined = []
+        identity_fields = (
+            "waveform_id",
+            "source_family",
+            "stratum",
+            "gps_block",
+            "gps_time",
+            "vt_weight",
+            "vt_weight_unit",
+        )
+        for injection_id in sorted(baseline_by_id):
+            reference = baseline_by_id[injection_id]
+            perturbed = scenario_by_id[injection_id]
+            if any(reference.get(field) != perturbed.get(field) for field in identity_fields):
+                raise ValueError(f"Calibration injection identity differs: {injection_id}")
+            if injection_id not in scored_injections:
+                raise ValueError("Calibration detector stratum is missing an injection")
+            detector_subset = "+".join(scored_injections[injection_id]["valid_ifos"])
+            weight = float(reference.get("vt_weight", reference.get("weight", 1.0)))
+            recovered_baseline = float(reference["ranking_score"]) >= threshold
+            recovered_scenario = float(perturbed["ranking_score"]) >= threshold
+            weights.append(weight)
+            contributions.append(weight * (recovered_scenario - recovered_baseline))
+            joined.append((detector_subset, weight, recovered_baseline, recovered_scenario))
+        weights_array = np.asarray(weights, dtype=np.float64)
+        contributions_array = np.asarray(contributions, dtype=np.float64)
+        total_weight = float(weights_array.sum())
+        if total_weight <= 0 or not np.isfinite(weights_array).all():
+            raise ValueError("Calibration injection weights are invalid")
+        delta_efficiency = float(contributions_array.sum() / total_weight)
+        rng = np.random.default_rng(seed + scenario_index)
+        bootstrap = []
+        for _ in range(bootstrap_replicates):
+            indices = rng.integers(0, len(weights_array), size=len(weights_array))
+            denominator = float(weights_array[indices].sum())
+            if denominator > 0:
+                bootstrap.append(float(contributions_array[indices].sum() / denominator))
+        interval = [
+            float(np.percentile(bootstrap, 2.5)),
+            float(np.percentile(bootstrap, 97.5)),
+        ]
+        exceedances = sum(float(row["ranking_score"]) >= threshold for row in background_rows)
+        live_time = float(background_report["equivalent_live_time_years"])
+        far_per_year = exceedances / live_time
+        efficiency_gate = interval[0] >= -maximum_loss
+        far_gate = far_per_year <= target_far * maximum_far_multiplier
+        per_detector = {}
+        for subset in sorted({row[0] for row in joined}):
+            subset_rows = [row for row in joined if row[0] == subset]
+            subset_weight = sum(row[1] for row in subset_rows)
+            per_detector[subset] = {
+                "injections": len(subset_rows),
+                "total_vt_weight": subset_weight,
+                "baseline_weighted_efficiency": sum(row[1] * row[2] for row in subset_rows)
+                / subset_weight,
+                "scenario_weighted_efficiency": sum(row[1] * row[3] for row in subset_rows)
+                / subset_weight,
+            }
+            detector_strata.setdefault(
+                subset, {"scenario_count": 0, "injections": len(subset_rows)}
+            )
+            detector_strata[subset]["scenario_count"] += 1
+        scenario_results.append(
+            {
+                "scenario_id": scenario_id,
+                "threshold": threshold,
+                "threshold_source": "unchanged_baseline_validation_calibration",
+                "background_exceedances": exceedances,
+                "equivalent_live_time_years": live_time,
+                "far_per_year": far_per_year,
+                "far_multiplier_of_target": far_per_year / target_far,
+                "baseline_weighted_efficiency": baseline_efficiency,
+                "scenario_weighted_efficiency": baseline_efficiency + delta_efficiency,
+                "absolute_weighted_efficiency_delta": delta_efficiency,
+                "paired_bootstrap_delta_95": interval,
+                "efficiency_noninferiority_passed": efficiency_gate,
+                "far_robustness_passed": far_gate,
+                "passed": bool(efficiency_gate and far_gate),
+                "detector_strata": per_detector,
+                "receipt": _artifact(receipt_path),
+            }
+        )
+    passed = all(row["passed"] for row in scenario_results)
+    result = {
+        "status": "completed_validation_calibration_perturbation_robustness",
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "locked_test_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "protocol": "all frozen physical perturbations evaluated at one unchanged validation threshold",
+        "threshold": threshold,
+        "threshold_source": "baseline_validation_candidate_search_calibration_only",
+        "scenario_threshold_refits": 0,
+        "target_far_per_year": target_far,
+        "policy": {
+            "minimum_scenarios": minimum_scenarios,
+            "maximum_absolute_weighted_efficiency_loss": maximum_loss,
+            "maximum_far_multiplier_of_target": maximum_far_multiplier,
+            "bootstrap_replicates": bootstrap_replicates,
+            "seed": seed,
+        },
+        "scenario_count": len(scenario_results),
+        "scenario_results": scenario_results,
+        "detector_strata_audited": dict(sorted(detector_strata.items())),
+        "physical_time_domain_perturbation": True,
+        "fresh_time_frequency_transform": True,
+        "envelope_interpretation": plan.get("envelope_interpretation"),
+        "plan": _artifact(plan_file),
+        "baseline_calibration": _artifact(baseline_file),
+        "config_path": str(Path(config_path).resolve()),
+        "config_sha256": file_sha256(config_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result

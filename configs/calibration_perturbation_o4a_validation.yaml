@@ -21,3 +21,12 @@ calibration_perturbation:
         semantics: bounded_stress_test_not_calibration_posterior
   run_template_assignments:
     O4a: conservative_o4a_stress_v1
+
+calibration_robustness:
+  # Every scenario is evaluated at the original validation-only FAR threshold.
+  # The lower paired-bootstrap bound must satisfy the non-inferiority margin.
+  minimum_scenarios: 7
+  maximum_absolute_weighted_efficiency_loss: 0.05
+  maximum_far_multiplier_of_target: 2.0
+  bootstrap_replicates: 10000
+  seed: 20260722

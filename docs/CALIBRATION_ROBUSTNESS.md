@@ -51,3 +51,49 @@ an official calibration-posterior sample and cannot be described as one. A paper
 the stress-test interpretation or replace it before freezing with official, hash-bound per-run/IFO
 envelopes. Scenario thresholds must never be refit: candidate extraction and time slides are rerun,
 but FAR and injection efficiency are evaluated with the original frozen validation threshold.
+
+After candidate extraction, application of the already-frozen timing calibration, execution of the
+same score-blind block-permutation schedule, and physical injection ranking, freeze one receipt for
+each scenario:
+
+```bash
+python -m gwyolo.cli calibration-perturbation-scenario-freeze \
+  --plan /artifacts/calibration_perturbation_plan.json \
+  --background-score-report /artifacts/calibration/envelope_plus/background/trigger_score_report.json \
+  --injection-score-report /artifacts/calibration/envelope_plus/injections/injection_score_report.json \
+  --background-timing-application-report /artifacts/calibration/envelope_plus/background/calibrated.jsonl.report.json \
+  --injection-timing-application-report /artifacts/calibration/envelope_plus/injections/calibrated.jsonl.report.json \
+  --background-search-report /artifacts/calibration/envelope_plus/search/val_candidate_time_slide_report.json \
+  --injection-ranking-report /artifacts/calibration/envelope_plus/rankings/val_injection_candidate_ranking_report.json \
+  --output /artifacts/calibration/envelope_plus/scenario_receipt.json
+```
+
+The receipt rejects missing/changed hashes, test rows, an altered model/config/commit, uncalibrated
+candidate timing, a different timing calibration, and a background or injection manifest outside
+the frozen plan. It records `threshold_fitted_or_selected: false`.
+
+Once every frozen scenario has a receipt, evaluate all of them together. Repeat
+`--scenario-receipt` exactly once per scenario:
+
+```bash
+python -m gwyolo.cli calibration-perturbation-evaluate \
+  --plan /artifacts/calibration_perturbation_plan.json \
+  --baseline-calibration-report /artifacts/candidate_search_calibration.json \
+  --scenario-receipt /artifacts/calibration/envelope_plus/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/envelope_minus/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/amplitude_plus_phase_minus/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/random_draw_000/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/random_draw_001/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/random_draw_002/scenario_receipt.json \
+  --scenario-receipt /artifacts/calibration/random_draw_003/scenario_receipt.json \
+  --config configs/calibration_perturbation_o4a_validation.yaml \
+  --output /artifacts/calibration/calibration_robustness.json
+```
+
+The evaluator requires the exact seven-scenario set, identical checkpoint/config/code/timing,
+identical GPS-block background schedule and live time, and identical physical injection identities
+and weights. It applies the original baseline validation threshold to every background and injection
+row. The predeclared gate requires the paired-bootstrap lower bound on absolute weighted-efficiency
+change to remain above `-0.05` and scenario FAR to remain at most twice the target FAR. Results are
+also stratified by explicit detector subset. Passing this validation robustness gate does not open
+O4b or GWTC-5 and does not by itself authorize a scientific claim.

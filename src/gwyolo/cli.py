@@ -972,6 +972,29 @@ def build_parser() -> argparse.ArgumentParser:
     calibration_plan.add_argument("--config", required=True)
     calibration_plan.add_argument("--output", required=True)
 
+    calibration_scenario = subparsers.add_parser(
+        "calibration-perturbation-scenario-freeze"
+    )
+    calibration_scenario.add_argument("--plan", required=True)
+    calibration_scenario.add_argument("--background-score-report", required=True)
+    calibration_scenario.add_argument("--injection-score-report", required=True)
+    calibration_scenario.add_argument(
+        "--background-timing-application-report", required=True
+    )
+    calibration_scenario.add_argument(
+        "--injection-timing-application-report", required=True
+    )
+    calibration_scenario.add_argument("--background-search-report", required=True)
+    calibration_scenario.add_argument("--injection-ranking-report", required=True)
+    calibration_scenario.add_argument("--output", required=True)
+
+    calibration_evaluate = subparsers.add_parser("calibration-perturbation-evaluate")
+    calibration_evaluate.add_argument("--plan", required=True)
+    calibration_evaluate.add_argument("--baseline-calibration-report", required=True)
+    calibration_evaluate.add_argument("--scenario-receipt", action="append", required=True)
+    calibration_evaluate.add_argument("--config", required=True)
+    calibration_evaluate.add_argument("--output", required=True)
+
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
     candidates.add_argument("--output-dir", required=True)
@@ -2914,6 +2937,33 @@ def main(argv: list[str] | None = None) -> int:
             freeze_calibration_perturbation_plan(
                 args.background_manifest,
                 args.injection_manifest,
+                args.config,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-perturbation-scenario-freeze":
+        from .calibration import freeze_calibration_perturbation_scenario_result
+
+        _print(
+            freeze_calibration_perturbation_scenario_result(
+                args.plan,
+                args.background_score_report,
+                args.injection_score_report,
+                args.background_timing_application_report,
+                args.injection_timing_application_report,
+                args.background_search_report,
+                args.injection_ranking_report,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-perturbation-evaluate":
+        from .calibration import evaluate_calibration_perturbation_robustness
+
+        _print(
+            evaluate_calibration_perturbation_robustness(
+                args.plan,
+                args.baseline_calibration_report,
+                args.scenario_receipt,
                 args.config,
                 args.output,
             )
