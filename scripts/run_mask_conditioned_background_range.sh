@@ -487,6 +487,8 @@ if (
     raise SystemExit("paired raw/mask background did not reach both validation FAR gates")
 receipt = {
     "status": "completed_validation_only_raw_mask_continuous_background",
+    "passed": comparison.get("passed") is True
+    and comparison.get("mask_locked_test_arm_eligible") is True,
     "scientific_claim_allowed": False,
     "locked_test_allowed": False,
     "test_rows_read": 0,
@@ -497,6 +499,9 @@ receipt = {
     "mask_locked_test_arm_eligible": comparison.get(
         "mask_locked_test_arm_eligible"
     ) is True,
+    "background_plan_authorization_id": authorization["authorization_id"],
+    "background_plan_purpose_disjoint": True,
+    "background_plan_capacity_authorized": True,
     "code_commit": code_commit,
     "merge_report": {"path": str(merge_path), "sha256": digest(merge_path)},
     "mask_validation_receipt": {

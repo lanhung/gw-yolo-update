@@ -254,3 +254,94 @@ def test_official_validation_protocol_rejects_undersized_independent_endpoint(
     )
     assert gate["state"] == "passed"
     assert len(gate["artifact_replay"]) == 8
+
+
+def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
+    tmp_path: Path,
+) -> None:
+    protocol = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "publication_validation_evidence.yaml"
+    )
+    evidence = tmp_path / "raw-mask.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "validation_only_paired_raw_mask_candidate_calibration_comparison"
+                ),
+                "passed": True,
+                "mask_locked_test_arm_eligible": True,
+                "locked_test_prerequisites_satisfied": False,
+                "test_rows_read": 0,
+                "scientific_claim_allowed": False,
+                "code_commit": "old",
+            }
+        ),
+        encoding="utf-8",
+    )
+    failed = run_publication_evidence_audit(
+        protocol,
+        [f"paired_raw_mask_vt={evidence}"],
+        tmp_path / "failed-raw-mask-audit.json",
+    )
+    gate = next(
+        row for row in failed["requirements"] if row["id"] == "paired_raw_mask_vt"
+    )
+    assert gate["state"] == "failed"
+
+    artifacts = {}
+    for label in (
+        "authorization",
+        "parent_plan",
+        "merge_report",
+        "raw_calibration",
+        "mask_calibration",
+        "paired_comparison",
+        "mask_validation",
+        "mask_timing",
+    ):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        artifacts[label] = {"path": str(path), "sha256": file_sha256(path)}
+    evidence.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_raw_mask_continuous_background",
+                "passed": True,
+                "mask_locked_test_arm_eligible": True,
+                "validation_calibration_frozen": True,
+                "background_plan_authorization_id": "authorization-id",
+                "background_plan_purpose_disjoint": True,
+                "background_plan_capacity_authorized": True,
+                "locked_test_prerequisites_satisfied": False,
+                "test_rows_read": 0,
+                "scientific_claim_allowed": False,
+                "code_commit": "new",
+                "inputs": {
+                    "background_plan_authorization": artifacts["authorization"],
+                    "parent_plan": artifacts["parent_plan"],
+                },
+                "merge_report": artifacts["merge_report"],
+                "calibrations": {
+                    "raw": artifacts["raw_calibration"],
+                    "mask": artifacts["mask_calibration"],
+                },
+                "paired_validation_comparison": artifacts["paired_comparison"],
+                "mask_validation_receipt": artifacts["mask_validation"],
+                "mask_timing_receipt": artifacts["mask_timing"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    passed = run_publication_evidence_audit(
+        protocol,
+        [f"paired_raw_mask_vt={evidence}"],
+        tmp_path / "passed-raw-mask-audit.json",
+    )
+    gate = next(
+        row for row in passed["requirements"] if row["id"] == "paired_raw_mask_vt"
+    )
+    assert gate["state"] == "passed"
+    assert len(gate["artifact_replay"]) == 8

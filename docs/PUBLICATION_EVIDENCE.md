@@ -37,6 +37,13 @@ injection rankings, continuous block-permutation background and calibration. It 
 GPS-block overlap between threshold background and injection validation, exactly the predeclared
 0.1/year FAR target and at least 10,000 bootstrap replicates.
 
+The paired raw/mask entry must be the full
+`completed_validation_only_raw_mask_continuous_background` receipt, not the standalone comparison
+JSON. The receipt replays the purpose-disjoint background authorization, parent plan, merged
+background, both calibrations, mask validation/timing receipts and paired comparison. This prevents
+an otherwise valid-looking comparison made on a pre-partition or capacity-insufficient plan from
+entering the validation ledger.
+
 `publication_ready=true` in the validation protocol means only that the predeclared inputs needed
 to freeze and authorize the one-time locked evaluation are present. It deliberately keeps
 `scientific_claim_allowed=false`. A separate `locked_final` protocol, populated only after the
