@@ -126,6 +126,7 @@ def run_mask_search_validation_pipeline(
         model_ifos,
         q_values,
         target_sample_rate,
+        save_probabilities=True,
         required_split="val",
     )
 

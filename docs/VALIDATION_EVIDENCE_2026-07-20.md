@@ -856,3 +856,26 @@ metrics and excludes `last.ckpt`. Both AMPLFI and DINGO runtime adapters require
 with `validation_selected_checkpoint` status and `publication_eligible=true`; the model sidecar
 freezer enforces the same gate. A short smoke run may therefore demonstrate environment and model
 loading but cannot be promoted into the PE paper table.
+
+## Independent endpoint and paired mask-background closure — 2026-07-22
+
+The physically independent O4a validation endpoint is now frozen at 3,000 injection rows. It binds
+45 candidate-calibration GPS blocks and 59 injection GPS blocks, reports zero purpose overlap and
+records `test_rows_read=0`. Its immutable report SHA256 is
+`7274d6ce800f9599f1341d03c8c31e937cc6a64dcb963b761d9cf83e39fc8c67`. This closes the endpoint
+construction gate but is not a FAR, `<VT>` or locked-test result.
+
+The mask path now extends beyond its six-arm ranking table. Raw and mask-conditioned contaminated
+validation injections receive separate empirical timing calibration, complete single-IFO candidate
+preservation and physical H1/L1 network rankings. The continuous-background executor processes the
+same stable-GPS window once through both arms, independently applies the matching timing
+calibration, merges only identical physical exposure and freezes thresholds from validation block
+permutations. Cross-commit reuse is fail-closed behind a normalized implementation audit, and all
+recoverable probability/override/source arrays have hash-bound eviction receipts to keep the
+800/880-pair run within bounded storage.
+
+The new code passed the complete CPU test suite from an in-memory pytest base directory, the 21
+focused mask/streaming/compatibility regressions, full Ruff lint, every shell syntax check and
+`git diff --check`. No raw/mask continuous-background result exists yet: the executor is queued
+behind the expanded source-safe Gravity Spy corpus, five-seed selection and timing gate. O4b and the
+locked test remain unopened.

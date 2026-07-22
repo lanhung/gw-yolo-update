@@ -651,7 +651,30 @@ per-mask-cluster arrival estimator on waveform-matched contaminated raw and mask
 validation injections. The two arms must contain identical injection, waveform, GPS, detector and
 arrival identities. Both must separately pass the precommitted 99th-percentile 10 ms empirical
 timing limit with at least 30 matches; otherwise `coherent_background_scale_allowed` remains false.
-This prevents mask cleaning from silently inheriting the raw-strain timing uncertainty.
+This prevents mask cleaning from silently inheriting the raw-strain timing uncertainty. Each arm
+also preserves every single-IFO candidate, applies its own timing calibration and freezes one
+network ranking per physical validation injection under the declared H1/L1 10 ms light-travel-time
+limit plus empirical uncertainty. Only after candidate extraction, calibration and ranking all
+hash-replay successfully are the recoverable per-injection probability artifacts evicted; the
+timing receipt binds the eviction intent, removed hashes and byte count.
+
+`scripts/run_mask_conditioned_background_range.sh` is the corresponding storage-bounded continuous
+background executor. It refuses a partial parent plan, test rows, an unpromoted five-seed model or a
+failed six-arm/timing receipt. A calibration produced by an older immutable checkout may be reused
+only when `candidate-scoring-compatibility-audit` proves that all scientific scoring and candidate
+extraction implementation hashes are unchanged; the newer timing-application orchestration alone
+is normalized out of that comparison. Every stable-GPS validation shard is scored as a paired raw
+and mask-conditioned arm over the identical physical windows. Candidates and calibrated arrival
+times are retained, while probability arrays, reconstructed mask overrides and recoverable source
+HDF5 files are deleted only after their downstream reports and hashes exist.
+
+The paired merge independently replays the ordinary continuous-background merge for both arms and
+requires identical pair ranges, GPS blocks, detector availability, observing-run counts, live time
+and background-manifest hash. One common block-permutation schedule is then used to freeze separate
+raw and mask validation FAR thresholds. The final receipt remains
+`scientific_claim_allowed=false`, `locked_test_open_allowed=false` and
+`locked_test_prerequisites_satisfied=false`: it freezes development calibration but cannot by
+itself authorize O4b/GWTC-5 or support a search-sensitivity claim.
 
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ

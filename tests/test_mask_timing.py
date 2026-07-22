@@ -57,6 +57,10 @@ def _fixture(tmp_path: Path, development_passed: bool = True) -> tuple[Path, Pat
   uncertainty_quantile: 0.99
   minimum_matches_per_method: 30
   maximum_empirical_timing_uncertainty_seconds: 0.01
+  reference_ifo: H1
+  second_ifo: L1
+  physical_delay_limit_seconds: 0.01
+  truth_association_window_seconds: 0.25
 """,
         encoding="utf-8",
     )
@@ -124,6 +128,8 @@ def test_mask_timing_requires_paired_raw_and_mask_gates(
             "status": "validation_only_candidate_timing_calibration",
             "methods": {
                 "local_whitened_strain_envelope_per_mask_cluster_v1": {
+                    "matches": 100,
+                    "empirical_timing_uncertainty_seconds": 0.008,
                     "calibration_gate_passed": True
                 }
             },
@@ -131,7 +137,89 @@ def test_mask_timing_requires_paired_raw_and_mask_gates(
         _write_json(Path(output), report)
         return report
 
+    def extract(trigger: Path, output: Path, *args: object) -> dict[str, object]:
+        assert Path(trigger).is_file()
+        assert args == (0.3, 1)
+        manifest = Path(output) / "single_ifo_injection_candidates.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("", encoding="utf-8")
+        report = {
+            "status": "single_ifo_physical_injection_candidates",
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+        }
+        _write_json(Path(output) / "injection_candidate_extraction_report.json", report)
+        return report
+
+    def apply(
+        candidates: Path, calibration: Path, output: Path
+    ) -> dict[str, object]:
+        assert Path(candidates).is_file() and Path(calibration).is_file()
+        Path(output).write_text("", encoding="utf-8")
+        return {"uncalibrated_candidates": 0}
+
+    def rank(
+        triggers: Path,
+        candidates: Path,
+        output: Path,
+        split: str,
+        reference_ifo: str,
+        second_ifo: str,
+        physical_delay: float,
+        uncertainty: float,
+        association: float,
+    ) -> dict[str, object]:
+        assert Path(triggers).is_file() and Path(candidates).is_file()
+        assert (split, reference_ifo, second_ifo) == ("val", "H1", "L1")
+        assert (physical_delay, uncertainty, association) == (0.01, 0.008, 0.25)
+        manifest = Path(output) / "val_network_injection_candidate_rankings.jsonl"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("", encoding="utf-8")
+        condition = "raw" if "raw_" in str(output) else "mask"
+        timing_path = (
+            tmp_path / "result" / "timing" / f"{condition}_candidate_timing_calibration.json"
+        )
+        report = {
+            "status": "physical_network_injection_candidate_rankings",
+            "split": "val",
+            "input_injections": 100,
+            "timing_calibration_report_sha256": file_sha256(timing_path),
+            "candidate_checkpoint_sha256": "checkpoint",
+            "candidate_config_sha256": "model-config",
+            "candidate_code_commit": "scoring-commit",
+            "candidate_scoring_provenance_consistent": True,
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+        }
+        _write_json(Path(output) / "val_injection_candidate_ranking_report.json", report)
+        return report
+
+    def evict(
+        candidate_report: Path,
+        score_report: Path,
+        probability_root: Path,
+        output: Path,
+    ) -> dict[str, object]:
+        assert Path(candidate_report).is_file()
+        assert Path(score_report).is_file()
+        assert Path(probability_root).name == "probabilities"
+        report = {
+            "status": "verified_candidate_probability_eviction",
+            "candidate_extraction_report_sha256": file_sha256(candidate_report),
+            "score_report_sha256": file_sha256(score_report),
+            "removed_files": 100,
+            "removed_bytes": 409600,
+        }
+        _write_json(Path(output), report)
+        return report
+
     monkeypatch.setattr("gwyolo.mask_timing.run_candidate_timing_calibration", calibrate)
+    monkeypatch.setattr("gwyolo.mask_timing.run_injection_candidate_extraction", extract)
+    monkeypatch.setattr("gwyolo.mask_timing.run_apply_candidate_timing_calibration", apply)
+    monkeypatch.setattr("gwyolo.mask_timing.run_injection_candidate_rankings", rank)
+    monkeypatch.setattr(
+        "gwyolo.mask_timing.evict_candidate_probability_artifacts", evict
+    )
     result = run_mask_timing_validation(
         receipt, pipeline, config, tmp_path / "result" / "receipt.json"
     )
@@ -139,6 +227,12 @@ def test_mask_timing_requires_paired_raw_and_mask_gates(
     assert result["raw_timing_gate_passed"] is True
     assert result["mask_timing_gate_passed"] is True
     assert result["coherent_background_scale_allowed"] is True
+    assert set(result["injection_ranking_reports"]) == {"raw", "mask"}
+    assert set(result["probability_eviction_reports"]) == {"raw", "mask"}
+    assert all(
+        report["removed_files"] == 100
+        for report in result["probability_eviction_reports"].values()
+    )
     assert result["test_rows_read"] == 0
 
 

@@ -69,7 +69,7 @@ def test_mask_pipeline_runs_six_paired_score_arms(tmp_path: Path, monkeypatch) -
         maximum_validation_false_alarms=8,
     )
     assert calls["background_score"] == [True, False]
-    assert calls["injection_score"] == [True, False, True, False]
+    assert calls["injection_score"] == [True, False, True, True]
     assert calls["clean"] == ["background", "injection", "injection"]
     assert result["development_gates_passed"] is False
     assert result["test_evaluation"] is None

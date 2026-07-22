@@ -927,6 +927,7 @@ def run_apply_candidate_timing_calibration(
     candidate_manifest: str | Path,
     calibration_report: str | Path,
     output: str | Path,
+    scoring_compatibility_report: str | Path | None = None,
 ) -> dict[str, Any]:
     with Path(calibration_report).open("r", encoding="utf-8") as handle:
         calibration = json.load(handle)
@@ -938,12 +939,35 @@ def run_apply_candidate_timing_calibration(
     candidate_provenance = _candidate_extraction_provenance(candidate_manifest)
     calibration_scoring = calibration.get("source_scoring_provenance", {})
     candidate_scoring = candidate_provenance.get("scoring", {})
+    calibration_commit = str(calibration_scoring.get("code_commit", ""))
+    candidate_commit = str(candidate_scoring.get("code_commit", ""))
+    cross_commit_compatibility = None
+    if (
+        calibration_scoring.get("available")
+        and candidate_provenance.get("available")
+        and calibration_commit != candidate_commit
+    ):
+        if scoring_compatibility_report is None:
+            raise ValueError(
+                "cross-commit timing calibration requires a scoring compatibility report"
+            )
+        from .code_compatibility import validate_candidate_scoring_compatibility
+
+        cross_commit_compatibility = validate_candidate_scoring_compatibility(
+            scoring_compatibility_report,
+            calibration_commit,
+            candidate_commit,
+        )
     provenance_matches = bool(
         calibration_scoring.get("available")
         and candidate_provenance.get("available")
         and all(
             str(calibration_scoring.get(field)) == str(candidate_scoring.get(field))
-            for field in ("checkpoint_sha256", "config_sha256", "code_commit")
+            for field in ("checkpoint_sha256", "config_sha256")
+        )
+        and (
+            calibration_commit == candidate_commit
+            or cross_commit_compatibility is not None
         )
     )
     calibrated = 0
@@ -995,6 +1019,11 @@ def run_apply_candidate_timing_calibration(
         "candidate_extraction_provenance": candidate_provenance,
         "calibration_scoring_provenance": calibration_scoring,
         "scoring_provenance_matches": provenance_matches,
+        "cross_commit_scoring_compatibility_report_sha256": (
+            file_sha256(scoring_compatibility_report)
+            if scoring_compatibility_report is not None
+            else None
+        ),
         "output_path": str(output_path),
         "output_sha256": file_sha256(output_path),
         **execution_provenance(),

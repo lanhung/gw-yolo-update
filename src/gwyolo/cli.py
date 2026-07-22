@@ -970,7 +970,17 @@ def build_parser() -> argparse.ArgumentParser:
     timing_apply = subparsers.add_parser("candidate-timing-apply")
     timing_apply.add_argument("--candidates", required=True)
     timing_apply.add_argument("--calibration-report", required=True)
+    timing_apply.add_argument("--scoring-compatibility-report")
     timing_apply.add_argument("--output", required=True)
+
+    scoring_compatibility = subparsers.add_parser(
+        "candidate-scoring-compatibility-audit"
+    )
+    scoring_compatibility.add_argument("--reference-code-dir", required=True)
+    scoring_compatibility.add_argument("--candidate-code-dir", required=True)
+    scoring_compatibility.add_argument("--reference-commit", required=True)
+    scoring_compatibility.add_argument("--candidate-commit", required=True)
+    scoring_compatibility.add_argument("--output", required=True)
 
     injection_candidates = subparsers.add_parser("injection-candidate-extract")
     injection_candidates.add_argument("--injection-triggers", required=True)
@@ -1244,6 +1254,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--verified-source-inventory", action="append", default=[]
     )
 
+    mask_stream_shard = subparsers.add_parser(
+        "background-raw-mask-stream-shard"
+    )
+    mask_stream_shard.add_argument("--parent-plan", required=True)
+    mask_stream_shard.add_argument("--event-exclusions", required=True)
+    mask_stream_shard.add_argument("--mask-validation-receipt", required=True)
+    mask_stream_shard.add_argument("--mask-timing-receipt", required=True)
+    mask_stream_shard.add_argument("--scoring-compatibility-report")
+    mask_stream_shard.add_argument("--checkpoint", required=True)
+    mask_stream_shard.add_argument("--config", required=True)
+    mask_stream_shard.add_argument("--coherence-config", required=True)
+    mask_stream_shard.add_argument("--cache-root", required=True)
+    mask_stream_shard.add_argument("--output-dir", required=True)
+    mask_stream_shard.add_argument("--shard-index", type=int, required=True)
+    mask_stream_shard.add_argument("--pairs-per-shard", type=int, default=1)
+    mask_stream_shard.add_argument("--validation-fraction", type=float, default=0.2)
+    mask_stream_shard.add_argument("--seed", type=int, default=20260720)
+    mask_stream_shard.add_argument(
+        "--model-ifos", nargs="+", default=["H1", "L1", "V1"]
+    )
+    mask_stream_shard.add_argument(
+        "--q-values", nargs="+", type=float, default=[4, 8, 16]
+    )
+    mask_stream_shard.add_argument("--target-sample-rate", type=int, default=1024)
+    mask_stream_shard.add_argument("--context-duration", type=float, default=64.0)
+    mask_stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
+    mask_stream_shard.add_argument("--minimum-bins", type=int, default=1)
+    mask_stream_shard.add_argument("--download-workers", type=int, default=8)
+    mask_stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
+
     morphology_stream_shard = subparsers.add_parser(
         "background-morphology-stream-shard"
     )
@@ -1277,6 +1319,13 @@ def build_parser() -> argparse.ArgumentParser:
     stream_merge.add_argument("--shard-report", action="append", required=True)
     stream_merge.add_argument("--parent-plan")
     stream_merge.add_argument("--output-dir", required=True)
+
+    mask_stream_merge = subparsers.add_parser(
+        "background-raw-mask-stream-merge"
+    )
+    mask_stream_merge.add_argument("--shard-report", action="append", required=True)
+    mask_stream_merge.add_argument("--parent-plan")
+    mask_stream_merge.add_argument("--output-dir", required=True)
 
     morphology_calibrate = subparsers.add_parser("background-morphology-calibrate")
     morphology_calibrate.add_argument("--merge-report", required=True)
@@ -2837,7 +2886,24 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_apply_candidate_timing_calibration(
-                args.candidates, args.calibration_report, args.output
+                args.candidates,
+                args.calibration_report,
+                args.output,
+                args.scoring_compatibility_report,
+            )
+        )
+    elif args.command == "candidate-scoring-compatibility-audit":
+        from .code_compatibility import (
+            audit_candidate_scoring_implementation_compatibility,
+        )
+
+        _print(
+            audit_candidate_scoring_implementation_compatibility(
+                args.reference_code_dir,
+                args.candidate_code_dir,
+                args.reference_commit,
+                args.candidate_commit,
+                args.output,
             )
         )
     elif args.command == "injection-candidate-extract":
@@ -3151,6 +3217,38 @@ def main(argv: list[str] | None = None) -> int:
                 args.verified_source_inventory,
             )
         )
+    elif args.command == "background-raw-mask-stream-shard":
+        from .streaming import run_streamed_background_shard
+
+        _print(
+            run_streamed_background_shard(
+                args.parent_plan,
+                args.event_exclusions,
+                None,
+                args.checkpoint,
+                args.config,
+                args.coherence_config,
+                args.cache_root,
+                args.output_dir,
+                args.shard_index,
+                args.pairs_per_shard,
+                args.validation_fraction,
+                0.0,
+                args.seed,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.download_workers,
+                False,
+                args.verified_source_inventory,
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.scoring_compatibility_report,
+            )
+        )
     elif args.command == "background-morphology-stream-shard":
         from .streaming import run_streamed_morphology_background_shard
 
@@ -3182,6 +3280,14 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             merge_streamed_background_shards(
+                args.shard_report, args.output_dir, args.parent_plan
+            )
+        )
+    elif args.command == "background-raw-mask-stream-merge":
+        from .streaming import merge_raw_mask_streamed_background_shards
+
+        _print(
+            merge_raw_mask_streamed_background_shards(
                 args.shard_report, args.output_dir, args.parent_plan
             )
         )
