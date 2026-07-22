@@ -23,6 +23,9 @@ def test_waveform_runtime_setup_is_isolated_pinned_and_receipted() -> None:
     assert "pip_freeze_sha256" in script
     assert "IMRPhenomPv3HM" in script
     assert "IMRPhenomXPHM" in script
+    assert '"IMRPhenomD"' in script
+    assert '"IMRPhenomHM"' in script
+    assert "SEOBNRv5HM_ROM" not in script
     assert "GetStringFromApproximant" in script
     assert "SimInspiralImplementedFDApproximants" in script
     assert "SimInspiralImplementedTDApproximants" in script

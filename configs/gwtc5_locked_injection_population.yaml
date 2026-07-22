@@ -76,9 +76,13 @@ gwtc5_locked_injection_population:
       target_fraction: 0.25
       minimum_rows: 1000
       assignment_protocol: hash_rank_primary_alternative_pair_v1
+      interpretation: within_phenom_generation_systematics_not_eob_cross_family_validation
       alternative_by_primary:
-        IMRPhenomXAS: SEOBNRv5_ROM
-        IMRPhenomXHM: SEOBNRv5HM_ROM
+        # The official SEOBNRv5 ROM assets require 2.6+ GB of external data.
+        # They are not bundled in LALSuite and are excluded from the locked
+        # runtime rather than silently relying on an unbound LAL_DATA_PATH.
+        IMRPhenomXAS: IMRPhenomD
+        IMRPhenomXHM: IMRPhenomHM
         # SEOBNRv5PHM is the native DINGO model label but is not a canonical
         # LALSimulation approximant in the frozen runtime, while SEOBNRv4PHM
         # fails the high-total-mass 20 Hz domain.  Use the preceding Phenom
@@ -86,7 +90,7 @@ gwtc5_locked_injection_population:
         # within-family waveform-systematics stratum.
         IMRPhenomXPHM: IMRPhenomPv3HM
         IMRPhenomXAS_NRTidalv3: IMRPhenomD_NRTidalv2
-        IMRPhenomNSBH: SEOBNRv4_ROM_NRTidalv2_NSBH
+        IMRPhenomNSBH: IMRPhenomD_NRTidalv2
     high_mass_unequal_mass:
       minimum_rows: 600
       family: BBH

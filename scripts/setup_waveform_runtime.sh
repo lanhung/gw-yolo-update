@@ -53,11 +53,10 @@ approximants = [
     "IMRPhenomXPHM",
     "IMRPhenomXAS_NRTidalv3",
     "IMRPhenomNSBH",
-    "SEOBNRv5_ROM",
-    "SEOBNRv5HM_ROM",
+    "IMRPhenomD",
+    "IMRPhenomHM",
     "IMRPhenomPv3HM",
     "IMRPhenomD_NRTidalv2",
-    "SEOBNRv4_ROM_NRTidalv2_NSBH",
 ]
 resolved = {}
 for name in approximants:

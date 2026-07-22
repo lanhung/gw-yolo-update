@@ -76,6 +76,12 @@ they are computed only after opening from the analyzed post-DQ live time and the
 volume/source-frame-time proposal density. DQ-invalid attempts are retained and cannot be replaced.
 Availability counts alone are therefore never reported as injection count or analyzed live time.
 
+The frozen waveform-systematics alternatives use preceding Phenom generations. This is a
+within-family generation-shift audit, not an EOB-versus-Phenom claim. LALSuite's official
+SEOBNRv5/SEOBNRv5HM ROM files require more than 2.6 GB of external assets; they are deliberately
+excluded until a separately hashed `LAL_DATA_PATH` asset contract is added, rather than being
+silently assumed present.
+
 Before the unopened report can pass, all primary and alternative approximants are sampled by
 family/approximant stratum and compared between PyCBC and the matching direct LALSimulation FD/TD
 API, including
