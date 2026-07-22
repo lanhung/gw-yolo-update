@@ -55,9 +55,13 @@ def test_candidate_pipeline_binds_five_seed_model_and_config(tmp_path) -> None:
     selection.write_text(
         json.dumps(
             {
-                "status": "completed_five_seed_source_safe_overlap_validation",
-                "passed": True,
-                "test_data_opened": False,
+                    "status": "completed_five_seed_source_safe_overlap_validation",
+                    "passed": True,
+                    "five_seed_stability": {
+                        "status": "five_seed_reproducibility_gate_v1",
+                        "passed": True,
+                    },
+                    "test_data_opened": False,
                 "selected_checkpoint_sha256": file_sha256(checkpoint),
                 "common_artifact_hashes": {
                     "config_file_sha256": file_sha256(config)
@@ -119,9 +123,13 @@ def test_continuous_calibration_binds_independent_endpoint_and_model(tmp_path) -
     selection.write_text(
         json.dumps(
             {
-                "status": "completed_five_seed_source_safe_overlap_validation",
-                "passed": True,
-                "test_data_opened": False,
+                    "status": "completed_five_seed_source_safe_overlap_validation",
+                    "passed": True,
+                    "five_seed_stability": {
+                        "status": "five_seed_reproducibility_gate_v1",
+                        "passed": True,
+                    },
+                    "test_data_opened": False,
                 "selected_checkpoint_sha256": "checkpoint",
                 "common_artifact_hashes": {"config_file_sha256": "config"},
             }

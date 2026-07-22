@@ -750,6 +750,9 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         selection.get("status")
         != "completed_five_seed_source_safe_overlap_validation"
         or selection.get("passed") is not True
+        or selection.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or selection.get("five_seed_stability", {}).get("passed") is not True
         or selection.get("test_data_opened") is not False
         or selection.get("selected_checkpoint_sha256")
         != run_identity.get("checkpoint_sha256")

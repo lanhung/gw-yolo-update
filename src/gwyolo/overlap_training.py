@@ -468,6 +468,7 @@ def promote_overlap_sampling_arm(
 def summarize_overlap_five_seed_promotion(
     promotion_report_path: str | Path,
     finetune_report_paths: list[str | Path],
+    stability_config_path: str | Path,
     output_path: str | Path,
 ) -> dict[str, Any]:
     """Aggregate exactly five validation-selected runs of the promoted arm."""
@@ -517,6 +518,45 @@ def summarize_overlap_five_seed_promotion(
     if any(labels != family_labels[0] for labels in family_labels[1:]):
         raise ValueError("Five-seed overlap reports differ in validation families")
 
+    promotion_config_path = Path(str(promotion.get("config_path", "")))
+    if not promotion_config_path.is_file():
+        raise ValueError("Five-seed promotion config is absent")
+    promotion_config = load_yaml(promotion_config_path)
+    if canonical_hash(promotion_config) != promotion.get("config_hash"):
+        raise ValueError("Five-seed promotion config changed after one-seed selection")
+    promotion_settings = promotion_config.get("overlap_sampling_promotion", {})
+    required_promotion_settings = {
+        "minimum_clean_chirp_iou_retention",
+        "minimum_glitch_iou",
+        "minimum_family_median_iou",
+        "maximum_zero_iou_families",
+        "minimum_validation_rows_per_family",
+    }
+    missing_promotion = sorted(required_promotion_settings - set(promotion_settings))
+    if missing_promotion:
+        raise ValueError(
+            f"Five-seed promotion config omits per-seed settings: {missing_promotion}"
+        )
+    stability_path = Path(stability_config_path).resolve()
+    stability_config = load_yaml(stability_path)
+    stability_settings = stability_config.get("overlap_five_seed_stability", {})
+    required_stability_settings = {
+        "minimum_passing_seed_fraction",
+        "minimum_median_clean_retention",
+        "minimum_median_glitch_iou",
+        "minimum_median_family_iou",
+    }
+    missing_stability = sorted(
+        required_stability_settings - set(stability_settings)
+    )
+    if missing_stability:
+        raise ValueError(
+            f"Five-seed stability config omits settings: {missing_stability}"
+        )
+    minimum_passing_fraction = float(stability_settings["minimum_passing_seed_fraction"])
+    if not 0 < minimum_passing_fraction <= 1:
+        raise ValueError("Five-seed passing fraction must lie in (0, 1]")
+
     def selected_retention(report: dict[str, Any]) -> float:
         rows = [
             row
@@ -553,6 +593,67 @@ def summarize_overlap_five_seed_promotion(
             ]
         ),
     }
+    minimum_family_rows = int(
+        promotion_settings["minimum_validation_rows_per_family"]
+    )
+    seed_audits = []
+    for report in reports:
+        overlap_metrics = report["calibrated_overlap_validation"]
+        families = overlap_metrics["by_glitch_family"]
+        if any(
+            int(row.get("physical_rows", -1)) < minimum_family_rows
+            for row in families.values()
+        ):
+            raise ValueError("A five-seed report has an underpowered validation family")
+        family_ious = np.asarray(
+            [float(row["iou"]) for row in families.values()], dtype=np.float64
+        )
+        clean_retention = selected_retention(report)
+        checks = {
+            "clean_retention": clean_retention
+            >= float(promotion_settings["minimum_clean_chirp_iou_retention"]),
+            "glitch_iou": float(overlap_metrics["glitch"]["iou"])
+            >= float(promotion_settings["minimum_glitch_iou"]),
+            "family_median_iou": float(np.median(family_ious))
+            >= float(promotion_settings["minimum_family_median_iou"]),
+            "zero_iou_families": int(np.count_nonzero(family_ious == 0))
+            <= int(promotion_settings["maximum_zero_iou_families"]),
+        }
+        seed_audits.append(
+            {
+                "seed": int(report["seed"]),
+                "clean_chirp_iou_retention": clean_retention,
+                "glitch_iou": float(overlap_metrics["glitch"]["iou"]),
+                "median_family_iou": float(np.median(family_ious)),
+                "zero_iou_families": int(np.count_nonzero(family_ious == 0)),
+                "checks": checks,
+                "passed": all(checks.values()),
+            }
+        )
+    passing_seed_ids = sorted(
+        row["seed"] for row in seed_audits if row["passed"]
+    )
+    passing_fraction = len(passing_seed_ids) / len(seed_audits)
+    median_clean_retention = float(
+        np.median([row["clean_chirp_iou_retention"] for row in seed_audits])
+    )
+    median_glitch_iou = float(
+        np.median([row["glitch_iou"] for row in seed_audits])
+    )
+    median_family_iou = float(
+        np.median([row["median_family_iou"] for row in seed_audits])
+    )
+    stability_checks = {
+        "minimum_passing_seed_fraction": passing_fraction
+        >= minimum_passing_fraction,
+        "minimum_median_clean_retention": median_clean_retention
+        >= float(stability_settings["minimum_median_clean_retention"]),
+        "minimum_median_glitch_iou": median_glitch_iou
+        >= float(stability_settings["minimum_median_glitch_iou"]),
+        "minimum_median_family_iou": median_family_iou
+        >= float(stability_settings["minimum_median_family_iou"]),
+    }
+    stability_passed = all(stability_checks.values())
     by_family = {
         label: summary(
             [
@@ -566,33 +667,63 @@ def summarize_overlap_five_seed_promotion(
         )
         for label in sorted(family_labels[0])
     }
+    passing_reports = [
+        report
+        for report, audit in zip(reports, seed_audits)
+        if audit["passed"]
+    ]
     ranked = sorted(
-        reports,
+        passing_reports,
         key=lambda report: (
             -float(report["calibrated_overlap_validation"]["mean_iou"]),
             int(report["seed"]),
         ),
     )
-    selected = ranked[0]
-    selected_checkpoint = Path(selected["checkpoint_path"])
-    if file_sha256(selected_checkpoint) != str(selected["checkpoint_sha256"]):
+    selected = ranked[0] if stability_passed else None
+    selected_checkpoint = Path(selected["checkpoint_path"]) if selected else None
+    if selected_checkpoint is not None and file_sha256(selected_checkpoint) != str(
+        selected["checkpoint_sha256"]
+    ):
         raise ValueError("Five-seed selected checkpoint hash differs from its report")
     result = {
         "status": "completed_five_seed_source_safe_overlap_validation",
-        "passed": True,
+        "passed": stability_passed,
         "scientific_claim_allowed": False,
         "test_data_opened": False,
         "promoted_arm": promoted,
         "seeds": sorted(seeds),
         "metrics": metrics,
         "by_glitch_family": by_family,
-        "checkpoint_selection": "maximum_validation_overlap_mean_iou_then_seed",
-        "selected_seed": int(selected["seed"]),
-        "selected_validation_overlap_mean_iou": float(
-            selected["calibrated_overlap_validation"]["mean_iou"]
+        "five_seed_stability": {
+            "status": "five_seed_reproducibility_gate_v1",
+            "passed": stability_passed,
+            "config_path": str(stability_path),
+            "config_sha256": file_sha256(stability_path),
+            "config_hash": canonical_hash(stability_config),
+            "minimum_required_passing_fraction": minimum_passing_fraction,
+            "passing_seed_fraction": passing_fraction,
+            "passing_seeds": passing_seed_ids,
+            "median_clean_chirp_iou_retention": median_clean_retention,
+            "median_glitch_iou": median_glitch_iou,
+            "median_family_iou": median_family_iou,
+            "checks": stability_checks,
+            "seed_audits": sorted(seed_audits, key=lambda row: row["seed"]),
+        },
+        "checkpoint_selection": (
+            "maximum_validation_overlap_mean_iou_among_passing_seeds_then_seed"
+            if selected
+            else None
         ),
-        "selected_checkpoint_path": str(selected_checkpoint),
-        "selected_checkpoint_sha256": str(selected["checkpoint_sha256"]),
+        "selected_seed": int(selected["seed"]) if selected else None,
+        "selected_validation_overlap_mean_iou": (
+            float(selected["calibrated_overlap_validation"]["mean_iou"])
+            if selected
+            else None
+        ),
+        "selected_checkpoint_path": str(selected_checkpoint) if selected else None,
+        "selected_checkpoint_sha256": (
+            str(selected["checkpoint_sha256"]) if selected else None
+        ),
         "promotion_report_path": str(promotion_report_path),
         "promotion_report_sha256": file_sha256(promotion_report_path),
         "finetune_reports": [
@@ -607,6 +738,51 @@ def summarize_overlap_five_seed_promotion(
             "locked_o4a_then_o4b_evaluation",
         ],
         **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def replay_overlap_five_seed_stability(
+    source_summary_path: str | Path,
+    stability_config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Recompute a frozen five-seed decision without repeating model training."""
+
+    source_path = Path(source_summary_path).resolve()
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    if (
+        source.get("status")
+        != "completed_five_seed_source_safe_overlap_validation"
+        or source.get("test_data_opened") is not False
+        or source.get("scientific_claim_allowed") is not False
+    ):
+        raise ValueError("Five-seed stability replay source is not validation-only")
+    promotion_path = Path(str(source.get("promotion_report_path", ""))).resolve()
+    if (
+        not promotion_path.is_file()
+        or source.get("promotion_report_sha256") != file_sha256(promotion_path)
+    ):
+        raise ValueError("Five-seed stability replay promotion report changed")
+    identities = source.get("finetune_reports", [])
+    if len(identities) != 5:
+        raise ValueError("Five-seed stability replay requires exactly five reports")
+    report_paths = []
+    for identity in identities:
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or identity.get("sha256") != file_sha256(path):
+            raise ValueError("Five-seed stability replay report changed")
+        report_paths.append(path)
+    result = summarize_overlap_five_seed_promotion(
+        promotion_path,
+        report_paths,
+        stability_config_path,
+        output_path,
+    )
+    result["stability_replay_source"] = {
+        "path": str(source_path),
+        "sha256": file_sha256(source_path),
     }
     atomic_write_json(output_path, result)
     return result

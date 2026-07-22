@@ -15,6 +15,7 @@ from gwyolo.overlap_training import (
     glitch_family_sampling_weights,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
+    replay_overlap_five_seed_stability,
     resolve_overlap_training_control,
     run_physical_overlap_scaling_hard_endpoint_cell,
     summarize_overlap_five_seed_promotion,
@@ -737,6 +738,15 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
   maximum_regressed_families: 0
 """
     )
+    stability_config = tmp_path / "five-seed-stability.yaml"
+    stability_config.write_text(
+        """overlap_five_seed_stability:
+  minimum_passing_seed_fraction: 0.8
+  minimum_median_clean_retention: 0.95
+  minimum_median_glitch_iou: 0.10
+  minimum_median_family_iou: 0.05
+"""
+    )
     result = promote_overlap_sampling_arm(
         reports["uniform"],
         reports["family"],
@@ -771,6 +781,7 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
     summary = summarize_overlap_five_seed_promotion(
         tmp_path / "promotion.json",
         five_reports,
+        stability_config,
         tmp_path / "five-seed-summary.json",
     )
     assert summary["passed"]
@@ -781,8 +792,45 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
     ] == pytest.approx(0.0)
     assert summary["selected_seed"] == 7
     assert summary["checkpoint_selection"] == (
-        "maximum_validation_overlap_mean_iou_then_seed"
+        "maximum_validation_overlap_mean_iou_among_passing_seeds_then_seed"
     )
+    assert summary["five_seed_stability"]["passing_seed_fraction"] == 1.0
+    assert summary["five_seed_stability"]["passing_seeds"] == [7, 8, 9, 10, 11]
+
+    legacy_summary = dict(summary)
+    legacy_summary.pop("five_seed_stability")
+    legacy_path = tmp_path / "legacy-five-seed-summary.json"
+    legacy_path.write_text(json.dumps(legacy_summary))
+    replayed = replay_overlap_five_seed_stability(
+        legacy_path,
+        stability_config,
+        tmp_path / "replayed-five-seed-summary.json",
+    )
+    assert replayed["passed"] is True
+    assert replayed["five_seed_stability"]["passing_seed_fraction"] == 1.0
+    assert replayed["stability_replay_source"]["sha256"] == file_sha256(
+        legacy_path
+    )
+
+    for path in five_reports[-2:]:
+        payload = json.loads(path.read_text())
+        payload["calibrated_overlap_validation"]["glitch"]["iou"] = 0.01
+        for row in payload["calibrated_overlap_validation"][
+            "by_glitch_family"
+        ].values():
+            row["iou"] = 0.0
+        path.write_text(json.dumps(payload))
+    failed = summarize_overlap_five_seed_promotion(
+        tmp_path / "promotion.json",
+        five_reports,
+        stability_config,
+        tmp_path / "failed-five-seed-summary.json",
+    )
+    assert failed["passed"] is False
+    assert failed["five_seed_stability"]["passing_seed_fraction"] == 0.6
+    assert failed["five_seed_stability"]["passing_seeds"] == [7, 8, 9]
+    assert failed["selected_checkpoint_path"] is None
+    assert failed["selected_checkpoint_sha256"] is None
 
 
 def test_overlap_dataset_preserves_both_masks_and_availability(tmp_path) -> None:

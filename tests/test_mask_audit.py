@@ -705,9 +705,13 @@ def test_five_seed_mask_selection_resolves_its_exact_threshold_report(
     summary.write_text(
         json.dumps(
             {
-                "status": "completed_five_seed_source_safe_overlap_validation",
-                "passed": True,
-                "test_data_opened": False,
+                    "status": "completed_five_seed_source_safe_overlap_validation",
+                    "passed": True,
+                    "five_seed_stability": {
+                        "status": "five_seed_reproducibility_gate_v1",
+                        "passed": True,
+                    },
+                    "test_data_opened": False,
                 "selected_seed": 7,
                 "selected_checkpoint_path": str(checkpoint),
                 "selected_checkpoint_sha256": file_sha256(checkpoint),

@@ -485,7 +485,13 @@ def _resolve_mask_checkpoint_selection(
         checkpoint_path = Path(str(selection.get("checkpoint_path", "")))
         checkpoint_sha256 = str(selection.get("checkpoint_sha256", ""))
     elif status == "completed_five_seed_source_safe_overlap_validation":
-        if not selection.get("passed") or selection.get("test_data_opened") is not False:
+        if (
+            not selection.get("passed")
+            or selection.get("five_seed_stability", {}).get("status")
+            != "five_seed_reproducibility_gate_v1"
+            or selection.get("five_seed_stability", {}).get("passed") is not True
+            or selection.get("test_data_opened") is not False
+        ):
             raise ValueError("five-seed mask checkpoint selection is not validation-only")
         checkpoint_path = Path(str(selection.get("selected_checkpoint_path", "")))
         checkpoint_sha256 = str(selection.get("selected_checkpoint_sha256", ""))

@@ -932,7 +932,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overlap_five_seed_summary.add_argument("--promotion-report", required=True)
     overlap_five_seed_summary.add_argument("--report", action="append", required=True)
+    overlap_five_seed_summary.add_argument("--stability-config", required=True)
     overlap_five_seed_summary.add_argument("--output", required=True)
+
+    overlap_five_seed_replay = subparsers.add_parser(
+        "physical-overlap-five-seed-stability-replay"
+    )
+    overlap_five_seed_replay.add_argument("--source-summary", required=True)
+    overlap_five_seed_replay.add_argument("--stability-config", required=True)
+    overlap_five_seed_replay.add_argument("--output", required=True)
 
     overlap_scaling_summary = subparsers.add_parser(
         "physical-overlap-scale-summarize"
@@ -3166,7 +3174,20 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             summarize_overlap_five_seed_promotion(
-                args.promotion_report, args.report, args.output
+                args.promotion_report,
+                args.report,
+                args.stability_config,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-five-seed-stability-replay":
+        from .overlap_training import replay_overlap_five_seed_stability
+
+        _print(
+            replay_overlap_five_seed_stability(
+                args.source_summary,
+                args.stability_config,
+                args.output,
             )
         )
     elif args.command == "physical-overlap-scale-summarize":

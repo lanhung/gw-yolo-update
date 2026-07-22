@@ -28,6 +28,7 @@ materialization_config=${MATERIALIZATION_CONFIG:-$TASK_CODE_DIR/configs/physical
 uniform_config=${UNIFORM_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune.yaml}
 family_balanced_config=${FAMILY_BALANCED_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_family_balanced.yaml}
 promotion_config=${PROMOTION_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_sampling_promotion.yaml}
+five_seed_stability_config=${FIVE_SEED_STABILITY_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_five_seed_stability.yaml}
 seed=${SEED:-20260720}
 for path in \
   "$TASK_PYTHON" \
@@ -40,7 +41,8 @@ for path in \
   "$materialization_config" \
   "$uniform_config" \
   "$family_balanced_config" \
-  "$promotion_config"; do
+  "$promotion_config" \
+  "$five_seed_stability_config"; do
   if [[ ! -s "$path" ]]; then
     echo "required source-safe overlap artifact is absent: $path" >&2
     exit 3
@@ -245,6 +247,7 @@ if [[ -n "$arm" ]]; then
     PRETRAINED_CHECKPOINT="$PRETRAINED_CHECKPOINT" \
     UNIFORM_CONFIG="$uniform_config" \
     FAMILY_BALANCED_CONFIG="$family_balanced_config" \
+    FIVE_SEED_STABILITY_CONFIG="$five_seed_stability_config" \
     CLEAN_VALIDATION_FEATURE_CACHE_DIR="${CLEAN_VALIDATION_FEATURE_CACHE_DIR:-}" \
     OUTPUT_ROOT="$five_seed_root" \
     GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
@@ -294,6 +297,7 @@ if (
 ):
     raise SystemExit("overlap promotion provenance replay failed")
 summary = None
+summary_passed = False
 if summary_arg != "-":
     summary_path = pathlib.Path(summary_arg)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -301,12 +305,33 @@ if summary_arg != "-":
         summary.get("status")
         != "completed_five_seed_source_safe_overlap_validation"
         or summary.get("code_commit") != commit
-        or summary.get("passed") is not True
         or summary.get("test_data_opened") is not False
         or summary.get("scientific_claim_allowed") is not False
         or summary.get("promoted_arm") != promotion.get("promoted_arm")
+        or summary.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or summary.get("five_seed_stability", {}).get("passed")
+        is not summary.get("passed")
     ):
         raise SystemExit("five-seed overlap summary replay failed")
+    summary_passed = summary.get("passed") is True
+    if summary_passed:
+        checkpoint = pathlib.Path(str(summary.get("selected_checkpoint_path", "")))
+        if (
+            not checkpoint.is_file()
+            or summary.get("selected_checkpoint_sha256") != digest(checkpoint)
+        ):
+            raise SystemExit("passing five-seed checkpoint failed replay")
+    elif any(
+        summary.get(key) is not None
+        for key in (
+            "checkpoint_selection",
+            "selected_seed",
+            "selected_checkpoint_path",
+            "selected_checkpoint_sha256",
+        )
+    ):
+        raise SystemExit("failed five-seed gate exposed a selected checkpoint")
     summary_entry = {"path": str(summary_path), "sha256": digest(summary_path)}
 else:
     if promotion.get("passed") or promotion.get("scale_to_five_seeds"):
@@ -315,11 +340,16 @@ else:
 receipt = {
     "status": (
         "completed_source_safe_overlap_five_seed_chain"
-        if summary_entry
-        else "completed_source_safe_overlap_negative_promotion"
+        if summary_passed
+        else (
+            "completed_source_safe_overlap_negative_five_seed"
+            if summary_entry
+            else "completed_source_safe_overlap_negative_promotion"
+        )
     ),
     "execution_passed": True,
-    "five_seed_promoted": summary_entry is not None,
+    "five_seed_executed": summary_entry is not None,
+    "five_seed_promoted": summary_passed,
     "scientific_claim_allowed": False,
     "search_claim_allowed": False,
     "test_rows_read": 0,

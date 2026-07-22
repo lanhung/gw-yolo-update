@@ -1,0 +1,5 @@
+overlap_five_seed_stability:
+  minimum_passing_seed_fraction: 0.8
+  minimum_median_clean_retention: 0.95
+  minimum_median_glitch_iou: 0.10
+  minimum_median_family_iou: 0.05

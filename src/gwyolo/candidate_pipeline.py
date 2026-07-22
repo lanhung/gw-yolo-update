@@ -62,6 +62,9 @@ def validate_candidate_model_selection(
         selection.get("status")
         != "completed_five_seed_source_safe_overlap_validation"
         or not selection.get("passed")
+        or selection.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or selection.get("five_seed_stability", {}).get("passed") is not True
         or selection.get("test_data_opened") is not False
     ):
         raise ValueError("Candidate model selection is not a locked five-seed validation report")

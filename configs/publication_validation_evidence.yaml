@@ -48,6 +48,14 @@ publication_evidence:
         - {field: status, op: equals, value: completed_five_seed_source_safe_overlap_validation}
         - {field: passed, op: equals, value: true}
         - {field: seeds, op: length_at_least, value: 5}
+        - {field: five_seed_stability.status, op: equals, value: five_seed_reproducibility_gate_v1}
+        - {field: five_seed_stability.passed, op: equals, value: true}
+        - {field: five_seed_stability.passing_seed_fraction, op: at_least, value: 0.8}
+        - {field: five_seed_stability.passing_seeds, op: length_at_least, value: 4}
+        - {field: five_seed_stability.checks.minimum_passing_seed_fraction, op: equals, value: true}
+        - {field: five_seed_stability.checks.minimum_median_clean_retention, op: equals, value: true}
+        - {field: five_seed_stability.checks.minimum_median_glitch_iou, op: equals, value: true}
+        - {field: five_seed_stability.checks.minimum_median_family_iou, op: equals, value: true}
         - {field: test_data_opened, op: equals, value: false}
         - {field: code_commit, op: nonempty}
         - {field: exact_command, op: nonempty}
@@ -55,6 +63,7 @@ publication_evidence:
         - {field: common_artifact_hashes, op: nonempty}
       replay_artifacts:
         - {path_field: selected_checkpoint_path, sha256_field: selected_checkpoint_sha256}
+        - {path_field: five_seed_stability.config_path, sha256_field: five_seed_stability.config_sha256}
 
     - id: group_safe_data_scaling
       group: model

@@ -46,6 +46,9 @@ report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 if (
     report.get("status") != "completed_five_seed_source_safe_overlap_validation"
     or report.get("passed") is not True
+    or report.get("five_seed_stability", {}).get("status")
+    != "five_seed_reproducibility_gate_v1"
+    or report.get("five_seed_stability", {}).get("passed") is not True
     or len(report.get("seeds", [])) < 5
     or report.get("test_data_opened") is not False
 ):

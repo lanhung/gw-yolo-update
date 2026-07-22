@@ -12,6 +12,7 @@ required_variables=(
   INJECTION_MANIFEST
   UNIFORM_CONFIG
   FAMILY_BALANCED_CONFIG
+  FIVE_SEED_STABILITY_CONFIG
   COHERENCE_CONFIG
   CANDIDATE_OUTPUT_ROOT
   GWYOLO_CODE_COMMIT
@@ -43,6 +44,7 @@ done
 "$TASK_PYTHON" -m gwyolo.cli physical-overlap-five-seed-summarize \
   --promotion-report "$PROMOTION_REPORT" \
   "${reports[@]}" \
+  --stability-config "$FIVE_SEED_STABILITY_CONFIG" \
   --output "$SUMMARY_OUTPUT"
 
 export FIVE_SEED_SUMMARY="$SUMMARY_OUTPUT"

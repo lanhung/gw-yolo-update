@@ -71,6 +71,9 @@ summary = json.loads(pathlib.Path(summary_path).read_text(encoding="utf-8"))
 if (
     summary.get("status") != "completed_five_seed_source_safe_overlap_validation"
     or summary.get("passed") is not True
+    or summary.get("five_seed_stability", {}).get("status")
+    != "five_seed_reproducibility_gate_v1"
+    or summary.get("five_seed_stability", {}).get("passed") is not True
     or summary.get("test_data_opened") is not False
 ):
     raise SystemExit("five-seed summary is not a validation-only promoted result")

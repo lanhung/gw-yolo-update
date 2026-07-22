@@ -37,7 +37,13 @@ done
 if ! selection_output=$("$TASK_PYTHON" -c '
 import json, sys
 report = json.load(open(sys.argv[1], encoding="utf-8"))
-if report.get("status") != "completed_five_seed_source_safe_overlap_validation":
+if (
+    report.get("status") != "completed_five_seed_source_safe_overlap_validation"
+    or report.get("passed") is not True
+    or report.get("five_seed_stability", {}).get("status")
+    != "five_seed_reproducibility_gate_v1"
+    or report.get("five_seed_stability", {}).get("passed") is not True
+):
     raise SystemExit("five-seed summary has the wrong status")
 print(report["promoted_arm"])
 print(report["selected_checkpoint_path"])
