@@ -143,6 +143,16 @@ def test_network_family_capacity_forecast_separates_floor_and_plan_ceiling(
     assert not result["passed"]
     assert result["bounded_expansion_required"]
     assert not result["model_selection_authorized"]
+    required_output = tmp_path / "required-capacity.json"
+    with pytest.raises(ValueError, match="family capacity is not ready"):
+        forecast_gravityspy_network_family_capacity(
+            [report],
+            [plan],
+            config,
+            required_output,
+            require_ready=True,
+        )
+    assert required_output.is_file()
 
 
 def test_network_materialization_progress_counts_only_completed_physical_rows(
@@ -1054,6 +1064,69 @@ def test_network_numeric_resplit_keeps_source_components_disjoint(tmp_path) -> N
     assert result["actual_validation_rows"] == 2
     assert all(not values for values in result["cross_split_overlaps"].values())
     assert result["actual_validation_label_counts"] == {"Blip": 1, "Tomte": 1}
+
+
+def test_network_numeric_resplit_enforces_frozen_family_floor(tmp_path) -> None:
+    rows = []
+    for label in ("Blip", "Helix"):
+        for index in range(6):
+            sample = tmp_path / f"{label}-{index}.npz"
+            np.savez(sample, identity=np.asarray([label, index]))
+            rows.append(
+                {
+                    "glitch_id": f"{label}-{index}",
+                    "split": "train" if index % 2 == 0 else "val",
+                    "network_gps_block": f"{label}-block-{index}",
+                    "ml_label": label,
+                    "observing_run": "O3a",
+                    "ifo": "H1",
+                    "available_ifos": ["H1", "L1"],
+                    "network_strain_sources": {
+                        "H1": {
+                            "hdf5_url": f"https://example/{label}-{index}-h1.hdf5"
+                        },
+                        "L1": {
+                            "hdf5_url": f"https://example/{label}-{index}-l1.hdf5"
+                        },
+                    },
+                    "aligned_network_context": True,
+                    "human_pixel_mask": False,
+                    "path": str(sample),
+                    "sha256": file_sha256(sample),
+                }
+            )
+    reports = []
+    for split in ("train", "val"):
+        selected = [row for row in rows if row["split"] == split]
+        manifest = tmp_path / f"floor-{split}.jsonl"
+        manifest.write_text("".join(json.dumps(row) + "\n" for row in selected))
+        report = tmp_path / f"floor-{split}.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "status": "verified_merged_gravityspy_aligned_network_numeric_split",
+                    "split": split,
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "rows": len(selected),
+                }
+            )
+        )
+        reports.append(report)
+
+    result = resplit_gravityspy_network_numeric_corpus(
+        reports,
+        tmp_path / "floor-resplit",
+        validation_fraction=0.2,
+        seed=9,
+        minimum_validation_rows_per_family=5,
+    )
+
+    assert result["passed"]
+    assert result["minimum_validation_rows_per_family"] == 5
+    assert result["actual_validation_label_counts"] == {"Blip": 5, "Helix": 5}
+    train_report = json.loads(Path(result["reports"]["train"]["path"]).read_text())
+    assert train_report["labels"] == {"Blip": 1, "Helix": 1}
 
 
 def test_gravityspy_numeric_merge_verifies_unique_split_rows(tmp_path) -> None:

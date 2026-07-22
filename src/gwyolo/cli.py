@@ -857,6 +857,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--minimum-train-rows-per-family", type=int, default=1
     )
     gravityspy_network_family_capacity.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_family_capacity.add_argument("--require-ready", action="store_true")
     gravityspy_network_family_capacity.add_argument("--output", required=True)
 
     gravityspy_network_corpus_audit = subparsers.add_parser(
@@ -873,6 +874,9 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_resplit.add_argument("--output-dir", required=True)
     gravityspy_network_resplit.add_argument("--validation-fraction", type=float, default=0.2)
     gravityspy_network_resplit.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_resplit.add_argument(
+        "--minimum-validation-rows-per-family", type=int, default=1
+    )
 
     gravityspy_evict = subparsers.add_parser("gravityspy-strain-evict")
     gravityspy_evict.add_argument("--materialization-report", required=True)
@@ -3118,6 +3122,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.validation_fraction,
                 args.minimum_train_rows_per_family,
                 args.seed,
+                args.require_ready,
             )
         )
     elif args.command == "gravityspy-network-corpus-audit":
@@ -3133,7 +3138,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             resplit_gravityspy_network_numeric_corpus(
-                args.report, args.output_dir, args.validation_fraction, args.seed
+                args.report,
+                args.output_dir,
+                args.validation_fraction,
+                args.seed,
+                args.minimum_validation_rows_per_family,
             )
         )
     elif args.command == "gravityspy-strain-evict":

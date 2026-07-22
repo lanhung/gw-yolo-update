@@ -27,6 +27,7 @@ CHUNK_SAMPLES=${CHUNK_SAMPLES:-1048576}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
 RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-60}
+MINIMUM_VALIDATION_ROWS_PER_FAMILY=${MINIMUM_VALIDATION_ROWS_PER_FAMILY:-5}
 
 for count in "$TRAIN_SHARD_COUNT" "$VAL_SHARD_COUNT"; do
   if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
@@ -40,6 +41,10 @@ if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "RETRY_DELAY_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+if ! [[ "$MINIMUM_VALIDATION_ROWS_PER_FAMILY" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MINIMUM_VALIDATION_ROWS_PER_FAMILY must be a positive integer" >&2
   exit 2
 fi
 for input in \
@@ -127,6 +132,7 @@ done
   --report "$OUTPUT_ROOT/val-expanded-merged/gravityspy_network_numeric_merge_report.json" \
   --output-dir "$OUTPUT_ROOT/source-component-safe-resplit" \
   --validation-fraction 0.2 \
+  --minimum-validation-rows-per-family "$MINIMUM_VALIDATION_ROWS_PER_FAMILY" \
   --seed 20260720
 
 "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-corpus-audit \

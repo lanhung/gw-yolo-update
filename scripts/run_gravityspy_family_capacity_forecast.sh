@@ -56,6 +56,12 @@ arguments=(
   --seed 20260720
   --output "$OUTPUT"
 )
+if [[ "${REQUIRE_READY:-0}" == "1" ]]; then
+  arguments+=(--require-ready)
+elif [[ "${REQUIRE_READY:-0}" != "0" ]]; then
+  echo "REQUIRE_READY must be 0 or 1" >&2
+  exit 2
+fi
 for split in train val; do
   if [[ "$split" == train ]]; then
     shard_count=$TRAIN_SHARD_COUNT

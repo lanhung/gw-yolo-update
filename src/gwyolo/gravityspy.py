@@ -591,11 +591,14 @@ def resplit_gravityspy_network_numeric_corpus(
     output_dir: str | Path,
     validation_fraction: float = 0.2,
     seed: int = 20260720,
+    minimum_validation_rows_per_family: int = 1,
 ) -> dict[str, Any]:
     """Freeze a score-blind source-component-safe train/validation split."""
 
     if not 0 < validation_fraction < 0.5:
         raise ValueError("Network Gravity Spy validation fraction must be in (0, 0.5)")
+    if minimum_validation_rows_per_family <= 0:
+        raise ValueError("Network Gravity Spy family support must be positive")
     paths = [Path(path) for path in report_paths]
     if len(paths) < 2:
         raise ValueError("Network Gravity Spy resplit requires at least two merged reports")
@@ -635,8 +638,21 @@ def resplit_gravityspy_network_numeric_corpus(
         )
     components = _gravityspy_network_source_components(rows, seed)
     total_counts = Counter(str(row["ml_label"]) for row in rows)
+    under_capacity = {
+        label: count
+        for label, count in total_counts.items()
+        if count <= minimum_validation_rows_per_family
+    }
+    if under_capacity:
+        raise ValueError(
+            "Network Gravity Spy families cannot retain train rows after the validation floor: "
+            f"{dict(sorted(under_capacity.items()))}"
+        )
     target_counts = {
-        label: max(1, round(count * validation_fraction))
+        label: max(
+            minimum_validation_rows_per_family,
+            round(count * validation_fraction),
+        )
         for label, count in total_counts.items()
     }
     target_rows = max(1, round(len(rows) * validation_fraction))
@@ -689,31 +705,35 @@ def resplit_gravityspy_network_numeric_corpus(
         validation_counts = best[3]
         validation_rows = best[4]
 
-    # Cover every family in validation whenever source-component grouping permits it.
+    # Meet the frozen family floor while retaining at least one train row per family.
     for label in sorted(total_counts):
-        if validation_counts[label] > 0:
-            continue
-        candidates = []
-        for index, counts in enumerate(component_counts):
-            if index in selected or counts[label] == 0:
-                continue
-            if any(
-                total_counts[name] - validation_counts[name] - count <= 0
-                for name, count in counts.items()
-            ):
-                continue
-            candidate_counts = validation_counts + counts
-            candidate_rows = validation_rows + len(component_rows[index])
-            candidates.append(
-                (
-                    cost(candidate_counts, candidate_rows),
-                    str(components[index]["tie_break"]),
-                    index,
-                    candidate_counts,
-                    candidate_rows,
+        while validation_counts[label] < minimum_validation_rows_per_family:
+            candidates = []
+            for index, counts in enumerate(component_counts):
+                if index in selected or counts[label] == 0:
+                    continue
+                if any(
+                    total_counts[name] - validation_counts[name] - count <= 0
+                    for name, count in counts.items()
+                ):
+                    continue
+                candidate_counts = validation_counts + counts
+                candidate_rows = validation_rows + len(component_rows[index])
+                candidates.append(
+                    (
+                        cost(candidate_counts, candidate_rows),
+                        str(components[index]["tie_break"]),
+                        index,
+                        candidate_counts,
+                        candidate_rows,
+                    )
                 )
-            )
-        if candidates:
+            if not candidates:
+                raise ValueError(
+                    "Network Gravity Spy source components cannot satisfy the validation "
+                    f"floor for {label}: {validation_counts[label]}/"
+                    f"{minimum_validation_rows_per_family}"
+                )
             best = min(candidates, key=lambda item: (item[0], item[1]))
             selected.add(best[2])
             validation_counts = best[3]
@@ -752,6 +772,7 @@ def resplit_gravityspy_network_numeric_corpus(
             "split_strategy": "source_component_balanced_v1",
             "seed": seed,
             "validation_fraction": validation_fraction,
+            "minimum_validation_rows_per_family": minimum_validation_rows_per_family,
             "source_reports": sources,
             "source_reports_hash": canonical_hash(sources, 64),
             "manifest_path": str(manifest),
@@ -805,7 +826,11 @@ def resplit_gravityspy_network_numeric_corpus(
     }
     if any(overlaps.values()):
         raise ValueError(f"Network Gravity Spy resplit leakage: {overlaps}")
-    missing_validation = sorted(set(total_counts) - set(validation_counts))
+    missing_validation = sorted(
+        label
+        for label in total_counts
+        if validation_counts[label] < minimum_validation_rows_per_family
+    )
     result = {
         "status": "frozen_source_component_safe_gravityspy_network_resplit",
         "passed": not missing_validation,
@@ -816,6 +841,7 @@ def resplit_gravityspy_network_numeric_corpus(
         "split_strategy": "source_component_balanced_v1",
         "seed": seed,
         "validation_fraction": validation_fraction,
+        "minimum_validation_rows_per_family": minimum_validation_rows_per_family,
         "rows": len(rows),
         "source_components": len(components),
         "selected_validation_components": len(selected),
@@ -2765,6 +2791,7 @@ def forecast_gravityspy_network_family_capacity(
     validation_fraction: float = 0.2,
     minimum_train_rows_per_family: int = 1,
     seed: int = 20260720,
+    require_ready: bool = False,
 ) -> dict[str, Any]:
     """Forecast family support without treating unmaterialized rows as evidence."""
 
@@ -2947,9 +2974,15 @@ def forecast_gravityspy_network_family_capacity(
             "all_pending_usable_ceiling": ceiling,
         }
 
+    acquisition_complete = not planned_rows
+    current_capacity_ready = not current_shortfalls
+    plan_capacity_possible = not impossible_under_plan
+    bounded_expansion_required = bool(impossible_under_plan) or (
+        acquisition_complete and not current_capacity_ready
+    )
     result = {
         "status": "score_blind_gravityspy_family_capacity_forecast",
-        "passed": not impossible_under_plan,
+        "passed": acquisition_complete and current_capacity_ready,
         "scientific_claim_allowed": False,
         "model_selection_authorized": False,
         "forecast_scope": (
@@ -2975,11 +3008,18 @@ def forecast_gravityspy_network_family_capacity(
         "families": families,
         "families_with_current_shortfall": current_shortfalls,
         "families_impossible_even_if_all_pending_rows_are_usable": impossible_under_plan,
-        "bounded_expansion_required": bool(impossible_under_plan),
+        "acquisition_plan_complete": acquisition_complete,
+        "current_capacity_ready": current_capacity_ready,
+        "plan_capacity_possible": plan_capacity_possible,
+        "bounded_expansion_required": bounded_expansion_required,
         "next_action": (
             "freeze and acquire additional source-disjoint family components"
-            if impossible_under_plan
-            else "finish the frozen plan, then audit the exact joint resplit before training"
+            if bounded_expansion_required
+            else (
+                "finish the frozen plan, then audit the exact joint resplit before training"
+                if not acquisition_complete
+                else "audit the exact joint source-component-safe resplit before training"
+            )
         ),
         "warning": (
             "Planned rows are a score-blind upper bound, not physical samples. This report never "
@@ -2988,6 +3028,11 @@ def forecast_gravityspy_network_family_capacity(
         **_execution_provenance(),
     }
     atomic_write_json(target, result)
+    if require_ready and not result["passed"]:
+        raise ValueError(
+            "Gravity Spy family capacity is not ready: "
+            f"pending={len(planned_rows)}, shortfalls={current_shortfalls}"
+        )
     return result
 
 
