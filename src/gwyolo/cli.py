@@ -989,6 +989,28 @@ def build_parser() -> argparse.ArgumentParser:
     mask_segmentation.add_argument("--bootstrap-replicates", type=int, default=10000)
     mask_segmentation.add_argument("--bootstrap-seed", type=int, default=20260720)
 
+    mask_annotation_serve = subparsers.add_parser(
+        "gravityspy-mask-annotation-serve"
+    )
+    mask_annotation_serve.add_argument("--tasks", required=True)
+    mask_annotation_serve.add_argument("--annotator-id", required=True)
+    mask_annotation_serve.add_argument("--output-dir", required=True)
+    mask_annotation_serve.add_argument("--host", default="127.0.0.1")
+    mask_annotation_serve.add_argument("--port", type=int, default=8765)
+    mask_annotation_serve.add_argument(
+        "--protocol-version", default="gravityspy_human_mask_blind_v1"
+    )
+
+    mask_annotation_merge = subparsers.add_parser(
+        "gravityspy-mask-annotation-merge"
+    )
+    mask_annotation_merge.add_argument("--tasks", required=True)
+    mask_annotation_merge.add_argument(
+        "--annotation-manifest", action="append", required=True
+    )
+    mask_annotation_merge.add_argument("--minimum-annotators", type=int, default=3)
+    mask_annotation_merge.add_argument("--output", required=True)
+
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
     curve.add_argument("--output", required=True)
@@ -3240,6 +3262,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
+            )
+        )
+    elif args.command == "gravityspy-mask-annotation-serve":
+        from .human_annotation import serve_human_mask_annotation
+
+        serve_human_mask_annotation(
+            args.tasks,
+            args.annotator_id,
+            args.output_dir,
+            args.host,
+            args.port,
+            args.protocol_version,
+        )
+    elif args.command == "gravityspy-mask-annotation-merge":
+        from .human_annotation import merge_human_mask_annotation_manifests
+
+        _print(
+            merge_human_mask_annotation_manifests(
+                args.tasks,
+                args.annotation_manifest,
+                args.output,
+                args.minimum_annotators,
             )
         )
     elif args.command == "fit-curve":

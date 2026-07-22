@@ -38,3 +38,13 @@ def test_human_mask_publication_queue_waits_for_annotations_and_gpu() -> None:
     assert annotation < model < raw_endpoint < execute
     assert "nvidia-smi --query-compute-apps=pid" in script
     assert 'exec bash "$TASK_CODE_DIR/scripts/run_human_mask_publication_evidence.sh"' in script
+
+
+def test_human_mask_merge_queue_requires_three_finalized_reviewers() -> None:
+    script = (ROOT / "scripts" / "run_human_mask_annotation_merge_queue.sh").read_text()
+    assert "ANNOTATION_MANIFEST_A" in script
+    assert "ANNOTATION_MANIFEST_B" in script
+    assert "ANNOTATION_MANIFEST_C" in script
+    assert "gravityspy-mask-annotation-merge" in script
+    assert "--minimum-annotators 3" in script
+    assert "completed human annotation manifest is immutable" in script

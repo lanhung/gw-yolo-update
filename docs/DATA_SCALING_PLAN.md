@@ -676,6 +676,13 @@ fabricated or replaced by model pseudo-labels. `run_human_mask_publication_queue
 GPU use for the completed annotation manifest, promoted model and functional raw/mask endpoint,
 then waits for GPU idle and resumes the complete immutable evidence chain.
 
+`gravityspy-mask-annotation-serve` supplies the missing practical annotation surface. It binds to
+localhost only, renders one target-free numeric tensor at a time across all IFO/Q planes and writes
+atomic per-reviewer binary masks without exposing glitch labels, GPS/source identities, weak masks
+or model predictions. `gravityspy-mask-annotation-merge` accepts only three distinct, complete
+93-task manifests using the same protocol and hash-verifies all 279 masks. The operating and
+independence rules are frozen in `docs/HUMAN_MASK_ANNOTATION_PROTOCOL.md`.
+
 ## Group-safe chirp+glitch overlap scaling curve
 
 The aligned detector-set corpus now has its own scaling experiment; the earlier 2k/5k/10k clean
