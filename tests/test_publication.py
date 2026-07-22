@@ -293,9 +293,12 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
 
     artifacts = {}
     for label in (
+        "source_receipt",
         "authorization",
         "parent_plan",
         "merge_report",
+        "raw_arm_merge",
+        "mask_arm_merge",
         "raw_calibration",
         "mask_calibration",
         "paired_comparison",
@@ -308,7 +311,7 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
     evidence.write_text(
         json.dumps(
             {
-                "status": "completed_validation_only_raw_mask_continuous_background",
+                "status": "bound_validation_raw_mask_continuous_background_evidence",
                 "passed": True,
                 "mask_locked_test_arm_eligible": True,
                 "validation_calibration_frozen": True,
@@ -319,9 +322,12 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
                 "test_rows_read": 0,
                 "scientific_claim_allowed": False,
                 "code_commit": "new",
-                "inputs": {
-                    "background_plan_authorization": artifacts["authorization"],
-                    "parent_plan": artifacts["parent_plan"],
+                "source_background_receipt": artifacts["source_receipt"],
+                "background_plan_authorization": artifacts["authorization"],
+                "parent_plan": artifacts["parent_plan"],
+                "arm_merges": {
+                    "raw": artifacts["raw_arm_merge"],
+                    "mask": artifacts["mask_arm_merge"],
                 },
                 "merge_report": artifacts["merge_report"],
                 "calibrations": {
@@ -344,4 +350,4 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
         row for row in passed["requirements"] if row["id"] == "paired_raw_mask_vt"
     )
     assert gate["state"] == "passed"
-    assert len(gate["artifact_replay"]) == 8
+    assert len(gate["artifact_replay"]) == 11

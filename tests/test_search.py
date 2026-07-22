@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from gwyolo.search import (
+    bind_raw_mask_background_to_authorized_validation_endpoint,
     calibrate_validation_count,
     aggregate_physical_endpoint_records,
     calibrate_threshold,
@@ -365,6 +366,156 @@ def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
     assert result["paired_vt"]["delta_recovered_vt_b_minus_a"] == 10.0
     assert result["primary_endpoint_result"]["significant_mask_advantage"] is True
     assert result["threshold_refits_on_test"] == 0
+
+
+def test_raw_mask_endpoint_binder_replays_authorized_background(tmp_path: Path) -> None:
+    def write(name: str, value: dict) -> Path:
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    parent = write(
+        "parent",
+        {
+            "candidate_scores_inspected": False,
+            "test_data_opened": False,
+            "selected_pairs": 880,
+        },
+    )
+    authorization = write(
+        "authorization",
+        {
+            "status": "authorized_validation_candidate_continuous_background_plan",
+            "authorization_id": "authorization-id",
+            "passed": True,
+            "scientific_claim_allowed": False,
+            "candidate_scores_inspected": False,
+            "test_rows_read": 0,
+            "parent_plan": {"sha256": file_sha256(parent)},
+        },
+    )
+    arm_merges = {}
+    for arm in ("raw", "mask"):
+        arm_merges[arm] = write(
+            f"{arm}-merge",
+            {
+                "status": "verified_merged_streamed_candidate_background",
+                "complete_parent_plan": True,
+                "common_run_identity": {
+                    "parent_plan_sha256": file_sha256(parent)
+                },
+            },
+        )
+    merge = write(
+        "merge",
+        {
+            "status": "verified_merged_streamed_raw_mask_candidate_background",
+            "complete_parent_plan": True,
+            "test_rows_read": 0,
+            "arm_merges": {
+                arm: {
+                    "report_path": str(path),
+                    "report_sha256": file_sha256(path),
+                }
+                for arm, path in arm_merges.items()
+            },
+        },
+    )
+    calibrations = {}
+    for arm in ("raw", "mask"):
+        calibrations[arm] = write(
+            f"{arm}-calibration",
+            {
+                "status": "frozen_validation_candidate_search_calibration",
+                "publication_calibration_eligible": True,
+                "scientific_claim_allowed": False,
+                "test_evaluation": None,
+                "slide_schedule_audit": {
+                    "passed": True,
+                    "schedule_kind": "gps_block_permutation",
+                },
+                "bootstrap_replicates": 10_000,
+                "target_far_per_year": 0.1,
+            },
+        )
+    comparison = write(
+        "comparison",
+        {
+            "status": "validation_only_paired_raw_mask_candidate_calibration_comparison",
+            "passed": True,
+            "mask_locked_test_arm_eligible": True,
+            "scientific_claim_allowed": False,
+            "locked_test_allowed": False,
+            "test_rows_read": 0,
+            "raw_calibration_report": {"sha256": file_sha256(calibrations["raw"])},
+            "mask_calibration_report": {
+                "sha256": file_sha256(calibrations["mask"])
+            },
+        },
+    )
+    mask_validation = write(
+        "mask-validation",
+        {
+            "status": "completed_validation_only_mask_deglitch_gate",
+            "development_gates_passed": True,
+            "test_rows_read": 0,
+        },
+    )
+    mask_timing = write(
+        "mask-timing",
+        {
+            "status": "completed_validation_only_mask_timing_gate",
+            "coherent_background_scale_allowed": True,
+            "test_rows_read": 0,
+        },
+    )
+
+    def identity(path: Path) -> dict[str, str]:
+        return {"path": str(path), "sha256": file_sha256(path)}
+
+    receipt = write(
+        "receipt",
+        {
+            "status": "completed_validation_only_raw_mask_continuous_background",
+            "scientific_claim_allowed": False,
+            "locked_test_allowed": False,
+            "locked_test_open_allowed": False,
+            "locked_test_prerequisites_satisfied": False,
+            "validation_calibration_frozen": True,
+            "continuous_background_search_claim_allowed": False,
+            "test_rows_read": 0,
+            "code_commit": "source-commit",
+            "inputs": {
+                "background_plan_authorization": identity(authorization),
+                "parent_plan": identity(parent),
+            },
+            "merge_report": identity(merge),
+            "calibrations": {
+                arm: identity(path) for arm, path in calibrations.items()
+            },
+            "paired_validation_comparison": identity(comparison),
+            "mask_validation_receipt": identity(mask_validation),
+            "mask_timing_receipt": identity(mask_timing),
+        },
+    )
+    result = bind_raw_mask_background_to_authorized_validation_endpoint(
+        receipt, tmp_path / "bound.json"
+    )
+    assert result["status"] == (
+        "bound_validation_raw_mask_continuous_background_evidence"
+    )
+    assert result["passed"] is True
+    assert result["background_plan_authorization_id"] == "authorization-id"
+    assert result["source_background_code_commit"] == "source-commit"
+    assert result["test_rows_read"] == 0
+
+    changed = json.loads(authorization.read_text(encoding="utf-8"))
+    changed["candidate_scores_inspected"] = True
+    authorization.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(ValueError, match="authorization artifact replay"):
+        bind_raw_mask_background_to_authorized_validation_endpoint(
+            receipt, tmp_path / "invalid-bound.json"
+        )
 
 
 def test_candidate_search_calibration_accepts_frozen_block_permutations(

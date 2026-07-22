@@ -102,14 +102,14 @@ publication_evidence:
       group: search
       description: Fixed-FAR paired raw/mask validation gain with clean non-inferiority and timing.
       checks:
-        - {field: status, op: equals, value: completed_validation_only_raw_mask_continuous_background}
+        - {field: status, op: equals, value: bound_validation_raw_mask_continuous_background_evidence}
         - {field: passed, op: equals, value: true}
         - {field: mask_locked_test_arm_eligible, op: equals, value: true}
         - {field: validation_calibration_frozen, op: equals, value: true}
         - {field: background_plan_authorization_id, op: nonempty}
         - {field: background_plan_purpose_disjoint, op: equals, value: true}
         - {field: background_plan_capacity_authorized, op: equals, value: true}
-        - {field: inputs.background_plan_authorization, op: nonempty}
+        - {field: background_plan_authorization, op: nonempty}
         - {field: calibrations.raw, op: nonempty}
         - {field: calibrations.mask, op: nonempty}
         - {field: paired_validation_comparison, op: nonempty}
@@ -118,9 +118,12 @@ publication_evidence:
         - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
-        - {path_field: inputs.background_plan_authorization.path, sha256_field: inputs.background_plan_authorization.sha256}
-        - {path_field: inputs.parent_plan.path, sha256_field: inputs.parent_plan.sha256}
+        - {path_field: source_background_receipt.path, sha256_field: source_background_receipt.sha256}
+        - {path_field: background_plan_authorization.path, sha256_field: background_plan_authorization.sha256}
+        - {path_field: parent_plan.path, sha256_field: parent_plan.sha256}
         - {path_field: merge_report.path, sha256_field: merge_report.sha256}
+        - {path_field: arm_merges.raw.path, sha256_field: arm_merges.raw.sha256}
+        - {path_field: arm_merges.mask.path, sha256_field: arm_merges.mask.sha256}
         - {path_field: calibrations.raw.path, sha256_field: calibrations.raw.sha256}
         - {path_field: calibrations.mask.path, sha256_field: calibrations.mask.sha256}
         - {path_field: paired_validation_comparison.path, sha256_field: paired_validation_comparison.sha256}

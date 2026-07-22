@@ -20,6 +20,7 @@ from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
 from .search import (
+    bind_raw_mask_background_to_authorized_validation_endpoint,
     bind_candidate_search_calibration_to_independent_endpoint,
     run_candidate_search_calibration,
     run_frozen_candidate_search_evaluation,
@@ -163,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     raw_mask_calibration.add_argument("--bootstrap-replicates", type=int, default=10000)
     raw_mask_calibration.add_argument("--seed", type=int, default=20260720)
+
+    raw_mask_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-endpoint-bind"
+    )
+    raw_mask_endpoint_bind.add_argument("--raw-mask-background-receipt", required=True)
+    raw_mask_endpoint_bind.add_argument("--output", required=True)
 
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
@@ -2070,6 +2077,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_absolute_weighted_efficiency_gain,
                 args.bootstrap_replicates,
                 args.seed,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-endpoint-bind":
+        _print(
+            bind_raw_mask_background_to_authorized_validation_endpoint(
+                args.raw_mask_background_receipt,
+                args.output,
             )
         )
     elif args.command == "candidate-search-evaluate-frozen":

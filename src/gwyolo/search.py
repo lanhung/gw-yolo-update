@@ -1084,6 +1084,188 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     return result
 
 
+def bind_raw_mask_background_to_authorized_validation_endpoint(
+    raw_mask_background_receipt: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind a completed raw/mask run to its disjoint background authorization."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("authorized raw/mask endpoint bindings are immutable")
+    receipt_path = Path(raw_mask_background_receipt).resolve()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    def replay(identity: dict[str, Any], label: str) -> tuple[Path, dict[str, Any]]:
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or identity.get("sha256") != file_sha256(path):
+            raise ValueError(f"raw/mask {label} artifact replay failed")
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    if (
+        receipt.get("status")
+        != "completed_validation_only_raw_mask_continuous_background"
+        or receipt.get("scientific_claim_allowed") is not False
+        or receipt.get("locked_test_allowed") is not False
+        or receipt.get("locked_test_open_allowed") is not False
+        or receipt.get("locked_test_prerequisites_satisfied") is not False
+        or receipt.get("validation_calibration_frozen") is not True
+        or receipt.get("continuous_background_search_claim_allowed") is not False
+        or int(receipt.get("test_rows_read", -1)) != 0
+    ):
+        raise ValueError("raw/mask continuous-background receipt has the wrong contract")
+    authorization_path, authorization = replay(
+        receipt.get("inputs", {}).get("background_plan_authorization", {}),
+        "background authorization",
+    )
+    parent_path, parent = replay(
+        receipt.get("inputs", {}).get("parent_plan", {}), "parent plan"
+    )
+    merge_path, merge = replay(receipt.get("merge_report", {}), "merge report")
+    arm_merges: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for arm in ("raw", "mask"):
+        identity = merge.get("arm_merges", {}).get(arm, {})
+        arm_path = Path(str(identity.get("report_path", ""))).resolve()
+        if (
+            not arm_path.is_file()
+            or identity.get("report_sha256") != file_sha256(arm_path)
+        ):
+            raise ValueError(f"raw/mask {arm} arm merge replay failed")
+        arm_merges[arm] = (
+            arm_path,
+            json.loads(arm_path.read_text(encoding="utf-8")),
+        )
+    raw_path, raw = replay(
+        receipt.get("calibrations", {}).get("raw", {}), "raw calibration"
+    )
+    mask_path, mask = replay(
+        receipt.get("calibrations", {}).get("mask", {}), "mask calibration"
+    )
+    comparison_path, comparison = replay(
+        receipt.get("paired_validation_comparison", {}), "paired comparison"
+    )
+    mask_validation_path, mask_validation = replay(
+        receipt.get("mask_validation_receipt", {}), "mask validation receipt"
+    )
+    mask_timing_path, mask_timing = replay(
+        receipt.get("mask_timing_receipt", {}), "mask timing receipt"
+    )
+    if (
+        authorization.get("status")
+        != "authorized_validation_candidate_continuous_background_plan"
+        or authorization.get("passed") is not True
+        or authorization.get("scientific_claim_allowed") is not False
+        or authorization.get("candidate_scores_inspected") is not False
+        or int(authorization.get("test_rows_read", -1)) != 0
+        or authorization.get("parent_plan", {}).get("sha256")
+        != file_sha256(parent_path)
+        or parent.get("candidate_scores_inspected") is not False
+        or parent.get("test_data_opened") is not False
+        or int(parent.get("selected_pairs", -1)) != 880
+        or merge.get("status")
+        != "verified_merged_streamed_raw_mask_candidate_background"
+        or merge.get("complete_parent_plan") is not True
+        or int(merge.get("test_rows_read", -1)) != 0
+        or any(
+            arm_merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or arm_merge.get("complete_parent_plan") is not True
+            or arm_merge.get("common_run_identity", {}).get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            for _, arm_merge in arm_merges.values()
+        )
+    ):
+        raise ValueError("raw/mask background is not bound to the authorized parent plan")
+    for arm, calibration in (("raw", raw), ("mask", mask)):
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("publication_calibration_eligible") is not True
+            or calibration.get("scientific_claim_allowed") is not False
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+            or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
+            != "gps_block_permutation"
+            or int(calibration.get("bootstrap_replicates", -1)) < 10_000
+            or not np.isclose(
+                float(calibration.get("target_far_per_year", -1)),
+                0.1,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        ):
+            raise ValueError(f"authorized raw/mask {arm} calibration failed replay")
+    if (
+        comparison.get("status")
+        != "validation_only_paired_raw_mask_candidate_calibration_comparison"
+        or comparison.get("passed") is not True
+        or comparison.get("mask_locked_test_arm_eligible") is not True
+        or comparison.get("scientific_claim_allowed") is not False
+        or comparison.get("locked_test_allowed") is not False
+        or int(comparison.get("test_rows_read", -1)) != 0
+        or comparison.get("raw_calibration_report", {}).get("sha256")
+        != file_sha256(raw_path)
+        or comparison.get("mask_calibration_report", {}).get("sha256")
+        != file_sha256(mask_path)
+        or mask_validation.get("status")
+        != "completed_validation_only_mask_deglitch_gate"
+        or mask_validation.get("development_gates_passed") is not True
+        or int(mask_validation.get("test_rows_read", -1)) != 0
+        or mask_timing.get("status") != "completed_validation_only_mask_timing_gate"
+        or mask_timing.get("coherent_background_scale_allowed") is not True
+        or int(mask_timing.get("test_rows_read", -1)) != 0
+    ):
+        raise ValueError("authorized raw/mask validation gain or timing gate failed")
+
+    result = {
+        "status": "bound_validation_raw_mask_continuous_background_evidence",
+        "passed": True,
+        "mask_locked_test_arm_eligible": True,
+        "validation_calibration_frozen": True,
+        "background_plan_authorization_id": authorization["authorization_id"],
+        "background_plan_purpose_disjoint": True,
+        "background_plan_capacity_authorized": True,
+        "locked_test_prerequisites_satisfied": False,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_background_code_commit": receipt.get("code_commit"),
+        "source_background_receipt": {
+            "path": str(receipt_path),
+            "sha256": file_sha256(receipt_path),
+        },
+        "background_plan_authorization": {
+            "path": str(authorization_path),
+            "sha256": file_sha256(authorization_path),
+        },
+        "parent_plan": {"path": str(parent_path), "sha256": file_sha256(parent_path)},
+        "merge_report": {"path": str(merge_path), "sha256": file_sha256(merge_path)},
+        "arm_merges": {
+            arm: {"path": str(path), "sha256": file_sha256(path)}
+            for arm, (path, _) in arm_merges.items()
+        },
+        "calibrations": {
+            "raw": {"path": str(raw_path), "sha256": file_sha256(raw_path)},
+            "mask": {"path": str(mask_path), "sha256": file_sha256(mask_path)},
+        },
+        "paired_validation_comparison": {
+            "path": str(comparison_path),
+            "sha256": file_sha256(comparison_path),
+        },
+        "mask_validation_receipt": {
+            "path": str(mask_validation_path),
+            "sha256": file_sha256(mask_validation_path),
+        },
+        "mask_timing_receipt": {
+            "path": str(mask_timing_path),
+            "sha256": file_sha256(mask_timing_path),
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_frozen_candidate_search_evaluation(
     calibration_report: str | Path,
     test_time_slide_report: str | Path,
