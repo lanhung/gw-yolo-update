@@ -198,6 +198,10 @@ if (
     or independent.get("test_evaluation") is not None
     or independent.get("overlap_manifest_sha256") != digest(overlap_path)
     or independent.get("joint_overlap_audit_sha256") != digest(audit_path)
+    or pathlib.Path(independent["training_overlap_manifest_path"]).resolve()
+    != pathlib.Path(selection_overlap).resolve()
+    or independent.get("training_overlap_manifest_sha256")
+    != digest(selection_overlap)
     or independent.get("independent_validation_endpoint_report_sha256")
     != digest(endpoint_path)
     or independent.get("injection_arrival_manifest_sha256")
@@ -210,6 +214,8 @@ if (
     audit.get("status") != "passed_physical_overlap_group_audit"
     or audit.get("passed") is not True
     or audit.get("manifest_sha256_by_split", {}).get("val") != digest(overlap_path)
+    or audit.get("manifest_sha256_by_split", {}).get("train")
+    != digest(selection_overlap)
     or not cross
     or any(values for pair in cross.values() for values in pair.values())
 ):

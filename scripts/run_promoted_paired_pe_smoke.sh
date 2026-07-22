@@ -126,7 +126,8 @@ fi
   "$INDEPENDENT_PE_OVERLAP_REPORT" \
   "$INDEPENDENT_OVERLAP_AUDIT" \
   "$OVERLAP_MANIFEST" \
-  "$INJECTION_MANIFEST" <<'PY'
+  "$INJECTION_MANIFEST" \
+  "$MODEL_SELECTION_OVERLAP_MANIFEST" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -137,7 +138,14 @@ def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
-endpoint_path, receipt_path, audit_path, overlap_path, injection_path = sys.argv[1:]
+(
+    endpoint_path,
+    receipt_path,
+    audit_path,
+    overlap_path,
+    injection_path,
+    selection_overlap_path,
+) = sys.argv[1:]
 endpoint = json.loads(pathlib.Path(endpoint_path).read_text(encoding="utf-8"))
 components = endpoint.get("component_reports", {})
 expected_components = {
@@ -182,6 +190,10 @@ if (
     or pathlib.Path(receipt["joint_overlap_audit_path"]).resolve()
     != pathlib.Path(audit_path).resolve()
     or receipt.get("joint_overlap_audit_sha256") != digest(audit_path)
+    or pathlib.Path(receipt["training_overlap_manifest_path"]).resolve()
+    != pathlib.Path(selection_overlap_path).resolve()
+    or receipt.get("training_overlap_manifest_sha256")
+    != digest(selection_overlap_path)
     or digest(receipt["overlap_report_path"]) != receipt["overlap_report_sha256"]
     or receipt.get("endpoint_component_reports") != components
     or any(
@@ -197,6 +209,8 @@ if (
     audit.get("status") != "passed_physical_overlap_group_audit"
     or audit.get("passed") is not True
     or set(audit.get("manifest_sha256_by_split", {})) != {"train", "val"}
+    or audit["manifest_sha256_by_split"]["train"]
+    != digest(selection_overlap_path)
     or audit["manifest_sha256_by_split"]["val"] != digest(overlap_path)
     or audit.get("rows_by_split", {}).get("val") != int(receipt["rows"])
     or not cross

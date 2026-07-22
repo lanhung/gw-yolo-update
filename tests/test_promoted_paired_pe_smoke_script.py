@@ -33,12 +33,15 @@ def test_promoted_paired_pe_smoke_binds_every_selected_artifact() -> None:
         "INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
         "INDEPENDENT_PE_OVERLAP_REPORT",
         "INDEPENDENT_OVERLAP_AUDIT",
+        "training_overlap_manifest_path",
+        "training_overlap_manifest_sha256",
         "verified_independent_validation_pe_overlap",
         "passed_physical_overlap_group_audit",
         "test_data_opened",
     ):
         assert field in source
     assert 'export GWYOLO_MODEL_CONFIG="${selection[1]}"' in source
+    assert 'audit["manifest_sha256_by_split"]["train"]' in source
     assert "promoted paired PE model selection failed" in source
     assert "readarray -t selection < <(" not in source
 
