@@ -1,0 +1,2 @@
+# Frozen physical waveform runtime used by the locked GWTC-5 inventory gate.
+pycbc==2.9.0

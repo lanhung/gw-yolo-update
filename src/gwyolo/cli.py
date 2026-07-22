@@ -405,6 +405,14 @@ def build_parser() -> argparse.ArgumentParser:
     gwtc5_availability.add_argument("--output-dir", required=True)
     gwtc5_availability.add_argument("--sample-rate-khz", type=int, default=4)
 
+    gwtc5_injections = subparsers.add_parser("gwtc5-locked-injection-plan")
+    gwtc5_injections.add_argument("--availability-manifest", required=True)
+    gwtc5_injections.add_argument("--availability-report", required=True)
+    gwtc5_injections.add_argument("--suite-config", required=True)
+    gwtc5_injections.add_argument("--population-config", required=True)
+    gwtc5_injections.add_argument("--access-log", required=True)
+    gwtc5_injections.add_argument("--output-dir", required=True)
+
     gwosc_plan_extend = subparsers.add_parser("gwosc-plan-extend")
     gwosc_plan_extend.add_argument("--base-plan", required=True)
     gwosc_plan_extend.add_argument("--target-pairs", type=int, required=True)
@@ -1569,6 +1577,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     gwtc5_freeze = subparsers.add_parser("gwtc5-locked-corpus-freeze")
     gwtc5_freeze.add_argument("--manifest", required=True)
+    gwtc5_freeze.add_argument("--inventory-report", required=True)
+    gwtc5_freeze.add_argument("--waveform-validation-report", required=True)
     gwtc5_freeze.add_argument("--suite-config", required=True)
     gwtc5_freeze.add_argument("--output", required=True)
     gwtc5_freeze.add_argument("--access-log", required=True)
@@ -1641,6 +1651,12 @@ def build_parser() -> argparse.ArgumentParser:
     waveform_validate.add_argument("--sample-rate", type=int, default=2048)
     waveform_validate.add_argument("--reference-duration", type=float, default=128.0)
     waveform_validate.add_argument("--per-family", type=int, default=5)
+    waveform_validate.add_argument(
+        "--selection-mode",
+        choices=("family", "family_approximant"),
+        default="family",
+    )
+    waveform_validate.add_argument("--include-alternatives", action="store_true")
 
     snr_annotate = subparsers.add_parser("injection-snr-annotate")
     snr_annotate.add_argument("--manifest", required=True)
@@ -2411,6 +2427,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.access_log,
                 args.output_dir,
                 args.sample_rate_khz,
+            )
+        )
+    elif args.command == "gwtc5-locked-injection-plan":
+        from .locked_injections import run_gwtc5_locked_injection_inventory
+
+        _print(
+            run_gwtc5_locked_injection_inventory(
+                args.availability_manifest,
+                args.availability_report,
+                args.suite_config,
+                args.population_config,
+                args.access_log,
+                args.output_dir,
             )
         )
     elif args.command == "gwosc-plan-shard":
@@ -3867,6 +3896,8 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             freeze_gwtc5_locked_corpus_contract(
                 args.manifest,
+                args.inventory_report,
+                args.waveform_validation_report,
                 args.suite_config,
                 args.output,
                 args.access_log,
@@ -3966,6 +3997,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate,
                 args.reference_duration,
                 args.per_family,
+                selection_mode=args.selection_mode,
+                include_alternatives=args.include_alternatives,
             )
         )
     elif args.command == "injection-snr-annotate":

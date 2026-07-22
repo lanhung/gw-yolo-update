@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import h5py
 import numpy as np
@@ -17,9 +19,104 @@ from gwyolo.waveforms import (
     pack_scaled_float16_signal,
     place_waveform_samples,
     run_injection_materialization,
+    validate_waveform_backend,
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_waveform_validation_covers_primary_alternative_and_in_plane_spins(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    class Series:
+        start_time = 0.0
+
+        def numpy(self):
+            return np.asarray([1.0 + 0.0j, 2.0 + 0.0j])
+
+    class Reference:
+        epoch = 0.0
+        data = types.SimpleNamespace(data=np.asarray([1.0 + 0.0j, 2.0 + 0.0j]))
+
+    def get_fd_waveform(**kwargs):
+        calls.append(("pycbc", kwargs))
+        return Series(), Series()
+
+    def choose_fd(*args):
+        calls.append(("lal", args))
+        return Reference(), Reference()
+
+    lal = types.ModuleType("lal")
+    lal.MSUN_SI = 1.0
+    lal.PC_SI = 1.0
+    lal.CreateDict = lambda: {}
+    lalsimulation = types.ModuleType("lalsimulation")
+    lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1 = lambda *_: None
+    lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2 = lambda *_: None
+    lalsimulation.SimInspiralChooseFDWaveform = choose_fd
+    lalsimulation.GetApproximantFromString = lambda value: value
+    pycbc = types.ModuleType("pycbc")
+    pycbc_waveform = types.ModuleType("pycbc.waveform")
+    pycbc_waveform.get_fd_waveform = get_fd_waveform
+    monkeypatch.setitem(sys.modules, "lal", lal)
+    monkeypatch.setitem(sys.modules, "lalsimulation", lalsimulation)
+    monkeypatch.setitem(sys.modules, "pycbc", pycbc)
+    monkeypatch.setitem(sys.modules, "pycbc.waveform", pycbc_waveform)
+    monkeypatch.setattr("gwyolo.waveforms.version", lambda _name: "test")
+
+    def recipe(injection_id: str, family: str, approximant: str) -> dict:
+        return {
+            "injection_id": injection_id,
+            "source_family": family,
+            "waveform_approximant": approximant,
+            "mass_1_detector_msun": 30.0,
+            "mass_2_detector_msun": 20.0,
+            "spin_1x": 0.6,
+            "spin_1y": 0.2,
+            "spin_1z": 0.3,
+            "spin_2x": 0.1,
+            "spin_2y": 0.0,
+            "spin_2z": -0.2,
+            "lambda_1": 0.0,
+            "lambda_2": 0.0,
+            "inclination": 0.5,
+            "coalescence_phase": 0.2,
+            "luminosity_distance_mpc": 500.0,
+            "f_lower_hz": 20.0,
+        }
+
+    rows = [
+        {
+            **recipe("bbh", "BBH", "PrimaryP"),
+            "alternative_waveform_approximant": "AlternativeP",
+        },
+        recipe("bns", "BNS", "PrimaryT"),
+    ]
+    manifest = tmp_path / "recipes.jsonl"
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = validate_waveform_backend(
+        manifest,
+        tmp_path / "waveform-validation.json",
+        per_family=1,
+        selection_mode="family_approximant",
+        include_alternatives=True,
+    )
+    assert report["passed"] is True
+    assert report["selected_cases"] == 3
+    assert set(report["case_strata"]) == {
+        "BBH:alternative:AlternativeP",
+        "BBH:primary:PrimaryP",
+        "BNS:primary:PrimaryT",
+    }
+    pycbc_calls = [value for role, value in calls if role == "pycbc"]
+    assert all(value["spin1x"] == 0.6 for value in pycbc_calls)
+    assert all(value["spin1y"] == 0.2 for value in pycbc_calls)
+    lal_calls = [value for role, value in calls if role == "lal"]
+    assert all(value[2:8] == (0.6, 0.2, 0.3, 0.1, 0.0, -0.2) for value in lal_calls)
 
 
 def test_detector_arrivals_use_geometric_delay_not_waveform_array_end() -> None:

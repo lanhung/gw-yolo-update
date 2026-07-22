@@ -224,9 +224,20 @@ publication_evidence:
         - {field: candidate_scores_inspected, op: equals, value: false}
         - {field: test_strain_rows_read, op: equals, value: 0}
         - {field: selection_or_result_fields_present, op: equals, value: false}
+        - {field: inventory_producer_bound, op: equals, value: true}
+        - {field: physical_stress_predicates_passed, op: equals, value: true}
+        - {field: waveform_runtime_validation_bound, op: equals, value: true}
+        - {field: one_injection_per_frozen_gps_block, op: equals, value: true}
+        - {field: pre_access_vt_weights_assigned, op: equals, value: false}
+        - {field: post_access_dq_replacement_allowed, op: equals, value: false}
         - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: test_metrics, op: equals, value: null}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
         - {path_field: manifest_path, sha256_field: manifest_sha256}
+        - {path_field: inventory_report_path, sha256_field: inventory_report_sha256}
+        - {path_field: waveform_validation_report_path, sha256_field: waveform_validation_report_sha256}
+        - {path_field: availability_manifest_path, sha256_field: availability_manifest_sha256}
+        - {path_field: availability_report_path, sha256_field: availability_report_sha256}
+        - {path_field: population_config_path, sha256_field: population_config_sha256}
         - {path_field: suite_config_path, sha256_field: suite_config_sha256}

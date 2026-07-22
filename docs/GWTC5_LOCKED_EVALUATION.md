@@ -53,11 +53,52 @@ scripts/run_gwtc5_locked_availability_plan.sh \
   /artifacts/gwtc5-score-blind-availability
 ```
 
-This availability inventory is necessary but not sufficient for `locked_corpus_unopened`. A second
-producer must deterministically bind the frozen injection population and physical stress scenarios
-to these GPS/IFO blocks before `gwtc5-locked-corpus-freeze` is allowed to run. Availability counts
-alone are not injection counts or analyzed live time, and DQ validity is evaluated only after the
-one-time opening with every rejection retained.
+This availability inventory is necessary but not sufficient for `locked_corpus_unopened`.
+`gwtc5-locked-injection-plan` deterministically binds the frozen proposal population and physical
+stress scenarios to every GPS/IFO block exactly once. The machine-readable population contract is
+[`configs/gwtc5_locked_injection_population.yaml`](../configs/gwtc5_locked_injection_population.yaml).
+It fixes the family fractions and minimum counts, source-frame mass/spin/distance proposals,
+detector-subset minima, coalescence context, calibration scenarios, waveform alternatives and the
+post-access strain-only glitch assignment rule.
+
+Stress labels are recomputed, not trusted. `missing_detector` requires the exact available IFO count
+to be below three; `high_mass_unequal_mass` requires its mass and mass-ratio inequalities;
+`high_spin_precessing` requires a precessing approximant plus a sufficiently large three-dimensional
+in-plane spin. Calibration and waveform-systematics rows must replay an exact configured scenario or
+primary/alternative pair. A glitch-overlap row freezes a hash assignment key, uses no auxiliary veto
+and must retain an explicit unavailable result without replacement if no post-access strain-only
+candidate exists. Untagged rows are explicitly `nominal` rather than being decorated with all stress
+names.
+
+The current policy schedules every frozen availability block once and requires at least 4,000
+pre-access attempts and 3,000 usable post-DQ injections. Pre-access `<VT>` weights are forbidden:
+they are computed only after opening from the analyzed post-DQ live time and the stored comoving-
+volume/source-frame-time proposal density. DQ-invalid attempts are retained and cannot be replaced.
+Availability counts alone are therefore never reported as injection count or analyzed live time.
+
+Before the unopened report can pass, all primary and alternative approximants are sampled by
+family/approximant stratum and compared between PyCBC and the direct LALSimulation FD API, including
+the three-dimensional spins used by the precessing stratum. The isolated runtime is pinned by
+[`requirements-waveforms.txt`](../requirements-waveforms.txt); its setup receipt records the exact
+requirements hash, PyCBC/LALSuite versions and complete `pip freeze` hash.
+
+```bash
+scripts/setup_waveform_runtime.sh /path/to/base/python /artifacts/waveform-runtime
+
+TASK_PYTHON=/path/to/control/python \
+WAVEFORM_PYTHON=/artifacts/waveform-runtime/venv/bin/python \
+scripts/run_gwtc5_locked_injection_plan.sh \
+  /artifacts/gwtc5-score-blind-availability \
+  configs/locked_evaluation_suite_gwtc5.yaml \
+  configs/gwtc5_locked_injection_population.yaml \
+  /artifacts/gwtc5-locked-access.json \
+  /artifacts/gwtc5-locked-injection-contract
+```
+
+The final freeze replays seven artifacts: injection manifest, its producer report, waveform runtime
+validation, availability manifest/report, population config and suite config. Any file mutation,
+fabricated stress label, premature `<VT>` weight, post-DQ replacement policy or live access-log path
+makes `locked_corpus_unopened` fail.
 
 ## Predeclared GWTC-5 endpoints
 

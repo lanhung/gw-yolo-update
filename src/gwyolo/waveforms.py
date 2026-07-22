@@ -332,10 +332,16 @@ def validate_waveform_backend(
     minimum_overlap: float = 0.999999,
     maximum_relative_error: float = 1e-3,
     maximum_epoch_error_seconds: float = 1e-9,
+    selection_mode: str = "family",
+    include_alternatives: bool = False,
 ) -> dict[str, Any]:
     """Validate PyCBC parameter routing against the direct LALSimulation FD API."""
     if sample_rate <= 0 or reference_duration <= 0 or per_family <= 0:
         raise ValueError("sample rate, reference duration and per-family count must be positive")
+    if selection_mode not in {"family", "family_approximant"}:
+        raise ValueError("waveform validation selection mode is invalid")
+    if include_alternatives and selection_mode != "family_approximant":
+        raise ValueError("alternative waveform validation requires family_approximant mode")
     try:
         import lal
         import lalsimulation
@@ -350,21 +356,44 @@ def validate_waveform_backend(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(str(row["source_family"]), []).append(row)
-    selected = []
-    for family in sorted(grouped):
-        selected.extend(
-            sorted(grouped[family], key=lambda row: str(row["injection_id"]))[:per_family]
-        )
+    selected: list[tuple[dict[str, Any], str, str]] = []
+    if selection_mode == "family":
+        for family in sorted(grouped):
+            selected.extend(
+                (row, str(row["waveform_approximant"]), "primary")
+                for row in sorted(
+                    grouped[family], key=lambda row: str(row["injection_id"])
+                )[:per_family]
+            )
+    else:
+        strata: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            family = str(row["source_family"])
+            primary = str(row["waveform_approximant"])
+            strata.setdefault((family, "primary", primary), []).append(row)
+            alternative = row.get("alternative_waveform_approximant")
+            if include_alternatives and alternative:
+                strata.setdefault((family, "alternative", str(alternative)), []).append(row)
+        for (_family, role, approximant), candidates in sorted(strata.items()):
+            selected.extend(
+                (row, approximant, role)
+                for row in sorted(candidates, key=lambda row: str(row["injection_id"]))[
+                    :per_family
+                ]
+            )
     delta_f = 1.0 / reference_duration
     f_max = sample_rate / 2.0
     cases = []
-    for recipe in selected:
-        approximant = str(recipe["waveform_approximant"])
+    for recipe, approximant, waveform_role in selected:
         pycbc_plus, pycbc_cross = get_fd_waveform(
             approximant=approximant,
             mass1=float(recipe["mass_1_detector_msun"]),
             mass2=float(recipe["mass_2_detector_msun"]),
+            spin1x=float(recipe.get("spin_1x", 0.0)),
+            spin1y=float(recipe.get("spin_1y", 0.0)),
             spin1z=float(recipe["spin_1z"]),
+            spin2x=float(recipe.get("spin_2x", 0.0)),
+            spin2y=float(recipe.get("spin_2y", 0.0)),
             spin2z=float(recipe["spin_2z"]),
             lambda1=float(recipe.get("lambda_1", 0.0)),
             lambda2=float(recipe.get("lambda_2", 0.0)),
@@ -385,11 +414,11 @@ def validate_waveform_backend(
         reference_plus, reference_cross = lalsimulation.SimInspiralChooseFDWaveform(
             float(recipe["mass_1_detector_msun"]) * lal.MSUN_SI,
             float(recipe["mass_2_detector_msun"]) * lal.MSUN_SI,
-            0.0,
-            0.0,
+            float(recipe.get("spin_1x", 0.0)),
+            float(recipe.get("spin_1y", 0.0)),
             float(recipe["spin_1z"]),
-            0.0,
-            0.0,
+            float(recipe.get("spin_2x", 0.0)),
+            float(recipe.get("spin_2y", 0.0)),
             float(recipe["spin_2z"]),
             float(recipe["luminosity_distance_mpc"]) * 1e6 * lal.PC_SI,
             float(recipe["inclination"]),
@@ -431,6 +460,7 @@ def validate_waveform_backend(
                 "injection_id": recipe["injection_id"],
                 "source_family": recipe["source_family"],
                 "approximant": approximant,
+                "waveform_role": waveform_role,
                 "polarizations": polarizations,
                 "passed": passed,
             }
@@ -449,9 +479,19 @@ def validate_waveform_backend(
         "recipe_manifest_path": str(recipe_manifest),
         "recipe_manifest_sha256": file_sha256(recipe_manifest),
         "families": sorted(grouped),
-        "approximants": sorted({str(row["waveform_approximant"]) for row in selected}),
+        "approximants": sorted({approximant for _, approximant, _ in selected}),
         "selected_cases": len(cases),
         "per_family": per_family,
+        "selection_mode": selection_mode,
+        "include_alternatives": include_alternatives,
+        "case_strata": dict(
+            sorted(
+                Counter(
+                    f"{case['source_family']}:{case['waveform_role']}:{case['approximant']}"
+                    for case in cases
+                ).items()
+            )
+        ),
         "sample_rate": sample_rate,
         "reference_duration": reference_duration,
         "thresholds": {
@@ -588,7 +628,11 @@ class PyCBCWaveformBackend:
             approximant=str(recipe["waveform_approximant"]),
             mass1=float(recipe["mass_1_detector_msun"]),
             mass2=float(recipe["mass_2_detector_msun"]),
+            spin1x=float(recipe.get("spin_1x", 0.0)),
+            spin1y=float(recipe.get("spin_1y", 0.0)),
             spin1z=float(recipe["spin_1z"]),
+            spin2x=float(recipe.get("spin_2x", 0.0)),
+            spin2y=float(recipe.get("spin_2y", 0.0)),
             spin2z=float(recipe["spin_2z"]),
             lambda1=float(recipe.get("lambda_1", 0.0)),
             lambda2=float(recipe.get("lambda_2", 0.0)),

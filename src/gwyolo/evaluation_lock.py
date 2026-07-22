@@ -690,6 +690,8 @@ def freeze_evaluation_corpus(
 
 def freeze_gwtc5_locked_corpus_contract(
     manifest_path: str | Path,
+    inventory_report_path: str | Path,
+    waveform_validation_report_path: str | Path,
     suite_config_path: str | Path,
     output_path: str | Path,
     access_log_path: str | Path,
@@ -697,10 +699,17 @@ def freeze_gwtc5_locked_corpus_contract(
     """Freeze the exact score-blind GWTC-5/O4b test inventory without opening strain."""
 
     manifest = Path(manifest_path).resolve()
+    inventory_report_file = Path(inventory_report_path).resolve()
+    waveform_validation_file = Path(waveform_validation_report_path).resolve()
     config_path = Path(suite_config_path).resolve()
     target = Path(output_path).resolve()
     access_log = Path(access_log_path).resolve()
-    if not manifest.is_file() or not config_path.is_file():
+    if (
+        not manifest.is_file()
+        or not inventory_report_file.is_file()
+        or not waveform_validation_file.is_file()
+        or not config_path.is_file()
+    ):
         raise FileNotFoundError("GWTC-5 corpus freeze inputs are absent")
     if target == access_log or access_log.exists():
         raise FileExistsError("GWTC-5 access log exists before corpus freezing")
@@ -738,6 +747,47 @@ def freeze_gwtc5_locked_corpus_contract(
         or not required_stress_strata
     ):
         raise ValueError("GWTC-5 suite lacks required frozen corpus strata")
+    inventory_report = json.loads(inventory_report_file.read_text(encoding="utf-8"))
+    population_config_path = Path(
+        str(inventory_report.get("population_config_path", ""))
+    ).resolve()
+    availability_manifest_path = Path(
+        str(inventory_report.get("availability_manifest_path", ""))
+    ).resolve()
+    availability_report_path = Path(
+        str(inventory_report.get("availability_report_path", ""))
+    ).resolve()
+    if (
+        inventory_report.get("status")
+        != "score_blind_gwtc5_locked_injection_inventory"
+        or inventory_report.get("passed") is not True
+        or inventory_report.get("physical_stress_predicates_passed") is not True
+        or inventory_report.get("candidate_catalog_queried") is not False
+        or inventory_report.get("candidate_scores_inspected") is not False
+        or inventory_report.get("event_level_parameters_inspected") is not False
+        or int(inventory_report.get("test_strain_files_downloaded", -1)) != 0
+        or int(inventory_report.get("test_strain_bytes_read", -1)) != 0
+        or int(inventory_report.get("test_strain_rows_read", -1)) != 0
+        or inventory_report.get("pre_access_vt_weights_assigned") is not False
+        or inventory_report.get("post_access_dq_replacement_allowed") is not False
+        or Path(str(inventory_report.get("manifest_path", ""))).resolve() != manifest
+        or inventory_report.get("manifest_sha256") != file_sha256(manifest)
+        or Path(str(inventory_report.get("suite_config_path", ""))).resolve()
+        != config_path
+        or inventory_report.get("suite_config_sha256") != file_sha256(config_path)
+        or Path(str(inventory_report.get("access_log_path", ""))).resolve()
+        != access_log
+        or not population_config_path.is_file()
+        or inventory_report.get("population_config_sha256")
+        != file_sha256(population_config_path)
+        or not availability_manifest_path.is_file()
+        or inventory_report.get("availability_manifest_sha256")
+        != file_sha256(availability_manifest_path)
+        or not availability_report_path.is_file()
+        or inventory_report.get("availability_report_sha256")
+        != file_sha256(availability_report_path)
+    ):
+        raise ValueError("GWTC-5 corpus freeze requires a source-safe injection producer")
     rows = _load_jsonl(manifest)
     if len(rows) < minimum_rows:
         raise ValueError("GWTC-5 locked corpus is below the predeclared injection floor")
@@ -790,6 +840,43 @@ def freeze_gwtc5_locked_corpus_contract(
     )
     if exposed:
         raise ValueError(f"GWTC-5 freeze manifest exposes selection/result fields: {exposed}")
+    waveform_validation = json.loads(
+        waveform_validation_file.read_text(encoding="utf-8")
+    )
+    expected_waveform_strata: Counter[str] = Counter()
+    expected_approximants: set[str] = set()
+    for row in rows:
+        family = str(row["source_family"])
+        primary = str(row.get("waveform_approximant", ""))
+        if not primary:
+            raise ValueError("GWTC-5 injection lacks a primary waveform approximant")
+        expected_approximants.add(primary)
+        expected_waveform_strata[f"{family}:primary:{primary}"] += 1
+        alternative = row.get("alternative_waveform_approximant")
+        if alternative:
+            expected_approximants.add(str(alternative))
+            expected_waveform_strata[f"{family}:alternative:{alternative}"] += 1
+    observed_case_strata = waveform_validation.get("case_strata", {})
+    if (
+        waveform_validation.get("passed") is not True
+        or waveform_validation.get("validation_scope")
+        != "external_reference_waveform_equivalence"
+        or waveform_validation.get("selection_mode") != "family_approximant"
+        or waveform_validation.get("include_alternatives") is not True
+        or Path(str(waveform_validation.get("recipe_manifest_path", ""))).resolve()
+        != manifest
+        or waveform_validation.get("recipe_manifest_sha256") != file_sha256(manifest)
+        or set(waveform_validation.get("approximants", [])) != expected_approximants
+        or set(observed_case_strata) != set(expected_waveform_strata)
+        or any(int(value) < 3 for value in observed_case_strata.values())
+        or int(waveform_validation.get("selected_cases", -1))
+        != sum(int(value) for value in observed_case_strata.values())
+        or not waveform_validation.get("versions", {}).get("pycbc")
+        or not waveform_validation.get("versions", {}).get("lalsuite")
+        or not waveform_validation.get("cases")
+        or any(case.get("passed") is not True for case in waveform_validation["cases"])
+    ):
+        raise ValueError("GWTC-5 waveform runtime validation is incomplete")
     observed_detector_subsets = {str(row["detector_subset"]) for row in rows}
     observed_source_families = {str(row["source_family"]) for row in rows}
     observed_stress_strata: set[str] = set()
@@ -807,6 +894,22 @@ def freeze_gwtc5_locked_corpus_contract(
     stress_coverage = set(map(str, required_stress_strata)) <= observed_stress_strata
     if not detector_coverage or not family_coverage or not stress_coverage:
         raise ValueError("GWTC-5 locked corpus does not cover every predeclared stratum")
+    from .locked_injections import audit_gwtc5_locked_injection_rows
+
+    availability_rows = _load_jsonl(availability_manifest_path)
+    population_settings = load_yaml(population_config_path).get(
+        "gwtc5_locked_injection_population"
+    )
+    if not isinstance(population_settings, dict):
+        raise ValueError("GWTC-5 population config is invalid")
+    physical_audit = audit_gwtc5_locked_injection_rows(
+        rows,
+        availability_rows,
+        settings,
+        population_settings,
+    )
+    if physical_audit != inventory_report.get("audit"):
+        raise ValueError("GWTC-5 physical injection audit differs from producer evidence")
 
     group_fields = [
         "injection_id",
@@ -819,6 +922,10 @@ def freeze_gwtc5_locked_corpus_contract(
     identity = {
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
+        "inventory_report_path": str(inventory_report_file),
+        "inventory_report_sha256": file_sha256(inventory_report_file),
+        "waveform_validation_report_path": str(waveform_validation_file),
+        "waveform_validation_report_sha256": file_sha256(waveform_validation_file),
         "suite_config_path": str(config_path),
         "suite_config_sha256": file_sha256(config_path),
         "access_log_path": str(access_log),
@@ -846,11 +953,29 @@ def freeze_gwtc5_locked_corpus_contract(
         "test_strain_rows_read": 0,
         "test_manifest_metadata_rows_read": len(rows),
         "selection_or_result_fields_present": False,
+        "inventory_producer_bound": True,
+        "physical_stress_predicates_passed": True,
+        "waveform_runtime_validation_bound": True,
+        "one_injection_per_frozen_gps_block": True,
+        "pre_access_vt_weights_assigned": False,
+        "post_access_dq_replacement_allowed": False,
         "freeze_identity": identity,
         "rows": len(rows),
         "minimum_test_injections": minimum_rows,
         "manifest_path": str(manifest),
         "manifest_sha256": identity["manifest_sha256"],
+        "inventory_report_path": str(inventory_report_file),
+        "inventory_report_sha256": identity["inventory_report_sha256"],
+        "waveform_validation_report_path": str(waveform_validation_file),
+        "waveform_validation_report_sha256": identity[
+            "waveform_validation_report_sha256"
+        ],
+        "availability_manifest_path": str(availability_manifest_path),
+        "availability_manifest_sha256": file_sha256(availability_manifest_path),
+        "availability_report_path": str(availability_report_path),
+        "availability_report_sha256": file_sha256(availability_report_path),
+        "population_config_path": str(population_config_path),
+        "population_config_sha256": file_sha256(population_config_path),
         "suite_config_path": str(config_path),
         "suite_config_sha256": identity["suite_config_sha256"],
         "access_log_path": str(access_log),
@@ -861,6 +986,7 @@ def freeze_gwtc5_locked_corpus_contract(
         "observed_detector_subsets": sorted(observed_detector_subsets),
         "observed_source_families": sorted(observed_source_families),
         "observed_stress_strata": sorted(observed_stress_strata),
+        "physical_inventory_audit": physical_audit,
         "unique_group_counts": {
             field: len({str(row[field]) for row in rows}) for field in group_fields
         },
