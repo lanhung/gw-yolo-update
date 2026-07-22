@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import shlex
@@ -2749,6 +2750,240 @@ def audit_gravityspy_network_materialization_progress(
         "warning": (
             "This snapshot counts only immutable completed shards. It is not a merged training "
             "corpus and may not be used for model or threshold selection."
+        ),
+        **_execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def forecast_gravityspy_network_family_capacity(
+    materialized_report_paths: Iterable[str | Path],
+    planned_manifest_paths: Iterable[str | Path],
+    promotion_config_path: str | Path,
+    output_path: str | Path,
+    validation_fraction: float = 0.2,
+    minimum_train_rows_per_family: int = 1,
+    seed: int = 20260720,
+) -> dict[str, Any]:
+    """Forecast family support without treating unmaterialized rows as evidence."""
+
+    if not 0 < validation_fraction < 0.5:
+        raise ValueError("family-capacity validation fraction must be in (0, 0.5)")
+    if minimum_train_rows_per_family <= 0:
+        raise ValueError("family-capacity training support must be positive")
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("family-capacity forecasts are immutable")
+    promotion_path = Path(promotion_config_path)
+    promotion = load_yaml(promotion_path)
+    settings = promotion.get("overlap_sampling_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("family-capacity forecast needs overlap promotion settings")
+    minimum_validation = int(settings.get("minimum_validation_rows_per_family", 0))
+    if minimum_validation <= 0:
+        raise ValueError("family-capacity validation support must be positive")
+
+    accepted_statuses = {
+        "verified_gravityspy_aligned_network_numeric_weak_masks",
+        "verified_merged_gravityspy_aligned_network_numeric_split",
+        "verified_resplit_gravityspy_aligned_network_numeric_split",
+    }
+    materialized_rows: list[dict[str, Any]] = []
+    materialized_ids: set[str] = set()
+    completed_plan_shards: dict[str, set[int]] = defaultdict(set)
+    report_evidence = []
+    for raw_path in materialized_report_paths:
+        path = Path(raw_path)
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") not in accepted_statuses:
+            raise ValueError(f"family-capacity materialization is incomplete: {path}")
+        manifest = Path(str(report.get("manifest_path", "")))
+        if not manifest.is_file() or file_sha256(manifest) != str(
+            report.get("manifest_sha256", "")
+        ):
+            raise ValueError("family-capacity materialized manifest failed replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(report.get("rows", -1)):
+            raise ValueError("family-capacity materialized row count differs")
+        for row in rows:
+            glitch_id = str(row.get("glitch_id", ""))
+            if not glitch_id or glitch_id in materialized_ids:
+                raise ValueError("family-capacity materialized glitches repeat or are empty")
+            if not row.get("ml_label") or not row.get("network_gps_block"):
+                raise ValueError("family-capacity materialized row lacks group identity")
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError("family-capacity materialized sample hash mismatch")
+            materialized_ids.add(glitch_id)
+            materialized_rows.append(row)
+        run_identity = report.get("run_identity", {})
+        source_plan_sha = str(run_identity.get("source_manifest_sha256", ""))
+        shard = report.get("shard")
+        if source_plan_sha and shard is not None:
+            completed_plan_shards[source_plan_sha].add(int(shard))
+        report_evidence.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "manifest_path": str(manifest.resolve()),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": len(rows),
+                "source_plan_sha256": source_plan_sha or None,
+                "completed_shard": int(shard) if shard is not None else None,
+            }
+        )
+    if not materialized_rows:
+        raise ValueError("family-capacity forecast needs materialized physical rows")
+
+    planned_rows: list[dict[str, Any]] = []
+    rejected_rows: list[dict[str, Any]] = []
+    planned_ids: set[str] = set()
+    plan_evidence = []
+    for raw_path in planned_manifest_paths:
+        path = Path(raw_path)
+        plan_sha = file_sha256(path)
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows:
+            raise ValueError("family-capacity plan cannot be empty")
+        for row in rows:
+            glitch_id = str(row.get("glitch_id", ""))
+            if not glitch_id or glitch_id in planned_ids:
+                raise ValueError("family-capacity plans repeat or omit glitch IDs")
+            if not row.get("ml_label") or not row.get("network_gps_block"):
+                raise ValueError("family-capacity planned row lacks group identity")
+            planned_ids.add(glitch_id)
+            shard = row.get("network_strain_shard", row.get("shard"))
+            completed_shard = (
+                shard is not None and int(shard) in completed_plan_shards.get(plan_sha, set())
+            )
+            if glitch_id not in materialized_ids and completed_shard:
+                rejected_rows.append(row)
+            elif glitch_id not in materialized_ids:
+                planned_rows.append(row)
+        plan_evidence.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": plan_sha,
+                "rows": len(rows),
+                "completed_shards": sorted(completed_plan_shards.get(plan_sha, set())),
+            }
+        )
+    if not plan_evidence:
+        raise ValueError("family-capacity forecast needs a frozen acquisition plan")
+
+    def component_label_counts(rows: list[dict[str, Any]]) -> tuple[list[Counter], int]:
+        components = _gravityspy_network_source_components(rows, seed)
+        return (
+            [
+                Counter(str(rows[index]["ml_label"]) for index in component["indices"])
+                for component in components
+            ],
+            len(components),
+        )
+
+    current_components, current_component_count = component_label_counts(
+        materialized_rows
+    )
+    ceiling_rows = materialized_rows + planned_rows
+    ceiling_components, ceiling_component_count = component_label_counts(ceiling_rows)
+    current_counts = Counter(str(row["ml_label"]) for row in materialized_rows)
+    pending_counts = Counter(str(row["ml_label"]) for row in planned_rows)
+    rejected_counts = Counter(str(row["ml_label"]) for row in rejected_rows)
+
+    def family_split_audit(
+        label: str, total: int, components: list[Counter]
+    ) -> dict[str, Any]:
+        component_counts = sorted(
+            (int(counts[label]) for counts in components if counts[label]), reverse=True
+        )
+        possible = {0}
+        for count in component_counts:
+            possible |= {value + count for value in tuple(possible)}
+        valid_validation_counts = sorted(
+            value
+            for value in possible
+            if value >= minimum_validation
+            and total - value >= minimum_train_rows_per_family
+        )
+        return {
+            "rows": total,
+            "source_components": len(component_counts),
+            "component_row_counts": component_counts,
+            "labelwise_group_safe_split_feasible": bool(valid_validation_counts),
+            "minimum_feasible_validation_rows": (
+                valid_validation_counts[0] if valid_validation_counts else None
+            ),
+            "maximum_feasible_validation_rows": (
+                valid_validation_counts[-1] if valid_validation_counts else None
+            ),
+        }
+
+    families = {}
+    current_shortfalls = []
+    impossible_under_plan = []
+    for label in sorted(
+        current_counts.keys() | pending_counts.keys() | rejected_counts.keys()
+    ):
+        current = family_split_audit(label, current_counts[label], current_components)
+        ceiling = family_split_audit(
+            label, current_counts[label] + pending_counts[label], ceiling_components
+        )
+        if not current["labelwise_group_safe_split_feasible"]:
+            current_shortfalls.append(label)
+        if not ceiling["labelwise_group_safe_split_feasible"]:
+            impossible_under_plan.append(label)
+        families[label] = {
+            "materialized_usable_rows": current_counts[label],
+            "unmaterialized_planned_rows": pending_counts[label],
+            "accounted_rejected_rows": rejected_counts[label],
+            "all_pending_usable_ceiling_rows": current_counts[label]
+            + pending_counts[label],
+            "nominal_total_rows_for_validation_target": math.ceil(
+                minimum_validation / validation_fraction
+            ),
+            "current": current,
+            "all_pending_usable_ceiling": ceiling,
+        }
+
+    result = {
+        "status": "score_blind_gravityspy_family_capacity_forecast",
+        "passed": not impossible_under_plan,
+        "scientific_claim_allowed": False,
+        "model_selection_authorized": False,
+        "forecast_scope": (
+            "per-family necessary capacity under source/GPS connected components; the final "
+            "joint source-component-safe resplit remains authoritative"
+        ),
+        "validation_fraction": validation_fraction,
+        "minimum_train_rows_per_family": minimum_train_rows_per_family,
+        "minimum_validation_rows_per_family": minimum_validation,
+        "seed": seed,
+        "promotion_config": {
+            "path": str(promotion_path.resolve()),
+            "sha256": file_sha256(promotion_path),
+            "config_hash": canonical_hash(promotion),
+        },
+        "materialized_reports": report_evidence,
+        "planned_manifests": plan_evidence,
+        "materialized_usable_rows": len(materialized_rows),
+        "unmaterialized_planned_rows": len(planned_rows),
+        "accounted_rejected_rows": len(rejected_rows),
+        "materialized_source_components": current_component_count,
+        "all_pending_usable_ceiling_source_components": ceiling_component_count,
+        "families": families,
+        "families_with_current_shortfall": current_shortfalls,
+        "families_impossible_even_if_all_pending_rows_are_usable": impossible_under_plan,
+        "bounded_expansion_required": bool(impossible_under_plan),
+        "next_action": (
+            "freeze and acquire additional source-disjoint family components"
+            if impossible_under_plan
+            else "finish the frozen plan, then audit the exact joint resplit before training"
+        ),
+        "warning": (
+            "Planned rows are a score-blind upper bound, not physical samples. This report never "
+            "converts pending attempts into training evidence or authorizes model selection."
         ),
         **_execution_provenance(),
     }

@@ -11,6 +11,7 @@ from gwyolo.gravityspy import (
     _effective_network_detector_availability,
     audit_gravityspy_network_materialization_progress,
     evict_gravityspy_verified_sources,
+    forecast_gravityspy_network_family_capacity,
     gravityspy_weak_mask,
     index_gravityspy_csv,
     match_glitch_to_strain_file,
@@ -27,6 +28,121 @@ from gwyolo.gravityspy import (
     split_gravityspy_anchors,
 )
 from gwyolo.io import canonical_hash, file_sha256, load_yaml
+
+
+def test_network_family_capacity_forecast_separates_floor_and_plan_ceiling(
+    tmp_path,
+) -> None:
+    def sources(component: str) -> dict[str, dict[str, str]]:
+        return {
+            "H1": {"hdf5_url": f"https://example/{component}-h1.hdf5"},
+            "L1": {"hdf5_url": f"https://example/{component}-l1.hdf5"},
+        }
+
+    rows = []
+    family_components = {
+        "A": [f"a-{index}" for index in range(5)],
+        "B": [f"b-{index}" for index in range(6)],
+        "C": ["c-shared"] * 6,
+        "D": [f"d-{index}" for index in range(4)],
+    }
+    for family, components in family_components.items():
+        for index, component in enumerate(components):
+            sample = tmp_path / f"{family}-{index}.npz"
+            np.savez(sample, identity=np.asarray([family, index]))
+            rows.append(
+                {
+                    "glitch_id": f"{family}-{index}",
+                    "ml_label": family,
+                    "network_gps_block": f"block-{component}",
+                    "network_strain_sources": sources(component),
+                    "path": str(sample),
+                    "sha256": file_sha256(sample),
+                }
+            )
+    manifest = tmp_path / "materialized.jsonl"
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = tmp_path / "materialized-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_merged_gravityspy_aligned_network_numeric_split",
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": len(rows),
+            }
+        )
+    )
+    pending = [
+        {
+            "glitch_id": "A-pending",
+            "ml_label": "A",
+            "network_gps_block": "block-a-pending",
+            "network_strain_sources": sources("a-pending"),
+            "network_strain_shard": 1,
+        },
+        {
+            "glitch_id": "C-pending",
+            "ml_label": "C",
+            "network_gps_block": "block-c-pending",
+            "network_strain_sources": sources("c-pending"),
+            "network_strain_shard": 1,
+        },
+        {
+            "glitch_id": "D-pending",
+            "ml_label": "D",
+            "network_gps_block": "block-d-pending",
+            "network_strain_sources": sources("d-pending"),
+            "network_strain_shard": 1,
+        },
+        {
+            "glitch_id": "D-rejected",
+            "ml_label": "D",
+            "network_gps_block": "block-d-rejected",
+            "network_strain_sources": sources("d-rejected"),
+            "network_strain_shard": 0,
+        },
+    ]
+    plan = tmp_path / "plan.jsonl"
+    plan.write_text("".join(json.dumps(row) + "\n" for row in pending))
+    report_payload = json.loads(report.read_text())
+    report_payload.update(
+        {
+            "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+            "shard": 0,
+            "run_identity": {"source_manifest_sha256": file_sha256(plan)},
+        }
+    )
+    report.write_text(json.dumps(report_payload))
+    config = tmp_path / "promotion.yaml"
+    config.write_text(
+        "overlap_sampling_promotion:\n"
+        "  minimum_validation_rows_per_family: 5\n"
+    )
+
+    result = forecast_gravityspy_network_family_capacity(
+        [report], [plan], config, tmp_path / "capacity.json"
+    )
+
+    assert result["families_with_current_shortfall"] == ["A", "C", "D"]
+    assert result["families_impossible_even_if_all_pending_rows_are_usable"] == [
+        "D"
+    ]
+    assert result["families"]["A"]["current"]["rows"] == 5
+    assert result["accounted_rejected_rows"] == 1
+    assert result["families"]["D"]["accounted_rejected_rows"] == 1
+    assert result["families"]["A"]["all_pending_usable_ceiling"][
+        "labelwise_group_safe_split_feasible"
+    ]
+    assert not result["families"]["C"]["current"][
+        "labelwise_group_safe_split_feasible"
+    ]
+    assert result["families"]["C"]["all_pending_usable_ceiling"][
+        "minimum_feasible_validation_rows"
+    ] == 6
+    assert not result["passed"]
+    assert result["bounded_expansion_required"]
+    assert not result["model_selection_authorized"]
 
 
 def test_network_materialization_progress_counts_only_completed_physical_rows(

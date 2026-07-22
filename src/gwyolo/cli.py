@@ -840,6 +840,25 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_progress.add_argument("--expected-shards", type=int, required=True)
     gravityspy_network_progress.add_argument("--output", required=True)
 
+    gravityspy_network_family_capacity = subparsers.add_parser(
+        "gravityspy-network-family-capacity-forecast"
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--materialized-report", action="append", required=True
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--planned-manifest", action="append", required=True
+    )
+    gravityspy_network_family_capacity.add_argument("--promotion-config", required=True)
+    gravityspy_network_family_capacity.add_argument(
+        "--validation-fraction", type=float, default=0.2
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--minimum-train-rows-per-family", type=int, default=1
+    )
+    gravityspy_network_family_capacity.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_family_capacity.add_argument("--output", required=True)
+
     gravityspy_network_corpus_audit = subparsers.add_parser(
         "gravityspy-network-corpus-audit"
     )
@@ -3085,6 +3104,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.split,
                 args.expected_shards,
                 args.output,
+            )
+        )
+    elif args.command == "gravityspy-network-family-capacity-forecast":
+        from .gravityspy import forecast_gravityspy_network_family_capacity
+
+        _print(
+            forecast_gravityspy_network_family_capacity(
+                args.materialized_report,
+                args.planned_manifest,
+                args.promotion_config,
+                args.output,
+                args.validation_fraction,
+                args.minimum_train_rows_per_family,
+                args.seed,
             )
         )
     elif args.command == "gravityspy-network-corpus-audit":
