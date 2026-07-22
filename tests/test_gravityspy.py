@@ -40,7 +40,7 @@ def test_network_materialization_progress_counts_only_completed_physical_rows(
     planned = [
         {
             "split": "train",
-            "shard": 0,
+            "network_strain_shard": 0,
             "glitch_id": "g0",
             "network_strain_sources": {
                 "H1": source("https://example/h0.hdf5", "H1"),
@@ -49,7 +49,7 @@ def test_network_materialization_progress_counts_only_completed_physical_rows(
         },
         {
             "split": "train",
-            "shard": 0,
+            "network_strain_shard": 0,
             "glitch_id": "g1",
             "network_strain_sources": {
                 "H1": source("https://example/h0.hdf5", "H1"),
@@ -58,7 +58,7 @@ def test_network_materialization_progress_counts_only_completed_physical_rows(
         },
         {
             "split": "train",
-            "shard": 1,
+            "network_strain_shard": 1,
             "glitch_id": "g2",
             "network_strain_sources": {
                 "H1": source("https://example/h1.hdf5", "H1"),

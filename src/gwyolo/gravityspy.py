@@ -2593,7 +2593,7 @@ def audit_gravityspy_network_materialization_progress(
     planned_by_shard: dict[int, list[dict[str, Any]]] = {}
     source_shards: dict[str, set[int]] = {}
     for row in planned_rows:
-        shard = int(row.get("shard", -1))
+        shard = int(row.get("network_strain_shard", row.get("shard", -1)))
         if not 0 <= shard < expected_shards:
             raise ValueError("network materialization plan shard is outside its range")
         planned_by_shard.setdefault(shard, []).append(row)
