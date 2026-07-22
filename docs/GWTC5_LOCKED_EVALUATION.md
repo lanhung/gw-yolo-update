@@ -38,6 +38,27 @@ manifest metadata only and records zero strain rows read. The validation ledger 
 the predeclared access-log path is still absent at audit time; a stale unopened report cannot pass
 after the one-time opening.
 
+The first upstream artifact is the exhaustive score-blind detector-availability inventory. It is
+created by `gwtc5-locked-availability-plan`, a deliberately separate command from the development
+`gwosc-run-plan`. It queries only the official GWOSC O4b strain-file listing, groups aligned file
+metadata by GPS start, records which of H1/L1/V1 are available and proves that all four predeclared
+detector subsets can be scheduled. It never requests an HDF5/GWF file, a catalog endpoint, an event
+record or a score. The report records zero downloaded strain files, zero strain bytes and zero
+strain rows read. Both the command and its replay fail once the exclusive access-log path exists.
+
+```bash
+scripts/run_gwtc5_locked_availability_plan.sh \
+  configs/locked_evaluation_suite_gwtc5.yaml \
+  /artifacts/gwtc5-locked-access.json \
+  /artifacts/gwtc5-score-blind-availability
+```
+
+This availability inventory is necessary but not sufficient for `locked_corpus_unopened`. A second
+producer must deterministically bind the frozen injection population and physical stress scenarios
+to these GPS/IFO blocks before `gwtc5-locked-corpus-freeze` is allowed to run. Availability counts
+alone are not injection counts or analyzed live time, and DQ validity is evaluated only after the
+one-time opening with every rejection retained.
+
 ## Predeclared GWTC-5 endpoints
 
 The primary search claim is not catalog-image hit rate. It is paired raw-versus-mask-cleaned

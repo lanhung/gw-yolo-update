@@ -31,7 +31,13 @@ from gwyolo.gwosc import (
     run_gwosc_event_exclusions,
     run_gwosc_plan_shard,
     run_gwosc_pilot,
+    run_gwtc5_locked_availability_plan,
     verify_hdf5_against_detail,
+)
+
+
+SUITE_CONFIG = (
+    Path(__file__).resolve().parents[1] / "configs/locked_evaluation_suite_gwtc5.yaml"
 )
 
 
@@ -84,6 +90,104 @@ def test_remote_size_retries_transient_head_failure() -> None:
         patch("gwyolo.gwosc.time.sleep"),
     ):
         assert _remote_size("https://example.test/file.hdf5") == 456
+
+
+def test_gwtc5_locked_availability_is_metadata_only_and_immutable(tmp_path: Path) -> None:
+    def record(ifo: str, gps: int = 1000) -> dict:
+        return {
+            "gps_start": gps,
+            "detector": ifo,
+            "sample_rate_kHz": 4,
+            "hdf5_url": (
+                f"https://gwosc.org/archive/data/O4b_4KHZ_R1/0/"
+                f"{ifo[0]}-{ifo}_GWOSC_O4b_4KHZ_R1-{gps}-4096.hdf5"
+            ),
+            "detail_url": f"https://gwosc.org/api/v2/strain-files/{ifo}-{gps}-4kHz",
+        }
+
+    access_log = tmp_path / "locked-access.json"
+    output = tmp_path / "availability"
+    api_rows = [record(ifo) for ifo in ("H1", "L1", "V1")]
+    with patch(
+        "gwyolo.gwosc._api_results",
+        return_value=(api_rows, {"api_results_count": 3, "api_pages": 1}),
+    ) as query:
+        report = run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+    query.assert_called_once_with(
+        "https://gwosc.org/api/v2/runs/O4b/strain-files?sample-rate=4&pagesize=500"
+    )
+    assert report["status"] == "score_blind_gwtc5_o4b_availability_inventory"
+    assert report["availability_blocks"] == 1
+    assert report["required_detector_subsets_covered"] is True
+    assert set(report["compatible_detector_subset_counts"]) == {
+        "H1+L1",
+        "H1+V1",
+        "L1+V1",
+        "H1+L1+V1",
+    }
+    assert report["candidate_catalog_queried"] is False
+    assert report["candidate_scores_inspected"] is False
+    assert report["event_level_parameters_inspected"] is False
+    assert report["test_strain_files_downloaded"] == 0
+    assert report["test_strain_bytes_read"] == 0
+    assert report["test_strain_rows_read"] == 0
+    assert not access_log.exists()
+    manifest = Path(report["manifest_path"])
+    assert file_sha256(manifest) == report["manifest_sha256"]
+    row = json.loads(manifest.read_text(encoding="utf-8"))
+    assert row["split"] == "test"
+    assert row["observing_run"] == "O4b"
+    assert row["available_ifos"] == ["H1", "L1", "V1"]
+
+    with patch("gwyolo.gwosc._api_results", side_effect=AssertionError("must not query")):
+        replay = run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+    assert replay == report
+
+    access_log.write_text('{"status":"opened"}\n', encoding="utf-8")
+    with pytest.raises(FileExistsError, match="access log"):
+        run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+
+
+def test_gwtc5_locked_availability_rejects_result_exposure(tmp_path: Path) -> None:
+    rows = [
+        {
+            "gps_start": 1000,
+            "detector": ifo,
+            "sample_rate_kHz": 4,
+            "hdf5_url": (
+                f"https://gwosc.org/archive/data/O4b_4KHZ_R1/0/"
+                f"{ifo[0]}-{ifo}_GWOSC_O4b_4KHZ_R1-1000-4096.hdf5"
+            ),
+            "detail_url": f"https://gwosc.org/api/v2/strain-files/{ifo}-1000-4kHz",
+            "p_astro": 0.9,
+        }
+        for ifo in ("H1", "L1", "V1")
+    ]
+    with (
+        patch(
+            "gwyolo.gwosc._api_results",
+            return_value=(rows, {"api_results_count": 3, "api_pages": 1}),
+        ),
+        pytest.raises(ValueError, match="forbidden result fields"),
+    ):
+        run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            tmp_path / "access.json",
+            tmp_path / "must-not-exist",
+        )
+    assert not (tmp_path / "must-not-exist" / "gwtc5_o4b_availability.jsonl").exists()
 
 
 def test_gwosc_plan_shards_are_disjoint_and_parent_bound(tmp_path: Path) -> None:

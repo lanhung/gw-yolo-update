@@ -15,6 +15,7 @@ from .gwosc import (
     run_gwosc_pilot,
     run_gwosc_run_plan,
     run_gwosc_verification,
+    run_gwtc5_locked_availability_plan,
 )
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
@@ -397,6 +398,12 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_run_plan.add_argument("--maximum-pairs", type=int)
     gwosc_run_plan.add_argument("--seed", type=int, default=20260719)
     gwosc_run_plan.add_argument("--output", required=True)
+
+    gwtc5_availability = subparsers.add_parser("gwtc5-locked-availability-plan")
+    gwtc5_availability.add_argument("--suite-config", required=True)
+    gwtc5_availability.add_argument("--access-log", required=True)
+    gwtc5_availability.add_argument("--output-dir", required=True)
+    gwtc5_availability.add_argument("--sample-rate-khz", type=int, default=4)
 
     gwosc_plan_extend = subparsers.add_parser("gwosc-plan-extend")
     gwosc_plan_extend.add_argument("--base-plan", required=True)
@@ -2395,6 +2402,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate_khz,
                 args.maximum_pairs,
                 args.seed,
+            )
+        )
+    elif args.command == "gwtc5-locked-availability-plan":
+        _print(
+            run_gwtc5_locked_availability_plan(
+                args.suite_config,
+                args.access_log,
+                args.output_dir,
+                args.sample_rate_khz,
             )
         )
     elif args.command == "gwosc-plan-shard":

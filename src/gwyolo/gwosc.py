@@ -7,6 +7,7 @@ import re
 import tempfile
 import time
 import urllib.request
+from collections import Counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .io import atomic_write_json, canonical_hash, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
@@ -228,6 +229,223 @@ def run_gwosc_run_plan(
     }
     atomic_write_json(output, result)
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
+
+
+def run_gwtc5_locked_availability_plan(
+    suite_config_path: str | Path,
+    access_log_path: str | Path,
+    output_dir: str | Path,
+    sample_rate_khz: int = 4,
+) -> dict[str, Any]:
+    """Freeze score-blind O4b strain-file availability without downloading strain.
+
+    This is deliberately separate from :func:`run_gwosc_run_plan`: O4b may never be
+    admitted to a development plan.  The only permitted pre-access operation is an
+    exhaustive inventory of official strain-file metadata needed to predeclare a
+    locked injection/background schedule.
+    """
+
+    if sample_rate_khz != 4:
+        raise ValueError("GWTC-5 locked availability requires the frozen 4 kHz source tier")
+    config_path = Path(suite_config_path).resolve()
+    access_log = Path(access_log_path).resolve()
+    output = Path(output_dir).resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError("GWTC-5 locked suite config is absent")
+    if access_log.exists():
+        raise FileExistsError("GWTC-5 access log exists before availability planning")
+    settings = load_yaml(config_path).get("locked_evaluation_suite")
+    if (
+        not isinstance(settings, dict)
+        or settings.get("schema") != "locked_suite_v2"
+        or settings.get("corpus_label") != "GWTC-5.0_O4b_locked_suite_v2"
+        or settings.get("required_split") != "test"
+        or settings.get("observing_runs") != ["O4b"]
+        or settings.get("catalog_release") != "GWTC-5.0"
+    ):
+        raise ValueError("locked availability requires the exact GWTC-5.0/O4b suite")
+    required_subsets = settings.get("endpoints", {}).get("required_detector_subsets")
+    if not isinstance(required_subsets, list) or not required_subsets:
+        raise ValueError("locked suite has no required detector subsets")
+    parsed_subsets: dict[str, frozenset[str]] = {}
+    for label in required_subsets:
+        value = str(label)
+        detectors = frozenset(value.split("+"))
+        if (
+            not detectors
+            or not detectors <= {"H1", "L1", "V1"}
+            or len(detectors) < 2
+            or "+".join(sorted(detectors)) != value
+        ):
+            raise ValueError(f"invalid locked detector subset: {value}")
+        parsed_subsets[value] = detectors
+
+    endpoint = f"{API_ROOT}/runs/O4b/strain-files?sample-rate=4&pagesize=500"
+    identity = {
+        "schema": "score_blind_gwtc5_o4b_availability_v1",
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": file_sha256(config_path),
+        "access_log_path": str(access_log),
+        "source_endpoint": endpoint,
+        "sample_rate_khz": sample_rate_khz,
+        "required_detector_subsets": list(required_subsets),
+    }
+    manifest_path = output / "gwtc5_o4b_availability.jsonl"
+    report_path = output / "gwtc5_o4b_availability_report.json"
+    if report_path.is_file():
+        completed = json.loads(report_path.read_text(encoding="utf-8"))
+        if completed.get("freeze_identity") != identity:
+            raise ValueError("existing locked availability report has another identity")
+        if (
+            not manifest_path.is_file()
+            or completed.get("manifest_sha256") != file_sha256(manifest_path)
+        ):
+            raise ValueError("existing locked availability manifest changed")
+        return completed
+    if manifest_path.exists():
+        raise FileExistsError("partial GWTC-5 locked availability output exists")
+
+    records, api_summary = _api_results(endpoint)
+    if not records:
+        raise ValueError("GWOSC returned no O4b strain-file metadata")
+    forbidden_api_fields = {
+        "candidate_score",
+        "ranking_statistic",
+        "p_astro",
+        "posterior_samples",
+        "model_prediction",
+        "far",
+        "ifar",
+    }
+    by_gps: dict[int, dict[str, dict[str, Any]]] = {}
+    for record in records:
+        exposed = forbidden_api_fields & set(record)
+        if exposed:
+            raise ValueError(
+                f"O4b availability endpoint exposed forbidden result fields: {sorted(exposed)}"
+            )
+        if int(record.get("sample_rate_kHz", -1)) != sample_rate_khz:
+            continue
+        ifo = str(record.get("detector", ""))
+        if ifo not in {"H1", "L1", "V1"}:
+            continue
+        gps_start = int(record.get("gps_start", -1))
+        hdf5_url = str(record.get("hdf5_url", ""))
+        detail_url = str(record.get("detail_url", ""))
+        hdf5_parsed = urlparse(hdf5_url)
+        detail_parsed = urlparse(detail_url)
+        match = re.search(r"-(\d+)-(\d+)\.hdf5$", hdf5_parsed.path)
+        if (
+            gps_start <= 0
+            or hdf5_parsed.scheme != "https"
+            or hdf5_parsed.netloc != "gwosc.org"
+            or detail_parsed.scheme != "https"
+            or detail_parsed.netloc != "gwosc.org"
+            or match is None
+            or int(match.group(1)) != gps_start
+            or int(match.group(2)) <= 0
+        ):
+            raise ValueError("GWOSC O4b availability metadata has an invalid source identity")
+        if ifo in by_gps.setdefault(gps_start, {}):
+            raise ValueError(f"duplicate O4b {ifo} strain metadata at GPS {gps_start}")
+        by_gps[gps_start][ifo] = {
+            "detector": ifo,
+            "gps_start": gps_start,
+            "duration": int(match.group(2)),
+            "sample_rate_khz": sample_rate_khz,
+            "hdf5_url": hdf5_url,
+            "detail_url": detail_url,
+        }
+
+    rows = []
+    for gps_start, sources in sorted(by_gps.items()):
+        available_ifos = sorted(sources)
+        if len(available_ifos) < 2:
+            continue
+        durations = {int(source["duration"]) for source in sources.values()}
+        if len(durations) != 1:
+            raise ValueError(f"O4b detectors disagree about duration at GPS {gps_start}")
+        duration = next(iter(durations))
+        available = frozenset(available_ifos)
+        compatible = [
+            label for label, subset in parsed_subsets.items() if subset <= available
+        ]
+        if not compatible:
+            continue
+        rows.append(
+            {
+                "availability_id": "o4b-availability-"
+                + canonical_hash(
+                    {
+                        "gps_start": gps_start,
+                        "duration": duration,
+                        "available_ifos": available_ifos,
+                    },
+                    24,
+                ),
+                "split": "test",
+                "observing_run": "O4b",
+                "catalog_release": "GWTC-5.0",
+                "gps_start": gps_start,
+                "gps_end": gps_start + duration,
+                "gps_block": f"O4b:{gps_start}:{duration}",
+                "available_ifos": available_ifos,
+                "compatible_detector_subsets": compatible,
+                "sources": {ifo: sources[ifo] for ifo in available_ifos},
+            }
+        )
+    if not rows:
+        raise ValueError("GWOSC O4b metadata produced no multi-detector availability blocks")
+    availability_counts = Counter(
+        subset for row in rows for subset in row["compatible_detector_subsets"]
+    )
+    missing_subsets = sorted(set(parsed_subsets) - set(availability_counts))
+    if missing_subsets:
+        raise ValueError(
+            f"O4b metadata cannot support locked detector subsets: {missing_subsets}"
+        )
+
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    report = {
+        "status": "score_blind_gwtc5_o4b_availability_inventory",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "locked_evaluation_data": True,
+        "selection_role": "pre_access_metadata_inventory_only",
+        "freeze_identity": identity,
+        "corpus_label": settings["corpus_label"],
+        "catalog_release": settings["catalog_release"],
+        "observing_run": "O4b",
+        "required_split": "test",
+        "source_endpoint": endpoint,
+        **api_summary,
+        "api_metadata_rows_read": len(records),
+        "availability_blocks": len(rows),
+        "unique_gps_blocks": len({row["gps_block"] for row in rows}),
+        "available_ifo_set_counts": dict(
+            sorted(Counter("+".join(row["available_ifos"]) for row in rows).items())
+        ),
+        "compatible_detector_subset_counts": dict(sorted(availability_counts.items())),
+        "required_detector_subsets_covered": True,
+        "candidate_catalog_queried": False,
+        "candidate_scores_inspected": False,
+        "event_level_parameters_inspected": False,
+        "test_strain_files_downloaded": 0,
+        "test_strain_bytes_read": 0,
+        "test_strain_rows_read": 0,
+        "access_log_path": str(access_log),
+        "access_log_exists": False,
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": file_sha256(config_path),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, report)
+    return report
 
 
 def extend_gwosc_run_plan(
