@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # Evaluate the official DINGO release on validation-only paired conditions under
-# its native prior/waveform. This is a within-backend robustness smoke and must
-# never be joined to the common-prior DINGO/AMPLFI absolute comparison.
+# its native prior/waveform. This is within-backend robustness evidence and
+# must never be joined to a common-prior DINGO/AMPLFI absolute comparison. The
+# historical smoke filename/status remains replay-compatible; evaluation_tier
+# records whether the batch reaches the publication-validation event floor.
 
 required=(
   TASK_PYTHON
@@ -212,14 +214,40 @@ if (
     or robustness.get("dingo_amplfi_joint_gate") is not False
 ):
     raise SystemExit("official-native DINGO smoke violated its comparison boundary")
+paired_injections = int(batch["paired_injections"])
+bootstrap_replicates = int(robustness["bootstrap_replicates"])
+minimum_publication_validation_injections = 100
+evaluation_tier = (
+    "publication_validation"
+    if paired_injections >= minimum_publication_validation_injections
+    and bootstrap_replicates >= 10000
+    else "bounded_smoke"
+)
+if evaluation_tier == "publication_validation":
+    blocker = (
+        "validation-only official-native within-DINGO deltas meet the predeclared "
+        "event/bootstrap floors; portfolio promotion and locked evaluation remain "
+        "required, and absolute DINGO/AMPLFI ranking remains forbidden"
+    )
+else:
+    blocker = (
+        "bounded official-native within-DINGO smoke is below the predeclared "
+        "100-injection and/or 10000-bootstrap publication floors; it is not a "
+        "common-prior DINGO/AMPLFI absolute comparison"
+    )
 result = {
     "status": "validation_only_dingo_official_native_paired_smoke_complete",
     "scientific_claim_allowed": False,
-    "scientific_blocker": (
-        "three-event smoke under the official native prior/waveform; it is not a "
-        "common-prior DINGO/AMPLFI absolute comparison"
+    "scientific_blocker": blocker,
+    "evaluation_tier": evaluation_tier,
+    "paired_injections": paired_injections,
+    "minimum_publication_validation_injections": (
+        minimum_publication_validation_injections
     ),
+    "bootstrap_replicates": bootstrap_replicates,
+    "comparison_scope": "strict_within_backend_paired",
     "cross_backend_absolute_comparison_allowed": False,
+    "test_rows_read": 0,
     "artifacts": artifacts,
 }
 target = root / "dingo_official_native_paired_smoke_summary.json"

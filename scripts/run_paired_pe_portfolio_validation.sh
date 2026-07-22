@@ -148,6 +148,15 @@ if (
     or promotion.get("absolute_cross_backend_comparison_allowed") is not False
 ):
     raise SystemExit("paired PE portfolio violated its comparison boundary")
+paired_injections = int(portfolio["common_injection_count"])
+bootstrap_replicates = int(portfolio["bootstrap_replicates"])
+minimum_publication_validation_injections = 100
+evaluation_tier = (
+    "publication_validation"
+    if paired_injections >= minimum_publication_validation_injections
+    and bootstrap_replicates >= 10000
+    else "bounded_smoke"
+)
 artifacts = {
     label: {
         "path": str(path),
@@ -164,12 +173,16 @@ result = {
         "this is validation-only matched-event within-backend evidence; locked evaluation "
         "is still required and absolute DINGO/AMPLFI ranking remains forbidden"
     ),
+    "evaluation_tier": evaluation_tier,
+    "minimum_publication_validation_injections": (
+        minimum_publication_validation_injections
+    ),
     "comparison_scope": "matched_event_within_backend_deltas_only",
     "absolute_cross_backend_comparison_allowed": False,
     "matched_event_gate": True,
     "within_backend_provenance_gate": True,
-    "paired_injections": portfolio["common_injection_count"],
-    "bootstrap_replicates": portfolio["bootstrap_replicates"],
+    "paired_injections": paired_injections,
+    "bootstrap_replicates": bootstrap_replicates,
     "test_rows_read": 0,
     "code_commit": commit,
     "artifacts": artifacts,

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Materialize a bounded validation-only clean/contaminated/mask-conditioned
-# posterior-input smoke after a detector-set overlap model has completed.
+# Materialize validation-only clean/contaminated/mask-conditioned posterior
+# inputs after a detector-set overlap model has completed. The historical
+# "smoke" filename/status is retained for backwards-compatible replay; the
+# report's evaluation_tier distinguishes bounded smoke from the predeclared
+# publication-validation batch.
 # Every machine path is supplied explicitly through the environment.
 
 required=(
@@ -190,15 +193,40 @@ for label, value in receipt_paths.items():
         "path": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
+loaded_reports = {
+    name: json.loads(path.read_text(encoding="utf-8"))
+    for name, path in reports.items()
+}
+paired_injections = int(loaded_reports["common_sources"]["paired_injections"])
+minimum_publication_validation_injections = 100
+evaluation_tier = (
+    "publication_validation"
+    if paired_injections >= minimum_publication_validation_injections
+    else "bounded_smoke"
+)
+if evaluation_tier == "publication_validation":
+    blocker = (
+        "validation-only paired inputs meet the predeclared event-count floor, but "
+        "backend posteriors, 10000-replicate paired uncertainty, promotion, and locked "
+        "test evaluation remain required"
+    )
+else:
+    blocker = (
+        "bounded validation smoke is below the predeclared 100-injection publication "
+        "floor; backend posteriors, promotion, and locked test evaluation remain required"
+    )
 summary = {
     "status": "paired_pe_native_inputs_smoke_complete",
     "scientific_claim_allowed": False,
+    "scientific_blocker": blocker,
+    "evaluation_tier": evaluation_tier,
+    "paired_injections": paired_injections,
+    "minimum_publication_validation_injections": (
+        minimum_publication_validation_injections
+    ),
     "test_rows_read": 0 if source_receipts else None,
     "source_receipts": source_receipts,
-    "reports": {
-        name: json.loads(path.read_text(encoding="utf-8"))
-        for name, path in reports.items()
-    },
+    "reports": loaded_reports,
 }
 target = root / "paired_pe_smoke_summary.json"
 temporary = target.with_suffix(".json.part")

@@ -39,3 +39,5 @@ def test_paired_pe_smoke_records_independent_source_receipts() -> None:
     ):
         assert variable in source
     assert '"source_receipts": source_receipts' in source
+    assert '"evaluation_tier": evaluation_tier' in source
+    assert "minimum_publication_validation_injections" in source

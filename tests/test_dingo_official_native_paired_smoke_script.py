@@ -39,4 +39,8 @@ def test_dingo_official_native_smoke_is_validation_only_and_not_joint() -> None:
     assert "AMPLFI_MODEL_METADATA" not in source
     assert "--required-split test" not in source
     assert "cross_backend_absolute_comparison_allowed" in source
+    assert "evaluation_tier" in source
+    assert "minimum_publication_validation_injections" in source
+    assert "bootstrap_replicates" in source
+    assert "three-event smoke" not in source
     assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source

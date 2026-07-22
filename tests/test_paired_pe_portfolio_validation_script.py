@@ -30,5 +30,7 @@ def test_paired_pe_portfolio_is_validation_only_and_forbids_absolute_ranking() -
     assert "within_backend_provenance_gate" in source
     assert "PE_BOOTSTRAP_REPLICATES:-10000" in source
     assert "test_rows_read" in source
+    assert "evaluation_tier" in source
+    assert "minimum_publication_validation_injections" in source
     assert "--required-split test" not in source
     assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source

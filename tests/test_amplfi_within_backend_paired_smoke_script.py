@@ -33,6 +33,8 @@ def test_amplfi_within_backend_smoke_is_strict_validation_only() -> None:
     assert "--within-backend-only" in source
     assert "within_backend_provenance_gate" in source
     assert "bootstrap_replicates" in source
+    assert "evaluation_tier" in source
+    assert "minimum_publication_validation_injections" in source
     assert "test_rows_read" in source
     assert "pe-robustness-joint-evaluate" not in source
     assert "dingo-common-batch" not in source

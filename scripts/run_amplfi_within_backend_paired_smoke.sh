@@ -165,6 +165,27 @@ if (
     or len(rows) != int(batch.get("rows", -1))
 ):
     raise SystemExit("AMPLFI within-backend posterior manifest is not validation-only")
+paired_injections = int(batch["paired_injections"])
+bootstrap_replicates = int(robustness["bootstrap_replicates"])
+minimum_publication_validation_injections = 100
+evaluation_tier = (
+    "publication_validation"
+    if paired_injections >= minimum_publication_validation_injections
+    and bootstrap_replicates >= 10000
+    else "bounded_smoke"
+)
+if evaluation_tier == "publication_validation":
+    blocker = (
+        "validation-only within-AMPLFI deltas meet the predeclared event/bootstrap "
+        "floors; portfolio promotion and locked evaluation remain required, and "
+        "absolute DINGO/AMPLFI ranking remains forbidden"
+    )
+else:
+    blocker = (
+        "bounded within-AMPLFI smoke is below the predeclared 100-injection and/or "
+        "10000-bootstrap publication floors; it is not an absolute DINGO/AMPLFI "
+        "comparison"
+    )
 artifacts = {
     label: {
         "path": str(path),
@@ -175,15 +196,17 @@ artifacts = {
 result = {
     "status": "validation_only_amplfi_within_backend_paired_smoke_complete",
     "scientific_claim_allowed": False,
-    "scientific_blocker": (
-        "bounded validation smoke must expand under a predeclared sample-size protocol; "
-        "it is not an absolute DINGO/AMPLFI comparison"
+    "scientific_blocker": blocker,
+    "evaluation_tier": evaluation_tier,
+    "minimum_publication_validation_injections": (
+        minimum_publication_validation_injections
     ),
     "comparison_scope": "strict_within_backend_paired",
     "cross_backend_absolute_comparison_allowed": False,
     "test_rows_read": 0,
     "code_commit": commit,
-    "paired_injections": int(batch["paired_injections"]),
+    "paired_injections": paired_injections,
+    "bootstrap_replicates": bootstrap_replicates,
     "artifacts": artifacts,
 }
 target = root / "amplfi_within_backend_paired_smoke_summary.json"
