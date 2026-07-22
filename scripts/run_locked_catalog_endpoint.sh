@@ -6,7 +6,6 @@ required_variables=(
   TASK_CODE_DIR
   LOCKED_SUITE_PLAN
   LOCKED_ACCESS_LOG
-  CANDIDATE_SEARCH_REPORT
 )
 for variable in "${required_variables[@]}"; do
   if [[ -z "${!variable:-}" ]]; then
@@ -17,8 +16,7 @@ done
 for input in \
   "$TASK_PYTHON" \
   "$LOCKED_SUITE_PLAN" \
-  "$LOCKED_ACCESS_LOG" \
-  "$CANDIDATE_SEARCH_REPORT"; do
+  "$LOCKED_ACCESS_LOG"; do
   if [[ ! -f "$input" ]]; then
     echo "required input is absent: $input" >&2
     exit 2
@@ -47,9 +45,13 @@ for key in (
 ):
     print(plan["inputs"][key])
 print(plan["outputs"]["catalog_diagnostic"])
+search_arm = plan.get("endpoints", {}).get("catalog_search_arm")
+if search_arm not in {"raw_candidate_search", "mask_candidate_search"}:
+    raise SystemExit("locked suite catalog search arm is invalid")
+print(plan["outputs"][search_arm])
 PY
 )
-if (( ${#paths[@]} != 6 )); then
+if (( ${#paths[@]} != 7 )); then
   echo "locked suite plan did not resolve the catalog endpoint" >&2
   exit 2
 fi
@@ -59,9 +61,14 @@ candidate_report=${paths[2]}
 prediction_manifest=${paths[3]}
 prediction_report=${paths[4]}
 endpoint_output=${paths[5]}
-for input in "$source_manifest" "$candidate_manifest" "$candidate_report"; do
+candidate_search_report=${paths[6]}
+for input in \
+  "$source_manifest" \
+  "$candidate_manifest" \
+  "$candidate_report" \
+  "$candidate_search_report"; do
   if [[ ! -f "$input" ]]; then
-    echo "predeclared locked catalog candidate input is absent: $input" >&2
+    echo "predeclared locked catalog input is absent: $input" >&2
     exit 2
   fi
 done
@@ -89,7 +96,7 @@ if [[ ! -s "$endpoint_output" ]]; then
     "$TASK_PYTHON" -m gwyolo.cli catalog-eval-locked \
       --prediction-manifest "$prediction_manifest" \
       --prediction-report "$prediction_report" \
-      --candidate-search-report "$CANDIDATE_SEARCH_REPORT" \
+      --candidate-search-report "$candidate_search_report" \
       --locked-suite-plan "$LOCKED_SUITE_PLAN" \
       --access-log "$LOCKED_ACCESS_LOG" \
       --output "$endpoint_output"
