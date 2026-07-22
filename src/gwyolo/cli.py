@@ -963,6 +963,14 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--required-split", choices=["train", "val", "test"])
     trigger.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
     trigger.add_argument("--coherence-config")
+    trigger.add_argument("--calibration-plan")
+    trigger.add_argument("--calibration-scenario")
+
+    calibration_plan = subparsers.add_parser("calibration-perturbation-plan-freeze")
+    calibration_plan.add_argument("--background-manifest", required=True)
+    calibration_plan.add_argument("--injection-manifest", required=True)
+    calibration_plan.add_argument("--config", required=True)
+    calibration_plan.add_argument("--output", required=True)
 
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
@@ -1494,6 +1502,8 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--required-split", choices=["train", "val", "test"])
     injection_score.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
     injection_score.add_argument("--coherence-config")
+    injection_score.add_argument("--calibration-plan")
+    injection_score.add_argument("--calibration-scenario")
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -2893,6 +2903,19 @@ def main(argv: list[str] | None = None) -> int:
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
                 coherence_config_path=args.coherence_config,
+                calibration_plan_path=args.calibration_plan,
+                calibration_scenario_id=args.calibration_scenario,
+            )
+        )
+    elif args.command == "calibration-perturbation-plan-freeze":
+        from .calibration import freeze_calibration_perturbation_plan
+
+        _print(
+            freeze_calibration_perturbation_plan(
+                args.background_manifest,
+                args.injection_manifest,
+                args.config,
+                args.output,
             )
         )
     elif args.command == "candidate-extract":
@@ -3549,6 +3572,8 @@ def main(argv: list[str] | None = None) -> int:
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
                 coherence_config_path=args.coherence_config,
+                calibration_plan_path=args.calibration_plan,
+                calibration_scenario_id=args.calibration_scenario,
             )
         )
     elif args.command == "pe-evaluate":

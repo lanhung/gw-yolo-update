@@ -64,6 +64,13 @@ def _scoring_provenance(
         "code_commit": str(report["code_commit"]),
         "source_manifest_sha256": str(report["manifest_sha256"]),
         "trigger_manifest_sha256": str(report["triggers_sha256"]),
+        "calibration_perturbation": report.get("calibration_perturbation"),
+        "physical_time_domain_perturbation": bool(
+            report.get("physical_time_domain_perturbation", False)
+        ),
+        "fresh_time_frequency_transform": bool(
+            report.get("fresh_time_frequency_transform", False)
+        ),
     }
 
 

@@ -9,6 +9,12 @@ from typing import Any
 
 import numpy as np
 
+from .calibration import (
+    apply_frequency_dependent_calibration_response,
+    load_calibration_perturbation_scenario,
+    response_for_row,
+)
+from .coherence import arrival_time_coherence_gate, pairwise_lag_coherence
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten, read_hdf5_segment
 from .io import (
@@ -21,7 +27,6 @@ from .io import (
 )
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz
-from .coherence import arrival_time_coherence_gate, pairwise_lag_coherence
 
 
 def _load_resumable_trigger_rows(
@@ -284,6 +289,7 @@ def _window_strain(
     target_sample_rate: int,
     context_duration: float,
     enabled_ifos: tuple[str, ...] | None = None,
+    calibration_scenario: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, list[str], dict[str, Any]]:
     center = (float(row["gps_start"]) + float(row["gps_end"])) / 2.0
     window_duration = float(row["duration"])
@@ -350,7 +356,14 @@ def _window_strain(
         if ifo not in context_by_ifo:
             strains.append(np.zeros(output_samples, dtype=np.float32))
             continue
-        whitened = _whiten(context_by_ifo[ifo])
+        values = context_by_ifo[ifo]
+        if calibration_scenario is not None:
+            values = apply_frequency_dependent_calibration_response(
+                values,
+                target_sample_rate,
+                response_for_row(calibration_scenario, row, ifo),
+            )
+        whitened = _whiten(values)
         center_index = whitened.size // 2
         start = center_index - output_samples // 2
         strains.append(whitened[start : start + output_samples])
@@ -370,6 +383,8 @@ def score_background_manifest(
     required_split: str | None = None,
     enabled_ifos: tuple[str, ...] | None = None,
     coherence_config_path: str | Path | None = None,
+    calibration_plan_path: str | Path | None = None,
+    calibration_scenario_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -406,6 +421,29 @@ def score_background_manifest(
         raise ValueError(
             f"Background scorer required split {required_split!r}, observed {observed_splits}"
         )
+    if (calibration_plan_path is None) != (calibration_scenario_id is None):
+        raise ValueError("Background calibration perturbation requires both plan and scenario")
+    calibration = (
+        load_calibration_perturbation_scenario(
+            calibration_plan_path,
+            manifest_path,
+            "background",
+            calibration_scenario_id,
+            target_sample_rate,
+            model_ifos,
+        )
+        if calibration_plan_path is not None and calibration_scenario_id is not None
+        else None
+    )
+    calibration_identity = (
+        {
+            key: value
+            for key, value in calibration.items()
+            if key not in {"responses", "gps_block_run_map"}
+        }
+        if calibration is not None
+        else None
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -431,6 +469,7 @@ def score_background_manifest(
             coherence["config_sha256"] if coherence is not None else None
         ),
         "required_split": required_split,
+        "calibration_perturbation": calibration_identity,
         "code_commit": execution_provenance()["code_commit"],
     }
     resumed_rows = _load_resumable_trigger_rows(output, run_identity, manifest_rows)
@@ -446,7 +485,12 @@ def score_background_manifest(
             continue
         try:
             strain, valid_ifos, override_record = _window_strain(
-                row, model_ifos, target_sample_rate, context_duration, enabled_ifos
+                row,
+                model_ifos,
+                target_sample_rate,
+                context_duration,
+                enabled_ifos,
+                calibration,
             )
             power = multiresolution_power(
                 strain,
@@ -522,6 +566,7 @@ def score_background_manifest(
                     "gps_block": row["gps_block"],
                     "enabled_ifos": list(enabled_ifos),
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
+                    "calibration_perturbation": calibration_identity,
                     **override_record,
                     **probability_record,
                     **summary,
@@ -557,6 +602,9 @@ def score_background_manifest(
         "probabilities_saved": save_probabilities,
         "required_split": required_split,
         "observed_splits": observed_splits,
+        "calibration_perturbation": calibration_identity,
+        "physical_time_domain_perturbation": calibration is not None,
+        "fresh_time_frequency_transform": calibration is not None,
         "run_identity_hash": canonical_hash(run_identity, 64),
         "input_windows": len(manifest_rows),
         "resumed_windows": len(resumed_rows),

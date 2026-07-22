@@ -36,6 +36,8 @@ def test_trigger_cli_routes_only_declared_arguments() -> None:
         required_split=None,
         enabled_ifos=None,
         coherence_config_path=None,
+        calibration_plan_path=None,
+        calibration_scenario_id=None,
     )
 
 
@@ -81,6 +83,8 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
     assert score.call_args.kwargs["required_split"] is None
     assert score.call_args.kwargs["enabled_ifos"] is None
     assert score.call_args.kwargs["coherence_config_path"] is None
+    assert score.call_args.kwargs["calibration_plan_path"] is None
+    assert score.call_args.kwargs["calibration_scenario_id"] is None
 
 
 def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:

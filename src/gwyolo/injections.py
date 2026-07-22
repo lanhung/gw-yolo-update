@@ -159,6 +159,7 @@ def plan_injection_recipes(
                     ),
                     "f_lower_hz": float(population[family].get("f_lower_hz", 20.0)),
                     "background_window_id": window["window_id"],
+                    "observing_run": window.get("observing_run"),
                     "gps_block": window["gps_block"],
                     "gps_time": float(
                         rng.uniform(float(window["gps_start"]) + 1, float(window["gps_end"]) - 1)

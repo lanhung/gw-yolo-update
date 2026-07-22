@@ -8,6 +8,11 @@ from typing import Any
 
 import numpy as np
 
+from .calibration import (
+    apply_frequency_dependent_calibration_response,
+    load_calibration_perturbation_scenario,
+    response_for_row,
+)
 from .factory import _normalize_power, multiresolution_power
 from .gwosc import _fft_downsample, _whiten, _whiten_with_reference
 from .io import (
@@ -150,6 +155,8 @@ def score_materialized_injections(
     required_split: str | None = None,
     enabled_ifos: tuple[str, ...] | None = None,
     coherence_config_path: str | Path | None = None,
+    calibration_plan_path: str | Path | None = None,
+    calibration_scenario_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         import torch
@@ -186,6 +193,29 @@ def score_materialized_injections(
         raise ValueError(
             f"Injection scorer required split {required_split!r}, observed {observed_splits}"
         )
+    if (calibration_plan_path is None) != (calibration_scenario_id is None):
+        raise ValueError("Injection calibration perturbation requires both plan and scenario")
+    calibration = (
+        load_calibration_perturbation_scenario(
+            calibration_plan_path,
+            manifest_path,
+            "injection",
+            calibration_scenario_id,
+            target_sample_rate,
+            model_ifos,
+        )
+        if calibration_plan_path is not None and calibration_scenario_id is not None
+        else None
+    )
+    calibration_identity = (
+        {
+            key: value
+            for key, value in calibration.items()
+            if key not in {"responses", "gps_block_run_map"}
+        }
+        if calibration is not None
+        else None
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     run_identity = {
@@ -211,6 +241,7 @@ def score_materialized_injections(
         ),
         "whitening": str(tensor_config.get("whitening", "self")),
         "required_split": required_split,
+        "calibration_perturbation": calibration_identity,
         "code_commit": execution_provenance()["code_commit"],
     }
     resumed_rows = _load_resumable_rows(output, run_identity, manifest_rows)
@@ -252,6 +283,15 @@ def score_materialized_injections(
                 ifo_index = ifos.index(ifo)
                 values = mixture[ifo_index]
                 values = _fft_downsample(values, source_rate, target_sample_rate)
+                response = (
+                    response_for_row(calibration, row, ifo)
+                    if calibration is not None
+                    else None
+                )
+                if response is not None:
+                    values = apply_frequency_dependent_calibration_response(
+                        values, target_sample_rate, response
+                    )
                 whitening = str(tensor_config.get("whitening", "self"))
                 if whitening == "self":
                     whitened = _whiten(values)
@@ -259,6 +299,10 @@ def score_materialized_injections(
                     reference = _fft_downsample(
                         noise[ifo_index], source_rate, target_sample_rate
                     )
+                    if response is not None:
+                        reference = apply_frequency_dependent_calibration_response(
+                            reference, target_sample_rate, response
+                        )
                     whitened = _whiten_with_reference(reference, values)
                 else:
                     raise ValueError("injection whitening must be self or noise_reference")
@@ -367,6 +411,7 @@ def score_materialized_injections(
                     "source_ifos": ifos,
                     "enabled_ifos": list(enabled_ifos),
                     "padded_ifos": [ifo for ifo in model_ifos if ifo not in valid_ifos],
+                    "calibration_perturbation": calibration_identity,
                     **probability_record,
                     **summary,
                 }
@@ -400,6 +445,9 @@ def score_materialized_injections(
         "probabilities_saved": save_probabilities,
         "required_split": required_split,
         "observed_splits": observed_splits,
+        "calibration_perturbation": calibration_identity,
+        "physical_time_domain_perturbation": calibration is not None,
+        "fresh_time_frequency_transform": calibration is not None,
         "run_identity_hash": canonical_hash(run_identity, 64),
         "input_injections": len(manifest_rows),
         "resumed_injections": len(resumed_rows),

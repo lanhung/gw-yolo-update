@@ -1,0 +1,23 @@
+calibration_perturbation:
+  # This is a conservative bounded stress envelope, not a draw from an official
+  # detector-calibration posterior. A publication result must either retain that
+  # interpretation or replace the template with hash-frozen official envelopes.
+  protocol: run_correlated_frequency_response_v1
+  required_split: val
+  # Existing injection manifests predate explicit observing_run propagation;
+  # their frozen GPS/source inventory is known to be O4a.
+  default_observing_run: O4a
+  seed: 20260722
+  target_sample_rate: 1024
+  model_ifos: [H1, L1, V1]
+  anchor_frequencies_hz: [20, 64, 128, 256, 480]
+  random_draws: 4
+  envelope_templates:
+    conservative_o4a_stress_v1:
+      maximum_amplitude_fraction: [0.08, 0.05, 0.04, 0.05, 0.08]
+      maximum_phase_degrees: [8.0, 5.0, 4.0, 5.0, 8.0]
+      source:
+        identity: predeclared_conservative_o4a_validation_envelope_v1
+        semantics: bounded_stress_test_not_calibration_posterior
+  run_template_assignments:
+    O4a: conservative_o4a_stress_v1
