@@ -90,6 +90,7 @@ def freeze_locked_evaluation_suite_plan(
         "minimum_test_live_time_years": 0.0,
         "minimum_test_injections": 0,
         "minimum_paired_pe_injections": 0,
+        "minimum_locked_ood_rows": 0,
         "bootstrap_replicates": 9999,
     }
     for field, lower in numeric_minima.items():

@@ -79,6 +79,12 @@ threshold. Once OOD, PE and catalog endpoints are also complete,
 `locked-evaluation-suite-finalize` hashes all eight outputs into the predeclared suite receipt.
 The locked-final publication ledger must then pass all nine requirements before interpretation.
 
+`ood-abstention-evaluate-locked` similarly accepts only a detector-set, logit-energy validation
+report whose known-only threshold, checkpoint and score manifests replay by hash. It rejects any
+O4b glitch/GPS overlap with either OOD validation role, requires explicit detector availability,
+and reports known false abstention and unknown false acceptance overall and by family, run and
+detector subset without refitting the threshold.
+
 ## Promotion decision
 
 The current model is not ready to unlock O4b. Its first three real-noise physical injections produced

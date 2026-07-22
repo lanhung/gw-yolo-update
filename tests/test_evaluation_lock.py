@@ -69,6 +69,7 @@ def _locked_suite_config(path) -> None:
         "    minimum_test_live_time_years: 23.02585093\n"
         "    minimum_test_injections: 3000\n"
         "    minimum_paired_pe_injections: 100\n"
+        "    minimum_locked_ood_rows: 500\n"
         "    bootstrap_replicates: 10000\n"
         "    bootstrap_seed: 20260722\n",
         encoding="utf-8",

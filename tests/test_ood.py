@@ -11,6 +11,7 @@ from gwyolo.ood import (
     fit_class_conditional_mahalanobis,
     freeze_ood_held_family_protocol,
     ood_auc,
+    run_locked_ood_transfer_evaluation,
     supervised_contrastive_loss,
 )
 
@@ -123,6 +124,106 @@ def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
     leaked[0] = {**leaked[0], "glitch_id": "c0"}
     with pytest.raises(ValueError, match="group leakage"):
         evaluate_frozen_ood_threshold(calibration, leaked, 0.25)
+
+
+def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    from gwyolo.io import file_sha256
+
+    endpoints = {"minimum_locked_ood_rows": 4}
+
+    def binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(output_path.resolve()),
+            "endpoints": endpoints,
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access", binding
+    )
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calibration = tmp_path / "calibration.jsonl"
+    calibration.write_text(
+        "".join(
+            json.dumps(_row(f"c{i}", f"cb{i}", "Known", score, False, "val"))
+            + "\n"
+            for i, score in enumerate((0.1, 0.2, 0.3, 0.4))
+        ),
+        encoding="utf-8",
+    )
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text(
+        json.dumps(_row("v0", "vb0", "Held", 0.8, True, "val")) + "\n",
+        encoding="utf-8",
+    )
+    validation = tmp_path / "validation.json"
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "known_family_embedding_heldout_ood_validation",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "test_evaluation": None,
+                "ood_score_fit": {
+                    "heldout_scores_used_for_method_or_fit_selection": False
+                },
+                "ood_evaluation": {
+                    "status": "frozen_known_only_ood_abstention_evaluation",
+                    "calibration": {
+                        "threshold": 0.4,
+                        "selection_data": "known_validation_only",
+                        "unknown_scores_used_for_selection": False,
+                    },
+                },
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "known_calibration_scores_path": str(calibration),
+                "known_calibration_scores_sha256": file_sha256(calibration),
+                "heldout_evaluation_scores_path": str(heldout),
+                "heldout_evaluation_scores_sha256": file_sha256(heldout),
+            }
+        ),
+        encoding="utf-8",
+    )
+    locked_rows = [
+        _row("t0", "tb0", "Known", 0.1, False, "test"),
+        _row("t1", "tb1", "Known", 0.5, False, "test"),
+        _row("u0", "ub0", "New", 0.8, True, "test"),
+        _row("u1", "ub1", "New", 0.2, True, "test"),
+    ]
+    for row, ifos in zip(
+        locked_rows,
+        (("H1", "L1"), ("H1", "V1"), ("H1", "L1", "V1"), ("L1", "V1")),
+    ):
+        row.update(
+            {
+                "observing_run": "O4b",
+                "available_ifos": list(ifos),
+                "embedding_checkpoint_sha256": file_sha256(checkpoint),
+                "ood_score_method": "logit_energy",
+            }
+        )
+    locked = tmp_path / "locked.jsonl"
+    locked.write_text(
+        "".join(json.dumps(row) + "\n" for row in locked_rows), encoding="utf-8"
+    )
+    result = run_locked_ood_transfer_evaluation(
+        validation,
+        locked,
+        tmp_path / "plan.json",
+        tmp_path / "access.json",
+        tmp_path / "result.json",
+    )
+    assert result["threshold"] == 0.4
+    assert result["threshold_refits_on_test"] == 0
+    assert result["known_false_abstention"]["rate"] == 0.5
+    assert result["unknown_false_acceptance"]["rate"] == 0.5
+    assert len(result["detector_subset_strata"]) == 4
 
 
 def test_leave_one_family_out_split_excludes_whole_gps_blocks(tmp_path) -> None:

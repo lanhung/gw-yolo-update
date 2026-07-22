@@ -319,6 +319,199 @@ def run_ood_abstention_evaluation(
     return result
 
 
+def run_locked_ood_transfer_evaluation(
+    validation_ood_report: str | Path,
+    locked_score_manifest: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+    score_field: str = "ood_score",
+) -> dict[str, Any]:
+    """Apply one validation-frozen OOD threshold to a disjoint locked O4b set."""
+
+    from .evaluation_lock import validate_locked_evaluation_suite_access
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("locked OOD transfer outputs are immutable")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan, access_log, "locked_ood_transfer", output_path
+    )
+    validation_path = Path(validation_ood_report).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    checkpoint_path = Path(str(validation.get("checkpoint_path", ""))).resolve()
+    calibration_path = Path(
+        str(validation.get("known_calibration_scores_path", ""))
+    ).resolve()
+    heldout_path = Path(
+        str(validation.get("heldout_evaluation_scores_path", ""))
+    ).resolve()
+    frozen_evaluation = validation.get("ood_evaluation", {})
+    frozen_calibration = frozen_evaluation.get("calibration", {})
+    if (
+        validation.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or validation.get("architecture") != "detector_set"
+        or validation.get("ood_score_method") != "logit_energy"
+        or validation.get("test_evaluation") is not None
+        or validation.get("ood_score_fit", {}).get(
+            "heldout_scores_used_for_method_or_fit_selection"
+        )
+        is not False
+        or frozen_evaluation.get("status")
+        != "frozen_known_only_ood_abstention_evaluation"
+        or frozen_calibration.get("selection_data") != "known_validation_only"
+        or frozen_calibration.get("unknown_scores_used_for_selection") is not False
+        or not checkpoint_path.is_file()
+        or validation.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+        or not calibration_path.is_file()
+        or validation.get("known_calibration_scores_sha256")
+        != file_sha256(calibration_path)
+        or not heldout_path.is_file()
+        or validation.get("heldout_evaluation_scores_sha256")
+        != file_sha256(heldout_path)
+    ):
+        raise ValueError("locked OOD endpoint requires a replayable detector-set validation gate")
+
+    def load(path: Path) -> list[dict[str, Any]]:
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows:
+            raise ValueError(f"OOD score manifest is empty: {path}")
+        return rows
+
+    calibration_rows = load(calibration_path)
+    heldout_rows = load(heldout_path)
+    locked_path = Path(locked_score_manifest).resolve()
+    locked_rows = load(locked_path)
+    if len(locked_rows) < int(suite_access["endpoints"]["minimum_locked_ood_rows"]):
+        raise ValueError("locked OOD transfer set is smaller than the predeclared minimum")
+    required = {
+        "glitch_id",
+        "gps_block",
+        "glitch_family",
+        "observing_run",
+        "is_unknown",
+        "available_ifos",
+        "embedding_checkpoint_sha256",
+        "ood_score_method",
+        score_field,
+    }
+    missing = [index for index, row in enumerate(locked_rows) if required - set(row)]
+    if missing:
+        raise ValueError(f"locked OOD rows lack required fields at {missing[:10]}")
+    if any(str(row.get("split")) != "test" for row in locked_rows):
+        raise ValueError("locked OOD transfer rows must use the test split")
+    scores = np.asarray([float(row[score_field]) for row in locked_rows])
+    if not np.isfinite(scores).all():
+        raise ValueError("locked OOD scores must be finite")
+    if any(
+        row["embedding_checkpoint_sha256"] != validation["checkpoint_sha256"]
+        or row["ood_score_method"] != validation["ood_score_method"]
+        for row in locked_rows
+    ):
+        raise ValueError("locked OOD rows differ from the validation-frozen model or score")
+    overlaps = {}
+    for label, rows in (
+        ("known_calibration", calibration_rows),
+        ("heldout_validation", heldout_rows),
+    ):
+        for field in ("glitch_id", "gps_block"):
+            overlaps[f"{label}_{field}"] = sorted(
+                {str(row[field]) for row in rows}
+                & {str(row[field]) for row in locked_rows}
+            )
+    if any(overlaps.values()):
+        raise ValueError(f"locked OOD transfer overlaps validation groups: {overlaps}")
+    known = [row for row in locked_rows if not bool(row["is_unknown"])]
+    unknown = [row for row in locked_rows if bool(row["is_unknown"])]
+    if not known or not unknown:
+        raise ValueError("locked OOD transfer requires known and unknown artifacts")
+    threshold = float(frozen_calibration["threshold"])
+    evaluated = [
+        {**row, "abstained": float(row[score_field]) >= threshold}
+        for row in locked_rows
+    ]
+    known_evaluated = [row for row in evaluated if not bool(row["is_unknown"])]
+    unknown_evaluated = [row for row in evaluated if bool(row["is_unknown"])]
+
+    def strata(field: str) -> dict[str, Any]:
+        output_rows = {}
+        for value in sorted({str(row[field]) for row in evaluated}):
+            selected = [row for row in evaluated if str(row[field]) == value]
+            selected_unknown = [row for row in selected if bool(row["is_unknown"])]
+            selected_known = [row for row in selected if not bool(row["is_unknown"])]
+            output_rows[value] = {
+                "rows": len(selected),
+                "unknown_false_acceptance": (
+                    _rate(
+                        sum(not row["abstained"] for row in selected_unknown),
+                        len(selected_unknown),
+                    )
+                    if selected_unknown
+                    else None
+                ),
+                "known_false_abstention": (
+                    _rate(
+                        sum(row["abstained"] for row in selected_known),
+                        len(selected_known),
+                    )
+                    if selected_known
+                    else None
+                ),
+            }
+        return output_rows
+
+    detector_rows = [
+        {**row, "detector_subset": "+".join(str(ifo) for ifo in row["available_ifos"])}
+        for row in evaluated
+    ]
+    evaluated = detector_rows
+    result = {
+        "status": "locked_detector_set_ood_transfer_evaluation",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "threshold_refits_on_test": 0,
+        "threshold": threshold,
+        "threshold_source": "known_validation_only",
+        "score_field": score_field,
+        "evaluation_rows": len(evaluated),
+        "known_rows": len(known_evaluated),
+        "unknown_rows": len(unknown_evaluated),
+        "known_false_abstention": _rate(
+            sum(row["abstained"] for row in known_evaluated), len(known_evaluated)
+        ),
+        "unknown_true_abstention": _rate(
+            sum(row["abstained"] for row in unknown_evaluated), len(unknown_evaluated)
+        ),
+        "unknown_false_acceptance": _rate(
+            sum(not row["abstained"] for row in unknown_evaluated),
+            len(unknown_evaluated),
+        ),
+        "auroc_diagnostic": ood_auc(evaluated, score_field),
+        "glitch_family_strata": strata("glitch_family"),
+        "detector_subset_strata": strata("detector_subset"),
+        "observing_run_strata": strata("observing_run"),
+        "split_audit": {"passed": True, "cross_split_overlaps": overlaps},
+        "validation_ood_report": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "locked_score_manifest": {
+            "path": str(locked_path),
+            "sha256": file_sha256(locked_path),
+        },
+        "checkpoint": {
+            "path": str(checkpoint_path),
+            "sha256": file_sha256(checkpoint_path),
+        },
+        "locked_suite_access": suite_access,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def freeze_ood_held_family_protocol(
     train_manifest: str | Path,
     validation_manifest: str | Path,

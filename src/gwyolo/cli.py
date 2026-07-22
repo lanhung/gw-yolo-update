@@ -1767,6 +1767,14 @@ def build_parser() -> argparse.ArgumentParser:
     ood.add_argument("--maximum-known-abstention-rate", type=float, default=0.05)
     ood.add_argument("--score-field", default="ood_score")
 
+    locked_ood = subparsers.add_parser("ood-abstention-evaluate-locked")
+    locked_ood.add_argument("--validation-ood-report", required=True)
+    locked_ood.add_argument("--locked-score-manifest", required=True)
+    locked_ood.add_argument("--locked-suite-plan", required=True)
+    locked_ood.add_argument("--access-log", required=True)
+    locked_ood.add_argument("--output", required=True)
+    locked_ood.add_argument("--score-field", default="ood_score")
+
     ood_split = subparsers.add_parser("gravityspy-ood-split")
     ood_split.add_argument("--train-manifest", required=True)
     ood_split.add_argument("--validation-manifest", required=True)
@@ -4006,6 +4014,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.evaluation_manifest,
                 args.output,
                 args.maximum_known_abstention_rate,
+                args.score_field,
+            )
+        )
+    elif args.command == "ood-abstention-evaluate-locked":
+        from .ood import run_locked_ood_transfer_evaluation
+
+        _print(
+            run_locked_ood_transfer_evaluation(
+                args.validation_ood_report,
+                args.locked_score_manifest,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
                 args.score_field,
             )
         )
