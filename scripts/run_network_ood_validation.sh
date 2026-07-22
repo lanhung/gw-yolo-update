@@ -195,3 +195,11 @@ target = root / "network_ood_validation_receipt.json"
 atomic_write_json(target, result)
 print(json.dumps(result, indent=2, sort_keys=True))
 PY
+
+endpoint="$OUTPUT_ROOT/network_ood_validation_endpoint.json"
+if [[ ! -s "$endpoint" ]]; then
+  "$TASK_PYTHON" -m gwyolo.cli detector-set-ood-validation-bind \
+    --source-receipt "$OUTPUT_ROOT/network_ood_validation_receipt.json" \
+    --corpus-audit "$GRAVITYSPY_CORPUS_AUDIT" \
+    --output "$endpoint"
+fi

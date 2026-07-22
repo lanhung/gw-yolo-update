@@ -46,6 +46,15 @@ This prevents an otherwise valid-looking comparison made on a pre-partition or
 capacity-insufficient plan from entering the validation ledger while preserving the immutable
 commit that executed the expensive background run.
 
+The detector-set OOD entry must be the output of
+`detector-set-ood-validation-bind`, not the inner embedding report or the runner receipt alone.
+The binder replays the source-safe corpus audit, score-blind held-family protocol, leave-family-out
+split, three exact split manifests, CUDA embedding report, checkpoint and both score manifests. It
+also requires at least two observing-run strata, a known-only frozen threshold and an auxiliary
+policy that cannot veto a strain-coherent candidate. This keeps the locked scorer's native
+validation-model input separate while ensuring that only corpus-bound OOD evidence can satisfy the
+validation ledger.
+
 `publication_ready=true` in the validation protocol means only that the predeclared inputs needed
 to freeze and authorize the one-time locked evaluation are present. It deliberately keeps
 `scientific_claim_allowed=false`. A separate `locked_final` protocol, populated only after the

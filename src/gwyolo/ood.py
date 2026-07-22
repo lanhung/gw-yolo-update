@@ -325,6 +325,200 @@ def run_ood_abstention_evaluation(
     return result
 
 
+def bind_source_safe_detector_set_ood_validation(
+    source_receipt: str | Path,
+    corpus_audit: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind detector-set OOD evidence to its exact source-safe validation corpus."""
+
+    source_path = Path(source_receipt).resolve()
+    corpus_path = Path(corpus_audit).resolve()
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("source-safe OOD validation endpoints are immutable")
+    if not source_path.is_file() or not corpus_path.is_file():
+        raise FileNotFoundError("source-safe OOD binding inputs are absent")
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    artifacts = source.get("artifacts", {})
+    required_artifacts = {
+        "held_family_protocol",
+        "split_report",
+        "embedding_report",
+        "checkpoint",
+        "known_calibration_scores",
+        "heldout_evaluation_scores",
+        "gravityspy_corpus_audit",
+    }
+    if (
+        source.get("status") != "completed_source_safe_detector_set_ood_validation"
+        or source.get("passed") is not True
+        or source.get("scientific_claim_allowed") is not False
+        or source.get("test_rows_read") != 0
+        or source.get("test_evaluation") is not None
+        or not isinstance(artifacts, dict)
+        or required_artifacts - set(artifacts)
+    ):
+        raise ValueError("source detector-set OOD receipt is not validation-eligible")
+
+    resolved: dict[str, Path] = {}
+    for label in sorted(required_artifacts):
+        identity = artifacts[label]
+        if not isinstance(identity, dict):
+            raise ValueError(f"source OOD artifact identity is invalid: {label}")
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or identity.get("sha256") != file_sha256(path):
+            raise ValueError(f"source OOD artifact failed hash replay: {label}")
+        resolved[label] = path
+    if (
+        resolved["gravityspy_corpus_audit"] != corpus_path
+        or artifacts["gravityspy_corpus_audit"].get("sha256")
+        != file_sha256(corpus_path)
+    ):
+        raise ValueError("source OOD receipt is bound to a different corpus audit")
+
+    cross_split = corpus.get("split_audit", {}).get("cross_split_overlaps", {})
+    if (
+        corpus.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or corpus.get("passed") is not True
+        or not isinstance(cross_split, dict)
+        or not cross_split
+        or any(value for value in cross_split.values())
+        or not corpus.get("train_manifest_sha256")
+        or not corpus.get("validation_manifest_sha256")
+    ):
+        raise ValueError("OOD corpus audit is not source/GPS/glitch-disjoint")
+
+    protocol = json.loads(resolved["held_family_protocol"].read_text(encoding="utf-8"))
+    split = json.loads(resolved["split_report"].read_text(encoding="utf-8"))
+    embedding = json.loads(resolved["embedding_report"].read_text(encoding="utf-8"))
+    evaluation = embedding.get("ood_evaluation", {})
+    calibration = evaluation.get("calibration", {})
+    protocol_identity = protocol.get("identity", {})
+    protocol_overlaps = protocol.get("base_split_audit", {}).get(
+        "cross_split_overlaps", {}
+    )
+    split_overlaps = split.get("split_audit", {}).get("gps_block_overlaps", {})
+    split_base_overlaps = split.get("base_split_audit", {}).get(
+        "cross_split_overlaps", {}
+    )
+    if (
+        protocol.get("status") != "frozen_score_blind_held_glitch_family_protocol"
+        or protocol.get("model_scores_used_for_selection") is not False
+        or protocol.get("unknown_scores_opened_before_selection") is not False
+        or protocol_identity.get("train_manifest_sha256")
+        != corpus.get("train_manifest_sha256")
+        or protocol_identity.get("validation_manifest_sha256")
+        != corpus.get("validation_manifest_sha256")
+        or protocol.get("base_split_audit", {}).get("passed") is not True
+        or not isinstance(protocol_overlaps, dict)
+        or any(protocol_overlaps.values())
+        or split.get("status") != "frozen_leave_one_glitch_family_out_split"
+        or split.get("held_out_family")
+        != protocol.get("selected", {}).get("glitch_family")
+        or split.get("train_manifest_sha256") != corpus.get("train_manifest_sha256")
+        or split.get("validation_manifest_sha256")
+        != corpus.get("validation_manifest_sha256")
+        or split.get("split_audit", {}).get("passed") is not True
+        or split.get("base_split_audit", {}).get("passed") is not True
+        or not isinstance(split_overlaps, dict)
+        or not isinstance(split_base_overlaps, dict)
+        or any(split_overlaps.values())
+        or any(split_base_overlaps.values())
+        or embedding.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or embedding.get("architecture") != "detector_set"
+        or embedding.get("ood_score_method") != "logit_energy"
+        or embedding.get("device") != "cuda"
+        or embedding.get("test_evaluation") is not None
+        or embedding.get("scientific_claim_allowed") is not False
+        or embedding.get("ood_score_fit", {}).get(
+            "heldout_scores_used_for_method_or_fit_selection"
+        )
+        is not False
+        or evaluation.get("status")
+        != "frozen_known_only_ood_abstention_evaluation"
+        or calibration.get("selection_data") != "known_validation_only"
+        or calibration.get("unknown_scores_used_for_selection") is not False
+        or len(evaluation.get("observing_run_strata", {})) < 2
+        or not evaluation.get("unknown_false_acceptance")
+    ):
+        raise ValueError("detector-set OOD validation boundary failed replay")
+    split_manifest_artifacts: dict[str, Path] = {}
+    embedding_identity = embedding.get("run_identity", {})
+    for role in ("known_train", "known_calibration", "heldout_evaluation"):
+        identity = split.get("artifacts", {}).get(role, {})
+        path = Path(str(identity.get("path", ""))).resolve()
+        expected_hash = identity.get("sha256")
+        if (
+            not path.is_file()
+            or expected_hash != file_sha256(path)
+            or embedding_identity.get(f"{role}_manifest_sha256") != expected_hash
+        ):
+            raise ValueError(f"OOD split manifest failed embedding replay: {role}")
+        split_manifest_artifacts[f"{role}_manifest"] = path
+    embedded_artifacts = {
+        "checkpoint": ("checkpoint_path", "checkpoint_sha256"),
+        "known_calibration_scores": (
+            "known_calibration_scores_path",
+            "known_calibration_scores_sha256",
+        ),
+        "heldout_evaluation_scores": (
+            "heldout_evaluation_scores_path",
+            "heldout_evaluation_scores_sha256",
+        ),
+    }
+    for label, (path_field, hash_field) in embedded_artifacts.items():
+        if (
+            Path(str(embedding.get(path_field, ""))).resolve() != resolved[label]
+            or embedding.get(hash_field) != file_sha256(resolved[label])
+        ):
+            raise ValueError(f"embedding OOD artifact differs from source receipt: {label}")
+
+    bound_artifacts = {
+        "source_receipt": {
+            "path": str(source_path),
+            "sha256": file_sha256(source_path),
+        },
+        **{
+            label: {
+                "path": str(resolved[label]),
+                "sha256": file_sha256(resolved[label]),
+            }
+            for label in sorted(required_artifacts)
+        },
+        **{
+            label: {"path": str(path), "sha256": file_sha256(path)}
+            for label, path in sorted(split_manifest_artifacts.items())
+        },
+    }
+    result = {
+        "status": "bound_source_safe_detector_set_ood_validation",
+        "passed": True,
+        "validation_transfer_eligible": True,
+        "source_safe_corpus_gate": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation-only auxiliary attribution/abstention evidence; it cannot veto a "
+            "strain-coherent candidate and locked later-run transfer remains required"
+        ),
+        "architecture": embedding["architecture"],
+        "ood_score_method": embedding["ood_score_method"],
+        "ood_score_fit": embedding["ood_score_fit"],
+        "ood_evaluation": evaluation,
+        "auxiliary_policy": embedding["auxiliary_policy"],
+        "selected_held_family": protocol["selected"]["glitch_family"],
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "artifacts": bound_artifacts,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_frozen_glitch_ood_scoring(
     config_path: str | Path,
     validation_ood_report: str | Path,

@@ -151,18 +151,32 @@ publication_evidence:
       group: robustness
       description: Detector-set leave-family-out and observing-run transfer without retuning.
       checks:
-        - {field: status, op: equals, value: known_family_embedding_heldout_ood_validation}
+        - {field: status, op: equals, value: bound_source_safe_detector_set_ood_validation}
+        - {field: passed, op: equals, value: true}
+        - {field: validation_transfer_eligible, op: equals, value: true}
+        - {field: source_safe_corpus_gate, op: equals, value: true}
         - {field: architecture, op: equals, value: detector_set}
         - {field: ood_score_method, op: equals, value: logit_energy}
         - {field: ood_score_fit.heldout_scores_used_for_method_or_fit_selection, op: equals, value: false}
         - {field: ood_evaluation.calibration.unknown_scores_used_for_selection, op: equals, value: false}
         - {field: ood_evaluation.observing_run_strata, op: length_at_least, value: 2}
         - {field: ood_evaluation.unknown_false_acceptance, op: nonempty}
+        - {field: auxiliary_policy, op: contains, value: cannot veto}
+        - {field: test_rows_read, op: equals, value: 0}
         - {field: test_evaluation, op: equals, value: null}
+        - {field: scientific_claim_allowed, op: equals, value: false}
       replay_artifacts:
-        - {path_field: checkpoint_path, sha256_field: checkpoint_sha256}
-        - {path_field: known_calibration_scores_path, sha256_field: known_calibration_scores_sha256}
-        - {path_field: heldout_evaluation_scores_path, sha256_field: heldout_evaluation_scores_sha256}
+        - {path_field: artifacts.source_receipt.path, sha256_field: artifacts.source_receipt.sha256}
+        - {path_field: artifacts.gravityspy_corpus_audit.path, sha256_field: artifacts.gravityspy_corpus_audit.sha256}
+        - {path_field: artifacts.held_family_protocol.path, sha256_field: artifacts.held_family_protocol.sha256}
+        - {path_field: artifacts.split_report.path, sha256_field: artifacts.split_report.sha256}
+        - {path_field: artifacts.embedding_report.path, sha256_field: artifacts.embedding_report.sha256}
+        - {path_field: artifacts.checkpoint.path, sha256_field: artifacts.checkpoint.sha256}
+        - {path_field: artifacts.known_calibration_scores.path, sha256_field: artifacts.known_calibration_scores.sha256}
+        - {path_field: artifacts.heldout_evaluation_scores.path, sha256_field: artifacts.heldout_evaluation_scores.sha256}
+        - {path_field: artifacts.known_train_manifest.path, sha256_field: artifacts.known_train_manifest.sha256}
+        - {path_field: artifacts.known_calibration_manifest.path, sha256_field: artifacts.known_calibration_manifest.sha256}
+        - {path_field: artifacts.heldout_evaluation_manifest.path, sha256_field: artifacts.heldout_evaluation_manifest.sha256}
 
     - id: paired_dingo_amplfi_pe_portfolio
       group: pe

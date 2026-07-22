@@ -1920,6 +1920,11 @@ def build_parser() -> argparse.ArgumentParser:
     locked_ood.add_argument("--output", required=True)
     locked_ood.add_argument("--score-field", default="ood_score")
 
+    bind_ood = subparsers.add_parser("detector-set-ood-validation-bind")
+    bind_ood.add_argument("--source-receipt", required=True)
+    bind_ood.add_argument("--corpus-audit", required=True)
+    bind_ood.add_argument("--output", required=True)
+
     frozen_ood_score = subparsers.add_parser("glitch-ood-score-frozen")
     frozen_ood_score.add_argument("--config", required=True)
     frozen_ood_score.add_argument("--validation-ood-report", required=True)
@@ -4336,6 +4341,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.access_log,
                 args.output,
                 args.score_field,
+            )
+        )
+    elif args.command == "detector-set-ood-validation-bind":
+        from .ood import bind_source_safe_detector_set_ood_validation
+
+        _print(
+            bind_source_safe_detector_set_ood_validation(
+                args.source_receipt,
+                args.corpus_audit,
+                args.output,
             )
         )
     elif args.command == "glitch-ood-score-frozen":

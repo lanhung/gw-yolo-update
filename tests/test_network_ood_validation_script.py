@@ -29,4 +29,6 @@ def test_network_ood_script_binds_corpus_commit_and_auxiliary_boundary() -> None
     assert 'report.get("device") != "cuda"' in source
     assert "cannot veto a" in source
     assert "network_ood_validation_receipt.json" in source
+    assert "detector-set-ood-validation-bind" in source
+    assert "network_ood_validation_endpoint.json" in source
     assert "test_rows_read" in source
