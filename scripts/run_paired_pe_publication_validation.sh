@@ -29,6 +29,7 @@ required=(
   AMPLFI_PYTHON
   AMPLFI_MODEL_METADATA
   AMPLFI_NATIVE_PRIOR
+  PRIOR_SMOKE_PORTFOLIO_SUMMARY
   PE_INPUT_OUTPUT_ROOT
   DINGO_OUTPUT_ROOT
   AMPLFI_OUTPUT_ROOT
@@ -65,6 +66,39 @@ if [[ -n "${WAIT_FOR_PID:-}" ]]; then
     sleep 30
   done
 fi
+
+"$TASK_PYTHON" - "$PRIOR_SMOKE_PORTFOLIO_SUMMARY" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+
+def digest(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+summary_path = pathlib.Path(sys.argv[1]).resolve()
+if not summary_path.is_file():
+    raise SystemExit("prior paired PE smoke portfolio summary is absent")
+summary = json.loads(summary_path.read_text(encoding="utf-8"))
+paired_injections = int(summary.get("paired_injections", -1))
+if (
+    summary.get("status") != "validation_only_paired_pe_portfolio_complete"
+    or not 0 < paired_injections < 100
+    or int(summary.get("bootstrap_replicates", -1)) < 10000
+    or summary.get("test_rows_read") != 0
+    or summary.get("absolute_cross_backend_comparison_allowed") is not False
+):
+    raise SystemExit("prior paired PE smoke portfolio did not pass the runtime proof gate")
+artifacts = summary.get("artifacts", {})
+if not artifacts:
+    raise SystemExit("prior paired PE smoke portfolio has no replayable artifacts")
+for label, identity in artifacts.items():
+    path = pathlib.Path(identity.get("path", "")).resolve()
+    if not path.is_file() or digest(path) != identity.get("sha256"):
+        raise SystemExit(f"prior paired PE smoke artifact changed: {label}")
+PY
 
 cd "$TASK_CODE_DIR"
 PE_SMOKE_LIMIT="$validation_limit" \
