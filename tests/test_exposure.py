@@ -8,6 +8,7 @@ import pytest
 
 from gwyolo.background import SECONDS_PER_YEAR
 from gwyolo.exposure import (
+    authorize_candidate_background_plan,
     candidate_slide_schedule_identity,
     forecast_candidate_block_permutation_capacity,
     freeze_candidate_block_capacity_extension_decision,
@@ -182,6 +183,116 @@ def test_block_capacity_forecast_matches_hand_calculated_quadratic_gate(
     with pytest.raises(ValueError, match="pair IDs must be nonempty and unique"):
         forecast_candidate_block_permutation_capacity(
             schedule_path, background, duplicate_plan, safety_factor=2
+        )
+
+
+def test_candidate_background_authorization_replays_all_purpose_gates(
+    tmp_path: Path,
+) -> None:
+    purpose = tmp_path / "purpose.json"
+    purpose.write_text("{}\n", encoding="utf-8")
+    purpose_hash = file_sha256(purpose)
+    endpoint = tmp_path / "endpoint.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "rows": 3000,
+                "candidate_calibration_unique_gps_blocks": 25,
+                "injection_validation_unique_gps_blocks": 25,
+                "purpose_gps_block_overlap": 0,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "component_reports": {
+                    "purpose_partition": {
+                        "path": str(purpose),
+                        "sha256": purpose_hash,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "run": "O4a",
+                "locked_evaluation_data": False,
+                "candidate_scores_inspected": False,
+                "test_data_opened": False,
+                "selected_pairs": 4,
+                "pairs": [{"pair_id": f"pair-{index}"} for index in range(4)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    audit = tmp_path / "purpose-audit.json"
+    audit_report = {
+        "status": "verified_gwosc_plan_validation_purpose_disjointness",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "overlap_pair_ids": [],
+        "overlap_gps_blocks": [],
+        "plan": {"sha256": file_sha256(plan)},
+        "purpose_partition": {"sha256": purpose_hash},
+        "roles": {
+            role: {
+                "gps_interval_overlap_count": 0,
+                "direct_pair_id_overlaps": [],
+            }
+            for role in ("candidate_calibration", "injection_validation")
+        },
+    }
+    audit.write_text(json.dumps(audit_report), encoding="utf-8")
+    forecast = tmp_path / "forecast.json"
+    forecast.write_text(
+        json.dumps(
+            {
+                "status": "score_blind_candidate_block_capacity_forecast",
+                "scientific_claim_allowed": False,
+                "forecast_only": True,
+                "candidate_scores_inspected": False,
+                "planned_pairs_satisfy_safety_forecast": True,
+                "recommendation_fits_available_pairs": True,
+                "planned_parent_plan_sha256": file_sha256(plan),
+                "planned_source_pairs": 4,
+                "recommended_minimum_source_pairs": 4,
+                "safety_factor": 1.5,
+                "target_far_per_year": 0.1,
+                "zero_count_confidence": 0.9,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "authorization.json"
+    report = authorize_candidate_background_plan(
+        endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
+    )
+    assert report["status"] == (
+        "authorized_validation_candidate_continuous_background_plan"
+    )
+    assert report["passed"] is True
+    assert report["test_rows_read"] == 0
+    assert len(report["authorization_id"]) == 64
+    assert report["authorization_identity"]["selected_pairs"] == 4
+    assert (
+        authorize_candidate_background_plan(
+            endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
+        )["authorization_id"]
+        == report["authorization_id"]
+    )
+
+    audit_report["overlap_gps_blocks"] = ["gps:1:256"]
+    audit.write_text(json.dumps(audit_report), encoding="utf-8")
+    with pytest.raises(ValueError, match="purpose audit"):
+        authorize_candidate_background_plan(
+            endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
         )
 
 

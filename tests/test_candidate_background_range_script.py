@@ -83,9 +83,8 @@ def test_candidate_background_extension_binds_authoritative_parent() -> None:
     assert '"$INDEPENDENT_VALIDATION_ENDPOINT_REPORT"' in source
     assert '"$VALIDATION_PURPOSE_AUDIT"' in source
     assert '"$CAPACITY_FORECAST"' in source
-    assert 'audit.get("plan", {}).get("sha256") != plan_hash' in source
-    assert 'forecast.get("planned_parent_plan_sha256") != plan_hash' in source
-    assert 'int(endpoint.get("rows", -1)) < 3000' in source
+    assert "candidate-background-plan-authorize" in source
+    assert "publication_background_plan_authorization.json" in source
     assert '"$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN"' in source
     assert '"$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"' in source
     assert 'get("parent_plan_sha256") != digest' in source
@@ -107,13 +106,13 @@ def test_candidate_background_rejects_audit_for_another_plan(tmp_path: Path) -> 
     environment.update(
         {
             "TASK_PYTHON": sys.executable,
+            "TASK_CODE_DIR": str(SCRIPT.parents[1]),
+            "SCORING_CODE_DIR": str(SCRIPT.parents[1]),
             "CHECKPOINT": str(tmp_path / "checkpoint.pt"),
             "CONFIG": str(tmp_path / "config.yaml"),
             "SHARD_STOP_EXCLUSIVE": "1",
         }
     )
-    for name in ("task_code_dir", "scoring_code_dir"):
-        (tmp_path / name / "src" / "gwyolo").mkdir(parents=True)
     for name in (
         "promotion_report",
         "promoted_pipeline_report",
@@ -126,22 +125,34 @@ def test_candidate_background_rejects_audit_for_another_plan(tmp_path: Path) -> 
     ):
         (tmp_path / name).write_text("{}\n", encoding="utf-8")
 
-    purpose_hash = "a" * 64
+    purpose_path = tmp_path / "purpose.json"
+    purpose_path.write_text("{}\n", encoding="utf-8")
+    purpose_hash = hashlib.sha256(purpose_path.read_bytes()).hexdigest()
     endpoint = {
         "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
         "passed": True,
+        "scientific_claim_allowed": False,
         "rows": 3000,
         "candidate_calibration_unique_gps_blocks": 25,
         "injection_validation_unique_gps_blocks": 25,
         "purpose_gps_block_overlap": 0,
         "test_rows_read": 0,
         "test_evaluation": None,
-        "component_reports": {"purpose_partition": {"sha256": purpose_hash}},
+        "component_reports": {
+            "purpose_partition": {
+                "path": str(purpose_path),
+                "sha256": purpose_hash,
+            }
+        },
     }
     plan = {
+        "status": "development_acquisition_plan",
+        "run": "O4a",
+        "locked_evaluation_data": False,
         "selected_pairs": 4,
         "candidate_scores_inspected": False,
         "test_data_opened": False,
+        "pairs": [{"pair_id": f"pair-{index}"} for index in range(4)],
     }
     endpoint_path = Path(environment["INDEPENDENT_VALIDATION_ENDPOINT_REPORT"])
     plan_path = Path(environment["PARENT_PLAN"])
@@ -151,15 +162,24 @@ def test_candidate_background_rejects_audit_for_another_plan(tmp_path: Path) -> 
     audit = {
         "status": "verified_gwosc_plan_validation_purpose_disjointness",
         "passed": True,
+        "scientific_claim_allowed": False,
         "candidate_scores_inspected": False,
         "test_rows_read": 0,
         "overlap_pair_ids": [],
         "overlap_gps_blocks": [],
         "plan": {"sha256": "b" * 64},
         "purpose_partition": {"sha256": purpose_hash},
+        "roles": {
+            role: {
+                "gps_interval_overlap_count": 0,
+                "direct_pair_id_overlaps": [],
+            }
+            for role in ("candidate_calibration", "injection_validation")
+        },
     }
     forecast = {
         "status": "score_blind_candidate_block_capacity_forecast",
+        "scientific_claim_allowed": False,
         "forecast_only": True,
         "candidate_scores_inspected": False,
         "planned_pairs_satisfy_safety_forecast": True,

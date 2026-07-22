@@ -13,6 +13,13 @@ def test_mask_conditioned_background_runner_is_gate_bound_and_validation_only() 
     for token in (
         "MASK_VALIDATION_RECEIPT",
         "MASK_TIMING_RECEIPT",
+        "INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
+        "VALIDATION_PURPOSE_AUDIT",
+        "CAPACITY_FORECAST",
+        "candidate-background-plan-authorize",
+        "publication_background_plan_authorization.json",
+        "authorized_validation_candidate_continuous_background_plan",
+        '"background_plan_authorization"',
         "candidate-scoring-compatibility-audit",
         "background-raw-mask-stream-shard",
         "background-raw-mask-stream-merge",

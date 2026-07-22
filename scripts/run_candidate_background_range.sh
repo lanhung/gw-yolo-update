@@ -153,99 +153,22 @@ for input in \
   fi
 done
 
-"$TASK_PYTHON" - \
-  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
-  "$PARENT_PLAN" \
-  "$VALIDATION_PURPOSE_AUDIT" \
-  "$CAPACITY_FORECAST" \
-  "$SHARD_STOP_EXCLUSIVE" \
-  "$PAIRS_PER_SHARD" \
-  "$TARGET_FAR_PER_YEAR" \
-  "$ZERO_COUNT_CONFIDENCE" <<'PY'
-import hashlib
-import json
-import math
-import pathlib
-import sys
-
-
-def digest(path):
-    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-
-
+authorization="$OUTPUT_ROOT/publication_background_plan_authorization.json"
 (
-    endpoint_path,
-    plan_path,
-    audit_path,
-    forecast_path,
-    shard_stop,
-    pairs_per_shard,
-    target_far,
-    zero_count_confidence,
-) = sys.argv[1:]
-endpoint = json.loads(pathlib.Path(endpoint_path).read_text(encoding="utf-8"))
-plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
-audit = json.loads(pathlib.Path(audit_path).read_text(encoding="utf-8"))
-forecast = json.loads(pathlib.Path(forecast_path).read_text(encoding="utf-8"))
-plan_hash = digest(plan_path)
-purpose_component = endpoint.get("component_reports", {}).get("purpose_partition", {})
-
-if (
-    endpoint.get("status") != "frozen_gps_and_purpose_disjoint_validation_endpoint"
-    or endpoint.get("passed") is not True
-    or int(endpoint.get("rows", -1)) < 3000
-    or int(endpoint.get("candidate_calibration_unique_gps_blocks", -1)) < 25
-    or int(endpoint.get("injection_validation_unique_gps_blocks", -1)) < 25
-    or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
-    or int(endpoint.get("test_rows_read", -1)) != 0
-    or endpoint.get("test_evaluation") is not None
-):
-    raise SystemExit("independent validation endpoint is incomplete or not purpose-disjoint")
-if (
-    audit.get("status") != "verified_gwosc_plan_validation_purpose_disjointness"
-    or audit.get("passed") is not True
-    or audit.get("candidate_scores_inspected") is not False
-    or int(audit.get("test_rows_read", -1)) != 0
-    or audit.get("overlap_pair_ids") != []
-    or audit.get("overlap_gps_blocks") != []
-    or audit.get("plan", {}).get("sha256") != plan_hash
-    or audit.get("purpose_partition", {}).get("sha256")
-    != purpose_component.get("sha256")
-):
-    raise SystemExit("validation-purpose audit does not authorize this parent plan")
-
-selected_pairs = int(plan.get("selected_pairs", -1))
-if (
-    plan.get("candidate_scores_inspected") is not False
-    or plan.get("test_data_opened") is not False
-    or selected_pairs <= 0
-    or math.ceil(selected_pairs / int(pairs_per_shard)) != int(shard_stop)
-):
-    raise SystemExit("parent plan is not score-blind or does not match the bounded shard range")
-if (
-    forecast.get("status") != "score_blind_candidate_block_capacity_forecast"
-    or forecast.get("forecast_only") is not True
-    or forecast.get("candidate_scores_inspected") is not False
-    or forecast.get("planned_pairs_satisfy_safety_forecast") is not True
-    or forecast.get("recommendation_fits_available_pairs") is not True
-    or forecast.get("planned_parent_plan_sha256") != plan_hash
-    or int(forecast.get("planned_source_pairs", -1)) != selected_pairs
-    or int(forecast.get("recommended_minimum_source_pairs", selected_pairs + 1))
-    > selected_pairs
-    or float(forecast.get("safety_factor", -1)) < 1.5
-    or not math.isclose(
-        float(forecast.get("target_far_per_year", -1)),
-        float(target_far),
-        abs_tol=1e-12,
-    )
-    or not math.isclose(
-        float(forecast.get("zero_count_confidence", -1)),
-        float(zero_count_confidence),
-        abs_tol=1e-12,
-    )
-):
-    raise SystemExit("capacity forecast does not authorize this parent plan and FAR target")
-PY
+  cd "$TASK_CODE_DIR"
+  export PYTHONPATH=src GWYOLO_CODE_COMMIT
+  "$TASK_PYTHON" -m gwyolo.cli candidate-background-plan-authorize \
+    --independent-validation-endpoint "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+    --parent-plan "$PARENT_PLAN" \
+    --validation-purpose-audit "$VALIDATION_PURPOSE_AUDIT" \
+    --capacity-forecast "$CAPACITY_FORECAST" \
+    --shard-stop-exclusive "$SHARD_STOP_EXCLUSIVE" \
+    --pairs-per-shard "$PAIRS_PER_SHARD" \
+    --target-far-per-year "$TARGET_FAR_PER_YEAR" \
+    --zero-count-confidence "$ZERO_COUNT_CONFIDENCE" \
+    --minimum-safety-factor 1.5 \
+    --output "$authorization"
+)
 
 if (( SHARD_START > 0 )); then
   if [[ ! -f "$CAPACITY_EXTENSION_DECISION" ]]; then

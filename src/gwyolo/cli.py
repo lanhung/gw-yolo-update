@@ -1257,6 +1257,34 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_block_capacity.add_argument("--safety-factor", type=float, default=1.5)
     candidate_block_capacity.add_argument("--allow-insufficient", action="store_true")
 
+    candidate_background_authorize = subparsers.add_parser(
+        "candidate-background-plan-authorize"
+    )
+    candidate_background_authorize.add_argument(
+        "--independent-validation-endpoint", required=True
+    )
+    candidate_background_authorize.add_argument("--parent-plan", required=True)
+    candidate_background_authorize.add_argument(
+        "--validation-purpose-audit", required=True
+    )
+    candidate_background_authorize.add_argument("--capacity-forecast", required=True)
+    candidate_background_authorize.add_argument("--output", required=True)
+    candidate_background_authorize.add_argument(
+        "--shard-stop-exclusive", type=int, required=True
+    )
+    candidate_background_authorize.add_argument(
+        "--pairs-per-shard", type=int, default=4
+    )
+    candidate_background_authorize.add_argument(
+        "--target-far-per-year", type=float, default=0.1
+    )
+    candidate_background_authorize.add_argument(
+        "--zero-count-confidence", type=float, default=0.9
+    )
+    candidate_background_authorize.add_argument(
+        "--minimum-safety-factor", type=float, default=1.5
+    )
+
     candidate_block_extension = subparsers.add_parser(
         "candidate-block-permutation-capacity-extension-freeze"
     )
@@ -3385,6 +3413,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.safety_factor,
                 args.allow_insufficient,
+            )
+        )
+    elif args.command == "candidate-background-plan-authorize":
+        from .exposure import authorize_candidate_background_plan
+
+        _print(
+            authorize_candidate_background_plan(
+                args.independent_validation_endpoint,
+                args.parent_plan,
+                args.validation_purpose_audit,
+                args.capacity_forecast,
+                args.output,
+                args.shard_stop_exclusive,
+                args.pairs_per_shard,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+                args.minimum_safety_factor,
             )
         )
     elif args.command == "candidate-block-permutation-capacity-extension-freeze":

@@ -759,6 +759,181 @@ def run_candidate_block_permutation_capacity_forecast(
     return report
 
 
+def authorize_candidate_background_plan(
+    independent_validation_endpoint_path: str | Path,
+    parent_plan_path: str | Path,
+    validation_purpose_audit_path: str | Path,
+    capacity_forecast_path: str | Path,
+    output_path: str | Path,
+    shard_stop_exclusive: int,
+    pairs_per_shard: int = 4,
+    target_far_per_year: float = 0.1,
+    zero_count_confidence: float = 0.9,
+    minimum_safety_factor: float = 1.5,
+) -> dict[str, Any]:
+    """Authorize one validation-background plan against every frozen data-purpose gate."""
+
+    if (
+        shard_stop_exclusive < 1
+        or pairs_per_shard < 1
+        or target_far_per_year <= 0
+        or not 0 < zero_count_confidence < 1
+        or minimum_safety_factor < 1
+    ):
+        raise ValueError("candidate background authorization settings are invalid")
+    endpoint_path = Path(independent_validation_endpoint_path).resolve()
+    plan_path = Path(parent_plan_path).resolve()
+    audit_path = Path(validation_purpose_audit_path).resolve()
+    forecast_path = Path(capacity_forecast_path).resolve()
+    endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    forecast = json.loads(forecast_path.read_text(encoding="utf-8"))
+    plan_hash = file_sha256(plan_path)
+    purpose_component = endpoint.get("component_reports", {}).get(
+        "purpose_partition", {}
+    )
+    purpose_path = Path(str(purpose_component.get("path", ""))).resolve()
+
+    if (
+        endpoint.get("status")
+        != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+        or endpoint.get("passed") is not True
+        or endpoint.get("scientific_claim_allowed") is not False
+        or int(endpoint.get("rows", -1)) != 3000
+        or int(endpoint.get("candidate_calibration_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("injection_validation_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        or int(endpoint.get("test_rows_read", -1)) != 0
+        or endpoint.get("test_evaluation") is not None
+        or not purpose_path.is_file()
+        or purpose_component.get("sha256") != file_sha256(purpose_path)
+    ):
+        raise ValueError("independent validation endpoint authorization failed")
+    roles = audit.get("roles", {})
+    if (
+        audit.get("status")
+        != "verified_gwosc_plan_validation_purpose_disjointness"
+        or audit.get("passed") is not True
+        or audit.get("scientific_claim_allowed") is not False
+        or audit.get("candidate_scores_inspected") is not False
+        or int(audit.get("test_rows_read", -1)) != 0
+        or audit.get("overlap_pair_ids") != []
+        or audit.get("overlap_gps_blocks") != []
+        or audit.get("plan", {}).get("sha256") != plan_hash
+        or audit.get("purpose_partition", {}).get("sha256")
+        != purpose_component.get("sha256")
+        or set(roles) != {"candidate_calibration", "injection_validation"}
+        or any(
+            int(role.get("gps_interval_overlap_count", -1)) != 0
+            or role.get("direct_pair_id_overlaps") != []
+            for role in roles.values()
+        )
+    ):
+        raise ValueError("validation-purpose audit does not authorize the parent plan")
+
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    selected_pairs = int(plan.get("selected_pairs", -1))
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("run") != "O4a"
+        or plan.get("locked_evaluation_data") is not False
+        or plan.get("candidate_scores_inspected") is not False
+        or plan.get("test_data_opened") is not False
+        or selected_pairs != len(pairs)
+        or selected_pairs <= 0
+        or any(not value for value in pair_ids)
+        or len(set(pair_ids)) != len(pair_ids)
+        or math.ceil(selected_pairs / pairs_per_shard) != shard_stop_exclusive
+    ):
+        raise ValueError("parent plan is not a complete score-blind O4a shard range")
+    if (
+        forecast.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or forecast.get("scientific_claim_allowed") is not False
+        or forecast.get("forecast_only") is not True
+        or forecast.get("candidate_scores_inspected") is not False
+        or forecast.get("planned_pairs_satisfy_safety_forecast") is not True
+        or forecast.get("recommendation_fits_available_pairs") is not True
+        or forecast.get("planned_parent_plan_sha256") != plan_hash
+        or int(forecast.get("planned_source_pairs", -1)) != selected_pairs
+        or int(forecast.get("recommended_minimum_source_pairs", selected_pairs + 1))
+        > selected_pairs
+        or float(forecast.get("safety_factor", -1)) < minimum_safety_factor
+        or not math.isclose(
+            float(forecast.get("target_far_per_year", -1)),
+            target_far_per_year,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(forecast.get("zero_count_confidence", -1)),
+            zero_count_confidence,
+            abs_tol=1e-12,
+        )
+    ):
+        raise ValueError("capacity forecast does not authorize the parent plan")
+
+    identity = {
+        "independent_validation_endpoint_sha256": file_sha256(endpoint_path),
+        "parent_plan_sha256": plan_hash,
+        "validation_purpose_audit_sha256": file_sha256(audit_path),
+        "capacity_forecast_sha256": file_sha256(forecast_path),
+        "purpose_partition_sha256": file_sha256(purpose_path),
+        "selected_pairs": selected_pairs,
+        "shard_stop_exclusive": shard_stop_exclusive,
+        "pairs_per_shard": pairs_per_shard,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+        "minimum_safety_factor": minimum_safety_factor,
+    }
+    authorization_id = canonical_hash(identity, length=64)
+    result = {
+        "status": "authorized_validation_candidate_continuous_background_plan",
+        "authorization_id": authorization_id,
+        "authorization_identity": identity,
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "independent_validation_endpoint": {
+            "path": str(endpoint_path),
+            "sha256": file_sha256(endpoint_path),
+        },
+        "parent_plan": {"path": str(plan_path), "sha256": plan_hash},
+        "validation_purpose_audit": {
+            "path": str(audit_path),
+            "sha256": file_sha256(audit_path),
+        },
+        "capacity_forecast": {
+            "path": str(forecast_path),
+            "sha256": file_sha256(forecast_path),
+        },
+        "purpose_partition": {
+            "path": str(purpose_path),
+            "sha256": file_sha256(purpose_path),
+        },
+        "scientific_blocker": (
+            "validation background is authorized; scoring and locked evaluation remain pending"
+        ),
+        **execution_provenance(),
+    }
+    target = Path(output_path).resolve()
+    if target.exists():
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        if (
+            existing.get("status") != result["status"]
+            or existing.get("authorization_id") != authorization_id
+            or existing.get("authorization_identity") != identity
+        ):
+            raise FileExistsError(
+                "candidate background authorization output has another identity"
+            )
+        return existing
+    atomic_write_json(target, result)
+    return result
+
+
 def freeze_candidate_block_capacity_extension_decision(
     base_forecast_path: str | Path,
     extended_plan_path: str | Path,

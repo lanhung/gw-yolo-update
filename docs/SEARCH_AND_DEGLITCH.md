@@ -397,6 +397,10 @@ contract, binds both reports to the exact parent-plan SHA-256, requires zero pai
 checks that the planned source-pair count satisfies the declared FAR/confidence/safety forecast.
 The bounded shard range must cover that parent plan exactly. A plan made before the endpoint was
 partitioned may be retained as a diagnostic, but it cannot be used for publication calibration.
+The replay is emitted as an idempotent, immutable
+`publication_background_plan_authorization.json` by
+`candidate-background-plan-authorize`. Both baseline and raw/mask background runners require this
+same authorization contract, and the final raw/mask receipt carries its path and SHA-256.
 
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the

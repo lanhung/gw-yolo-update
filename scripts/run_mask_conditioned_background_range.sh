@@ -7,7 +7,10 @@ required=(
   GWYOLO_CODE_COMMIT
   MASK_VALIDATION_RECEIPT
   MASK_TIMING_RECEIPT
+  INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   PARENT_PLAN
+  VALIDATION_PURPOSE_AUDIT
+  CAPACITY_FORECAST
   EVENT_EXCLUSIONS
   COHERENCE_CONFIG
   CACHE_ROOT
@@ -100,7 +103,10 @@ for path in \
   "$TASK_PYTHON" \
   "$MASK_VALIDATION_RECEIPT" \
   "$MASK_TIMING_RECEIPT" \
+  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$PARENT_PLAN" \
+  "$VALIDATION_PURPOSE_AUDIT" \
+  "$CAPACITY_FORECAST" \
   "$EVENT_EXCLUSIONS" \
   "$COHERENCE_CONFIG" \
   "$CHECKPOINT" \
@@ -110,6 +116,23 @@ for path in \
     exit 2
   fi
 done
+
+authorization="$OUTPUT_ROOT/publication_background_plan_authorization.json"
+(
+  cd "$TASK_CODE_DIR"
+  export PYTHONPATH=src GWYOLO_CODE_COMMIT
+  "$TASK_PYTHON" -m gwyolo.cli candidate-background-plan-authorize \
+    --independent-validation-endpoint "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+    --parent-plan "$PARENT_PLAN" \
+    --validation-purpose-audit "$VALIDATION_PURPOSE_AUDIT" \
+    --capacity-forecast "$CAPACITY_FORECAST" \
+    --shard-stop-exclusive "$SHARD_STOP_EXCLUSIVE" \
+    --pairs-per-shard "$PAIRS_PER_SHARD" \
+    --target-far-per-year "$TARGET_FAR_PER_YEAR" \
+    --zero-count-confidence "$ZERO_COUNT_CONFIDENCE" \
+    --minimum-safety-factor 1.5 \
+    --output "$authorization"
+)
 
 required_shards=$(
   "$TASK_PYTHON" - "$PARENT_PLAN" "$PAIRS_PER_SHARD" <<'PY'
@@ -383,6 +406,7 @@ fi
   "$OUTPUT_ROOT/raw/frozen_validation_candidate_search_calibration.json" \
   "$OUTPUT_ROOT/mask/frozen_validation_candidate_search_calibration.json" \
   "$paired_comparison" \
+  "$authorization" \
   "$GWYOLO_CODE_COMMIT" \
   "$OUTPUT_ROOT/raw_mask_background_validation_receipt.json" <<'PY'
 import hashlib
@@ -410,9 +434,10 @@ def digest(path):
     raw_path,
     mask_path,
     comparison_path,
-) = map(pathlib.Path, sys.argv[1:13])
-code_commit = sys.argv[13]
-output = pathlib.Path(sys.argv[14])
+    authorization_path,
+) = map(pathlib.Path, sys.argv[1:14])
+code_commit = sys.argv[14]
+output = pathlib.Path(sys.argv[15])
 if output.exists():
     raise SystemExit("raw/mask background validation receipts are immutable")
 merge = json.loads(merge_path.read_text(encoding="utf-8"))
@@ -422,6 +447,7 @@ calibrations = {
     "mask": json.loads(mask_path.read_text(encoding="utf-8")),
 }
 comparison = json.loads(comparison_path.read_text(encoding="utf-8"))
+authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
 if (
     merge.get("status")
     != "verified_merged_streamed_raw_mask_candidate_background"
@@ -445,6 +471,12 @@ if (
     != digest(raw_path)
     or comparison.get("mask_calibration_report", {}).get("sha256")
     != digest(mask_path)
+    or authorization.get("status")
+    != "authorized_validation_candidate_continuous_background_plan"
+    or authorization.get("passed") is not True
+    or authorization.get("scientific_claim_allowed") is not False
+    or authorization.get("test_rows_read") != 0
+    or authorization.get("parent_plan", {}).get("sha256") != digest(parent_path)
     or any(
         report.get("status") != "frozen_validation_candidate_search_calibration"
         or report.get("publication_calibration_eligible") is not True
@@ -476,6 +508,10 @@ receipt = {
         "sha256": digest(timing_path),
     },
     "inputs": {
+        "background_plan_authorization": {
+            "path": str(authorization_path),
+            "sha256": digest(authorization_path),
+        },
         "parent_plan": {"path": str(parent_path), "sha256": digest(parent_path)},
         "event_exclusions": {
             "path": str(exclusions_path),

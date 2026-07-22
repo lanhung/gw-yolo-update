@@ -19,6 +19,8 @@ def test_mask_publication_queue_is_fail_closed_and_dependency_ordered() -> None:
         "coherent_background_scale_allowed",
         "RUN_MASK_BACKGROUND",
         "run_mask_conditioned_background_range.sh",
+        "VALIDATION_PURPOSE_AUDIT",
+        "CAPACITY_FORECAST",
         "test_rows_read",
         "locked_test_allowed",
     ):
