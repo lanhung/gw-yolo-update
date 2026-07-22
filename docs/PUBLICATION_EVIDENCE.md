@@ -31,6 +31,13 @@ Add `--require-ready` only at the validation-freeze boundary. The report is writ
 before a non-ready audit exits nonzero, so failures are retained. Outputs are immutable and must
 use a new path for a later snapshot.
 
+For the final validation-freeze handoff, use
+`scripts/run_publication_validation_ledger.sh`. It requires one explicit path for each of the ten
+declared reports, refuses missing or duplicate output paths, invokes `--require-ready`, and then
+independently checks 10/10 passing states plus every artifact replay. The final requirement is an
+already-frozen `locked_evaluation_corpus_unopened` contract; the ledger runner does not create that
+contract or read O4b event-level data.
+
 The continuous-search entry must be the output of
 `candidate-search-calibration-endpoint-bind`, not a standalone threshold report. The binding
 replays the 3,000-row purpose-disjoint endpoint, five-seed selection, candidate pipeline,
