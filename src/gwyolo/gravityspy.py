@@ -2566,6 +2566,196 @@ def merge_gravityspy_network_numeric_manifests(
     return result
 
 
+def audit_gravityspy_network_materialization_progress(
+    planned_manifest_path: str | Path,
+    report_paths: Iterable[str | Path],
+    expected_split: str,
+    expected_shards: int,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Audit only immutable completed shards without promoting a partial corpus."""
+
+    if expected_split not in {"train", "val", "test"} or expected_shards <= 0:
+        raise ValueError("network materialization progress settings are invalid")
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("network materialization progress snapshots are immutable")
+    planned_path = Path(planned_manifest_path)
+    with planned_path.open("r", encoding="utf-8") as handle:
+        planned_rows = [json.loads(line) for line in handle if line.strip()]
+    if not planned_rows:
+        raise ValueError("network materialization plan cannot be empty")
+    if any(str(row.get("split")) != expected_split for row in planned_rows):
+        raise ValueError("network materialization plan mixes frozen splits")
+    planned_ids = [str(row.get("glitch_id", "")) for row in planned_rows]
+    if any(not value for value in planned_ids) or len(set(planned_ids)) != len(planned_ids):
+        raise ValueError("network materialization plan repeats or omits glitch IDs")
+    planned_by_shard: dict[int, list[dict[str, Any]]] = {}
+    source_shards: dict[str, set[int]] = {}
+    for row in planned_rows:
+        shard = int(row.get("shard", -1))
+        if not 0 <= shard < expected_shards:
+            raise ValueError("network materialization plan shard is outside its range")
+        planned_by_shard.setdefault(shard, []).append(row)
+        sources = row.get("network_strain_sources")
+        if not isinstance(sources, dict) or len(sources) < 2:
+            raise ValueError("network materialization plan lacks aligned source inventory")
+        for source in sources.values():
+            url = str(source.get("hdf5_url", "")) if isinstance(source, dict) else ""
+            if not url:
+                raise ValueError("network materialization plan source lacks an HDF5 URL")
+            source_shards.setdefault(url, set()).add(shard)
+    if set(planned_by_shard) != set(range(expected_shards)):
+        raise ValueError("network materialization plan does not cover every declared shard")
+    cross_shard_sources = {
+        url: sorted(shards) for url, shards in source_shards.items() if len(shards) > 1
+    }
+    if cross_shard_sources:
+        raise ValueError(
+            f"network materialization plan repeats source files across shards: "
+            f"{dict(list(cross_shard_sources.items())[:5])}"
+        )
+
+    completed_shards: set[int] = set()
+    completed_rows: list[dict[str, Any]] = []
+    completed_ids: set[str] = set()
+    report_identities = []
+    requested_rows = usable_rows = rejected_rows = runtime_downgrades = 0
+    rejection_reasons: Counter[str] = Counter()
+    detector_subsets: Counter[str] = Counter()
+    verified_files = 0
+    plan_sha = file_sha256(planned_path)
+    for raw_path in report_paths:
+        path = Path(raw_path)
+        report = json.loads(path.read_text(encoding="utf-8"))
+        shard = int(report.get("shard", -1))
+        if (
+            report.get("status")
+            != "verified_gravityspy_aligned_network_numeric_weak_masks"
+            or shard not in planned_by_shard
+            or shard in completed_shards
+            or report.get("run_identity", {}).get("source_manifest_sha256") != plan_sha
+        ):
+            raise ValueError(f"network materialization progress report is invalid: {path}")
+        requested = int(report.get("requested_rows", -1))
+        usable = int(report.get("rows", -1))
+        rejected = int(report.get("rejected_rows", -1))
+        if (
+            requested != len(planned_by_shard[shard])
+            or min(usable, rejected) < 0
+            or usable + rejected != requested
+        ):
+            raise ValueError("network materialization progress row accounting differs")
+        manifest = Path(str(report.get("manifest_path", "")))
+        if not manifest.is_file() or report.get("manifest_sha256") != file_sha256(manifest):
+            raise ValueError("network materialization progress manifest failed replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        planned_shard_ids = {str(row["glitch_id"]) for row in planned_by_shard[shard]}
+        observed_ids = [str(row.get("glitch_id", "")) for row in rows]
+        if (
+            len(rows) != usable
+            or len(set(observed_ids)) != len(observed_ids)
+            or not set(observed_ids).issubset(planned_shard_ids)
+            or completed_ids & set(observed_ids)
+            or any(str(row.get("split")) != expected_split for row in rows)
+        ):
+            raise ValueError("network materialization progress rows failed shard replay")
+        for row in rows:
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError("network materialization progress sample hash mismatch")
+        subset_counts = {
+            str(key): int(value)
+            for key, value in report.get("detector_subset_counts", {}).items()
+        }
+        if sum(subset_counts.values()) != usable:
+            raise ValueError("network materialization detector subsets do not sum to rows")
+        completed_shards.add(shard)
+        completed_rows.extend(rows)
+        completed_ids.update(observed_ids)
+        requested_rows += requested
+        usable_rows += usable
+        rejected_rows += rejected
+        runtime_downgrades += int(report.get("runtime_detector_downgraded_rows", 0))
+        rejection_reasons.update(
+            {
+                str(key): int(value)
+                for key, value in report.get("rejection_reason_counts", {}).items()
+            }
+        )
+        detector_subsets.update(subset_counts)
+        verified_files += int(report.get("verified_files", 0))
+        report_identities.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "shard": shard,
+                "requested_rows": requested,
+                "usable_rows": usable,
+                "rejected_rows": rejected,
+            }
+        )
+
+    report_identities.sort(key=lambda row: int(row["shard"]))
+    completed_rows.sort(key=lambda row: str(row["glitch_id"]))
+    planned_total = len(planned_rows)
+    pending_rows = planned_total - requested_rows
+    result = {
+        "status": (
+            "completed_gravityspy_network_materialization_progress"
+            if len(completed_shards) == expected_shards
+            else "in_progress_gravityspy_network_materialization"
+        ),
+        "corpus_complete": len(completed_shards) == expected_shards,
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "partial_corpus_may_select_model": False,
+        "split": expected_split,
+        "planned_manifest": {
+            "path": str(planned_path.resolve()),
+            "sha256": plan_sha,
+        },
+        "expected_shards": expected_shards,
+        "completed_shards": sorted(completed_shards),
+        "pending_shards": sorted(set(range(expected_shards)) - completed_shards),
+        "shard_completion_fraction": len(completed_shards) / expected_shards,
+        "planned_physical_rows": planned_total,
+        "accounted_physical_rows": requested_rows,
+        "pending_physical_rows": pending_rows,
+        "row_completion_fraction": requested_rows / planned_total,
+        "usable_aligned_numeric_rows": usable_rows,
+        "explicit_rejected_rows": rejected_rows,
+        "usable_yield_among_accounted": (
+            usable_rows / requested_rows if requested_rows else None
+        ),
+        "usable_fraction_of_plan": usable_rows / planned_total,
+        "unique_usable_glitches": len(completed_ids),
+        "unique_usable_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in completed_rows}
+        ),
+        "detector_subset_counts": dict(sorted(detector_subsets.items())),
+        "observing_run_counts": dict(
+            sorted(Counter(str(row["observing_run"]) for row in completed_rows).items())
+        ),
+        "glitch_family_counts": dict(
+            sorted(Counter(str(row["ml_label"]) for row in completed_rows).items())
+        ),
+        "runtime_detector_downgraded_rows": runtime_downgrades,
+        "rejection_reason_counts": dict(sorted(rejection_reasons.items())),
+        "verified_source_file_references": verified_files,
+        "planned_unique_source_files": len(source_shards),
+        "planned_cross_shard_source_overlap": 0,
+        "completed_reports": report_identities,
+        "warning": (
+            "This snapshot counts only immutable completed shards. It is not a merged training "
+            "corpus and may not be used for model or threshold selection."
+        ),
+        **_execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def evict_gravityspy_verified_sources(
     materialization_report_path: str | Path,
     cache_dir: str | Path,

@@ -9,6 +9,7 @@ import pytest
 
 from gwyolo.gravityspy import (
     _effective_network_detector_availability,
+    audit_gravityspy_network_materialization_progress,
     evict_gravityspy_verified_sources,
     gravityspy_weak_mask,
     index_gravityspy_csv,
@@ -26,6 +27,100 @@ from gwyolo.gravityspy import (
     split_gravityspy_anchors,
 )
 from gwyolo.io import canonical_hash, file_sha256, load_yaml
+
+
+def test_network_materialization_progress_counts_only_completed_physical_rows(
+    tmp_path,
+) -> None:
+    plan = tmp_path / "plan.jsonl"
+
+    def source(url: str, ifo: str) -> dict[str, str]:
+        return {"hdf5_url": url, "detector": ifo}
+
+    planned = [
+        {
+            "split": "train",
+            "shard": 0,
+            "glitch_id": "g0",
+            "network_strain_sources": {
+                "H1": source("https://example/h0.hdf5", "H1"),
+                "L1": source("https://example/l0.hdf5", "L1"),
+            },
+        },
+        {
+            "split": "train",
+            "shard": 0,
+            "glitch_id": "g1",
+            "network_strain_sources": {
+                "H1": source("https://example/h0.hdf5", "H1"),
+                "L1": source("https://example/l0.hdf5", "L1"),
+            },
+        },
+        {
+            "split": "train",
+            "shard": 1,
+            "glitch_id": "g2",
+            "network_strain_sources": {
+                "H1": source("https://example/h1.hdf5", "H1"),
+                "L1": source("https://example/l1.hdf5", "L1"),
+            },
+        },
+    ]
+    plan.write_text("".join(json.dumps(row) + "\n" for row in planned))
+    sample = tmp_path / "g0.npz"
+    sample.write_bytes(b"verified numeric sample")
+    manifest = tmp_path / "shard-0.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "split": "train",
+                "glitch_id": "g0",
+                "network_gps_block": "O3a:100:64",
+                "observing_run": "O3a",
+                "ml_label": "Blip",
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+            }
+        )
+        + "\n"
+    )
+    report = tmp_path / "shard-0-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_gravityspy_aligned_network_numeric_weak_masks",
+                "shard": 0,
+                "run_identity": {"source_manifest_sha256": file_sha256(plan)},
+                "requested_rows": 2,
+                "rows": 1,
+                "rejected_rows": 1,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+                "detector_subset_counts": {"H1L1": 1},
+                "runtime_detector_downgraded_rows": 1,
+                "rejection_reason_counts": {"event_ifo_unusable": 1},
+                "verified_files": 2,
+            }
+        )
+    )
+    result = audit_gravityspy_network_materialization_progress(
+        plan,
+        [report],
+        "train",
+        2,
+        tmp_path / "progress.json",
+    )
+    assert result["corpus_complete"] is False
+    assert result["completed_shards"] == [0]
+    assert result["pending_shards"] == [1]
+    assert result["shard_completion_fraction"] == 0.5
+    assert result["row_completion_fraction"] == 2 / 3
+    assert result["usable_yield_among_accounted"] == 0.5
+    assert result["usable_fraction_of_plan"] == 1 / 3
+    assert result["unique_usable_glitches"] == 1
+    assert result["unique_usable_network_gps_blocks"] == 1
+    assert result["planned_unique_source_files"] == 4
+    assert result["partial_corpus_may_select_model"] is False
 
 
 def test_gravityspy_weak_mask_is_detector_local_and_hand_calculable() -> None:

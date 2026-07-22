@@ -764,6 +764,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", choices=("train", "val", "test"), required=True
     )
 
+    gravityspy_network_progress = subparsers.add_parser(
+        "gravityspy-network-materialization-progress"
+    )
+    gravityspy_network_progress.add_argument("--planned-manifest", required=True)
+    gravityspy_network_progress.add_argument("--report", action="append", required=True)
+    gravityspy_network_progress.add_argument(
+        "--split", choices=("train", "val", "test"), required=True
+    )
+    gravityspy_network_progress.add_argument("--expected-shards", type=int, required=True)
+    gravityspy_network_progress.add_argument("--output", required=True)
+
     gravityspy_network_corpus_audit = subparsers.add_parser(
         "gravityspy-network-corpus-audit"
     )
@@ -2771,6 +2782,18 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             merge_gravityspy_network_numeric_manifests(
                 args.report, args.output_dir, args.split
+            )
+        )
+    elif args.command == "gravityspy-network-materialization-progress":
+        from .gravityspy import audit_gravityspy_network_materialization_progress
+
+        _print(
+            audit_gravityspy_network_materialization_progress(
+                args.planned_manifest,
+                args.report,
+                args.split,
+                args.expected_shards,
+                args.output,
             )
         )
     elif args.command == "gravityspy-network-corpus-audit":
