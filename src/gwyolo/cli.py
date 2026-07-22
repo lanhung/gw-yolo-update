@@ -2000,6 +2000,17 @@ def build_parser() -> argparse.ArgumentParser:
     publication.add_argument("--output", required=True)
     publication.add_argument("--markdown")
     publication.add_argument("--require-ready", action="store_true")
+
+    publication_registry = subparsers.add_parser("publication-result-registry")
+    publication_registry.add_argument(
+        "--ledger",
+        action="append",
+        required=True,
+        metavar="EVIDENCE_AUDIT.json",
+    )
+    publication_registry.add_argument("--output", required=True)
+    publication_registry.add_argument("--csv", required=True)
+    publication_registry.add_argument("--markdown", required=True)
     return parser
 
 
@@ -4485,6 +4496,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.markdown,
                 args.require_ready,
+            )
+        )
+    elif args.command == "publication-result-registry":
+        from .publication import run_publication_result_registry
+
+        _print(
+            run_publication_result_registry(
+                args.ledger,
+                args.output,
+                args.csv,
+                args.markdown,
             )
         )
     else:

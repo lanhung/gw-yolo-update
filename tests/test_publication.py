@@ -7,7 +7,10 @@ import pytest
 
 from gwyolo.cli import main
 from gwyolo.io import file_sha256
-from gwyolo.publication import run_publication_evidence_audit
+from gwyolo.publication import (
+    run_publication_evidence_audit,
+    run_publication_result_registry,
+)
 
 
 def _write_protocol(path: Path, phase: str = "validation_freeze") -> None:
@@ -148,6 +151,138 @@ def test_publication_evidence_cli_marks_locked_package_complete_without_authoriz
     assert report["publication_ready"] is True
     assert report["locked_final_evidence_complete"] is True
     assert report["scientific_claim_allowed"] is False
+
+
+def _write_registry_ledgers(tmp_path: Path) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    manifest = tmp_path / "registry-manifest.jsonl"
+    manifest.write_text('{"split":"validation"}\n', encoding="utf-8")
+    data_evidence = tmp_path / "registry-data.json"
+    _write_data_evidence(data_evidence, manifest)
+
+    validation_protocol = tmp_path / "registry-validation.yaml"
+    _write_protocol(validation_protocol)
+    validation_ledger = tmp_path / "registry-validation-ledger.json"
+    run_publication_evidence_audit(
+        validation_protocol,
+        [f"data_gate={data_evidence}"],
+        validation_ledger,
+    )
+
+    locked_protocol = tmp_path / "registry-locked.yaml"
+    _write_protocol(locked_protocol, "locked_final")
+    locked_search = tmp_path / "registry-locked-search.json"
+    locked_search.write_text(
+        json.dumps(
+            {
+                "exposure_years": 2.0,
+                "endpoint_complete": True,
+                "primary_endpoint_result": {
+                    "metric": "paired_delta_recovered_vt_at_common_far",
+                    "observed_absolute_weighted_efficiency_gain": 0.01,
+                    "significant_mask_advantage": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    locked_ledger = tmp_path / "registry-locked-ledger.json"
+    run_publication_evidence_audit(
+        locked_protocol,
+        [f"data_gate={data_evidence}", f"search_gate={locked_search}"],
+        locked_ledger,
+    )
+    return validation_ledger, locked_ledger, manifest
+
+
+def test_publication_result_registry_replays_and_retains_hand_calculated_null_result(
+    tmp_path: Path,
+) -> None:
+    validation_ledger, locked_ledger, _ = _write_registry_ledgers(tmp_path)
+    output = tmp_path / "registry.json"
+    csv_output = tmp_path / "registry.csv"
+    markdown = tmp_path / "registry.md"
+
+    assert (
+        main(
+            [
+                "publication-result-registry",
+                "--ledger",
+                str(validation_ledger),
+                "--ledger",
+                str(locked_ledger),
+                "--output",
+                str(output),
+                "--csv",
+                str(csv_output),
+                "--markdown",
+                str(markdown),
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["summary"] == {
+        "ledger_count": 2,
+        "gate_total": 4,
+        "passed": 3,
+        "failed": 0,
+        "pending": 1,
+        "skipped": 0,
+        "negative_or_null_outcomes": 1,
+        "locked_final_registry_present": True,
+        "locked_final_ready": True,
+    }
+    assert report["requirements_omitted"] == 0
+    assert report["negative_and_null_results_retained"] is True
+    assert report["scientific_claim_allowed"] is False
+    locked_search = next(
+        row
+        for row in report["rows"]
+        if row["phase"] == "locked_final" and row["gate_id"] == "search_gate"
+    )
+    assert (
+        locked_search["result_class"]
+        == "gate_passed_null_or_negative_primary_endpoint"
+    )
+    assert (
+        locked_search["outcome"]["primary_endpoint_result"][
+            "significant_mask_advantage"
+        ]
+        is False
+    )
+    assert "gate_passed_null_or_negative_primary_endpoint" in csv_output.read_text(
+        encoding="utf-8"
+    )
+    assert "Registered gates: **4**" in markdown.read_text(encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="immutable"):
+        run_publication_result_registry(
+            [validation_ledger, locked_ledger], output, csv_output, markdown
+        )
+
+
+def test_publication_result_registry_fails_closed_on_tamper_or_duplicate_phase(
+    tmp_path: Path,
+) -> None:
+    validation_ledger, locked_ledger, manifest = _write_registry_ledgers(tmp_path)
+    manifest.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="ledger replay differs for gate: data_gate"):
+        run_publication_result_registry(
+            [validation_ledger, locked_ledger],
+            tmp_path / "tampered.json",
+            tmp_path / "tampered.csv",
+            tmp_path / "tampered.md",
+        )
+
+    validation_ledger, _, _ = _write_registry_ledgers(tmp_path / "duplicate")
+    with pytest.raises(ValueError, match="duplicate phase: validation_freeze"):
+        run_publication_result_registry(
+            [validation_ledger, validation_ledger],
+            tmp_path / "duplicate.json",
+            tmp_path / "duplicate.csv",
+            tmp_path / "duplicate.md",
+        )
 
 
 @pytest.mark.parametrize(

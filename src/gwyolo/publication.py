@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -338,4 +340,305 @@ def run_publication_evidence_audit(
         raise RuntimeError(
             f"Publication evidence is incomplete: {required_passed}/{len(required_rows)} gates"
         )
+    return result
+
+
+_OUTCOME_FIELDS = (
+    "primary_endpoint_result",
+    "endpoint_outcomes",
+    "promote_to_paper",
+    "promotion_checks",
+    "endpoint_complete",
+    "negative_and_null_results_retained",
+)
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} is absent: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not readable JSON: {path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return value
+
+
+def _replay_publication_ledger(
+    ledger_path: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Replay one audit against its live config, evidence and artifact hashes."""
+
+    ledger = _load_json_object(ledger_path, "publication evidence ledger")
+    if ledger.get("schema") != "publication_evidence_audit_v1":
+        raise ValueError("publication result registry requires evidence-audit v1 ledgers")
+    config_identity = ledger.get("config")
+    if not isinstance(config_identity, dict):
+        raise ValueError("publication evidence ledger lacks its config identity")
+    raw_config_path = config_identity.get("path")
+    expected_config_sha = config_identity.get("sha256")
+    if not isinstance(raw_config_path, str) or not raw_config_path:
+        raise ValueError("publication evidence ledger config path is invalid")
+    config_path = Path(raw_config_path).resolve()
+    if (
+        not isinstance(expected_config_sha, str)
+        or len(expected_config_sha) != 64
+        or not config_path.is_file()
+        or file_sha256(config_path) != expected_config_sha
+    ):
+        raise ValueError("publication evidence ledger config failed hash replay")
+    protocol, requirements = _validate_protocol(load_yaml(config_path))
+    if (
+        ledger.get("protocol") != protocol.get("protocol")
+        or ledger.get("phase") != protocol.get("phase")
+    ):
+        raise ValueError("publication evidence ledger protocol identity changed")
+
+    raw_rows = ledger.get("requirements")
+    if not isinstance(raw_rows, list) or not all(
+        isinstance(row, dict) for row in raw_rows
+    ):
+        raise ValueError("publication evidence ledger requirements are invalid")
+    rows_by_id = {str(row.get("id")): row for row in raw_rows}
+    expected_ids = [str(requirement["id"]) for requirement in requirements]
+    if len(rows_by_id) != len(raw_rows) or set(rows_by_id) != set(expected_ids):
+        raise ValueError("publication evidence ledger omitted or duplicated a requirement")
+
+    replayed = []
+    compared_fields = (
+        "id",
+        "group",
+        "description",
+        "required",
+        "state",
+        "passed",
+        "evidence",
+        "checks",
+        "artifact_replay",
+        "failures",
+    )
+    for requirement in requirements:
+        identifier = str(requirement["id"])
+        original = rows_by_id[identifier]
+        evidence_identity = original.get("evidence")
+        evidence_path = None
+        if evidence_identity is not None:
+            if (
+                not isinstance(evidence_identity, dict)
+                or not isinstance(evidence_identity.get("path"), str)
+                or not evidence_identity["path"]
+            ):
+                raise ValueError(f"ledger evidence identity is invalid: {identifier}")
+            evidence_path = Path(evidence_identity["path"]).resolve()
+        current = _evaluate_requirement(requirement, evidence_path)
+        if any(original.get(field) != current.get(field) for field in compared_fields):
+            raise ValueError(f"publication ledger replay differs for gate: {identifier}")
+        replayed.append(current)
+
+    required_rows = [row for row in replayed if row["required"]]
+    required_passed = sum(row["passed"] for row in required_rows)
+    replay_summary = {
+        "required_total": len(required_rows),
+        "required_passed": required_passed,
+        "required_pending": sum(row["state"] == "pending" for row in required_rows),
+        "required_failed": sum(row["state"] == "failed" for row in required_rows),
+        "completion_percent": 100.0 * required_passed / len(required_rows),
+    }
+    ready = required_passed == len(required_rows)
+    if (
+        ledger.get("summary") != replay_summary
+        or ledger.get("publication_ready") is not ready
+        or ledger.get("locked_final_evidence_complete")
+        is not (ready and protocol.get("phase") == "locked_final")
+    ):
+        raise ValueError("publication evidence ledger summary failed replay")
+    return ledger, replayed
+
+
+def _result_class(state: str, evidence: dict[str, Any] | None) -> str:
+    if state != "passed":
+        return state
+    primary = evidence.get("primary_endpoint_result") if evidence else None
+    if isinstance(primary, dict) and isinstance(
+        primary.get("significant_mask_advantage"), bool
+    ):
+        if primary["significant_mask_advantage"]:
+            return "gate_passed_positive_primary_endpoint"
+        return "gate_passed_null_or_negative_primary_endpoint"
+    promotion = evidence.get("promote_to_paper") if evidence else None
+    if isinstance(promotion, bool):
+        return "gate_passed_promotion_accepted" if promotion else "gate_passed_promotion_rejected"
+    return "gate_passed_outcome_not_directional"
+
+
+def _registry_csv(rows: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO(newline="")
+    fieldnames = (
+        "phase",
+        "protocol",
+        "gate_id",
+        "group",
+        "required",
+        "state",
+        "result_class",
+        "description",
+        "evidence_path",
+        "evidence_sha256",
+        "outcome_json",
+    )
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(
+            {
+                **{field: row.get(field) for field in fieldnames if field != "outcome_json"},
+                "outcome_json": json.dumps(
+                    row["outcome"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ),
+            }
+        )
+    return buffer.getvalue()
+
+
+def _registry_markdown(report: dict[str, Any]) -> str:
+    summary = report["summary"]
+    lines = [
+        "# GW-YOLO publication result registry",
+        "",
+        "This table is an immutable evidence index; it does not authorize a scientific claim.",
+        "",
+        f"Replayed ledgers: **{summary['ledger_count']}**  ",
+        f"Registered gates: **{summary['gate_total']}**  ",
+        f"Passed / failed / pending / skipped: **{summary['passed']} / "
+        f"{summary['failed']} / {summary['pending']} / {summary['skipped']}**",
+        "",
+        "| Phase | Gate | Group | State | Result class | Evidence SHA-256 |",
+        "|---|---|---|---:|---|---|",
+    ]
+    for row in report["rows"]:
+        digest = row.get("evidence_sha256") or "—"
+        rendered_digest = f"`{digest}`" if digest != "—" else digest
+        lines.append(
+            f"| {row['phase']} | {row['gate_id']} | {row['group']} | "
+            f"{row['state']} | {row['result_class']} | {rendered_digest} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def run_publication_result_registry(
+    ledger_paths: list[str | Path],
+    output_path: str | Path,
+    csv_path: str | Path,
+    markdown_path: str | Path,
+) -> dict[str, Any]:
+    """Replay all declared gates and export an omission-resistant paper registry."""
+
+    if not ledger_paths:
+        raise ValueError("publication result registry requires at least one ledger")
+    targets = [Path(value).resolve() for value in (output_path, csv_path, markdown_path)]
+    if len(set(targets)) != len(targets):
+        raise ValueError("publication result registry outputs must be distinct")
+    if any(target.exists() for target in targets):
+        raise FileExistsError("publication result registry outputs are immutable")
+
+    ledger_records = []
+    rows = []
+    phases: set[str] = set()
+    for raw_ledger_path in ledger_paths:
+        ledger_path = Path(raw_ledger_path).resolve()
+        ledger, replayed = _replay_publication_ledger(ledger_path)
+        phase = str(ledger["phase"])
+        if phase in phases:
+            raise ValueError(f"publication result registry received duplicate phase: {phase}")
+        phases.add(phase)
+        ledger_records.append(
+            {
+                "path": str(ledger_path),
+                "sha256": file_sha256(ledger_path),
+                "protocol": str(ledger["protocol"]),
+                "phase": phase,
+                "publication_ready": bool(ledger["publication_ready"]),
+                "locked_final_evidence_complete": bool(
+                    ledger["locked_final_evidence_complete"]
+                ),
+                "required_passed": int(ledger["summary"]["required_passed"]),
+                "required_total": int(ledger["summary"]["required_total"]),
+            }
+        )
+        for gate in replayed:
+            evidence_identity = gate.get("evidence", {})
+            evidence_report = None
+            if gate["state"] in {"passed", "failed"} and isinstance(
+                evidence_identity.get("path"), str
+            ):
+                evidence_path = Path(evidence_identity["path"])
+                if evidence_path.is_file():
+                    evidence_report = _load_json_object(evidence_path, "gate evidence")
+            outcome = {
+                field: evidence_report[field]
+                for field in _OUTCOME_FIELDS
+                if evidence_report is not None and field in evidence_report
+            }
+            rows.append(
+                {
+                    "phase": phase,
+                    "protocol": str(ledger["protocol"]),
+                    "gate_id": str(gate["id"]),
+                    "group": str(gate["group"]),
+                    "required": bool(gate["required"]),
+                    "state": str(gate["state"]),
+                    "result_class": _result_class(str(gate["state"]), evidence_report),
+                    "description": str(gate["description"]),
+                    "evidence_path": evidence_identity.get("path"),
+                    "evidence_sha256": evidence_identity.get("sha256"),
+                    "outcome": outcome,
+                }
+            )
+
+    state_counts = {
+        state: sum(row["state"] == state for row in rows)
+        for state in ("passed", "failed", "pending", "skipped")
+    }
+    negative_or_null = sum(
+        row["result_class"]
+        in {
+            "gate_passed_null_or_negative_primary_endpoint",
+            "gate_passed_promotion_rejected",
+        }
+        for row in rows
+    )
+    result = {
+        "status": "completed_publication_result_registry",
+        "schema": "publication_result_registry_v1",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_claim_blocker": (
+            "this registry proves artifact retention and replay only; scientific interpretation "
+            "requires the predeclared locked reports and statistical endpoints"
+        ),
+        "requirements_omitted": 0,
+        "negative_and_null_results_retained": True,
+        "ledgers": ledger_records,
+        "summary": {
+            "ledger_count": len(ledger_records),
+            "gate_total": len(rows),
+            **state_counts,
+            "negative_or_null_outcomes": negative_or_null,
+            "locked_final_registry_present": "locked_final" in phases,
+            "locked_final_ready": any(
+                record["phase"] == "locked_final"
+                and record["locked_final_evidence_complete"]
+                for record in ledger_records
+            ),
+        },
+        "rows": rows,
+        **execution_provenance(),
+    }
+    csv_text = _registry_csv(rows)
+    markdown_text = _registry_markdown(result)
+    atomic_write_json(targets[0], result)
+    atomic_write_text(targets[1], csv_text)
+    atomic_write_text(targets[2], markdown_text)
     return result

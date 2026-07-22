@@ -78,3 +78,34 @@ catalog diagnostic and
 the final all-output hash receipt. A non-significant or negative paired result is still a valid
 completed endpoint and is retained; it cannot be replaced by a new threshold or omitted from the
 ledger.
+
+## Omission-resistant paper registry
+
+`publication-result-registry` converts one validation ledger and, after the one-time evaluation,
+one locked-final ledger into immutable JSON, CSV and Markdown outputs. It does not trust an old
+ledger at face value: it reloads the exact hashed protocol config, reevaluates every predicate,
+rehashes every bound evidence report and replays every declared artifact. The live `path_absent`
+check is also reevaluated, so a pre-access validation ledger cannot be presented as current after
+the access log has appeared.
+
+Every protocol requirement is exported, including `pending`, `failed`, skipped, non-significant
+and negative rows. For reports that expose `primary_endpoint_result`, `promote_to_paper`,
+`promotion_checks`, `endpoint_outcomes` or endpoint-completion fields, the raw outcome is retained
+in the JSON and CSV rather than reduced to a favorable boolean. A non-significant primary mask
+result is labeled `gate_passed_null_or_negative_primary_endpoint`; it is never filtered out.
+
+Create the validation-stage registry without opening or naming a locked result:
+
+```bash
+python -m gwyolo.cli publication-result-registry \
+  --ledger /artifacts/publication-validation-ledger.json \
+  --output /artifacts/publication-result-registry-validation.json \
+  --csv /artifacts/publication-result-registry-validation.csv \
+  --markdown /artifacts/publication-result-registry-validation.md
+```
+
+After the one-time locked evaluation has completed, use new output paths and add exactly one
+`--ledger /artifacts/publication-locked-final-ledger.json`. Duplicate phases, changed evidence,
+omitted requirements and preexisting output paths fail explicitly. The registry always writes
+`scientific_claim_allowed=false`: it is an artifact-retention and paper-table index, not a claim
+promotion mechanism.
