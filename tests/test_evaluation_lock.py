@@ -64,7 +64,11 @@ def _locked_suite_config(path) -> None:
         "locked_ood_source_manifest": "inputs/ood-source.jsonl",
         "dingo_locked_source_batch_report": "inputs/dingo.json",
         "amplfi_locked_source_batch_report": "inputs/amplfi.json",
+        "catalog_source_manifest": "inputs/catalog-source.jsonl",
+        "catalog_candidate_manifest": "inputs/catalog-candidates.jsonl",
+        "catalog_candidate_report": "inputs/catalog-candidate-report.json",
         "catalog_prediction_manifest": "inputs/catalog.jsonl",
+        "catalog_prediction_report": "inputs/catalog-report.json",
     }
     path.write_text(
         "locked_evaluation_suite:\n"
@@ -379,7 +383,13 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         },
         "dingo_batch": {"single": "dingo_locked_source_batch_report"},
         "amplfi_batch": {"single": "amplfi_locked_source_batch_report"},
-        "catalog_diagnostic": {"single": "catalog_prediction_manifest"},
+        "catalog_diagnostic": {
+            "catalog_source_manifest": "catalog_source_manifest",
+            "catalog_candidate_manifest": "catalog_candidate_manifest",
+            "catalog_candidate_report": "catalog_candidate_report",
+            "catalog_prediction_manifest": "catalog_prediction_manifest",
+            "catalog_prediction_report": "catalog_prediction_report",
+        },
     }
     for key, status in expected_statuses.items():
         path = Path(plan["outputs"][key])

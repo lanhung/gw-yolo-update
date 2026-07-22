@@ -41,7 +41,11 @@ locked_evaluation_suite:
     locked_ood_source_manifest: inputs/robustness/locked_ood_source.jsonl
     dingo_locked_source_batch_report: inputs/pe/dingo_locked_source_batch.json
     amplfi_locked_source_batch_report: inputs/pe/amplfi_locked_source_batch.json
+    catalog_source_manifest: inputs/catalog/gwtc5_source.jsonl
+    catalog_candidate_manifest: inputs/catalog/gwtc5_candidates.jsonl
+    catalog_candidate_report: inputs/catalog/gwtc5_candidate_report.json
     catalog_prediction_manifest: inputs/catalog/gwtc5_predictions.jsonl
+    catalog_prediction_report: inputs/catalog/gwtc5_prediction_report.json
 
   endpoints:
     primary_search_metric: paired_delta_recovered_vt_at_common_far

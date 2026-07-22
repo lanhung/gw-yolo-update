@@ -70,10 +70,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     locked_catalog = subparsers.add_parser("catalog-eval-locked")
     locked_catalog.add_argument("--prediction-manifest", required=True)
+    locked_catalog.add_argument("--prediction-report", required=True)
     locked_catalog.add_argument("--candidate-search-report", required=True)
     locked_catalog.add_argument("--locked-suite-plan", required=True)
     locked_catalog.add_argument("--access-log", required=True)
     locked_catalog.add_argument("--output", required=True)
+
+    locked_catalog_predict = subparsers.add_parser("catalog-predict-locked")
+    locked_catalog_predict.add_argument("--candidate-manifest", required=True)
+    locked_catalog_predict.add_argument("--candidate-report", required=True)
+    locked_catalog_predict.add_argument("--locked-suite-plan", required=True)
+    locked_catalog_predict.add_argument("--access-log", required=True)
+    locked_catalog_predict.add_argument("--prediction-manifest", required=True)
+    locked_catalog_predict.add_argument("--prediction-report", required=True)
 
     search = subparsers.add_parser("search-eval")
     search.add_argument("--validation-background", required=True)
@@ -1892,10 +1901,24 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             run_locked_gwtc5_catalog_diagnostic(
                 args.prediction_manifest,
+                args.prediction_report,
                 args.candidate_search_report,
                 args.locked_suite_plan,
                 args.access_log,
                 args.output,
+            )
+        )
+    elif args.command == "catalog-predict-locked":
+        from .catalog import run_locked_catalog_prediction_manifest
+
+        _print(
+            run_locked_catalog_prediction_manifest(
+                args.candidate_manifest,
+                args.candidate_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.prediction_manifest,
+                args.prediction_report,
             )
         )
     elif args.command == "search-eval":

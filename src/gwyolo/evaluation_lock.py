@@ -38,7 +38,11 @@ _LOCKED_SUITE_INPUT_KEYS = {
     "locked_ood_source_manifest",
     "dingo_locked_source_batch_report",
     "amplfi_locked_source_batch_report",
+    "catalog_source_manifest",
+    "catalog_candidate_manifest",
+    "catalog_candidate_report",
     "catalog_prediction_manifest",
+    "catalog_prediction_report",
 }
 _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
     "config",
@@ -330,7 +334,13 @@ def finalize_locked_evaluation_suite_receipt(
         },
         "dingo_batch": {"single": "dingo_locked_source_batch_report"},
         "amplfi_batch": {"single": "amplfi_locked_source_batch_report"},
-        "catalog_diagnostic": {"single": "catalog_prediction_manifest"},
+        "catalog_diagnostic": {
+            "catalog_source_manifest": "catalog_source_manifest",
+            "catalog_candidate_manifest": "catalog_candidate_manifest",
+            "catalog_candidate_report": "catalog_candidate_report",
+            "catalog_prediction_manifest": "catalog_prediction_manifest",
+            "catalog_prediction_report": "catalog_prediction_report",
+        },
     }
     outputs = {}
     endpoint_outcomes = {}
@@ -360,11 +370,9 @@ def finalize_locked_evaluation_suite_receipt(
                 )
                 for alias, input_key in expected_inputs[key].items()
             }
-            observed_inputs = (
-                report.get("locked_suite_inputs")
-                if "single" not in replayed_inputs
-                else {"single": report.get("locked_suite_input")}
-            )
+            observed_inputs = report.get("locked_suite_inputs")
+            if "single" in replayed_inputs:
+                observed_inputs = {"single": report.get("locked_suite_input")}
             if observed_inputs != replayed_inputs:
                 raise ValueError(f"locked suite output lacks its frozen input binding: {key}")
         outputs[key] = {

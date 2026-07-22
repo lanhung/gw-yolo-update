@@ -55,9 +55,10 @@ The machine-readable contract is
 It fixes the primary metric, 0.1/year target FAR, at least 23.02585093 years of equivalent test
 background, at least 3,000 paired injections, at least 100 PE injections, 10,000 paired bootstrap
 replicates and seed 20260722. It also names every output path before any locked score is read.
-The contract separately freezes ten post-access intermediate paths: raw/mask time-slide and
+The contract separately freezes fourteen post-access intermediate paths: raw/mask time-slide and
 injection-ranking reports, the OOD source/score manifest and score report, DINGO/AMPLFI source
-batches and catalog predictions. The
+batches, and the catalog numeric source, candidate manifest/report plus normalized prediction
+manifest/report. The
 exclusive access receipt must additionally hash the two validation calibrations, raw/mask
 comparison, OOD report, PE promotion and catalog metadata. Thus a final report cannot be made valid
 by swapping an intermediate test artifact after opening the corpus.
@@ -95,6 +96,14 @@ checkpoint/config, preserves explicit H1/L1/V1 availability, writes no threshold
 test scores were not used for model, threshold or score-method selection. The source manifest,
 score manifest and score report are all separately predeclared and automated by
 [`scripts/run_locked_ood_endpoint.sh`](../scripts/run_locked_ood_endpoint.sh).
+
+The catalog endpoint has an equally explicit producer boundary. `catalog-predict-locked` accepts
+only the predeclared numeric source and unthresholded candidate manifest/scoring report, replays the
+frozen model, config, source tensor and catalog metadata identities, and groups every candidate,
+instance and mask into one row per event without applying a catalog threshold.
+`catalog-eval-locked` then replays that producer report before applying the already frozen own-search
+threshold. The resumable wrapper is
+[`scripts/run_locked_catalog_endpoint.sh`](../scripts/run_locked_catalog_endpoint.sh).
 
 For PE, `pe-backend-bind-locked` accepts completed DINGO or AMPLFI test batches only after the
 validation promotion report passes. It requires the locked batch to preserve the validation-fixed
