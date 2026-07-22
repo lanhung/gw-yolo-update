@@ -97,6 +97,9 @@ publication_evidence:
         - {field: observing_run_strata, op: nonempty}
       replay_artifacts:
         - {path_field: validation_ood_report.path, sha256_field: validation_ood_report.sha256}
+        - {path_field: locked_score_report.path, sha256_field: locked_score_report.sha256}
+        - {path_field: locked_score_manifest.path, sha256_field: locked_score_manifest.sha256}
+        - {path_field: checkpoint.path, sha256_field: checkpoint.sha256}
 
     - id: locked_joint_dingo_amplfi_pe
       group: pe
@@ -126,6 +129,10 @@ publication_evidence:
         - {field: threshold_refits_on_catalog, op: equals, value: 0}
         - {field: predictions_retain_all_instances_and_masks, op: equals, value: true}
         - {field: locked_suite_access.output_key, op: equals, value: catalog_diagnostic}
+      replay_artifacts:
+        - {path_field: candidate_search_report.path, sha256_field: candidate_search_report.sha256}
+        - {path_field: catalog_metadata.path, sha256_field: catalog_metadata.sha256}
+        - {path_field: prediction_manifest.path, sha256_field: prediction_manifest.sha256}
 
     - id: locked_suite_receipt
       group: reproducibility

@@ -55,8 +55,9 @@ The machine-readable contract is
 It fixes the primary metric, 0.1/year target FAR, at least 23.02585093 years of equivalent test
 background, at least 3,000 paired injections, at least 100 PE injections, 10,000 paired bootstrap
 replicates and seed 20260722. It also names every output path before any locked score is read.
-The contract separately freezes eight post-access intermediate paths: raw/mask time-slide and
-injection-ranking reports, OOD scores, DINGO/AMPLFI source batches and catalog predictions. The
+The contract separately freezes ten post-access intermediate paths: raw/mask time-slide and
+injection-ranking reports, the OOD source/score manifest and score report, DINGO/AMPLFI source
+batches and catalog predictions. The
 exclusive access receipt must additionally hash the two validation calibrations, raw/mask
 comparison, OOD report, PE promotion and catalog metadata. Thus a final report cannot be made valid
 by swapping an intermediate test artifact after opening the corpus.
