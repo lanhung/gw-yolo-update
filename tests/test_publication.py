@@ -164,3 +164,93 @@ def test_publication_evidence_rejects_unknown_or_duplicate_binding(
         bindings.append(binding)
     with pytest.raises(ValueError):
         run_publication_evidence_audit(protocol, bindings, tmp_path / "audit.json")
+
+
+def test_official_validation_protocol_rejects_undersized_independent_endpoint(
+    tmp_path: Path,
+) -> None:
+    protocol = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "publication_validation_evidence.yaml"
+    )
+    component_reports = {}
+    for label in (
+        "purpose_partition",
+        "injection_plan",
+        "waveform_validation",
+        "materialization",
+        "snr_annotation",
+        "arrival_annotation",
+    ):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        component_reports[label] = {
+            "path": str(path),
+            "sha256": file_sha256(path),
+        }
+    calibration = tmp_path / "candidate-calibration.jsonl"
+    arrivals = tmp_path / "arrivals.jsonl"
+    calibration.write_text('{"gps_block":"g1"}\n', encoding="utf-8")
+    arrivals.write_text('{"injection_id":"i1"}\n', encoding="utf-8")
+    evidence = tmp_path / "endpoint.json"
+
+    def write_endpoint(rows: int, calibration_blocks: int, injection_blocks: int) -> None:
+        evidence.write_text(
+            json.dumps(
+                {
+                    "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+                    "passed": True,
+                    "rows": rows,
+                    "candidate_calibration_unique_gps_blocks": calibration_blocks,
+                    "injection_validation_unique_gps_blocks": injection_blocks,
+                    "purpose_gps_block_overlap": 0,
+                    "test_rows_read": 0,
+                    "test_evaluation": None,
+                    "scientific_claim_allowed": False,
+                    "candidate_calibration_background_manifest_path": str(calibration),
+                    "candidate_calibration_background_manifest_sha256": file_sha256(
+                        calibration
+                    ),
+                    "injection_arrival_manifest_path": str(arrivals),
+                    "injection_arrival_manifest_sha256": file_sha256(arrivals),
+                    "component_reports": component_reports,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_endpoint(rows=2, calibration_blocks=1, injection_blocks=1)
+    failed = run_publication_evidence_audit(
+        protocol,
+        [f"independent_validation_endpoint={evidence}"],
+        tmp_path / "failed-audit.json",
+    )
+    gate = next(
+        row
+        for row in failed["requirements"]
+        if row["id"] == "independent_validation_endpoint"
+    )
+    assert gate["state"] == "failed"
+    assert all(item["passed"] for item in gate["artifact_replay"])
+    assert {
+        row["field"] for row in gate["checks"] if row["passed"] is False
+    } == {
+        "rows",
+        "candidate_calibration_unique_gps_blocks",
+        "injection_validation_unique_gps_blocks",
+    }
+
+    write_endpoint(rows=3000, calibration_blocks=25, injection_blocks=25)
+    passed = run_publication_evidence_audit(
+        protocol,
+        [f"independent_validation_endpoint={evidence}"],
+        tmp_path / "passed-audit.json",
+    )
+    gate = next(
+        row
+        for row in passed["requirements"]
+        if row["id"] == "independent_validation_endpoint"
+    )
+    assert gate["state"] == "passed"
+    assert len(gate["artifact_replay"]) == 8

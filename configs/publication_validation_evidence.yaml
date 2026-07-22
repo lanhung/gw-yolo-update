@@ -23,12 +23,23 @@ publication_evidence:
       checks:
         - {field: status, op: equals, value: frozen_gps_and_purpose_disjoint_validation_endpoint}
         - {field: passed, op: equals, value: true}
+        - {field: rows, op: equals, value: 3000}
+        - {field: candidate_calibration_unique_gps_blocks, op: at_least, value: 25}
+        - {field: injection_validation_unique_gps_blocks, op: at_least, value: 25}
         - {field: purpose_gps_block_overlap, op: equals, value: 0}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: test_evaluation, op: equals, value: null}
+        - {field: scientific_claim_allowed, op: equals, value: false}
+        - {field: component_reports, op: nonempty}
       replay_artifacts:
         - {path_field: candidate_calibration_background_manifest_path, sha256_field: candidate_calibration_background_manifest_sha256}
         - {path_field: injection_arrival_manifest_path, sha256_field: injection_arrival_manifest_sha256}
+        - {path_field: component_reports.purpose_partition.path, sha256_field: component_reports.purpose_partition.sha256}
+        - {path_field: component_reports.injection_plan.path, sha256_field: component_reports.injection_plan.sha256}
+        - {path_field: component_reports.waveform_validation.path, sha256_field: component_reports.waveform_validation.sha256}
+        - {path_field: component_reports.materialization.path, sha256_field: component_reports.materialization.sha256}
+        - {path_field: component_reports.snr_annotation.path, sha256_field: component_reports.snr_annotation.sha256}
+        - {path_field: component_reports.arrival_annotation.path, sha256_field: component_reports.arrival_annotation.sha256}
 
     - id: five_seed_model
       group: model
