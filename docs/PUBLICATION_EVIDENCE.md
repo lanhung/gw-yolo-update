@@ -97,15 +97,17 @@ result is labeled `gate_passed_null_or_negative_primary_endpoint`; it is never f
 Create the validation-stage registry without opening or naming a locked result:
 
 ```bash
-python -m gwyolo.cli publication-result-registry \
-  --ledger /artifacts/publication-validation-ledger.json \
-  --output /artifacts/publication-result-registry-validation.json \
-  --csv /artifacts/publication-result-registry-validation.csv \
-  --markdown /artifacts/publication-result-registry-validation.md
+GWYOLO_CODE_COMMIT="$(git rev-parse HEAD)" \
+  python -m gwyolo.cli publication-result-registry \
+    --ledger /artifacts/publication-validation-ledger.json \
+    --output /artifacts/publication-result-registry-validation.json \
+    --csv /artifacts/publication-result-registry-validation.csv \
+    --markdown /artifacts/publication-result-registry-validation.md
 ```
 
 After the one-time locked evaluation has completed, use new output paths and add exactly one
 `--ledger /artifacts/publication-locked-final-ledger.json`. Duplicate phases, changed evidence,
 omitted requirements and preexisting output paths fail explicitly. The registry always writes
 `scientific_claim_allowed=false`: it is an artifact-retention and paper-table index, not a claim
-promotion mechanism.
+promotion mechanism. A missing, abbreviated or non-hex `GWYOLO_CODE_COMMIT` also fails before any
+output is written; publication registries require the full 40- or 64-character commit identity.

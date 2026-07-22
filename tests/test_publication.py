@@ -196,8 +196,9 @@ def _write_registry_ledgers(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def test_publication_result_registry_replays_and_retains_hand_calculated_null_result(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "d" * 40)
     validation_ledger, locked_ledger, _ = _write_registry_ledgers(tmp_path)
     output = tmp_path / "registry.json"
     csv_output = tmp_path / "registry.csv"
@@ -263,8 +264,9 @@ def test_publication_result_registry_replays_and_retains_hand_calculated_null_re
 
 
 def test_publication_result_registry_fails_closed_on_tamper_or_duplicate_phase(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "e" * 40)
     validation_ledger, locked_ledger, manifest = _write_registry_ledgers(tmp_path)
     manifest.write_text("tampered\n", encoding="utf-8")
     with pytest.raises(ValueError, match="ledger replay differs for gate: data_gate"):
@@ -282,6 +284,20 @@ def test_publication_result_registry_fails_closed_on_tamper_or_duplicate_phase(
             tmp_path / "duplicate.json",
             tmp_path / "duplicate.csv",
             tmp_path / "duplicate.md",
+        )
+
+
+def test_publication_result_registry_requires_full_commit_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validation_ledger, _, _ = _write_registry_ledgers(tmp_path)
+    monkeypatch.delenv("GWYOLO_CODE_COMMIT", raising=False)
+    with pytest.raises(ValueError, match="full GWYOLO_CODE_COMMIT"):
+        run_publication_result_registry(
+            [validation_ledger],
+            tmp_path / "missing-commit.json",
+            tmp_path / "missing-commit.csv",
+            tmp_path / "missing-commit.md",
         )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -537,6 +538,14 @@ def run_publication_result_registry(
 
     if not ledger_paths:
         raise ValueError("publication result registry requires at least one ledger")
+    provenance = execution_provenance()
+    code_commit = provenance.get("code_commit")
+    if not isinstance(code_commit, str) or re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", code_commit
+    ) is None:
+        raise ValueError(
+            "publication result registry requires a full GWYOLO_CODE_COMMIT hash"
+        )
     targets = [Path(value).resolve() for value in (output_path, csv_path, markdown_path)]
     if len(set(targets)) != len(targets):
         raise ValueError("publication result registry outputs must be distinct")
@@ -634,7 +643,7 @@ def run_publication_result_registry(
             ),
         },
         "rows": rows,
-        **execution_provenance(),
+        **provenance,
     }
     csv_text = _registry_csv(rows)
     markdown_text = _registry_markdown(result)
