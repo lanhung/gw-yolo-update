@@ -57,6 +57,7 @@ locked_evaluation_suite:
     # 0.1/year requires approximately 23.026 years of equivalent exposure.
     minimum_test_live_time_years: 23.02585093
     minimum_test_injections: 3000
+    minimum_injection_gps_blocks: 25
     minimum_paired_pe_injections: 100
     minimum_locked_ood_rows: 500
     bootstrap_replicates: 10000

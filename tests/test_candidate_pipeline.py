@@ -190,7 +190,15 @@ def test_continuous_calibration_binds_independent_endpoint_and_model(tmp_path) -
                     },
                     "validation_background_gps_blocks": ["background-block"],
                     "validation_injection_gps_blocks": injection_blocks,
-                    "validation_injection_diagnostic": {"injections": 3000},
+                        "validation_injection_diagnostic": {
+                            "injections": 3000,
+                            "bootstrap_independence": {
+                                "status": "injection_bootstrap_independence_audit_v1",
+                                "passed": True,
+                                "method": "gps_block_then_paired_injection_hierarchical_bootstrap_v1",
+                                "physical_groups": 25,
+                            },
+                        },
                     "validation_time_slide_report_path": str(slides),
                     "validation_time_slide_report_sha256": file_sha256(slides),
                     "validation_injection_ranking_report_path": str(ranking),
@@ -301,6 +309,7 @@ def test_candidate_validation_comparison_uses_paired_injections(tmp_path) -> Non
   maximum_promoted_timing_uncertainty_seconds: 0.01
   maximum_timing_uncertainty_regression_seconds: 0.002
   bootstrap_replicates: 1000
+  minimum_injection_gps_blocks: 25
   seed: 7
 """
     )
@@ -316,6 +325,7 @@ def test_candidate_validation_comparison_uses_paired_injections(tmp_path) -> Non
         0.8
     )
     assert result["paired_bootstrap_95"][0] > 0
+    assert result["injection_bootstrap_independence"]["physical_groups"] == 100
 
     promoted = json.loads(report_paths["promoted"].read_text())
     promoted["run_identity"] = {**common_identity, "code_commit": "different"}

@@ -103,6 +103,10 @@ publication_evidence:
         - {field: test_rows_read, op: equals, value: 0}
         - {field: test_evaluation, op: equals, value: null}
         - {field: validation_injection_diagnostic, op: nonempty}
+        - {field: injection_bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: injection_bootstrap_independence.passed, op: equals, value: true}
+        - {field: injection_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: injection_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
@@ -129,6 +133,10 @@ publication_evidence:
         - {field: background_dependence_audits.raw.passed, op: equals, value: true}
         - {field: background_dependence_audits.mask.status, op: equals, value: candidate_background_dependence_audit_v1}
         - {field: background_dependence_audits.mask.passed, op: equals, value: true}
+        - {field: injection_bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: injection_bootstrap_independence.passed, op: equals, value: true}
+        - {field: injection_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: injection_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: validation_only, op: equals, value: true}
         - {field: checks.minimum_tasks, op: equals, value: true}
         - {field: checks.minimum_unique_glitches, op: equals, value: true}
@@ -164,6 +172,10 @@ publication_evidence:
         - {field: test_rows_read, op: equals, value: 0}
         - {field: scenario_threshold_refits, op: equals, value: 0}
         - {field: scenario_count, op: at_least, value: 7}
+        - {field: injection_bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: injection_bootstrap_independence.passed, op: equals, value: true}
+        - {field: injection_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: injection_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: scientific_claim_allowed, op: equals, value: false}
       replay_artifacts:
         - {path_field: plan.path, sha256_field: plan.sha256}

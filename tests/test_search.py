@@ -187,6 +187,7 @@ def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
         "target_far_per_year": 0.1,
         "minimum_test_live_time_years": 20.0,
         "minimum_test_injections": 4,
+        "minimum_injection_gps_blocks": 2,
         "bootstrap_replicates": 100,
         "bootstrap_seed": 7,
     }
@@ -455,6 +456,16 @@ def test_raw_mask_endpoint_binder_replays_authorized_background(tmp_path: Path) 
             "scientific_claim_allowed": False,
             "locked_test_allowed": False,
             "test_rows_read": 0,
+            "paired_vt": {
+                "bootstrap_independence": {
+                    "status": "injection_bootstrap_independence_audit_v1",
+                    "passed": True,
+                    "method": (
+                        "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+                    ),
+                    "physical_groups": 25,
+                }
+            },
             "raw_calibration_report": {"sha256": file_sha256(calibrations["raw"])},
             "mask_calibration_report": {
                 "sha256": file_sha256(calibrations["mask"])
@@ -878,6 +889,7 @@ def test_paired_raw_mask_calibration_comparison_has_hand_calculated_vt_gain(
         timing,
         tmp_path / "comparison.json",
         minimum_absolute_weighted_efficiency_gain=0.5,
+        minimum_injection_gps_blocks=2,
         bootstrap_replicates=200,
         seed=1,
     )

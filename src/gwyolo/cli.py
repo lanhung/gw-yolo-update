@@ -168,6 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     raw_mask_calibration.add_argument("--bootstrap-replicates", type=int, default=10000)
     raw_mask_calibration.add_argument("--seed", type=int, default=20260720)
+    raw_mask_calibration.add_argument(
+        "--minimum-injection-gps-blocks", type=int, default=25
+    )
 
     raw_mask_endpoint_bind = subparsers.add_parser(
         "candidate-search-raw-mask-endpoint-bind"
@@ -2231,6 +2234,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_absolute_weighted_efficiency_gain,
                 args.bootstrap_replicates,
                 args.seed,
+                args.minimum_injection_gps_blocks,
             )
         )
     elif args.command == "candidate-search-raw-mask-endpoint-bind":

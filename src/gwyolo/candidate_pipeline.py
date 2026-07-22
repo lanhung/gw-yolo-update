@@ -21,6 +21,7 @@ from .exposure import (
     freeze_candidate_block_permutation_schedule,
 )
 from .injection_score import score_materialized_injections
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 from .search import run_candidate_search_calibration
@@ -212,19 +213,21 @@ def compare_candidate_validation_pipelines(
     delta = float(contributions.sum() / denominator)
     replicates = int(settings["bootstrap_replicates"])
     seed = int(settings["seed"])
-    if replicates <= 0:
+    minimum_injection_gps_blocks = int(
+        settings.get("minimum_injection_gps_blocks", 25)
+    )
+    if replicates <= 0 or minimum_injection_gps_blocks < 2:
         raise ValueError("Candidate promotion bootstrap count must be positive")
-    rng = np.random.default_rng(seed)
-    bootstrap = []
-    for _ in range(replicates):
-        indices = rng.integers(0, len(ids), size=len(ids))
-        sampled_weight = float(weights[indices].sum())
-        if sampled_weight > 0:
-            bootstrap.append(float(contributions[indices].sum() / sampled_weight))
-    interval = [
-        float(np.percentile(bootstrap, 2.5)),
-        float(np.percentile(bootstrap, 97.5)),
-    ]
+    bootstrap = hierarchical_injection_bootstrap(
+        [ranking_rows["baseline"][value] for value in ids],
+        contributions,
+        weights,
+        replicates,
+        seed,
+        require_physical_groups=True,
+        minimum_physical_groups=minimum_injection_gps_blocks,
+    )
+    interval = bootstrap["interval_95"]
     strata = {}
     maximum_regression = float(settings["maximum_stratum_efficiency_regression"])
     regressed = []
@@ -269,6 +272,9 @@ def compare_candidate_validation_pipelines(
         "minimum_weighted_efficiency_gain": delta
         >= float(settings["minimum_weighted_efficiency_gain"]),
         "paired_bootstrap_lower_bound_positive": interval[0] > 0,
+        "injection_bootstrap_independence": bootstrap["independence_audit"][
+            "passed"
+        ],
         "maximum_regressed_strata": len(regressed)
         <= int(settings["maximum_regressed_strata"]),
         "promoted_timing_limit": timing["promoted"]
@@ -291,6 +297,8 @@ def compare_candidate_validation_pipelines(
         "weighted_efficiency_delta_promoted_minus_baseline": delta,
         "paired_bootstrap_95": interval,
         "bootstrap_replicates": replicates,
+        "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
+        "injection_bootstrap_independence": bootstrap["independence_audit"],
         "seed": seed,
         "timing_uncertainty_seconds": timing,
         "regressed_strata": regressed,

@@ -141,6 +141,7 @@ def freeze_locked_evaluation_suite_plan(
         "target_far_per_year": 0.0,
         "minimum_test_live_time_years": 0.0,
         "minimum_test_injections": 0,
+        "minimum_injection_gps_blocks": 1,
         "minimum_paired_pe_injections": 0,
         "minimum_locked_ood_rows": 0,
         "minimum_background_gps_blocks": 1,

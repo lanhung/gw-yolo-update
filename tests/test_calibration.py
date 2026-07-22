@@ -204,6 +204,7 @@ calibration_robustness:
   maximum_absolute_weighted_efficiency_loss: 0.10
   maximum_far_multiplier_of_target: 2.0
   bootstrap_replicates: 200
+  minimum_injection_gps_blocks: 2
   seed: 1234
 """
         )
@@ -232,7 +233,7 @@ calibration_robustness:
                     "waveform_id": "w1",
                     "source_family": "bbh",
                     "stratum": "near",
-                    "gps_block": "O4a:inj",
+                    "gps_block": "O4a:inj-1",
                     "gps_time": 1.0,
                     "vt_weight": 1.0,
                     "vt_weight_unit": "arb",
@@ -243,7 +244,7 @@ calibration_robustness:
                     "waveform_id": "w2",
                     "source_family": "bbh",
                     "stratum": "far",
-                    "gps_block": "O4a:inj",
+                    "gps_block": "O4a:inj-2",
                     "gps_time": 2.0,
                     "vt_weight": 1.0,
                     "vt_weight_unit": "arb",
@@ -395,6 +396,7 @@ def test_calibration_robustness_uses_one_fixed_threshold_and_hand_calculated_far
     assert result["scenario_threshold_refits"] == 0
     assert result["detector_strata"]["H1+L1"]["scenario_count"] == 7
     assert result["detector_strata_audited"]["H1+L1"]["scenario_count"] == 7
+    assert result["injection_bootstrap_independence"]["physical_groups"] == 2
     for scenario in result["scenario_results"]:
         assert scenario["threshold"] == pytest.approx(0.5)
         assert scenario["far_per_year"] == pytest.approx(0.5)

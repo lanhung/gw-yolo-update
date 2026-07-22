@@ -472,6 +472,12 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
                         }
                         for arm in ("raw", "mask")
                     },
+                    "injection_bootstrap_independence": {
+                        "status": "injection_bootstrap_independence_audit_v1",
+                        "passed": True,
+                        "method": "gps_block_then_paired_injection_hierarchical_bootstrap_v1",
+                        "physical_groups": 25,
+                    },
                     "validation_only": True,
                 "checks": {
                     "minimum_tasks": True,

@@ -100,6 +100,7 @@ def _locked_suite_config(path) -> None:
         "    target_far_per_year: 0.1\n"
         "    minimum_test_live_time_years: 23.02585093\n"
         "    minimum_test_injections: 3000\n"
+        "    minimum_injection_gps_blocks: 25\n"
         "    minimum_paired_pe_injections: 100\n"
         "    minimum_locked_ood_rows: 500\n"
         "    minimum_background_gps_blocks: 25\n"

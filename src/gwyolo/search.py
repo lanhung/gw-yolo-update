@@ -17,6 +17,7 @@ from .exposure import (
     candidate_slide_schedule_identity,
 )
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -102,6 +103,8 @@ def evaluate_search(
     injections: Iterable[dict[str, Any]],
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     """Evaluate a frozen threshold on background and importance-weighted injections."""
     if background_live_time_years <= 0:
@@ -120,20 +123,19 @@ def evaluate_search(
     if total_weight <= 0:
         raise ValueError("sum of injection weights must be positive")
     recovered_weight = sum(weight for weight, hit in zip(weights, recovered) if hit)
-    rng = np.random.default_rng(bootstrap_seed)
-    bootstrap_efficiencies = []
     if bootstrap_replicates <= 0:
         raise ValueError("bootstrap_replicates must be positive")
     recovered_array = np.asarray(recovered, dtype=np.float64)
     weight_array = np.asarray(weights, dtype=np.float64)
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        sampled_weights = weight_array[indices]
-        denominator = float(sampled_weights.sum())
-        if denominator > 0:
-            bootstrap_efficiencies.append(
-                float((sampled_weights * recovered_array[indices]).sum() / denominator)
-            )
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        weight_array * recovered_array,
+        weight_array,
+        bootstrap_replicates,
+        bootstrap_seed,
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     efficiency_interval = wilson_interval(sum(recovered), len(rows))
     return {
         "threshold": threshold,
@@ -155,11 +157,9 @@ def evaluate_search(
             "total_vt_weight": total_weight,
             "recovered_vt": recovered_weight,
             "weighted_efficiency": recovered_weight / total_weight,
-            "weighted_efficiency_bootstrap_95": [
-                float(np.percentile(bootstrap_efficiencies, 2.5)),
-                float(np.percentile(bootstrap_efficiencies, 97.5)),
-            ],
+            "weighted_efficiency_bootstrap_95": bootstrap["interval_95"],
             "bootstrap_replicates": bootstrap_replicates,
+            "bootstrap_independence": bootstrap["independence_audit"],
         },
     }
 
@@ -170,6 +170,8 @@ def summarize_injection_efficiency(
     score_field: str = "ranking_score",
     bootstrap_replicates: int = 2000,
     seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     rows = list(injections)
     if not rows:
@@ -188,15 +190,15 @@ def summarize_injection_efficiency(
     recovered = scores >= threshold
     recovered_count = int(recovered.sum())
     recovered_weight = float(weights[recovered].sum())
-    rng = np.random.default_rng(seed)
-    bootstrap = []
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        denominator = float(weights[indices].sum())
-        if denominator > 0:
-            bootstrap.append(
-                float((weights[indices] * recovered[indices]).sum() / denominator)
-            )
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        weights * recovered,
+        weights,
+        bootstrap_replicates,
+        seed,
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     return {
         "injections": len(rows),
         "recovered": recovered_count,
@@ -205,11 +207,9 @@ def summarize_injection_efficiency(
         "total_vt_weight": float(weights.sum()),
         "recovered_vt": recovered_weight,
         "weighted_efficiency": recovered_weight / float(weights.sum()),
-        "weighted_efficiency_bootstrap_95": [
-            float(np.percentile(bootstrap, 2.5)),
-            float(np.percentile(bootstrap, 97.5)),
-        ],
+        "weighted_efficiency_bootstrap_95": bootstrap["interval_95"],
         "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_independence": bootstrap["independence_audit"],
     }
 
 
@@ -221,6 +221,8 @@ def paired_vt_comparison(
     score_field_b: str,
     bootstrap_replicates: int = 2000,
     seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     rows = list(injections)
     if not rows:
@@ -239,11 +241,16 @@ def paired_vt_comparison(
     delta = float(contributions.sum())
     recovered_vt_a = float((weights * recovered_a).sum())
     recovered_vt_b = float((weights * recovered_b).sum())
-    rng = np.random.default_rng(seed)
-    bootstrap_delta = []
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        bootstrap_delta.append(float(contributions[indices].sum()))
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        contributions,
+        weights,
+        bootstrap_replicates,
+        seed,
+        output_scale=float(weights.sum()),
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     strata = {}
     for stratum in sorted({str(row.get("stratum", "all")) for row in rows}):
         indices = [index for index, row in enumerate(rows) if str(row.get("stratum", "all")) == stratum]
@@ -267,11 +274,9 @@ def paired_vt_comparison(
         "method_b": {"score_field": score_field_b, "threshold": threshold_b, "recovered_vt": recovered_vt_b},
         "delta_recovered_vt_b_minus_a": delta,
         "relative_delta": delta / recovered_vt_a if recovered_vt_a > 0 else None,
-        "paired_bootstrap_95": [
-            float(np.percentile(bootstrap_delta, 2.5)),
-            float(np.percentile(bootstrap_delta, 97.5)),
-        ],
+        "paired_bootstrap_95": bootstrap["interval_95"],
         "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_independence": bootstrap["independence_audit"],
         "strata": strata,
     }
 
@@ -593,6 +598,7 @@ def run_candidate_search_calibration(
         "ranking_score",
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=25,
     )
     result = {
         "status": "frozen_validation_candidate_search_calibration",
@@ -614,6 +620,7 @@ def run_candidate_search_calibration(
             schedule_audit["passed"]
             and dependence_audit is not None
             and dependence_audit["passed"]
+            and validation_efficiency["bootstrap_independence"]["passed"]
         )
         if schedule_audit.get("schedule_kind") == "gps_block_permutation"
         else bool(schedule_audit["passed"]),
@@ -765,6 +772,9 @@ def bind_candidate_search_calibration_to_independent_endpoint(
     }
     overlap = sorted(background_blocks & injection_blocks)
     dependence = calibration.get("background_dependence_audit")
+    injection_bootstrap = calibration.get("validation_injection_diagnostic", {}).get(
+        "bootstrap_independence", {}
+    )
     dependence_background = (
         Path(str(dependence.get("background_manifest", {}).get("path", ""))).resolve()
         if isinstance(dependence, dict)
@@ -804,6 +814,12 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         or dependence.get("time_slide_report", {}).get("path") != str(slide_path)
         or dependence.get("time_slide_report", {}).get("sha256")
         != file_sha256(slide_path)
+        or injection_bootstrap.get("status")
+        != "injection_bootstrap_independence_audit_v1"
+        or injection_bootstrap.get("passed") is not True
+        or injection_bootstrap.get("method")
+        != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+        or int(injection_bootstrap.get("physical_groups", -1)) < 25
         or not np.isclose(
             float(dependence.get("threshold", float("nan"))),
             float(calibration.get("calibration", {}).get("threshold", float("inf"))),
@@ -845,6 +861,7 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         "validation_injection_diagnostic": calibration[
             "validation_injection_diagnostic"
         ],
+        "injection_bootstrap_independence": injection_bootstrap,
         "validation_purpose_gps_block_overlap": 0,
         "validation_background_unique_gps_blocks": len(background_blocks),
         "validation_injection_unique_gps_blocks": len(injection_blocks),
@@ -888,6 +905,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     minimum_absolute_weighted_efficiency_gain: float = 0.05,
     bootstrap_replicates: int = 10000,
     seed: int = 20260720,
+    minimum_injection_gps_blocks: int = 25,
 ) -> dict[str, Any]:
     """Compare raw/mask validation rankings at independently frozen common-FAR thresholds."""
 
@@ -896,7 +914,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         raise FileExistsError("paired raw/mask calibration comparisons are immutable")
     if not 0 <= minimum_absolute_weighted_efficiency_gain < 1:
         raise ValueError("minimum raw/mask weighted-efficiency gain must be in [0, 1)")
-    if bootstrap_replicates <= 0:
+    if bootstrap_replicates <= 0 or minimum_injection_gps_blocks < 2:
         raise ValueError("bootstrap_replicates must be positive")
 
     validation_path = Path(mask_validation_receipt).resolve()
@@ -1090,6 +1108,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         "mask_score",
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=minimum_injection_gps_blocks,
     )
     total_vt = float(sum(float(row["vt_weight"]) for row in joined))
     delta_vt = float(paired["delta_recovered_vt_b_minus_a"])
@@ -1103,6 +1122,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         "passed": bool(
             absolute_gain >= minimum_absolute_weighted_efficiency_gain
             and float(paired["paired_bootstrap_95"][0]) > 0
+            and paired["bootstrap_independence"]["passed"]
         ),
     }
     result = {
@@ -1154,6 +1174,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             "timing_calibration_report_sha256"
         ],
         "bootstrap_replicates": bootstrap_replicates,
+        "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
         "seed": seed,
         **execution_provenance(),
     }
@@ -1312,6 +1333,10 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
         or comparison.get("scientific_claim_allowed") is not False
         or comparison.get("locked_test_allowed") is not False
         or int(comparison.get("test_rows_read", -1)) != 0
+        or comparison.get("paired_vt", {})
+        .get("bootstrap_independence", {})
+        .get("passed")
+        is not True
         or comparison.get("raw_calibration_report", {}).get("sha256")
         != file_sha256(raw_path)
         or comparison.get("mask_calibration_report", {}).get("sha256")
@@ -1361,6 +1386,9 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
             "raw": raw["background_dependence_audit"],
             "mask": mask["background_dependence_audit"],
         },
+        "injection_bootstrap_independence": comparison["paired_vt"][
+            "bootstrap_independence"
+        ],
         "paired_validation_comparison": {
             "path": str(comparison_path),
             "sha256": file_sha256(comparison_path),
@@ -1540,6 +1568,11 @@ def run_frozen_candidate_search_evaluation(
             bootstrap_replicates,
             seed,
         )
+    minimum_bootstrap_groups = (
+        int(locked_suite_access["endpoints"]["minimum_injection_gps_blocks"])
+        if locked_suite_access is not None
+        else 2
+    )
     evaluation = evaluate_search(
         float(frozen["calibration"]["threshold"]),
         (float(row["ranking_score"]) for row in background),
@@ -1547,6 +1580,7 @@ def run_frozen_candidate_search_evaluation(
         injection_rows,
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=minimum_bootstrap_groups,
     )
     endpoint_gates = {
         "minimum_test_live_time": live_time_years >= minimum_test_live_time_years,
@@ -1562,6 +1596,11 @@ def run_frozen_candidate_search_evaluation(
             dependence_audit is not None and dependence_audit["passed"]
         )
         if test_schedule_audit.get("schedule_kind") == "gps_block_permutation"
+        else True,
+        "injection_bootstrap_independence": bool(
+            evaluation["injections"]["bootstrap_independence"]["passed"]
+        )
+        if locked_suite_access is not None
         else True,
     }
     result = {
@@ -1819,6 +1858,7 @@ def run_paired_locked_raw_mask_candidate_search_comparison(
         "mask_score",
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=int(endpoints["minimum_injection_gps_blocks"]),
     )
     total_vt = float(sum(float(row.get("vt_weight", 1.0)) for row in joined))
     absolute_gain = float(paired["delta_recovered_vt_b_minus_a"]) / total_vt
@@ -1833,6 +1873,7 @@ def run_paired_locked_raw_mask_candidate_search_comparison(
         "significant_mask_advantage": bool(
             absolute_gain >= frozen_minimum_gain
             and float(paired["paired_bootstrap_95"][0]) > 0
+            and paired["bootstrap_independence"]["passed"]
         ),
     }
     result = {

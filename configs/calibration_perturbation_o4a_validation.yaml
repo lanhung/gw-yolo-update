@@ -29,4 +29,5 @@ calibration_robustness:
   maximum_absolute_weighted_efficiency_loss: 0.05
   maximum_far_multiplier_of_target: 2.0
   bootstrap_replicates: 10000
+  minimum_injection_gps_blocks: 25
   seed: 20260722

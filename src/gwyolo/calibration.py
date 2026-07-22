@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
@@ -713,12 +714,16 @@ def evaluate_calibration_perturbation_robustness(
     maximum_loss = float(settings.get("maximum_absolute_weighted_efficiency_loss", -1))
     maximum_far_multiplier = float(settings.get("maximum_far_multiplier_of_target", 0))
     bootstrap_replicates = int(settings.get("bootstrap_replicates", 0))
+    minimum_injection_gps_blocks = int(
+        settings.get("minimum_injection_gps_blocks", 25)
+    )
     seed = int(settings.get("seed", 0))
     if (
         minimum_scenarios < 1
         or not 0 <= maximum_loss < 1
         or maximum_far_multiplier < 1
         or bootstrap_replicates < 1
+        or minimum_injection_gps_blocks < 2
         or seed < 1
     ):
         raise ValueError("Calibration robustness policy is invalid")
@@ -883,6 +888,7 @@ def evaluate_calibration_perturbation_robustness(
         weights = []
         contributions = []
         joined = []
+        paired_rows = []
         identity_fields = (
             "waveform_id",
             "source_family",
@@ -906,27 +912,30 @@ def evaluate_calibration_perturbation_robustness(
             weights.append(weight)
             contributions.append(weight * (recovered_scenario - recovered_baseline))
             joined.append((detector_subset, weight, recovered_baseline, recovered_scenario))
+            paired_rows.append(reference)
         weights_array = np.asarray(weights, dtype=np.float64)
         contributions_array = np.asarray(contributions, dtype=np.float64)
         total_weight = float(weights_array.sum())
         if total_weight <= 0 or not np.isfinite(weights_array).all():
             raise ValueError("Calibration injection weights are invalid")
         delta_efficiency = float(contributions_array.sum() / total_weight)
-        rng = np.random.default_rng(seed + scenario_index)
-        bootstrap = []
-        for _ in range(bootstrap_replicates):
-            indices = rng.integers(0, len(weights_array), size=len(weights_array))
-            denominator = float(weights_array[indices].sum())
-            if denominator > 0:
-                bootstrap.append(float(contributions_array[indices].sum() / denominator))
-        interval = [
-            float(np.percentile(bootstrap, 2.5)),
-            float(np.percentile(bootstrap, 97.5)),
-        ]
+        bootstrap = hierarchical_injection_bootstrap(
+            paired_rows,
+            contributions_array,
+            weights_array,
+            bootstrap_replicates,
+            seed + scenario_index,
+            require_physical_groups=True,
+            minimum_physical_groups=minimum_injection_gps_blocks,
+        )
+        interval = bootstrap["interval_95"]
         exceedances = sum(float(row["ranking_score"]) >= threshold for row in background_rows)
         live_time = float(background_report["equivalent_live_time_years"])
         far_per_year = exceedances / live_time
-        efficiency_gate = interval[0] >= -maximum_loss
+        efficiency_gate = (
+            interval[0] >= -maximum_loss
+            and bootstrap["independence_audit"]["passed"]
+        )
         far_gate = far_per_year <= target_far * maximum_far_multiplier
         per_detector = {}
         for subset in sorted({row[0] for row in joined}):
@@ -957,6 +966,9 @@ def evaluate_calibration_perturbation_robustness(
                 "scenario_weighted_efficiency": baseline_efficiency + delta_efficiency,
                 "absolute_weighted_efficiency_delta": delta_efficiency,
                 "paired_bootstrap_delta_95": interval,
+                "injection_bootstrap_independence": bootstrap[
+                    "independence_audit"
+                ],
                 "efficiency_noninferiority_passed": efficiency_gate,
                 "far_robustness_passed": far_gate,
                 "passed": bool(efficiency_gate and far_gate),
@@ -965,6 +977,9 @@ def evaluate_calibration_perturbation_robustness(
             }
         )
     passed = all(row["passed"] for row in scenario_results)
+    injection_bootstrap_independence = scenario_results[0][
+        "injection_bootstrap_independence"
+    ]
     result = {
         "status": "completed_validation_calibration_perturbation_robustness",
         "passed": passed,
@@ -982,10 +997,12 @@ def evaluate_calibration_perturbation_robustness(
             "maximum_absolute_weighted_efficiency_loss": maximum_loss,
             "maximum_far_multiplier_of_target": maximum_far_multiplier,
             "bootstrap_replicates": bootstrap_replicates,
+            "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
             "seed": seed,
         },
         "scenario_count": len(scenario_results),
         "scenario_results": scenario_results,
+        "injection_bootstrap_independence": injection_bootstrap_independence,
         "detector_strata": dict(sorted(detector_strata.items())),
         "detector_strata_audited": dict(sorted(detector_strata.items())),
         "physical_time_domain_perturbation": True,

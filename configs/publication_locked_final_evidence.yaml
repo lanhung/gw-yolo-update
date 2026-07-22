@@ -48,6 +48,9 @@ publication_evidence:
         - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
         - {field: background_dependence_audit.passed, op: equals, value: true}
         - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: test_evaluation.injections.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: test_evaluation.injections.bootstrap_independence.passed, op: equals, value: true}
+        - {field: test_evaluation.injections.bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: locked_suite_access.output_key, op: equals, value: raw_candidate_search}
         - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
         - {field: test_evaluation.injections.total, op: at_least, value: 3000}
@@ -69,6 +72,9 @@ publication_evidence:
         - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
         - {field: background_dependence_audit.passed, op: equals, value: true}
         - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: test_evaluation.injections.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: test_evaluation.injections.bootstrap_independence.passed, op: equals, value: true}
+        - {field: test_evaluation.injections.bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: locked_suite_access.output_key, op: equals, value: mask_candidate_search}
         - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
         - {field: test_evaluation.injections.total, op: at_least, value: 3000}
@@ -90,6 +96,9 @@ publication_evidence:
         - {field: paired_injections, op: at_least, value: 3000}
         - {field: background_live_time_years, op: at_least, value: 23.02585093}
         - {field: primary_endpoint_result.metric, op: equals, value: paired_delta_recovered_vt_at_common_far}
+        - {field: paired_vt.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: paired_vt.bootstrap_independence.passed, op: equals, value: true}
+        - {field: paired_vt.bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: locked_suite_access.output_key, op: equals, value: paired_raw_mask_search}
       replay_artifacts:
         - {path_field: raw_locked_report.path, sha256_field: raw_locked_report.sha256}

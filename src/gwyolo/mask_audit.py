@@ -1048,6 +1048,18 @@ def bind_raw_mask_human_consensus_publication_evidence(
             raise ValueError(
                 "human-consensus binding requires clustered raw/mask background audits"
             )
+    injection_bootstrap = raw.get("injection_bootstrap_independence", {})
+    if (
+        injection_bootstrap.get("status")
+        != "injection_bootstrap_independence_audit_v1"
+        or injection_bootstrap.get("passed") is not True
+        or injection_bootstrap.get("method")
+        != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+        or int(injection_bootstrap.get("physical_groups", -1)) < 25
+    ):
+        raise ValueError(
+            "human-consensus binding requires physical-group injection bootstrap"
+        )
 
     segmentation_path, segmentation = replay_json(
         segmentation_report_path, "human mask segmentation report"
@@ -1259,6 +1271,7 @@ def bind_raw_mask_human_consensus_publication_evidence(
             "sha256": file_sha256(raw_path),
         },
         "background_dependence_audits": raw["background_dependence_audits"],
+        "injection_bootstrap_independence": injection_bootstrap,
         "human_mask_segmentation": {
             "path": str(segmentation_path),
             "sha256": file_sha256(segmentation_path),
