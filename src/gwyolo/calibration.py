@@ -897,6 +897,7 @@ def evaluate_calibration_perturbation_robustness(
         },
         "scenario_count": len(scenario_results),
         "scenario_results": scenario_results,
+        "detector_strata": dict(sorted(detector_strata.items())),
         "detector_strata_audited": dict(sorted(detector_strata.items())),
         "physical_time_domain_perturbation": True,
         "fresh_time_frequency_transform": True,

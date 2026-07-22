@@ -96,6 +96,12 @@ publication_evidence:
         - {field: fresh_time_frequency_transform, op: equals, value: true}
         - {field: detector_strata, op: nonempty}
         - {field: test_rows_read, op: equals, value: 0}
+        - {field: scenario_threshold_refits, op: equals, value: 0}
+        - {field: scenario_count, op: at_least, value: 7}
+        - {field: scientific_claim_allowed, op: equals, value: false}
+      replay_artifacts:
+        - {path_field: plan.path, sha256_field: plan.sha256}
+        - {path_field: baseline_calibration.path, sha256_field: baseline_calibration.sha256}
 
     - id: detector_set_ood_transfer
       group: robustness

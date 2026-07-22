@@ -393,6 +393,7 @@ def test_calibration_robustness_uses_one_fixed_threshold_and_hand_calculated_far
     assert result["passed"] is True
     assert result["scenario_count"] == 7
     assert result["scenario_threshold_refits"] == 0
+    assert result["detector_strata"]["H1+L1"]["scenario_count"] == 7
     assert result["detector_strata_audited"]["H1+L1"]["scenario_count"] == 7
     for scenario in result["scenario_results"]:
         assert scenario["threshold"] == pytest.approx(0.5)
