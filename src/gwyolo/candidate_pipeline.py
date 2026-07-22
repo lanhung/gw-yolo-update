@@ -443,6 +443,7 @@ def recalibrate_candidate_validation_pipeline_with_block_permutations(
             calibration_path,
             int(identity["bootstrap_replicates"]),
             int(identity["seed"]),
+            background_manifest,
         )
     result = {
         **source,

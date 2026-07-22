@@ -57,6 +57,8 @@ def _locked_suite_config(path) -> None:
     inputs = {
         "raw_test_time_slide_report": "inputs/raw-slides.json",
         "mask_test_time_slide_report": "inputs/mask-slides.json",
+        "raw_test_background_manifest": "inputs/raw-background.jsonl",
+        "mask_test_background_manifest": "inputs/mask-background.jsonl",
         "raw_test_injection_ranking_report": "inputs/raw-rankings.json",
         "mask_test_injection_ranking_report": "inputs/mask-rankings.json",
         "locked_ood_score_manifest": "inputs/ood.jsonl",
@@ -100,9 +102,12 @@ def _locked_suite_config(path) -> None:
         "    minimum_test_injections: 3000\n"
         "    minimum_paired_pe_injections: 100\n"
         "    minimum_locked_ood_rows: 500\n"
+        "    minimum_background_gps_blocks: 25\n"
+        "    minimum_background_shifts: 25\n"
         "    bootstrap_replicates: 10000\n"
         "    bootstrap_seed: 20260722\n"
         "    pe_credible_level: 0.9\n"
+        "    background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1\n"
         "    catalog_search_arm: mask_candidate_search\n",
         encoding="utf-8",
     )
@@ -370,10 +375,12 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
     expected_inputs = {
         "raw_candidate_search": {
             "time_slide": "raw_test_time_slide_report",
+            "background_manifest": "raw_test_background_manifest",
             "injection_ranking": "raw_test_injection_ranking_report",
         },
         "mask_candidate_search": {
             "time_slide": "mask_test_time_slide_report",
+            "background_manifest": "mask_test_background_manifest",
             "injection_ranking": "mask_test_injection_ranking_report",
         },
         "locked_ood_transfer": {

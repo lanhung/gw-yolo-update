@@ -364,6 +364,7 @@ PY
       "$TASK_PYTHON" -m gwyolo.cli candidate-search-calibrate \
         --validation-time-slide-report \
           "$block_dir/val_candidate_time_slide_report.json" \
+        --validation-background-manifest "$background_manifest" \
         --validation-injection-ranking-report "$ranking" \
         --target-far-per-year "$TARGET_FAR_PER_YEAR" \
         --output "$calibration" \

@@ -129,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_calibrate = subparsers.add_parser("candidate-search-calibrate")
     candidate_search_calibrate.add_argument("--validation-time-slide-report", required=True)
     candidate_search_calibrate.add_argument(
+        "--validation-background-manifest", required=True
+    )
+    candidate_search_calibrate.add_argument(
         "--validation-injection-ranking-report", required=True
     )
     candidate_search_calibrate.add_argument("--target-far-per-year", type=float, required=True)
@@ -170,6 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
         "candidate-search-raw-mask-endpoint-bind"
     )
     raw_mask_endpoint_bind.add_argument("--raw-mask-background-receipt", required=True)
+    raw_mask_endpoint_bind.add_argument("--raw-calibration-report")
+    raw_mask_endpoint_bind.add_argument("--mask-calibration-report")
+    raw_mask_endpoint_bind.add_argument("--paired-comparison-report")
     raw_mask_endpoint_bind.add_argument("--output", required=True)
 
     raw_mask_human_endpoint_bind = subparsers.add_parser(
@@ -185,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
     candidate_search_frozen.add_argument("--test-time-slide-report", required=True)
+    candidate_search_frozen.add_argument("--test-background-manifest", required=True)
     candidate_search_frozen.add_argument("--test-injection-ranking-report", required=True)
     candidate_search_frozen.add_argument(
         "--minimum-test-live-time-years", type=float, required=True
@@ -2199,6 +2206,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
+                args.validation_background_manifest,
             )
         )
     elif args.command == "candidate-search-calibration-endpoint-bind":
@@ -2230,6 +2238,9 @@ def main(argv: list[str] | None = None) -> int:
             bind_raw_mask_background_to_authorized_validation_endpoint(
                 args.raw_mask_background_receipt,
                 args.output,
+                args.raw_calibration_report,
+                args.mask_calibration_report,
+                args.paired_comparison_report,
             )
         )
     elif args.command == "candidate-search-raw-mask-human-endpoint-bind":
@@ -2254,6 +2265,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.minimum_test_injections,
                 args.bootstrap_replicates,
                 args.seed,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output_key,
+                args.test_background_manifest,
             )
         )
     elif args.command == "candidate-search-raw-mask-compare-locked":

@@ -479,6 +479,7 @@ if [[ ! -s "$calibration" ]]; then
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
     "$TASK_PYTHON" -m gwyolo.cli candidate-search-calibrate \
       --validation-time-slide-report "$block_report" \
+      --validation-background-manifest "$background_manifest" \
       --validation-injection-ranking-report "$VALIDATION_INJECTION_RANKING_REPORT" \
       --target-far-per-year "$TARGET_FAR_PER_YEAR" \
       --output "$calibration" \

@@ -89,6 +89,12 @@ publication_evidence:
         - {field: publication_calibration_eligible, op: equals, value: true}
         - {field: slide_schedule_audit.passed, op: equals, value: true}
         - {field: slide_schedule_audit.schedule_kind, op: equals, value: gps_block_permutation}
+        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audit.passed, op: equals, value: true}
+        - {field: background_dependence_audit.gates.cluster_bootstrap_complete, op: equals, value: true}
+        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: background_dependence_audit.unique_gps_blocks, op: at_least, value: 25}
+        - {field: background_dependence_audit.unique_shifts, op: at_least, value: 25}
         - {field: target_far_per_year, op: equals, value: 0.1}
         - {field: target_far_has_at_least_one_expected_background_count, op: equals, value: true}
         - {field: bootstrap_replicates, op: at_least, value: 10000}
@@ -104,6 +110,9 @@ publication_evidence:
         - {path_field: candidate_pipeline.path, sha256_field: candidate_pipeline.sha256}
         - {path_field: calibration.path, sha256_field: calibration.sha256}
         - {path_field: validation_time_slide.path, sha256_field: validation_time_slide.sha256}
+        - {path_field: background_dependence_audit.background_manifest.path, sha256_field: background_dependence_audit.background_manifest.sha256}
+        - {path_field: background_dependence_audit.candidate_manifest.path, sha256_field: background_dependence_audit.candidate_manifest.sha256}
+        - {path_field: background_dependence_audit.schedule.path, sha256_field: background_dependence_audit.schedule.sha256}
         - {path_field: validation_injection_ranking.path, sha256_field: validation_injection_ranking.sha256}
         - {path_field: model_selection.path, sha256_field: model_selection.sha256}
 
@@ -116,6 +125,10 @@ publication_evidence:
         - {field: mask_locked_test_arm_eligible, op: equals, value: true}
         - {field: functional_raw_mask_endpoint_passed, op: equals, value: true}
         - {field: human_consensus_segmentation_passed, op: equals, value: true}
+        - {field: background_dependence_audits.raw.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audits.raw.passed, op: equals, value: true}
+        - {field: background_dependence_audits.mask.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audits.mask.passed, op: equals, value: true}
         - {field: validation_only, op: equals, value: true}
         - {field: checks.minimum_tasks, op: equals, value: true}
         - {field: checks.minimum_unique_glitches, op: equals, value: true}

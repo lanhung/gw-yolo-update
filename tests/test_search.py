@@ -26,6 +26,7 @@ from gwyolo.search import (
     run_validation_injection_diagnostic,
     summarize_injection_efficiency,
 )
+from gwyolo.background_dependence import audit_candidate_background_dependence
 from gwyolo.io import file_sha256
 from gwyolo.io import canonical_hash
 from gwyolo.exposure import (
@@ -404,6 +405,7 @@ def test_raw_mask_endpoint_binder_replays_authorized_background(tmp_path: Path) 
                 "common_run_identity": {
                     "parent_plan_sha256": file_sha256(parent)
                 },
+                "background_manifest_sha256": "background-manifest",
             },
         )
     merge = write(
@@ -436,6 +438,12 @@ def test_raw_mask_endpoint_binder_replays_authorized_background(tmp_path: Path) 
                 },
                 "bootstrap_replicates": 10_000,
                 "target_far_per_year": 0.1,
+                "background_dependence_audit": {
+                    "status": "candidate_background_dependence_audit_v1",
+                    "passed": True,
+                    "background_manifest": {"sha256": "background-manifest"},
+                    "three_way_cluster_bootstrap": {"replicates": 10_000},
+                },
             },
         )
     comparison = write(
@@ -509,6 +517,16 @@ def test_raw_mask_endpoint_binder_replays_authorized_background(tmp_path: Path) 
     assert result["source_background_code_commit"] == "source-commit"
     assert result["test_rows_read"] == 0
 
+    replayed = bind_raw_mask_background_to_authorized_validation_endpoint(
+        receipt,
+        tmp_path / "override-bound.json",
+        raw_calibration_report=calibrations["raw"],
+        mask_calibration_report=calibrations["mask"],
+        paired_comparison_report=comparison,
+    )
+    assert replayed["background_dependence_audits"]["raw"]["passed"] is True
+    assert replayed["background_dependence_audits"]["mask"]["passed"] is True
+
     changed = json.loads(authorization.read_text(encoding="utf-8"))
     changed["candidate_scores_inspected"] = True
     authorization.write_text(json.dumps(changed), encoding="utf-8")
@@ -551,7 +569,18 @@ def test_candidate_search_calibration_accepts_frozen_block_permutations(
     )
     background = tmp_path / "candidate-background.jsonl"
     background.write_text(
-        json.dumps({"split": "val", "ranking_score": 0.8}) + "\n",
+        json.dumps(
+            {
+                "split": "val",
+                "ranking_score": 0.8,
+                "slide_index": 1,
+                "source_gps_blocks": {
+                    "H1": "gps:1000:256",
+                    "L1": "gps:1256:256",
+                },
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     identity = {
@@ -567,9 +596,13 @@ def test_candidate_search_calibration_accepts_frozen_block_permutations(
         "split": "val",
         "manifest_path": str(background),
         "manifest_sha256": file_sha256(background),
+        "background_rows": 1,
         "background_manifest_sha256": file_sha256(source_background),
         "background_pairing_method": schedule["method"],
         "equivalent_live_time_years": schedule["selected_equivalent_live_time_years"],
+        "equivalent_live_time_seconds": schedule[
+            "selected_equivalent_live_time_seconds"
+        ],
         "slide_count": 2,
         "slide_indices": schedule["shift_indices"],
         "slide_indices_sha256": schedule["shift_indices_sha256"],
@@ -630,11 +663,34 @@ def test_candidate_search_calibration_accepts_frozen_block_permutations(
         output=tmp_path / "calibration.json",
         bootstrap_replicates=20,
         seed=1,
+        validation_background_manifest=source_background,
     )
-    assert result["publication_calibration_eligible"] is True
+    assert result["publication_calibration_eligible"] is False
     assert result["selection_data"] == ("validation_candidate_block_permutations_only")
     assert result["slide_schedule_audit"]["schedule_kind"] == ("gps_block_permutation")
     assert result["slide_schedule_audit"]["passed"] is True
+    assert result["background_dependence_audit"]["passed"] is False
+    assert result["background_dependence_audit"]["false_alarms"] == 1
+
+    audit = audit_candidate_background_dependence(
+        slide_path,
+        source_background,
+        threshold=0.8,
+        bootstrap_replicates=100,
+        seed=3,
+        minimum_gps_blocks=2,
+        minimum_shifts=2,
+        minimum_effective_gps_blocks=1,
+        minimum_effective_shifts=1,
+        maximum_exposure_fraction_per_gps_block=1,
+        maximum_exposure_fraction_per_shift=1,
+    )
+    assert audit["passed"] is True
+    assert audit["unique_gps_blocks"] == 3
+    assert audit["unique_shifts"] == 2
+    assert audit["live_time_seconds"] == 96
+    assert math.isclose(audit["far_per_year"], 31557600 / 96)
+    assert audit["three_way_cluster_bootstrap"]["replicates"] == 100
 
 
 def test_paired_raw_mask_calibration_comparison_has_hand_calculated_vt_gain(
@@ -766,6 +822,15 @@ def test_paired_raw_mask_calibration_comparison_has_hand_calculated_vt_gain(
                     "test_evaluation": None,
                     "publication_calibration_eligible": True,
                     "slide_schedule_audit": {"passed": True},
+                    "background_dependence_audit": {
+                        "status": "candidate_background_dependence_audit_v1",
+                        "passed": True,
+                        "background_manifest": {"sha256": "e" * 64},
+                        "schedule": {"schedule_id": "schedule"},
+                        "unique_gps_blocks": 25,
+                        "unique_shifts": 25,
+                        "three_way_cluster_bootstrap": {"replicates": 10_000},
+                    },
                     "target_far_per_year": 0.1,
                     "identity": {
                         **identity,

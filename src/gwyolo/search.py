@@ -548,6 +548,7 @@ def run_candidate_search_calibration(
     output: str | Path,
     bootstrap_replicates: int = 2000,
     seed: int = 20260720,
+    validation_background_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     """Freeze a candidate-level threshold using validation artifacts only."""
 
@@ -571,6 +572,21 @@ def run_candidate_search_calibration(
         live_time_years,
         target_far_per_year,
     )
+    dependence_audit = None
+    if schedule_audit.get("schedule_kind") == "gps_block_permutation":
+        if validation_background_manifest is None:
+            raise ValueError(
+                "block-permutation calibration requires its physical background manifest"
+            )
+        from .background_dependence import audit_candidate_background_dependence
+
+        dependence_audit = audit_candidate_background_dependence(
+            validation_time_slide_report,
+            validation_background_manifest,
+            float(calibration["threshold"]),
+            bootstrap_replicates,
+            seed,
+        )
     validation_efficiency = summarize_injection_efficiency(
         injection_rows,
         float(calibration["threshold"]),
@@ -594,7 +610,14 @@ def run_candidate_search_calibration(
             live_time_years * target_far_per_year >= 1.0
         ),
         "slide_schedule_audit": schedule_audit,
-        "publication_calibration_eligible": bool(schedule_audit["passed"]),
+        "publication_calibration_eligible": bool(
+            schedule_audit["passed"]
+            and dependence_audit is not None
+            and dependence_audit["passed"]
+        )
+        if schedule_audit.get("schedule_kind") == "gps_block_permutation"
+        else bool(schedule_audit["passed"]),
+        "background_dependence_audit": dependence_audit,
         "validation_injection_diagnostic": validation_efficiency,
         "validation_background_gps_blocks": list(slide["input_gps_blocks"]),
         "validation_injection_gps_blocks": sorted(
@@ -741,6 +764,12 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         str(value) for value in calibration.get("validation_injection_gps_blocks", [])
     }
     overlap = sorted(background_blocks & injection_blocks)
+    dependence = calibration.get("background_dependence_audit")
+    dependence_background = (
+        Path(str(dependence.get("background_manifest", {}).get("path", ""))).resolve()
+        if isinstance(dependence, dict)
+        else None
+    )
     if (
         calibration.get("status") != "frozen_validation_candidate_search_calibration"
         or calibration.get("scientific_claim_allowed") is not False
@@ -761,6 +790,26 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         or calibration.get("slide_schedule_audit", {}).get("passed") is not True
         or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
         != "gps_block_permutation"
+        or not isinstance(dependence, dict)
+        or dependence.get("status") != "candidate_background_dependence_audit_v1"
+        or dependence.get("passed") is not True
+        or dependence.get("split") != "val"
+        or int(
+            dependence.get("three_way_cluster_bootstrap", {}).get("replicates", -1)
+        )
+        < minimum_bootstrap_replicates
+        or dependence_background != endpoint_background
+        or dependence.get("background_manifest", {}).get("sha256")
+        != file_sha256(endpoint_background)
+        or dependence.get("time_slide_report", {}).get("path") != str(slide_path)
+        or dependence.get("time_slide_report", {}).get("sha256")
+        != file_sha256(slide_path)
+        or not np.isclose(
+            float(dependence.get("threshold", float("nan"))),
+            float(calibration.get("calibration", {}).get("threshold", float("inf"))),
+            rtol=0.0,
+            atol=0.0,
+        )
         or not background_blocks
         or not injection_blocks
         or overlap
@@ -792,6 +841,7 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         "publication_calibration_eligible": True,
         "target_far_has_at_least_one_expected_background_count": True,
         "slide_schedule_audit": calibration["slide_schedule_audit"],
+        "background_dependence_audit": dependence,
         "validation_injection_diagnostic": calibration[
             "validation_injection_diagnostic"
         ],
@@ -906,6 +956,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         slide_path = Path(
             str(calibration.get("validation_time_slide_report_path", ""))
         ).resolve()
+        dependence = calibration.get("background_dependence_audit", {})
         if (
             calibration.get("status")
             != "frozen_validation_candidate_search_calibration"
@@ -913,6 +964,15 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             or calibration.get("test_evaluation") is not None
             or calibration.get("publication_calibration_eligible") is not True
             or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+            or dependence.get("status")
+            != "candidate_background_dependence_audit_v1"
+            or dependence.get("passed") is not True
+            or int(
+                dependence.get("three_way_cluster_bootstrap", {}).get(
+                    "replicates", -1
+                )
+            )
+            < 10_000
             or not str(calibration.get("selection_data", "")).startswith("validation_")
             or not ranking_path.is_file()
             or calibration.get("validation_injection_ranking_report_sha256")
@@ -977,6 +1037,19 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     )
     if any(raw_slide.get(field) != mask_slide.get(field) for field in common_background_fields):
         raise ValueError("raw/mask calibrations do not use identical physical background exposure")
+    raw_dependence = raw["background_dependence_audit"]
+    mask_dependence = mask["background_dependence_audit"]
+    if (
+        raw_dependence.get("background_manifest", {}).get("sha256")
+        != mask_dependence.get("background_manifest", {}).get("sha256")
+        or raw_dependence.get("schedule", {}).get("schedule_id")
+        != mask_dependence.get("schedule", {}).get("schedule_id")
+        or raw_dependence.get("unique_gps_blocks")
+        != mask_dependence.get("unique_gps_blocks")
+        or raw_dependence.get("unique_shifts")
+        != mask_dependence.get("unique_shifts")
+    ):
+        raise ValueError("raw/mask background dependence units differ")
     raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
     mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
     if (
@@ -1052,6 +1125,10 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         "six_arm_clean_noninferiority_gate": clean_gate,
         "six_arm_contaminated_gain_gate": contaminated_gate,
         "continuous_background_mask_gain_gate": gain_gate,
+        "background_dependence_audits": {
+            "raw": raw_dependence,
+            "mask": mask_dependence,
+        },
         "mask_locked_test_arm_eligible": gain_gate["passed"],
         "locked_test_prerequisites_satisfied": False,
         "raw_calibration_report": {
@@ -1087,6 +1164,9 @@ def run_paired_raw_mask_candidate_calibration_comparison(
 def bind_raw_mask_background_to_authorized_validation_endpoint(
     raw_mask_background_receipt: str | Path,
     output: str | Path,
+    raw_calibration_report: str | Path | None = None,
+    mask_calibration_report: str | Path | None = None,
+    paired_comparison_report: str | Path | None = None,
 ) -> dict[str, Any]:
     """Bind a completed raw/mask run to its disjoint background authorization."""
 
@@ -1135,14 +1215,30 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
             arm_path,
             json.loads(arm_path.read_text(encoding="utf-8")),
         )
-    raw_path, raw = replay(
-        receipt.get("calibrations", {}).get("raw", {}), "raw calibration"
+    def replay_optional(
+        override: str | Path | None, identity: dict[str, Any], label: str
+    ) -> tuple[Path, dict[str, Any]]:
+        if override is None:
+            return replay(identity, label)
+        path = Path(override).resolve()
+        if not path.is_file():
+            raise ValueError(f"raw/mask {label} override is absent")
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    raw_path, raw = replay_optional(
+        raw_calibration_report,
+        receipt.get("calibrations", {}).get("raw", {}),
+        "raw calibration",
     )
-    mask_path, mask = replay(
-        receipt.get("calibrations", {}).get("mask", {}), "mask calibration"
+    mask_path, mask = replay_optional(
+        mask_calibration_report,
+        receipt.get("calibrations", {}).get("mask", {}),
+        "mask calibration",
     )
-    comparison_path, comparison = replay(
-        receipt.get("paired_validation_comparison", {}), "paired comparison"
+    comparison_path, comparison = replay_optional(
+        paired_comparison_report,
+        receipt.get("paired_validation_comparison", {}),
+        "paired comparison",
     )
     mask_validation_path, mask_validation = replay(
         receipt.get("mask_validation_receipt", {}), "mask validation receipt"
@@ -1177,6 +1273,8 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
     ):
         raise ValueError("raw/mask background is not bound to the authorized parent plan")
     for arm, calibration in (("raw", raw), ("mask", mask)):
+        dependence = calibration.get("background_dependence_audit", {})
+        _, arm_merge = arm_merges[arm]
         if (
             calibration.get("status")
             != "frozen_validation_candidate_search_calibration"
@@ -1187,6 +1285,17 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
             or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
             != "gps_block_permutation"
             or int(calibration.get("bootstrap_replicates", -1)) < 10_000
+            or dependence.get("status")
+            != "candidate_background_dependence_audit_v1"
+            or dependence.get("passed") is not True
+            or int(
+                dependence.get("three_way_cluster_bootstrap", {}).get(
+                    "replicates", -1
+                )
+            )
+            < 10_000
+            or dependence.get("background_manifest", {}).get("sha256")
+            != arm_merge.get("background_manifest_sha256")
             or not np.isclose(
                 float(calibration.get("target_far_per_year", -1)),
                 0.1,
@@ -1248,6 +1357,10 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
             "raw": {"path": str(raw_path), "sha256": file_sha256(raw_path)},
             "mask": {"path": str(mask_path), "sha256": file_sha256(mask_path)},
         },
+        "background_dependence_audits": {
+            "raw": raw["background_dependence_audit"],
+            "mask": mask["background_dependence_audit"],
+        },
         "paired_validation_comparison": {
             "path": str(comparison_path),
             "sha256": file_sha256(comparison_path),
@@ -1278,6 +1391,7 @@ def run_frozen_candidate_search_evaluation(
     locked_suite_plan: str | Path | None = None,
     access_log: str | Path | None = None,
     output_key: str | None = None,
+    test_background_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     """Apply a frozen candidate threshold once to disjoint locked-test artifacts."""
 
@@ -1318,6 +1432,13 @@ def run_frozen_candidate_search_evaluation(
                 test_injection_ranking_report,
             ),
         }
+        if test_background_manifest is None:
+            raise ValueError("locked candidate evaluation requires a background manifest")
+        locked_suite_inputs["background_manifest"] = validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            f"{arm}_test_background_manifest",
+            test_background_manifest,
+        )
         endpoints = locked_suite_access["endpoints"]
         if (
             not np.isclose(
@@ -1404,6 +1525,21 @@ def run_frozen_candidate_search_evaluation(
             f"injection_ids={injection_id_overlap[:5]}, waveform_ids={waveform_id_overlap[:5]}"
         )
     live_time_years = float(slide["equivalent_live_time_years"])
+    dependence_audit = None
+    if test_schedule_audit.get("schedule_kind") == "gps_block_permutation":
+        if test_background_manifest is None:
+            raise ValueError(
+                "locked block-permutation evaluation requires its background manifest"
+            )
+        from .background_dependence import audit_candidate_background_dependence
+
+        dependence_audit = audit_candidate_background_dependence(
+            test_time_slide_report,
+            test_background_manifest,
+            float(frozen["calibration"]["threshold"]),
+            bootstrap_replicates,
+            seed,
+        )
     evaluation = evaluate_search(
         float(frozen["calibration"]["threshold"]),
         (float(row["ranking_score"]) for row in background),
@@ -1422,6 +1558,11 @@ def run_frozen_candidate_search_evaluation(
         "frozen_candidate_identity": True,
         "publication_timing_gate": bool(slide["publication_timing_gate_passed"]),
         "frozen_test_slide_schedule": bool(test_schedule_audit["passed"]),
+        "background_cluster_dependence_audit": bool(
+            dependence_audit is not None and dependence_audit["passed"]
+        )
+        if test_schedule_audit.get("schedule_kind") == "gps_block_permutation"
+        else True,
     }
     result = {
         "status": "locked_candidate_search_evaluation",
@@ -1447,6 +1588,7 @@ def run_frozen_candidate_search_evaluation(
         "minimum_test_live_time_years": minimum_test_live_time_years,
         "minimum_test_injections": minimum_test_injections,
         "test_evaluation": evaluation,
+        "background_dependence_audit": dependence_audit,
         "bootstrap_replicates": bootstrap_replicates,
         "seed": seed,
         "locked_suite_access": locked_suite_access,

@@ -45,6 +45,9 @@ publication_evidence:
         - {field: status, op: equals, value: locked_candidate_search_evaluation}
         - {field: candidate_endpoint_gates_passed, op: equals, value: true}
         - {field: threshold_source, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audit.passed, op: equals, value: true}
+        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
         - {field: locked_suite_access.output_key, op: equals, value: raw_candidate_search}
         - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
         - {field: test_evaluation.injections.total, op: at_least, value: 3000}
@@ -52,6 +55,9 @@ publication_evidence:
         - {path_field: calibration_report_path, sha256_field: calibration_report_sha256}
         - {path_field: test_time_slide_report_path, sha256_field: test_time_slide_report_sha256}
         - {path_field: test_injection_ranking_report_path, sha256_field: test_injection_ranking_report_sha256}
+        - {path_field: background_dependence_audit.background_manifest.path, sha256_field: background_dependence_audit.background_manifest.sha256}
+        - {path_field: background_dependence_audit.candidate_manifest.path, sha256_field: background_dependence_audit.candidate_manifest.sha256}
+        - {path_field: background_dependence_audit.schedule.path, sha256_field: background_dependence_audit.schedule.sha256}
 
     - id: locked_mask_candidate_search
       group: search
@@ -60,6 +66,9 @@ publication_evidence:
         - {field: status, op: equals, value: locked_candidate_search_evaluation}
         - {field: candidate_endpoint_gates_passed, op: equals, value: true}
         - {field: threshold_source, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audit.passed, op: equals, value: true}
+        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
         - {field: locked_suite_access.output_key, op: equals, value: mask_candidate_search}
         - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
         - {field: test_evaluation.injections.total, op: at_least, value: 3000}
@@ -67,6 +76,9 @@ publication_evidence:
         - {path_field: calibration_report_path, sha256_field: calibration_report_sha256}
         - {path_field: test_time_slide_report_path, sha256_field: test_time_slide_report_sha256}
         - {path_field: test_injection_ranking_report_path, sha256_field: test_injection_ranking_report_sha256}
+        - {path_field: background_dependence_audit.background_manifest.path, sha256_field: background_dependence_audit.background_manifest.sha256}
+        - {path_field: background_dependence_audit.candidate_manifest.path, sha256_field: background_dependence_audit.candidate_manifest.sha256}
+        - {path_field: background_dependence_audit.schedule.path, sha256_field: background_dependence_audit.schedule.sha256}
 
     - id: locked_paired_raw_mask_vt
       group: search

@@ -32,6 +32,8 @@ _LOCKED_SUITE_OUTPUT_KEYS = {
 _LOCKED_SUITE_INPUT_KEYS = {
     "raw_test_time_slide_report",
     "mask_test_time_slide_report",
+    "raw_test_background_manifest",
+    "mask_test_background_manifest",
     "raw_test_injection_ranking_report",
     "mask_test_injection_ranking_report",
     "locked_ood_score_manifest",
@@ -141,6 +143,8 @@ def freeze_locked_evaluation_suite_plan(
         "minimum_test_injections": 0,
         "minimum_paired_pe_injections": 0,
         "minimum_locked_ood_rows": 0,
+        "minimum_background_gps_blocks": 1,
+        "minimum_background_shifts": 0,
         "bootstrap_replicates": 9999,
     }
     for field, lower in numeric_minima.items():
@@ -165,6 +169,11 @@ def freeze_locked_evaluation_suite_plan(
         raise ValueError("Locked suite primary endpoint must be paired fixed-FAR recovered VT")
     if endpoints.get("threshold_policy") != "validation_frozen_no_test_retuning":
         raise ValueError("Locked suite must prohibit test threshold retuning")
+    if (
+        endpoints.get("background_dependence_uncertainty")
+        != "physical_block_x_block_x_offset_pigeonhole_v1"
+    ):
+        raise ValueError("Locked suite must predeclare clustered background uncertainty")
     if endpoints.get("catalog_search_arm") not in {
         "raw_candidate_search",
         "mask_candidate_search",
@@ -322,10 +331,12 @@ def finalize_locked_evaluation_suite_receipt(
     expected_inputs = {
         "raw_candidate_search": {
             "time_slide": "raw_test_time_slide_report",
+            "background_manifest": "raw_test_background_manifest",
             "injection_ranking": "raw_test_injection_ranking_report",
         },
         "mask_candidate_search": {
             "time_slide": "mask_test_time_slide_report",
+            "background_manifest": "mask_test_background_manifest",
             "injection_ranking": "mask_test_injection_ranking_report",
         },
         "locked_ood_transfer": {

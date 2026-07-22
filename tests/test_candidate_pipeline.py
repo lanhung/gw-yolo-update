@@ -172,6 +172,22 @@ def test_continuous_calibration_binds_independent_endpoint_and_model(tmp_path) -
                         "passed": True,
                         "schedule_kind": "gps_block_permutation",
                     },
+                    "calibration": {"threshold": 0.75},
+                    "background_dependence_audit": {
+                        "status": "candidate_background_dependence_audit_v1",
+                        "passed": True,
+                        "split": "val",
+                        "threshold": 0.75,
+                        "three_way_cluster_bootstrap": {"replicates": 10000},
+                        "background_manifest": {
+                            "path": str(endpoint_background.resolve()),
+                            "sha256": file_sha256(endpoint_background),
+                        },
+                        "time_slide_report": {
+                            "path": str(slides.resolve()),
+                            "sha256": file_sha256(slides),
+                        },
+                    },
                     "validation_background_gps_blocks": ["background-block"],
                     "validation_injection_gps_blocks": injection_blocks,
                     "validation_injection_diagnostic": {"injections": 3000},
@@ -434,7 +450,8 @@ def test_candidate_pipeline_block_recalibration_closes_frozen_schedule(tmp_path)
         injection_report,
         tmp_path / "recalibrated",
     )
-    assert result["frozen_search"]["publication_calibration_eligible"] is True
+    assert result["frozen_search"]["publication_calibration_eligible"] is False
+    assert result["frozen_search"]["background_dependence_audit"]["passed"] is False
     assert result["background_resampling_method"] == (
         "circular_gps_block_relative_window_permutation_v1"
     )

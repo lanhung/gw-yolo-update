@@ -65,13 +65,15 @@ for value in (
     endpoints["bootstrap_seed"],
     plan["inputs"]["raw_test_time_slide_report"],
     plan["inputs"]["mask_test_time_slide_report"],
+    plan["inputs"]["raw_test_background_manifest"],
+    plan["inputs"]["mask_test_background_manifest"],
     plan["inputs"]["raw_test_injection_ranking_report"],
     plan["inputs"]["mask_test_injection_ranking_report"],
 ):
     print(value)
 PY
 )
-if (( ${#suite_settings[@]} != 11 )); then
+if (( ${#suite_settings[@]} != 13 )); then
   echo "locked suite plan did not resolve the search endpoints" >&2
   exit 2
 fi
@@ -84,11 +86,15 @@ bootstrap_replicates=${suite_settings[5]}
 bootstrap_seed=${suite_settings[6]}
 RAW_TEST_TIME_SLIDE_REPORT=${suite_settings[7]}
 MASK_TEST_TIME_SLIDE_REPORT=${suite_settings[8]}
-RAW_TEST_INJECTION_RANKING_REPORT=${suite_settings[9]}
-MASK_TEST_INJECTION_RANKING_REPORT=${suite_settings[10]}
+RAW_TEST_BACKGROUND_MANIFEST=${suite_settings[9]}
+MASK_TEST_BACKGROUND_MANIFEST=${suite_settings[10]}
+RAW_TEST_INJECTION_RANKING_REPORT=${suite_settings[11]}
+MASK_TEST_INJECTION_RANKING_REPORT=${suite_settings[12]}
 for input in \
   "$RAW_TEST_TIME_SLIDE_REPORT" \
   "$MASK_TEST_TIME_SLIDE_REPORT" \
+  "$RAW_TEST_BACKGROUND_MANIFEST" \
+  "$MASK_TEST_BACKGROUND_MANIFEST" \
   "$RAW_TEST_INJECTION_RANKING_REPORT" \
   "$MASK_TEST_INJECTION_RANKING_REPORT"; do
   if [[ ! -f "$input" ]]; then
@@ -101,8 +107,9 @@ run_arm() {
   local arm=$1
   local calibration=$2
   local slides=$3
-  local rankings=$4
-  local output=$5
+  local background=$4
+  local rankings=$5
+  local output=$6
   if [[ ! -s "$output" ]]; then
     mkdir -p "$(dirname "$output")"
     (
@@ -111,6 +118,7 @@ run_arm() {
       "$TASK_PYTHON" -m gwyolo.cli candidate-search-evaluate-frozen \
         --calibration-report "$calibration" \
         --test-time-slide-report "$slides" \
+        --test-background-manifest "$background" \
         --test-injection-ranking-report "$rankings" \
         --minimum-test-live-time-years "$minimum_live_time" \
         --minimum-test-injections "$minimum_injections" \
@@ -127,11 +135,13 @@ run_arm() {
 run_arm raw \
   "$RAW_CALIBRATION_REPORT" \
   "$RAW_TEST_TIME_SLIDE_REPORT" \
+  "$RAW_TEST_BACKGROUND_MANIFEST" \
   "$RAW_TEST_INJECTION_RANKING_REPORT" \
   "$raw_output"
 run_arm mask \
   "$MASK_CALIBRATION_REPORT" \
   "$MASK_TEST_TIME_SLIDE_REPORT" \
+  "$MASK_TEST_BACKGROUND_MANIFEST" \
   "$MASK_TEST_INJECTION_RANKING_REPORT" \
   "$mask_output"
 

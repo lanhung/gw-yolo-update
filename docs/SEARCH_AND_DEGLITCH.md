@@ -409,7 +409,12 @@ injection-ranking reports require one common calibration, checkpoint, config and
 `candidate-search-calibrate` reads validation reports only, and
 `candidate-search-evaluate-frozen` has no threshold argument, rejects any validation/test GPS,
 injection or waveform overlap, refuses to overwrite an existing locked result, and reports FAR,
-IFAR and weighted `<VT>` with bootstrap uncertainty. An empty background-candidate list freezes a
+IFAR and weighted `<VT>` with bootstrap uncertainty. Block-permutation results additionally replay
+the physical background manifest and reconstruct every reference-block x shifted-block x offset
+exposure cell. FAR retains the standard equivalent-time-slide point estimate, while its dependence
+sensitivity uses a three-way pigeonhole cluster bootstrap; candidate rows are never treated as IID.
+For zero survivors the cluster bootstrap is explicitly non-informative and the report uses the
+predeclared Poisson upper limit. An empty background-candidate list freezes a
 threshold above probability support; it can never turn score-zero injection misses into detections.
 Calibration from an unscheduled or exposure-insufficient slide report remains available as explicit
 engineering output, but is marked `publication_calibration_eligible=false`. The locked command now
@@ -429,11 +434,13 @@ python -m gwyolo.cli candidate-timing-calibrate \
   --injection-triggers val-score/injection_triggers.jsonl --output timing-calibration.json
 python -m gwyolo.cli candidate-search-calibrate \
   --validation-time-slide-report val-slides/val_candidate_time_slide_report.json \
+  --validation-background-manifest val-background.jsonl \
   --validation-injection-ranking-report val-rank/val_injection_candidate_ranking_report.json \
   --target-far-per-year 1 --output frozen-candidate-threshold.json
 python -m gwyolo.cli candidate-search-evaluate-frozen \
   --calibration-report frozen-candidate-threshold.json \
   --test-time-slide-report test-slides/test_candidate_time_slide_report.json \
+  --test-background-manifest test-background.jsonl \
   --test-injection-ranking-report test-rank/test_injection_candidate_ranking_report.json \
   --minimum-test-live-time-years 10 --minimum-test-injections 20000 \
   --output locked-candidate-search.json

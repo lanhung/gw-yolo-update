@@ -464,8 +464,15 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
                 "passed": True,
                 "mask_locked_test_arm_eligible": True,
                 "functional_raw_mask_endpoint_passed": True,
-                "human_consensus_segmentation_passed": True,
-                "validation_only": True,
+                    "human_consensus_segmentation_passed": True,
+                    "background_dependence_audits": {
+                        arm: {
+                            "status": "candidate_background_dependence_audit_v1",
+                            "passed": True,
+                        }
+                        for arm in ("raw", "mask")
+                    },
+                    "validation_only": True,
                 "checks": {
                     "minimum_tasks": True,
                     "minimum_unique_glitches": True,

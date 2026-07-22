@@ -87,6 +87,57 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
     assert score.call_args.kwargs["calibration_scenario_id"] is None
 
 
+def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
+    target = "gwyolo.cli.run_frozen_candidate_search_evaluation"
+    with patch(target, return_value={}) as evaluate:
+        assert (
+            main(
+                [
+                    "candidate-search-evaluate-frozen",
+                    "--calibration-report",
+                    "calibration.json",
+                    "--test-time-slide-report",
+                    "slides.json",
+                    "--test-background-manifest",
+                    "background.jsonl",
+                    "--test-injection-ranking-report",
+                    "injections.json",
+                    "--minimum-test-live-time-years",
+                    "23.02585093",
+                    "--minimum-test-injections",
+                    "3000",
+                    "--bootstrap-replicates",
+                    "10000",
+                    "--seed",
+                    "20260722",
+                    "--locked-suite-plan",
+                    "suite.json",
+                    "--access-log",
+                    "access.json",
+                    "--output-key",
+                    "raw_candidate_search",
+                    "--output",
+                    "result.json",
+                ]
+            )
+            == 0
+        )
+    evaluate.assert_called_once_with(
+        "calibration.json",
+        "slides.json",
+        "injections.json",
+        "result.json",
+        23.02585093,
+        3000,
+        10000,
+        20260722,
+        "suite.json",
+        "access.json",
+        "raw_candidate_search",
+        "background.jsonl",
+    )
+
+
 def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
     target = "gwyolo.arrival_timing.run_detector_arrival_timing_validation_stratification"
     with patch(target, return_value={}) as stratify:

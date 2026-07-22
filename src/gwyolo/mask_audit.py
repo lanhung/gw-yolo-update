@@ -1033,6 +1033,21 @@ def bind_raw_mask_human_consensus_publication_evidence(
     for arm in ("raw", "mask"):
         replay_identity(raw.get("arm_merges", {}).get(arm, {}), f"{arm} arm merge")
         replay_identity(raw.get("calibrations", {}).get(arm, {}), f"{arm} calibration")
+        dependence = raw.get("background_dependence_audits", {}).get(arm, {})
+        if (
+            dependence.get("status")
+            != "candidate_background_dependence_audit_v1"
+            or dependence.get("passed") is not True
+            or int(
+                dependence.get("three_way_cluster_bootstrap", {}).get(
+                    "replicates", -1
+                )
+            )
+            < 10_000
+        ):
+            raise ValueError(
+                "human-consensus binding requires clustered raw/mask background audits"
+            )
 
     segmentation_path, segmentation = replay_json(
         segmentation_report_path, "human mask segmentation report"
@@ -1243,6 +1258,7 @@ def bind_raw_mask_human_consensus_publication_evidence(
             "path": str(raw_path),
             "sha256": file_sha256(raw_path),
         },
+        "background_dependence_audits": raw["background_dependence_audits"],
         "human_mask_segmentation": {
             "path": str(segmentation_path),
             "sha256": file_sha256(segmentation_path),

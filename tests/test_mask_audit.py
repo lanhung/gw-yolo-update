@@ -466,6 +466,14 @@ def test_raw_mask_publication_binding_requires_frozen_human_consensus_gate(
                 "locked_test_prerequisites_satisfied": False,
                 "test_rows_read": 0,
                 "code_commit": commit,
+                "background_dependence_audits": {
+                    arm: {
+                        "status": "candidate_background_dependence_audit_v1",
+                        "passed": True,
+                        "three_way_cluster_bootstrap": {"replicates": 10_000},
+                    }
+                    for arm in ("raw", "mask")
+                },
                 **{
                     field: artifacts[field]
                     for field in (
