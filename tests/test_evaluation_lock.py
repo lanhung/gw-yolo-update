@@ -11,6 +11,7 @@ from gwyolo.evaluation_lock import (
     finalize_locked_evaluation_suite_receipt,
     open_evaluation_corpus_once,
     validate_locked_evaluation_suite_access,
+    validate_locked_evaluation_suite_input,
 )
 
 
@@ -53,6 +54,16 @@ def _locked_suite_config(path) -> None:
         "catalog_diagnostic": "catalog/diagnostic.json",
         "suite_receipt": "suite.json",
     }
+    inputs = {
+        "raw_test_time_slide_report": "inputs/raw-slides.json",
+        "mask_test_time_slide_report": "inputs/mask-slides.json",
+        "raw_test_injection_ranking_report": "inputs/raw-rankings.json",
+        "mask_test_injection_ranking_report": "inputs/mask-rankings.json",
+        "locked_ood_score_manifest": "inputs/ood.jsonl",
+        "dingo_locked_source_batch_report": "inputs/dingo.json",
+        "amplfi_locked_source_batch_report": "inputs/amplfi.json",
+        "catalog_prediction_manifest": "inputs/catalog.jsonl",
+    }
     path.write_text(
         "locked_evaluation_suite:\n"
         "  schema: locked_suite_v1\n"
@@ -60,8 +71,21 @@ def _locked_suite_config(path) -> None:
         "  required_split: test\n"
         "  observing_runs: [O4b]\n"
         "  catalog_release: GWTC-5.0\n"
+        "  required_frozen_artifacts:\n"
+        "    - config\n"
+        "    - model\n"
+        "    - threshold_calibration\n"
+        "    - ood_policy\n"
+        "    - raw_candidate_calibration\n"
+        "    - mask_candidate_calibration\n"
+        "    - validation_raw_mask_comparison\n"
+        "    - validation_ood_report\n"
+        "    - validation_pe_promotion\n"
+        "    - catalog_metadata\n"
         "  outputs:\n"
         + "".join(f"    {key}: {value}\n" for key, value in outputs.items())
+        + "  inputs:\n"
+        + "".join(f"    {key}: {value}\n" for key, value in inputs.items())
         + "  endpoints:\n"
         "    primary_search_metric: paired_delta_recovered_vt_at_common_far\n"
         "    threshold_policy: validation_frozen_no_test_retuning\n"
@@ -71,7 +95,9 @@ def _locked_suite_config(path) -> None:
         "    minimum_paired_pe_injections: 100\n"
         "    minimum_locked_ood_rows: 500\n"
         "    bootstrap_replicates: 10000\n"
-        "    bootstrap_seed: 20260722\n",
+        "    bootstrap_seed: 20260722\n"
+        "    pe_credible_level: 0.9\n"
+        "    catalog_search_arm: mask_candidate_search\n",
         encoding="utf-8",
     )
 
@@ -292,6 +318,17 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         path = tmp_path / label
         path.write_text(label, encoding="utf-8")
         artifacts[label] = path
+    for label in (
+        "raw_candidate_calibration",
+        "mask_candidate_calibration",
+        "validation_raw_mask_comparison",
+        "validation_ood_report",
+        "validation_pe_promotion",
+        "catalog_metadata",
+    ):
+        path = tmp_path / label
+        path.write_text(label, encoding="utf-8")
+        artifacts[label] = path
     open_evaluation_corpus_once(
         freeze_path,
         "abc123",
@@ -324,18 +361,42 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         "joint_pe": "locked_joint_paired_pe_complete",
         "catalog_diagnostic": "locked_gwtc5_catalog_diagnostic",
     }
+    expected_inputs = {
+        "raw_candidate_search": {
+            "time_slide": "raw_test_time_slide_report",
+            "injection_ranking": "raw_test_injection_ranking_report",
+        },
+        "mask_candidate_search": {
+            "time_slide": "mask_test_time_slide_report",
+            "injection_ranking": "mask_test_injection_ranking_report",
+        },
+        "locked_ood_transfer": {"single": "locked_ood_score_manifest"},
+        "dingo_batch": {"single": "dingo_locked_source_batch_report"},
+        "amplfi_batch": {"single": "amplfi_locked_source_batch_report"},
+        "catalog_diagnostic": {"single": "catalog_prediction_manifest"},
+    }
     for key, status in expected_statuses.items():
         path = Path(plan["outputs"][key])
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "locked_suite_access": validate_locked_evaluation_suite_access(
-                        plan_path, access_path, key, path
-                    ),
-                }
+        value = {
+            "status": status,
+            "locked_suite_access": validate_locked_evaluation_suite_access(
+                plan_path, access_path, key, path
             ),
+        }
+        if key in expected_inputs:
+            inputs = {
+                alias: validate_locked_evaluation_suite_input(
+                    plan_path, input_key, plan["inputs"][input_key]
+                )
+                for alias, input_key in expected_inputs[key].items()
+            }
+            if "single" in inputs:
+                value["locked_suite_input"] = inputs["single"]
+            else:
+                value["locked_suite_inputs"] = inputs
+        path.write_text(
+            json.dumps(value),
             encoding="utf-8",
         )
     receipt = finalize_locked_evaluation_suite_receipt(

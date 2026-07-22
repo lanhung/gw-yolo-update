@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gwyolo.ood import (
@@ -135,15 +137,30 @@ def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
 
     endpoints = {"minimum_locked_ood_rows": 4}
 
+    validation = tmp_path / "validation.json"
+
     def binding(_plan, _access, output_key, output_path):
         return {
             "output_key": output_key,
             "output_path": str(output_path.resolve()),
             "endpoints": endpoints,
+            "frozen_artifacts": {
+                "validation_ood_report": {
+                    "path": str(validation.resolve()),
+                    "sha256": file_sha256(validation),
+                }
+            },
         }
 
     monkeypatch.setattr(
         "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access", binding
+    )
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        lambda _plan, input_key, input_path: {
+            "input_key": input_key,
+            "input_path": str(Path(input_path).resolve()),
+        },
     )
     checkpoint = tmp_path / "checkpoint.pt"
     checkpoint.write_bytes(b"checkpoint")
@@ -161,7 +178,6 @@ def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
         json.dumps(_row("v0", "vb0", "Held", 0.8, True, "val")) + "\n",
         encoding="utf-8",
     )
-    validation = tmp_path / "validation.json"
     validation.write_text(
         json.dumps(
             {

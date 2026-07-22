@@ -13,6 +13,9 @@ publication_evidence:
         - {field: locked_corpus_opened, op: equals, value: false}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: candidate_scores_inspected, op: equals, value: false}
+        - {field: inputs, op: length_at_least, value: 8}
+        - {field: outputs, op: length_at_least, value: 9}
+        - {field: required_frozen_artifacts, op: length_at_least, value: 10}
         - {field: endpoints.primary_search_metric, op: equals, value: paired_delta_recovered_vt_at_common_far}
         - {field: endpoints.threshold_policy, op: equals, value: validation_frozen_no_test_retuning}
         - {field: code_commit, op: nonempty}

@@ -907,8 +907,12 @@ def run_frozen_candidate_search_evaluation(
     ):
         raise ValueError("locked suite plan, access log and output key are all required")
     locked_suite_access = None
+    locked_suite_inputs = None
     if locked_suite_plan is not None:
-        from .evaluation_lock import validate_locked_evaluation_suite_access
+        from .evaluation_lock import (
+            validate_locked_evaluation_suite_access,
+            validate_locked_evaluation_suite_input,
+        )
 
         if output_key not in {"raw_candidate_search", "mask_candidate_search"}:
             raise ValueError("locked candidate output key must identify the raw or mask arm")
@@ -918,6 +922,19 @@ def run_frozen_candidate_search_evaluation(
             str(output_key),
             output_path,
         )
+        arm = str(output_key).removesuffix("_candidate_search")
+        locked_suite_inputs = {
+            "time_slide": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                f"{arm}_test_time_slide_report",
+                test_time_slide_report,
+            ),
+            "injection_ranking": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                f"{arm}_test_injection_ranking_report",
+                test_injection_ranking_report,
+            ),
+        }
         endpoints = locked_suite_access["endpoints"]
         if (
             not np.isclose(
@@ -935,6 +952,16 @@ def run_frozen_candidate_search_evaluation(
         raise ValueError("locked candidate endpoint minima must be positive")
     with Path(calibration_report).open("r", encoding="utf-8") as handle:
         frozen = json.load(handle)
+    if locked_suite_access is not None:
+        calibration_identity = locked_suite_access["frozen_artifacts"].get(
+            f"{arm}_candidate_calibration", {}
+        )
+        if (
+            Path(str(calibration_identity.get("path", ""))).resolve()
+            != Path(calibration_report).resolve()
+            or calibration_identity.get("sha256") != file_sha256(calibration_report)
+        ):
+            raise ValueError("locked candidate calibration differs from the access receipt")
     if frozen.get("status") != "frozen_validation_candidate_search_calibration":
         raise ValueError("candidate search calibration artifact has the wrong status")
     if frozen.get("test_evaluation") is not None:
@@ -1040,6 +1067,7 @@ def run_frozen_candidate_search_evaluation(
         "bootstrap_replicates": bootstrap_replicates,
         "seed": seed,
         "locked_suite_access": locked_suite_access,
+        "locked_suite_inputs": locked_suite_inputs,
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)
@@ -1078,6 +1106,14 @@ def run_paired_locked_raw_mask_candidate_search_comparison(
 
     validation_path = Path(validation_comparison_report).resolve()
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation_identity = suite_access["frozen_artifacts"].get(
+        "validation_raw_mask_comparison", {}
+    )
+    if (
+        Path(str(validation_identity.get("path", ""))).resolve() != validation_path
+        or validation_identity.get("sha256") != file_sha256(validation_path)
+    ):
+        raise ValueError("paired raw/mask validation gate differs from the access receipt")
     gain_gate = validation.get("continuous_background_mask_gain_gate", {})
     if (
         validation.get("status")
@@ -1104,12 +1140,26 @@ def run_paired_locked_raw_mask_candidate_search_comparison(
             locked_suite_plan, access_log, output_key, report_path
         )
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        binding_identity_fields = (
+            "plan_path",
+            "plan_sha256",
+            "access_log_path",
+            "access_log_sha256",
+            "output_key",
+            "output_path",
+            "code_commit",
+            "corpus_label",
+        )
         if (
             report.get("status") != "locked_candidate_search_evaluation"
             or report.get("candidate_endpoint_gates_passed") is not True
             or report.get("threshold_source")
             != "frozen_validation_candidate_search_calibration"
-            or report.get("locked_suite_access") != binding
+            or any(
+                report.get("locked_suite_access", {}).get(field)
+                != binding.get(field)
+                for field in binding_identity_fields
+            )
         ):
             raise ValueError(f"{arm} locked candidate report failed suite replay")
         calibration_path = Path(str(report.get("calibration_report_path", ""))).resolve()

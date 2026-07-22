@@ -55,6 +55,11 @@ The machine-readable contract is
 It fixes the primary metric, 0.1/year target FAR, at least 23.02585093 years of equivalent test
 background, at least 3,000 paired injections, at least 100 PE injections, 10,000 paired bootstrap
 replicates and seed 20260722. It also names every output path before any locked score is read.
+The contract separately freezes eight post-access intermediate paths: raw/mask time-slide and
+injection-ranking reports, OOD scores, DINGO/AMPLFI source batches and catalog predictions. The
+exclusive access receipt must additionally hash the two validation calibrations, raw/mask
+comparison, OOD report, PE promotion and catalog metadata. Thus a final report cannot be made valid
+by swapping an intermediate test artifact after opening the corpus.
 
 The sequence is fail-closed:
 
@@ -84,6 +89,14 @@ report whose known-only threshold, checkpoint and score manifests replay by hash
 O4b glitch/GPS overlap with either OOD validation role, requires explicit detector availability,
 and reports known false abstention and unknown false acceptance overall and by family, run and
 detector subset without refitting the threshold.
+
+For PE, `pe-backend-bind-locked` accepts completed DINGO or AMPLFI test batches only after the
+validation promotion report passes. It requires the locked batch to preserve the validation-fixed
+backend version, model, prior, waveform, detector set, calibration, hardware, latency scope and
+sky-area estimator. `pe-robustness-joint-evaluate-locked` then requires identical test injection
+triplets in both backends and evaluates coverage, bias, posterior width, sky area, effective sample
+rate and latency with the suite's frozen credible level and bootstrap seed. The resumable wrapper is
+[`scripts/run_locked_pe_endpoints.sh`](../scripts/run_locked_pe_endpoints.sh).
 
 ## Promotion decision
 

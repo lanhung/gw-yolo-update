@@ -329,7 +329,10 @@ def run_locked_ood_transfer_evaluation(
 ) -> dict[str, Any]:
     """Apply one validation-frozen OOD threshold to a disjoint locked O4b set."""
 
-    from .evaluation_lock import validate_locked_evaluation_suite_access
+    from .evaluation_lock import (
+        validate_locked_evaluation_suite_access,
+        validate_locked_evaluation_suite_input,
+    )
 
     output_path = Path(output).resolve()
     if output_path.exists():
@@ -337,7 +340,20 @@ def run_locked_ood_transfer_evaluation(
     suite_access = validate_locked_evaluation_suite_access(
         locked_suite_plan, access_log, "locked_ood_transfer", output_path
     )
+    suite_input = validate_locked_evaluation_suite_input(
+        locked_suite_plan,
+        "locked_ood_score_manifest",
+        locked_score_manifest,
+    )
     validation_path = Path(validation_ood_report).resolve()
+    validation_identity = suite_access["frozen_artifacts"].get(
+        "validation_ood_report", {}
+    )
+    if (
+        Path(str(validation_identity.get("path", ""))).resolve() != validation_path
+        or validation_identity.get("sha256") != file_sha256(validation_path)
+    ):
+        raise ValueError("locked OOD validation report differs from the access receipt")
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
     checkpoint_path = Path(str(validation.get("checkpoint_path", ""))).resolve()
     calibration_path = Path(
@@ -506,6 +522,7 @@ def run_locked_ood_transfer_evaluation(
             "sha256": file_sha256(checkpoint_path),
         },
         "locked_suite_access": suite_access,
+        "locked_suite_input": suite_input,
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)

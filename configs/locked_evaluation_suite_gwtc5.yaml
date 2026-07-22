@@ -4,6 +4,17 @@ locked_evaluation_suite:
   required_split: test
   observing_runs: [O4b]
   catalog_release: GWTC-5.0
+  required_frozen_artifacts:
+    - config
+    - model
+    - threshold_calibration
+    - ood_policy
+    - raw_candidate_calibration
+    - mask_candidate_calibration
+    - validation_raw_mask_comparison
+    - validation_ood_report
+    - validation_pe_promotion
+    - catalog_metadata
 
   # Paths are relative to the externally configured immutable output root. None
   # may exist when the suite plan is frozen.
@@ -18,6 +29,18 @@ locked_evaluation_suite:
     catalog_diagnostic: catalog/gwtc5_frozen_threshold_diagnostic.json
     suite_receipt: locked_suite_receipt.json
 
+  # Post-access intermediate artifacts are paths, not tuning freedoms. They are
+  # frozen before access and later replayed by every final endpoint.
+  inputs:
+    raw_test_time_slide_report: inputs/search/raw_test_time_slides.json
+    mask_test_time_slide_report: inputs/search/mask_test_time_slides.json
+    raw_test_injection_ranking_report: inputs/search/raw_test_injection_rankings.json
+    mask_test_injection_ranking_report: inputs/search/mask_test_injection_rankings.json
+    locked_ood_score_manifest: inputs/robustness/locked_ood_scores.jsonl
+    dingo_locked_source_batch_report: inputs/pe/dingo_locked_source_batch.json
+    amplfi_locked_source_batch_report: inputs/pe/amplfi_locked_source_batch.json
+    catalog_prediction_manifest: inputs/catalog/gwtc5_predictions.jsonl
+
   endpoints:
     primary_search_metric: paired_delta_recovered_vt_at_common_far
     threshold_policy: validation_frozen_no_test_retuning
@@ -30,8 +53,10 @@ locked_evaluation_suite:
     minimum_locked_ood_rows: 500
     bootstrap_replicates: 10000
     bootstrap_seed: 20260722
+    pe_credible_level: 0.9
     uncertainty: paired_nonparametric_bootstrap_95
     catalog_role: descriptive_secondary_endpoint_only
+    catalog_search_arm: mask_candidate_search
     required_detector_subsets: [H1+L1, H1+V1, L1+V1, H1+L1+V1]
     required_source_families: [BBH, BNS, NSBH]
     required_stress_strata:

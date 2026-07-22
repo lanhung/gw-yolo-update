@@ -13,10 +13,12 @@ from gwyolo.pe import (
     PUBLICATION_PROVENANCE_FIELDS,
     evaluate_pe_rows,
     evaluate_pe_robustness_rows,
+    bind_locked_pe_backend_batch,
     posterior_sky_area_equal_solid_angle,
     posterior_truth_metrics,
     promote_pe_robustness_validation,
     run_joint_pe_robustness_evaluation,
+    run_locked_joint_pe_robustness_evaluation,
     sky_area_estimator_identity,
     validate_paired_pe_latency,
 )
@@ -252,7 +254,9 @@ def test_pe_robustness_triplet_recovers_hand_calculated_contamination(tmp_path) 
     assert comparison["latency_mask_minus_contaminated_seconds"] == 0.5
 
 
-def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_path) -> None:
+def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
+    tmp_path, monkeypatch
+) -> None:
     files = {}
     for name, payload in (
         ("base", b"base manifest"),
@@ -419,6 +423,94 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(tmp_pa
     assert promotion["passed"] is True
     assert promotion["promote_to_locked_test"] is True
     assert promotion["scientific_claim_allowed"] is False
+
+    locked_endpoints = {
+        "minimum_paired_pe_injections": 1,
+        "pe_credible_level": 0.8,
+        "bootstrap_replicates": 20,
+        "bootstrap_seed": 20260720,
+    }
+
+    def locked_binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(Path(output_path).resolve()),
+            "endpoints": locked_endpoints,
+            "frozen_artifacts": {
+                "validation_pe_promotion": {
+                    "path": str((tmp_path / "pe-promotion.json").resolve()),
+                    "sha256": file_sha256(tmp_path / "pe-promotion.json"),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access",
+        locked_binding,
+    )
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        lambda _plan, input_key, input_path: {
+            "input_key": input_key,
+            "input_path": str(Path(input_path).resolve()),
+        },
+    )
+    locked_backend_reports = {}
+    for backend, status in (
+        ("DINGO", "real_dingo_common_batch_complete"),
+        ("AMPLFI", "real_amplfi_common_batch_complete"),
+    ):
+        locked_manifest = tmp_path / f"{backend.lower()}-locked-batch.jsonl"
+        locked_rows = [
+            {
+                **row,
+                "injection_id": "test-i-1",
+                "split": "test",
+                "source_event_hash": "test-event-hash",
+            }
+            for row in rows
+            if row["backend"] == backend
+        ]
+        locked_manifest.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in locked_rows),
+            encoding="utf-8",
+        )
+        source_batch = tmp_path / f"{backend.lower()}-locked-source-report.json"
+        source_batch.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "rows": 3,
+                    "paired_injections": 1,
+                    "manifest_path": str(locked_manifest),
+                    "manifest_sha256": file_sha256(locked_manifest),
+                }
+            ),
+            encoding="utf-8",
+        )
+        locked_report = tmp_path / f"{backend.lower()}-locked-binding.json"
+        bind_locked_pe_backend_batch(
+            backend,
+            source_batch,
+            tmp_path / "pe-promotion.json",
+            tmp_path / "suite-plan.json",
+            tmp_path / "access.json",
+            locked_report,
+        )
+        locked_backend_reports[backend] = locked_report
+    locked_joint = run_locked_joint_pe_robustness_evaluation(
+        locked_backend_reports["DINGO"],
+        locked_backend_reports["AMPLFI"],
+        tmp_path / "pe-promotion.json",
+        tmp_path / "suite-plan.json",
+        tmp_path / "access.json",
+        tmp_path / "locked-joint-pe.json",
+    )
+    assert locked_joint["status"] == "locked_joint_paired_pe_complete"
+    assert locked_joint["paired_injections"] == 1
+    assert locked_joint["identical_priors"] is True
+    assert locked_joint["identical_waveform_assumptions"] is True
+    assert set(locked_joint["coverage"]) == {"DINGO", "AMPLFI"}
 
     promotion_config.write_text(
         promotion_config.read_text(encoding="utf-8").replace(

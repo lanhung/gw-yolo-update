@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.add_argument("--api-url", required=True)
     catalog.add_argument("--output", required=True)
 
+    locked_catalog = subparsers.add_parser("catalog-eval-locked")
+    locked_catalog.add_argument("--prediction-manifest", required=True)
+    locked_catalog.add_argument("--candidate-search-report", required=True)
+    locked_catalog.add_argument("--locked-suite-plan", required=True)
+    locked_catalog.add_argument("--access-log", required=True)
+    locked_catalog.add_argument("--output", required=True)
+
     search = subparsers.add_parser("search-eval")
     search.add_argument("--validation-background", required=True)
     search.add_argument("--test-background", required=True)
@@ -1603,6 +1610,24 @@ def build_parser() -> argparse.ArgumentParser:
     pe_promotion.add_argument("--config", required=True)
     pe_promotion.add_argument("--output", required=True)
 
+    pe_locked_backend = subparsers.add_parser("pe-backend-bind-locked")
+    pe_locked_backend.add_argument("--backend", choices=("DINGO", "AMPLFI"), required=True)
+    pe_locked_backend.add_argument("--batch-report", required=True)
+    pe_locked_backend.add_argument("--validation-promotion-report", required=True)
+    pe_locked_backend.add_argument("--locked-suite-plan", required=True)
+    pe_locked_backend.add_argument("--access-log", required=True)
+    pe_locked_backend.add_argument("--output", required=True)
+
+    pe_locked_joint = subparsers.add_parser(
+        "pe-robustness-joint-evaluate-locked"
+    )
+    pe_locked_joint.add_argument("--dingo-locked-report", required=True)
+    pe_locked_joint.add_argument("--amplfi-locked-report", required=True)
+    pe_locked_joint.add_argument("--validation-promotion-report", required=True)
+    pe_locked_joint.add_argument("--locked-suite-plan", required=True)
+    pe_locked_joint.add_argument("--access-log", required=True)
+    pe_locked_joint.add_argument("--output", required=True)
+
     pe_inputs = subparsers.add_parser("pe-input-materialize")
     pe_inputs.add_argument("--clean-manifest", required=True)
     pe_inputs.add_argument("--contaminated-manifest", required=True)
@@ -1850,6 +1875,18 @@ def main(argv: list[str] | None = None) -> int:
         _print(predict_catalog(args.checkpoint, args.source, args.output_dir, args.confidence))
     elif args.command == "catalog-eval":
         _print(evaluate_catalog_predictions(args.predictions, args.api_url, args.output))
+    elif args.command == "catalog-eval-locked":
+        from .catalog import run_locked_gwtc5_catalog_diagnostic
+
+        _print(
+            run_locked_gwtc5_catalog_diagnostic(
+                args.prediction_manifest,
+                args.candidate_search_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
     elif args.command == "search-eval":
         _print(
             run_search_benchmark(
@@ -3778,6 +3815,32 @@ def main(argv: list[str] | None = None) -> int:
             promote_pe_robustness_validation(
                 args.joint_report,
                 args.config,
+                args.output,
+            )
+        )
+    elif args.command == "pe-backend-bind-locked":
+        from .pe import bind_locked_pe_backend_batch
+
+        _print(
+            bind_locked_pe_backend_batch(
+                args.backend,
+                args.batch_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
+    elif args.command == "pe-robustness-joint-evaluate-locked":
+        from .pe import run_locked_joint_pe_robustness_evaluation
+
+        _print(
+            run_locked_joint_pe_robustness_evaluation(
+                args.dingo_locked_report,
+                args.amplfi_locked_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
                 args.output,
             )
         )

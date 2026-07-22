@@ -8,10 +8,6 @@ required_variables=(
   LOCKED_ACCESS_LOG
   RAW_CALIBRATION_REPORT
   MASK_CALIBRATION_REPORT
-  RAW_TEST_TIME_SLIDE_REPORT
-  MASK_TEST_TIME_SLIDE_REPORT
-  RAW_TEST_INJECTION_RANKING_REPORT
-  MASK_TEST_INJECTION_RANKING_REPORT
   VALIDATION_RAW_MASK_COMPARISON_REPORT
 )
 for variable in "${required_variables[@]}"; do
@@ -26,10 +22,6 @@ for input in \
   "$LOCKED_ACCESS_LOG" \
   "$RAW_CALIBRATION_REPORT" \
   "$MASK_CALIBRATION_REPORT" \
-  "$RAW_TEST_TIME_SLIDE_REPORT" \
-  "$MASK_TEST_TIME_SLIDE_REPORT" \
-  "$RAW_TEST_INJECTION_RANKING_REPORT" \
-  "$MASK_TEST_INJECTION_RANKING_REPORT" \
   "$VALIDATION_RAW_MASK_COMPARISON_REPORT"; do
   if [[ ! -f "$input" ]]; then
     echo "required input is absent: $input" >&2
@@ -71,11 +63,15 @@ for value in (
     endpoints["minimum_test_injections"],
     endpoints["bootstrap_replicates"],
     endpoints["bootstrap_seed"],
+    plan["inputs"]["raw_test_time_slide_report"],
+    plan["inputs"]["mask_test_time_slide_report"],
+    plan["inputs"]["raw_test_injection_ranking_report"],
+    plan["inputs"]["mask_test_injection_ranking_report"],
 ):
     print(value)
 PY
 )
-if (( ${#suite_settings[@]} != 7 )); then
+if (( ${#suite_settings[@]} != 11 )); then
   echo "locked suite plan did not resolve the search endpoints" >&2
   exit 2
 fi
@@ -86,6 +82,20 @@ minimum_live_time=${suite_settings[3]}
 minimum_injections=${suite_settings[4]}
 bootstrap_replicates=${suite_settings[5]}
 bootstrap_seed=${suite_settings[6]}
+RAW_TEST_TIME_SLIDE_REPORT=${suite_settings[7]}
+MASK_TEST_TIME_SLIDE_REPORT=${suite_settings[8]}
+RAW_TEST_INJECTION_RANKING_REPORT=${suite_settings[9]}
+MASK_TEST_INJECTION_RANKING_REPORT=${suite_settings[10]}
+for input in \
+  "$RAW_TEST_TIME_SLIDE_REPORT" \
+  "$MASK_TEST_TIME_SLIDE_REPORT" \
+  "$RAW_TEST_INJECTION_RANKING_REPORT" \
+  "$MASK_TEST_INJECTION_RANKING_REPORT"; do
+  if [[ ! -f "$input" ]]; then
+    echo "predeclared locked search input is absent: $input" >&2
+    exit 2
+  fi
+done
 
 run_arm() {
   local arm=$1

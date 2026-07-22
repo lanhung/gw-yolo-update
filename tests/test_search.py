@@ -188,6 +188,7 @@ def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
         "bootstrap_replicates": 100,
         "bootstrap_seed": 7,
     }
+    frozen_artifacts = {}
 
     def binding(_plan, _access, output_key, output_path):
         return {
@@ -200,6 +201,7 @@ def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
             "code_commit": "deadbee",
             "corpus_label": "GWTC-5.0_O4b_locked_suite_v1",
             "endpoints": endpoints,
+            "frozen_artifacts": dict(frozen_artifacts),
         }
 
     monkeypatch.setattr(
@@ -344,6 +346,10 @@ def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
         ),
         encoding="utf-8",
     )
+    frozen_artifacts["validation_raw_mask_comparison"] = {
+        "path": str(validation_path.resolve()),
+        "sha256": file_sha256(validation_path),
+    }
     result = run_paired_locked_raw_mask_candidate_search_comparison(
         locked_reports["raw"],
         locked_reports["mask"],

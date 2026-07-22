@@ -28,6 +28,28 @@ _LOCKED_SUITE_OUTPUT_KEYS = {
     "catalog_diagnostic",
     "suite_receipt",
 }
+_LOCKED_SUITE_INPUT_KEYS = {
+    "raw_test_time_slide_report",
+    "mask_test_time_slide_report",
+    "raw_test_injection_ranking_report",
+    "mask_test_injection_ranking_report",
+    "locked_ood_score_manifest",
+    "dingo_locked_source_batch_report",
+    "amplfi_locked_source_batch_report",
+    "catalog_prediction_manifest",
+}
+_LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
+    "config",
+    "model",
+    "threshold_calibration",
+    "ood_policy",
+    "raw_candidate_calibration",
+    "mask_candidate_calibration",
+    "validation_raw_mask_comparison",
+    "validation_ood_report",
+    "validation_pe_promotion",
+    "catalog_metadata",
+}
 
 
 def freeze_locked_evaluation_suite_plan(
@@ -65,23 +87,44 @@ def freeze_locked_evaluation_suite_plan(
         raise ValueError("Locked evaluation suite must remain restricted to O4b")
     if settings.get("catalog_release") != "GWTC-5.0":
         raise ValueError("Locked evaluation suite must predeclare GWTC-5.0")
+    required_frozen_artifacts = settings.get("required_frozen_artifacts")
+    if (
+        not isinstance(required_frozen_artifacts, list)
+        or len(required_frozen_artifacts)
+        != len(_LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS)
+        or set(str(value) for value in required_frozen_artifacts)
+        != _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS
+    ):
+        raise ValueError("Locked suite frozen-artifact inventory is incomplete")
     if not code_commit.strip():
         raise ValueError("Locked evaluation suite requires an exact code commit")
     outputs = settings.get("outputs")
     if not isinstance(outputs, dict) or set(outputs) != _LOCKED_SUITE_OUTPUT_KEYS:
         raise ValueError("Locked evaluation suite output inventory is incomplete")
+    inputs = settings.get("inputs")
+    if not isinstance(inputs, dict) or set(inputs) != _LOCKED_SUITE_INPUT_KEYS:
+        raise ValueError("Locked evaluation suite input inventory is incomplete")
     root = Path(output_root).resolve()
-    resolved_outputs = {}
-    for key, relative_value in sorted(outputs.items()):
-        relative = Path(str(relative_value))
-        if relative.is_absolute() or ".." in relative.parts or relative.name == "":
-            raise ValueError(f"Locked suite output must be a safe relative path: {key}")
-        resolved = (root / relative).resolve()
-        if root not in resolved.parents or resolved.exists():
-            raise ValueError(f"Locked suite output exists or escapes its root: {key}")
-        resolved_outputs[key] = str(resolved)
-    if len(set(resolved_outputs.values())) != len(resolved_outputs):
-        raise ValueError("Locked evaluation suite output paths must be unique")
+
+    def resolve_inventory(values: dict[str, Any], inventory: str) -> dict[str, str]:
+        resolved_values = {}
+        for key, relative_value in sorted(values.items()):
+            relative = Path(str(relative_value))
+            if relative.is_absolute() or ".." in relative.parts or relative.name == "":
+                raise ValueError(f"Locked suite {inventory} must be a safe relative path: {key}")
+            resolved = (root / relative).resolve()
+            if root not in resolved.parents or resolved.exists():
+                raise ValueError(
+                    f"Locked suite {inventory} exists or escapes its root: {key}"
+                )
+            resolved_values[key] = str(resolved)
+        return resolved_values
+
+    resolved_outputs = resolve_inventory(outputs, "output")
+    resolved_inputs = resolve_inventory(inputs, "input")
+    all_paths = [*resolved_outputs.values(), *resolved_inputs.values()]
+    if len(set(all_paths)) != len(all_paths):
+        raise ValueError("Locked evaluation suite input/output paths must be unique")
     endpoints = settings.get("endpoints")
     if not isinstance(endpoints, dict):
         raise ValueError("Locked evaluation suite requires predeclared endpoints")
@@ -104,10 +147,22 @@ def freeze_locked_evaluation_suite_plan(
         or bootstrap_seed < 0
     ):
         raise ValueError("Locked evaluation endpoint is invalid: bootstrap_seed")
+    credible_level = endpoints.get("pe_credible_level")
+    if (
+        isinstance(credible_level, bool)
+        or not isinstance(credible_level, (int, float))
+        or not 0 < float(credible_level) < 1
+    ):
+        raise ValueError("Locked evaluation endpoint is invalid: pe_credible_level")
     if endpoints.get("primary_search_metric") != "paired_delta_recovered_vt_at_common_far":
         raise ValueError("Locked suite primary endpoint must be paired fixed-FAR recovered VT")
     if endpoints.get("threshold_policy") != "validation_frozen_no_test_retuning":
         raise ValueError("Locked suite must prohibit test threshold retuning")
+    if endpoints.get("catalog_search_arm") not in {
+        "raw_candidate_search",
+        "mask_candidate_search",
+    }:
+        raise ValueError("Locked suite catalog search arm is invalid")
     result = {
         "status": "frozen_locked_evaluation_suite_plan",
         "passed": True,
@@ -120,9 +175,13 @@ def freeze_locked_evaluation_suite_plan(
         "required_split": "test",
         "observing_runs": ["O4b"],
         "catalog_release": "GWTC-5.0",
+        "required_frozen_artifacts": sorted(
+            _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS
+        ),
         "code_commit": code_commit,
         "output_root": str(root),
         "outputs": resolved_outputs,
+        "inputs": resolved_inputs,
         "endpoints": endpoints,
         "validation_evidence": {
             "path": str(evidence_path),
@@ -170,11 +229,15 @@ def validate_locked_evaluation_suite_access(
     ):
         raise ValueError("Locked suite plan or one-time access receipt is invalid")
     frozen = access.get("frozen_artifacts", {}).get("locked_suite_plan", {})
+    frozen_artifacts = access.get("frozen_artifacts", {})
     if (
         Path(str(frozen.get("path", ""))).resolve() != plan_file
         or frozen.get("sha256") != file_sha256(plan_file)
         or access.get("predeclared_evaluation_output")
         != plan.get("outputs", {}).get("suite_receipt")
+        or not set(plan.get("required_frozen_artifacts", {})).issubset(
+            frozen_artifacts
+        )
     ):
         raise ValueError("One-time access receipt does not bind the frozen suite plan")
     expected = plan.get("outputs", {}).get(output_key)
@@ -190,6 +253,36 @@ def validate_locked_evaluation_suite_access(
         "code_commit": plan["code_commit"],
         "corpus_label": plan["corpus_label"],
         "endpoints": plan["endpoints"],
+        "inputs": plan["inputs"],
+        "frozen_artifacts": frozen_artifacts,
+    }
+
+
+def validate_locked_evaluation_suite_input(
+    plan_path: str | Path,
+    input_key: str,
+    input_path: str | Path,
+) -> dict[str, Any]:
+    """Require a locked intermediate artifact to use its predeclared suite path."""
+
+    plan_file = Path(plan_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    expected = plan.get("inputs", {}).get(input_key)
+    if (
+        plan.get("status") != "frozen_locked_evaluation_suite_plan"
+        or plan.get("passed") is not True
+        or plan.get("locked_corpus_opened") is not False
+        or expected is None
+        or Path(str(expected)).resolve() != Path(input_path).resolve()
+    ):
+        raise ValueError("Locked evaluator input is not predeclared by the suite plan")
+    return {
+        "plan_path": str(plan_file),
+        "plan_sha256": file_sha256(plan_file),
+        "input_key": input_key,
+        "input_path": str(Path(input_path).resolve()),
+        "code_commit": plan["code_commit"],
+        "corpus_label": plan["corpus_label"],
     }
 
 
@@ -219,6 +312,20 @@ def finalize_locked_evaluation_suite_receipt(
         "joint_pe": "locked_joint_paired_pe_complete",
         "catalog_diagnostic": "locked_gwtc5_catalog_diagnostic",
     }
+    expected_inputs = {
+        "raw_candidate_search": {
+            "time_slide": "raw_test_time_slide_report",
+            "injection_ranking": "raw_test_injection_ranking_report",
+        },
+        "mask_candidate_search": {
+            "time_slide": "mask_test_time_slide_report",
+            "injection_ranking": "mask_test_injection_ranking_report",
+        },
+        "locked_ood_transfer": {"single": "locked_ood_score_manifest"},
+        "dingo_batch": {"single": "dingo_locked_source_batch_report"},
+        "amplfi_batch": {"single": "amplfi_locked_source_batch_report"},
+        "catalog_diagnostic": {"single": "catalog_prediction_manifest"},
+    }
     outputs = {}
     endpoint_outcomes = {}
     for key, expected_status in expected_statuses.items():
@@ -238,6 +345,22 @@ def finalize_locked_evaluation_suite_receipt(
             or report.get("locked_suite_access") != binding
         ):
             raise ValueError(f"locked suite output failed plan replay: {key}")
+        if key in expected_inputs:
+            replayed_inputs = {
+                alias: validate_locked_evaluation_suite_input(
+                    plan_path,
+                    input_key,
+                    plan["inputs"][input_key],
+                )
+                for alias, input_key in expected_inputs[key].items()
+            }
+            observed_inputs = (
+                report.get("locked_suite_inputs")
+                if "single" not in replayed_inputs
+                else {"single": report.get("locked_suite_input")}
+            )
+            if observed_inputs != replayed_inputs:
+                raise ValueError(f"locked suite output lacks its frozen input binding: {key}")
         outputs[key] = {
             "path": str(path),
             "sha256": file_sha256(path),

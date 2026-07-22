@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -1185,6 +1185,328 @@ def run_joint_pe_robustness_evaluation(
     )
     atomic_write_json(report_output, report)
     return report
+
+
+_LOCKED_PE_FIXED_PROVENANCE_FIELDS = tuple(
+    field for field in PUBLICATION_PROVENANCE_FIELDS if field != "source_event_hash"
+)
+
+
+def _replay_locked_pe_validation_promotion(
+    promotion_report_path: str | Path,
+) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
+    promotion_path = Path(promotion_report_path).resolve()
+    promotion = json.loads(promotion_path.read_text(encoding="utf-8"))
+    joint_path = Path(str(promotion.get("joint_report_path", ""))).resolve()
+    manifest_path = Path(str(promotion.get("joint_manifest_path", ""))).resolve()
+    config_path = Path(str(promotion.get("config_path", ""))).resolve()
+    if (
+        promotion.get("status") != "pe_robustness_validation_promotion_decision"
+        or promotion.get("passed") is not True
+        or promotion.get("promote_to_locked_test") is not True
+        or promotion.get("scientific_claim_allowed") is not False
+        or not joint_path.is_file()
+        or promotion.get("joint_report_sha256") != file_sha256(joint_path)
+        or not manifest_path.is_file()
+        or promotion.get("joint_manifest_sha256") != file_sha256(manifest_path)
+        or not config_path.is_file()
+        or promotion.get("config_sha256") != file_sha256(config_path)
+    ):
+        raise ValueError("locked PE requires a passing replayable validation promotion")
+    joint = json.loads(joint_path.read_text(encoding="utf-8"))
+    if (
+        joint.get("status")
+        != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
+        or joint.get("dingo_amplfi_joint_gate") is not True
+        or joint.get("cross_backend_matched_input_gate") is not True
+        or joint.get("publication_provenance_required") is not True
+        or Path(str(joint.get("manifest_path", ""))).resolve() != manifest_path
+        or joint.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError("locked PE validation joint report failed replay")
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(str(row.get("split")) != "val" for row in rows):
+        raise ValueError("locked PE promotion manifest must remain validation-only")
+    return promotion_path, promotion, rows
+
+
+def bind_locked_pe_backend_batch(
+    backend: str,
+    batch_report_path: str | Path,
+    validation_promotion_report: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind one completed locked PE backend batch to the frozen suite and validation model."""
+
+    from .evaluation_lock import (
+        validate_locked_evaluation_suite_access,
+        validate_locked_evaluation_suite_input,
+    )
+
+    backend_name = str(backend).upper()
+    settings = {
+        "DINGO": (
+            "dingo_batch",
+            "real_dingo_common_batch_complete",
+            "locked_dingo_paired_pe_batch_complete",
+        ),
+        "AMPLFI": (
+            "amplfi_batch",
+            "real_amplfi_common_batch_complete",
+            "locked_amplfi_paired_pe_batch_complete",
+        ),
+    }
+    if backend_name not in settings:
+        raise ValueError("locked PE backend must be DINGO or AMPLFI")
+    output_key, expected_status, locked_status = settings[backend_name]
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("locked PE backend bindings are immutable")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan, access_log, output_key, output_path
+    )
+    suite_input = validate_locked_evaluation_suite_input(
+        locked_suite_plan,
+        f"{backend_name.lower()}_locked_source_batch_report",
+        batch_report_path,
+    )
+    promotion_path, _, validation_rows = _replay_locked_pe_validation_promotion(
+        validation_promotion_report
+    )
+    promotion_identity = suite_access["frozen_artifacts"].get(
+        "validation_pe_promotion", {}
+    )
+    if (
+        Path(str(promotion_identity.get("path", ""))).resolve() != promotion_path
+        or promotion_identity.get("sha256") != file_sha256(promotion_path)
+    ):
+        raise ValueError("locked PE promotion differs from the access receipt")
+    validation_backend_rows = [
+        row for row in validation_rows if str(row.get("backend", "")).upper() == backend_name
+    ]
+    if not validation_backend_rows:
+        raise ValueError(f"validation promotion contains no {backend_name} rows")
+
+    batch_path = Path(batch_report_path).resolve()
+    batch = json.loads(batch_path.read_text(encoding="utf-8"))
+    manifest_path = Path(str(batch.get("manifest_path", ""))).resolve()
+    if (
+        batch.get("status") != expected_status
+        or not manifest_path.is_file()
+        or batch.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError(f"locked {backend_name} batch report failed replay")
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if (
+        not rows
+        or len(rows) != int(batch.get("rows", -1))
+        or any(str(row.get("backend", "")).upper() != backend_name for row in rows)
+        or any(str(row.get("split")) != "test" for row in rows)
+    ):
+        raise ValueError(f"locked {backend_name} batch is not a complete test artifact")
+    keys = {
+        (str(row.get("injection_id", "")), str(row.get("condition", "")))
+        for row in rows
+    }
+    injection_ids = {injection_id for injection_id, _ in keys}
+    expected_keys = {
+        (injection_id, condition)
+        for injection_id in injection_ids
+        for condition in ROBUSTNESS_CONDITIONS
+    }
+    if (
+        len(keys) != len(rows)
+        or keys != expected_keys
+        or len(injection_ids) != int(batch.get("paired_injections", -1))
+        or len(injection_ids)
+        < int(suite_access["endpoints"]["minimum_paired_pe_injections"])
+    ):
+        raise ValueError(f"locked {backend_name} batch lacks complete paired triplets")
+
+    def fixed_identities(selected: list[dict[str, Any]]) -> set[str]:
+        identities = []
+        for row in selected:
+            _validate_publication_provenance(row)
+            identities.append(
+                canonical_hash(
+                    {
+                        field: row[field]
+                        for field in _LOCKED_PE_FIXED_PROVENANCE_FIELDS
+                    },
+                    64,
+                )
+            )
+        return set(identities)
+
+    validation_identities = fixed_identities(validation_backend_rows)
+    locked_identities = fixed_identities(rows)
+    if len(validation_identities) != 1 or locked_identities != validation_identities:
+        raise ValueError(
+            f"locked {backend_name} model/prior/waveform/latency identity differs from validation"
+        )
+    result = {
+        "status": locked_status,
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "backend": backend_name,
+        "rows": len(rows),
+        "paired_injections": len(injection_ids),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        "fixed_provenance_identity_sha256": next(iter(locked_identities)),
+        "source_batch_report": {
+            "path": str(batch_path),
+            "sha256": file_sha256(batch_path),
+        },
+        "validation_promotion_report": {
+            "path": str(promotion_path),
+            "sha256": file_sha256(promotion_path),
+        },
+        "locked_suite_access": suite_access,
+        "locked_suite_input": suite_input,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def run_locked_joint_pe_robustness_evaluation(
+    dingo_locked_report: str | Path,
+    amplfi_locked_report: str | Path,
+    validation_promotion_report: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Evaluate the predeclared locked DINGO/AMPLFI paired PE endpoint once."""
+
+    from .evaluation_lock import validate_locked_evaluation_suite_access
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("locked joint PE outputs are immutable")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan, access_log, "joint_pe", output_path
+    )
+    promotion_path, _, _ = _replay_locked_pe_validation_promotion(
+        validation_promotion_report
+    )
+    promotion_identity = suite_access["frozen_artifacts"].get(
+        "validation_pe_promotion", {}
+    )
+    if (
+        Path(str(promotion_identity.get("path", ""))).resolve() != promotion_path
+        or promotion_identity.get("sha256") != file_sha256(promotion_path)
+    ):
+        raise ValueError("locked PE promotion differs from the access receipt")
+    specifications = {
+        "DINGO": (
+            Path(dingo_locked_report).resolve(),
+            "dingo_batch",
+            "locked_dingo_paired_pe_batch_complete",
+        ),
+        "AMPLFI": (
+            Path(amplfi_locked_report).resolve(),
+            "amplfi_batch",
+            "locked_amplfi_paired_pe_batch_complete",
+        ),
+    }
+    rows = []
+    source_reports = {}
+    backend_keys = {}
+    for backend, (report_path, output_key, expected_status) in specifications.items():
+        binding = validate_locked_evaluation_suite_access(
+            locked_suite_plan, access_log, output_key, report_path
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest_path = Path(str(report.get("manifest_path", ""))).resolve()
+        if (
+            report.get("status") != expected_status
+            or report.get("endpoint_complete") is not True
+            or report.get("locked_suite_access") != binding
+            or not manifest_path.is_file()
+            or report.get("manifest_sha256") != file_sha256(manifest_path)
+            or Path(
+                str(report.get("validation_promotion_report", {}).get("path", ""))
+            ).resolve()
+            != promotion_path
+            or report.get("validation_promotion_report", {}).get("sha256")
+            != file_sha256(promotion_path)
+        ):
+            raise ValueError(f"locked {backend} PE binding failed replay")
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            backend_rows = [json.loads(line) for line in handle if line.strip()]
+        keys = {
+            (str(row.get("injection_id", "")), str(row.get("condition", "")))
+            for row in backend_rows
+        }
+        if (
+            not backend_rows
+            or len(backend_rows) != int(report.get("rows", -1))
+            or any(str(row.get("split")) != "test" for row in backend_rows)
+            or any(str(row.get("backend", "")).upper() != backend for row in backend_rows)
+        ):
+            raise ValueError(f"locked {backend} PE manifest changed after binding")
+        rows.extend(backend_rows)
+        backend_keys[backend] = keys
+        source_reports[backend] = {
+            "path": str(report_path),
+            "sha256": file_sha256(report_path),
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": file_sha256(manifest_path),
+        }
+    if backend_keys["DINGO"] != backend_keys["AMPLFI"]:
+        raise ValueError("locked DINGO and AMPLFI batches use different injection conditions")
+    endpoints = suite_access["endpoints"]
+    report = evaluate_pe_robustness_rows(
+        rows,
+        float(endpoints["pe_credible_level"]),
+        int(endpoints["bootstrap_replicates"]),
+        int(endpoints["bootstrap_seed"]),
+        True,
+    )
+    paired_injections = int(report["common_injection_count"])
+    if paired_injections < int(endpoints["minimum_paired_pe_injections"]):
+        raise ValueError("locked joint PE endpoint has too few common injections")
+    paired_summaries = report["paired_summaries"]
+    result = {
+        **report,
+        "status": "locked_joint_paired_pe_complete",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "paired_injections": paired_injections,
+        "identical_priors": True,
+        "identical_waveform_assumptions": True,
+        "coverage": report["coverage"],
+        "bias": {
+            backend: summary["parameters"]
+            for backend, summary in paired_summaries.items()
+        },
+        "posterior_width": {
+            backend: summary["parameters"]
+            for backend, summary in paired_summaries.items()
+        },
+        "latency": {
+            backend: summary["resources"].get(
+                "latency_mask_minus_contaminated_seconds"
+            )
+            for backend, summary in paired_summaries.items()
+        },
+        "dingo_batch": source_reports["DINGO"],
+        "amplfi_batch": source_reports["AMPLFI"],
+        "validation_promotion_report": {
+            "path": str(promotion_path),
+            "sha256": file_sha256(promotion_path),
+        },
+        "locked_suite_access": suite_access,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
 
 
 def promote_pe_robustness_validation(
