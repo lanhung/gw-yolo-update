@@ -654,8 +654,13 @@ def evaluate_pe_robustness_rows(
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260720,
     require_publication_provenance: bool = True,
+    require_cross_backend_join: bool = True,
 ) -> dict[str, Any]:
     """Evaluate clean/contaminated/mask-conditioned PE triplets without changing priors."""
+    if not require_cross_backend_join and not require_publication_provenance:
+        raise ValueError(
+            "Within-backend PE robustness requires publication provenance"
+        )
     if not rows:
         raise ValueError("PE robustness manifest cannot be empty")
     groups: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
@@ -881,10 +886,16 @@ def evaluate_pe_robustness_rows(
             prior = normalized_backends.setdefault(normalized, backend)
             if prior != backend:
                 raise ValueError("PE robustness backend names collide after normalization")
-        missing_backends = sorted({"DINGO", "AMPLFI"} - set(normalized_backends))
-        if missing_backends:
+        if require_cross_backend_join:
+            missing_backends = sorted({"DINGO", "AMPLFI"} - set(normalized_backends))
+            if missing_backends:
+                raise ValueError(
+                    "Publication PE cross-backend robustness requires actual "
+                    f"DINGO and AMPLFI: {missing_backends}"
+                )
+        elif len(normalized_backends) != 1:
             raise ValueError(
-                f"Publication PE robustness requires actual DINGO and AMPLFI: {missing_backends}"
+                "Within-backend PE robustness requires exactly one backend"
             )
         ids_by_backend = {
             normalized: {
@@ -894,45 +905,50 @@ def evaluate_pe_robustness_rows(
             }
             for normalized, original in normalized_backends.items()
         }
-        reference_ids = ids_by_backend["DINGO"]
-        if any(ids != reference_ids for ids in ids_by_backend.values()):
-            raise ValueError("Publication PE backends use different injection sets")
+        reference_ids = next(iter(ids_by_backend.values()))
         common_injection_ids = sorted(reference_ids)
-        for injection_id in common_injection_ids:
-            for condition in ROBUSTNESS_CONDITIONS:
-                backend_rows = [
-                    groups[(original, injection_id)][condition]
-                    for original in normalized_backends.values()
-                ]
-                if any(row["truth"] != backend_rows[0]["truth"] for row in backend_rows[1:]):
-                    raise ValueError(
-                        f"Publication PE truth differs across backends: {injection_id}"
-                    )
-                inconsistent = [
-                    field
-                    for field in PUBLICATION_SHARED_BACKEND_FIELDS
+        if require_cross_backend_join:
+            if any(ids != reference_ids for ids in ids_by_backend.values()):
+                raise ValueError("Publication PE backends use different injection sets")
+            for injection_id in common_injection_ids:
+                for condition in ROBUSTNESS_CONDITIONS:
+                    backend_rows = [
+                        groups[(original, injection_id)][condition]
+                        for original in normalized_backends.values()
+                    ]
                     if any(
-                        row[field] != backend_rows[0][field] for row in backend_rows[1:]
+                        row["truth"] != backend_rows[0]["truth"]
+                        for row in backend_rows[1:]
+                    ):
+                        raise ValueError(
+                            f"Publication PE truth differs across backends: {injection_id}"
+                        )
+                    inconsistent = [
+                        field
+                        for field in PUBLICATION_SHARED_BACKEND_FIELDS
+                        if any(
+                            row[field] != backend_rows[0][field]
+                            for row in backend_rows[1:]
+                        )
+                    ]
+                    if inconsistent:
+                        raise ValueError(
+                            f"Publication PE assumptions differ across backends for "
+                            f"{injection_id}/{condition}: {inconsistent}"
+                        )
+                    semantic = _common_source_semantics(
+                        backend_rows[0]["verified_publication_input"]
                     )
-                ]
-                if inconsistent:
-                    raise ValueError(
-                        f"Publication PE assumptions differ across backends for "
-                        f"{injection_id}/{condition}: {inconsistent}"
-                    )
-                semantic = _common_source_semantics(
-                    backend_rows[0]["verified_publication_input"]
-                )
-                if any(
-                    _common_source_semantics(row["verified_publication_input"])
-                    != semantic
-                    for row in backend_rows[1:]
-                ):
-                    raise ValueError(
-                        f"Publication PE inputs differ across backends: "
-                        f"{injection_id}/{condition}"
-                    )
-        cross_backend_input_gate = True
+                    if any(
+                        _common_source_semantics(row["verified_publication_input"])
+                        != semantic
+                        for row in backend_rows[1:]
+                    ):
+                        raise ValueError(
+                            f"Publication PE inputs differ across backends: "
+                            f"{injection_id}/{condition}"
+                        )
+            cross_backend_input_gate = True
 
     coverage = {}
     paired_summaries = {}
@@ -1026,6 +1042,17 @@ def evaluate_pe_robustness_rows(
             {name.upper() for name in backend_names}
         ),
         "cross_backend_matched_input_gate": cross_backend_input_gate,
+        "within_backend_provenance_gate": require_publication_provenance,
+        "cross_backend_join_required": require_cross_backend_join,
+        "comparison_scope": (
+            "matched_cross_backend"
+            if cross_backend_input_gate
+            else (
+                "strict_within_backend_paired"
+                if require_publication_provenance and not require_cross_backend_join
+                else "engineering_only"
+            )
+        ),
         "common_injection_ids": common_injection_ids,
         "common_injection_count": len(common_injection_ids),
         "triplets": len(comparisons),
@@ -1048,6 +1075,7 @@ def run_pe_robustness_evaluation(
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260720,
     require_publication_provenance: bool = True,
+    require_cross_backend_join: bool = True,
 ) -> dict[str, Any]:
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle if line.strip()]
@@ -1057,6 +1085,7 @@ def run_pe_robustness_evaluation(
         bootstrap_replicates,
         bootstrap_seed,
         require_publication_provenance,
+        require_cross_backend_join,
     )
     report["manifest_path"] = str(manifest_path)
     report["manifest_sha256"] = file_sha256(manifest_path)

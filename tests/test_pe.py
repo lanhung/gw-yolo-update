@@ -357,6 +357,18 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
     assert report["cross_backend_matched_input_gate"] is True
     assert report["common_injection_ids"] == ["i-1"]
 
+    within = evaluate_pe_robustness_rows(
+        [row for row in rows if row["backend"] == "DINGO"],
+        credible_level=0.8,
+        bootstrap_replicates=20,
+        require_publication_provenance=True,
+        require_cross_backend_join=False,
+    )
+    assert within["comparison_scope"] == "strict_within_backend_paired"
+    assert within["within_backend_provenance_gate"] is True
+    assert within["dingo_amplfi_joint_gate"] is False
+    assert within["cross_backend_matched_input_gate"] is False
+
     batch_reports = {}
     for backend, status in (
         ("DINGO", "real_dingo_common_batch_complete"),

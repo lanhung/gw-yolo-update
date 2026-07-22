@@ -9,8 +9,10 @@ import yaml
 
 from gwyolo.io import file_sha256
 from gwyolo.pe_backend import (
+    audit_joint_pe_model_compatibility,
     audit_pe_backend_lock,
     freeze_pe_backend_model_metadata,
+    run_joint_pe_model_compatibility_audit,
     run_pe_backend_lock_audit,
 )
 
@@ -149,6 +151,7 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 {
                     "schema_version": 1,
                     "backend": backend,
+                    "model_path": str(model),
                     "model_sha256": file_sha256(model),
                     "population": "BBH",
                     "source_input": {
@@ -231,6 +234,79 @@ def test_pe_backend_lock_accepts_two_isolated_pinned_backends(
     assert report["publication_ready"] is True
     assert report["status"] == "ready"
     assert report["backends"]["DINGO"]["source"]["tag"] == "v0.9.8"
+
+
+def test_joint_pe_model_compatibility_rejects_official_native_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch)
+    dingo_metadata = Path(os.environ["TEST_DINGO_METADATA"])
+    amplfi_metadata = Path(os.environ["TEST_AMPLFI_METADATA"])
+    dingo = yaml.safe_load(dingo_metadata.read_text(encoding="utf-8"))
+    dingo_prior = Path(dingo["artifacts"]["native_prior"]["path"])
+    dingo_init = Path(dingo["artifacts"]["initialization_model"]["path"])
+    amplfi = yaml.safe_load(amplfi_metadata.read_text(encoding="utf-8"))
+    amplfi_prior = Path(amplfi["artifacts"]["native_prior"]["path"])
+
+    compatible = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        dingo_prior,
+        amplfi_prior,
+        dingo_init,
+    )
+    assert compatible["publication_ready"] is True
+    assert compatible["cross_backend_absolute_comparison_allowed"] is True
+
+    dingo["cross_backend_absolute_comparison_allowed"] = False
+    dingo["common_prior_equivalent"] = False
+    dingo_metadata.write_text(yaml.safe_dump(dingo), encoding="utf-8")
+    incompatible = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        dingo_prior,
+        amplfi_prior,
+        dingo_init,
+    )
+    assert incompatible["publication_ready"] is False
+    assert incompatible["cross_backend_absolute_comparison_allowed"] is False
+    assert any("forbids absolute" in value for value in incompatible["failures"])
+    assert any("not common-prior equivalent" in value for value in incompatible["failures"])
+    assert incompatible["within_backend_paired_robustness_remains_allowed"] is True
+    output = tmp_path / "incompatible-joint-models.json"
+    with pytest.raises(RuntimeError, match="joint PE models are incompatible"):
+        run_joint_pe_model_compatibility_audit(
+            dingo_metadata,
+            amplfi_metadata,
+            dingo_prior,
+            amplfi_prior,
+            dingo_init,
+            output,
+        )
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["status"] == "joint_pe_models_incompatible"
+    assert persisted["test_rows_read"] == 0
+
+
+def test_joint_pe_model_compatibility_rejects_native_waveform_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch)
+    dingo_metadata = Path(os.environ["TEST_DINGO_METADATA"])
+    amplfi_metadata = Path(os.environ["TEST_AMPLFI_METADATA"])
+    dingo = yaml.safe_load(dingo_metadata.read_text(encoding="utf-8"))
+    amplfi = yaml.safe_load(amplfi_metadata.read_text(encoding="utf-8"))
+    amplfi["native_model_waveform_approximant"] = "ml4gw.waveforms.IMRPhenomPv2"
+    amplfi_metadata.write_text(yaml.safe_dump(amplfi), encoding="utf-8")
+    report = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        Path(dingo["artifacts"]["native_prior"]["path"]),
+        Path(amplfi["artifacts"]["native_prior"]["path"]),
+        Path(dingo["artifacts"]["initialization_model"]["path"]),
+    )
+    assert report["publication_ready"] is False
+    assert "DINGO/AMPLFI native model waveform assumptions differ" in report["failures"]
 
 
 def test_pe_backend_lock_rejects_unresolved_model_hash(

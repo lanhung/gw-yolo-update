@@ -508,6 +508,10 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
                 "analysis_waveform_approximant"
             ):
                 failures.append("DINGO/AMPLFI model metadata differ in analysis waveform")
+            if semantics[0].get("native_model_waveform_approximant") != semantics[1].get(
+                "native_model_waveform_approximant"
+            ):
+                failures.append("DINGO/AMPLFI model metadata differ in native model waveform")
             common_parameters = [
                 sorted(value.get("reported_parameter_mapping", {})) for value in semantics
             ]
@@ -545,6 +549,176 @@ def run_pe_backend_lock_audit(
     if not report["publication_ready"] and not allow_incomplete:
         raise RuntimeError(
             f"PE backend lock is incomplete; inspect the atomic report at {output_path}"
+        )
+    return report
+
+
+def audit_joint_pe_model_compatibility(
+    dingo_metadata_path: str | Path,
+    amplfi_metadata_path: str | Path,
+    dingo_native_prior_path: str | Path,
+    amplfi_native_prior_path: str | Path,
+    dingo_initialization_model_path: str | Path,
+) -> dict[str, Any]:
+    """Audit the model-level boundary for an absolute DINGO/AMPLFI join.
+
+    Official-native checkpoints remain useful for within-backend paired robustness,
+    but they may not enter this contract unless they were validation-selected for the
+    same canonical prior, analysis waveform and source-input definition.
+    """
+
+    contract = {
+        "population": "BBH",
+        "source_ifos": ["H1", "L1"],
+        "source_sample_rate_hz": 4096,
+        "source_duration_seconds": 16,
+        "source_post_trigger_seconds": 2,
+        "common_asd_required": True,
+    }
+    inputs = {
+        "DINGO": {
+            "metadata": Path(dingo_metadata_path).resolve(),
+            "native_prior": Path(dingo_native_prior_path).resolve(),
+        },
+        "AMPLFI": {
+            "metadata": Path(amplfi_metadata_path).resolve(),
+            "native_prior": Path(amplfi_native_prior_path).resolve(),
+        },
+    }
+    failures: list[str] = []
+    backends: dict[str, Any] = {}
+    for backend, paths in inputs.items():
+        metadata_path = paths["metadata"]
+        native_prior_path = paths["native_prior"]
+        if not metadata_path.is_file():
+            failures.append(f"{backend}: model metadata is absent")
+            continue
+        try:
+            raw = load_yaml(metadata_path)
+        except (OSError, ValueError) as error:
+            failures.append(f"{backend}: cannot load model metadata: {error}")
+            continue
+        model_hash = str(raw.get("model_sha256", ""))
+        semantic, semantic_failures = _audit_model_metadata_semantics(
+            backend, str(metadata_path), model_hash, contract
+        )
+        failures.extend(semantic_failures)
+        if raw.get("cross_backend_absolute_comparison_allowed") is False:
+            failures.append(
+                f"{backend}: metadata explicitly forbids absolute cross-backend comparison"
+            )
+        if raw.get("common_prior_equivalent") is False:
+            failures.append(
+                f"{backend}: native checkpoint is explicitly not common-prior equivalent"
+            )
+        model_path = Path(str(raw.get("model_path", ""))).resolve()
+        if not model_path.is_file() or file_sha256(model_path) != model_hash:
+            failures.append(f"{backend}: model path/hash differs from metadata")
+        artifacts = raw.get("artifacts", {})
+        native_prior_identity = artifacts.get("native_prior", {})
+        if (
+            not native_prior_path.is_file()
+            or file_sha256(native_prior_path) != native_prior_identity.get("sha256")
+        ):
+            failures.append(f"{backend}: runtime native prior differs from metadata")
+        backends[backend] = {
+            "metadata_path": str(metadata_path),
+            "metadata_sha256": file_sha256(metadata_path),
+            "model_path": str(model_path),
+            "model_sha256": model_hash,
+            "native_prior_path": str(native_prior_path),
+            "native_prior_sha256": (
+                file_sha256(native_prior_path) if native_prior_path.is_file() else None
+            ),
+            "semantics": semantic,
+        }
+
+    initialization = Path(dingo_initialization_model_path).resolve()
+    dingo_artifacts = backends.get("DINGO", {}).get("semantics", {}).get(
+        "verified_artifacts", {}
+    )
+    initialization_identity = dingo_artifacts.get("initialization_model", {})
+    if (
+        not initialization.is_file()
+        or file_sha256(initialization) != initialization_identity.get("observed_sha256")
+    ):
+        failures.append("DINGO: runtime initialization model differs from metadata")
+
+    if set(backends) == set(REQUIRED_BACKENDS):
+        dingo = backends["DINGO"]["semantics"]
+        amplfi = backends["AMPLFI"]["semantics"]
+        if dingo.get("analysis_waveform_approximant") != amplfi.get(
+            "analysis_waveform_approximant"
+        ):
+            failures.append("DINGO/AMPLFI analysis waveform assumptions differ")
+        if dingo.get("native_model_waveform_approximant") != amplfi.get(
+            "native_model_waveform_approximant"
+        ):
+            failures.append("DINGO/AMPLFI native model waveform assumptions differ")
+        dingo_prior = dingo.get("verified_artifacts", {}).get("analysis_prior", {})
+        amplfi_prior = amplfi.get("verified_artifacts", {}).get("analysis_prior", {})
+        if (
+            not dingo_prior.get("observed_sha256")
+            or dingo_prior.get("observed_sha256")
+            != amplfi_prior.get("observed_sha256")
+        ):
+            failures.append("DINGO/AMPLFI canonical analysis priors differ")
+        dingo_parameters = sorted(dingo.get("reported_parameter_mapping", {}))
+        amplfi_parameters = sorted(amplfi.get("reported_parameter_mapping", {}))
+        if not dingo_parameters or dingo_parameters != amplfi_parameters:
+            failures.append("DINGO/AMPLFI reported common parameter sets differ")
+        if dingo.get("source_input") != amplfi.get("source_input"):
+            failures.append("DINGO/AMPLFI source-input contracts differ")
+
+    unique_failures = list(dict.fromkeys(failures))
+    ready = not unique_failures
+    return {
+        "status": (
+            "joint_pe_models_compatible"
+            if ready
+            else "joint_pe_models_incompatible"
+        ),
+        "publication_ready": ready,
+        "cross_backend_absolute_comparison_allowed": ready,
+        "within_backend_paired_robustness_remains_allowed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation posterior batches and frozen promotion remain required"
+            if ready
+            else "model/prior/waveform compatibility failures forbid an absolute backend join"
+        ),
+        "comparison_contract": contract,
+        "backends": backends,
+        "dingo_initialization_model_path": str(initialization),
+        "dingo_initialization_model_sha256": (
+            file_sha256(initialization) if initialization.is_file() else None
+        ),
+        "failures": unique_failures,
+        "test_rows_read": 0,
+        **execution_provenance(),
+    }
+
+
+def run_joint_pe_model_compatibility_audit(
+    dingo_metadata_path: str | Path,
+    amplfi_metadata_path: str | Path,
+    dingo_native_prior_path: str | Path,
+    amplfi_native_prior_path: str | Path,
+    dingo_initialization_model_path: str | Path,
+    output_path: str | Path,
+    allow_incompatible: bool = False,
+) -> dict[str, Any]:
+    report = audit_joint_pe_model_compatibility(
+        dingo_metadata_path,
+        amplfi_metadata_path,
+        dingo_native_prior_path,
+        amplfi_native_prior_path,
+        dingo_initialization_model_path,
+    )
+    atomic_write_json(output_path, report)
+    if not report["publication_ready"] and not allow_incompatible:
+        raise RuntimeError(
+            "joint PE models are incompatible; inspect the atomic compatibility report"
         )
     return report
 

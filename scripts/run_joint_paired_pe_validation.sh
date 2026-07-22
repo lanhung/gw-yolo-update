@@ -98,6 +98,21 @@ if (( ${#native_manifests[@]} != 2 )) \
   exit 4
 fi
 
+mkdir -p "$OUTPUT_ROOT/logs"
+compatibility_report="$OUTPUT_ROOT/joint_model_compatibility_audit.json"
+if ! env PYTHONPATH="$TASK_CODE_DIR/src" GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
+  "$TASK_PYTHON" -m gwyolo.cli pe-joint-model-compatibility-audit \
+  --dingo-model-metadata "$DINGO_MODEL_METADATA" \
+  --amplfi-model-metadata "$AMPLFI_MODEL_METADATA" \
+  --dingo-native-prior "$DINGO_NATIVE_PRIOR" \
+  --amplfi-native-prior "$AMPLFI_NATIVE_PRIOR" \
+  --dingo-model-init "$DINGO_MODEL_INIT" \
+  --output "$compatibility_report" \
+  >"$OUTPUT_ROOT/logs/model-compatibility.log" 2>&1; then
+  echo "joint PE model compatibility failed; inspect $compatibility_report" >&2
+  exit 5
+fi
+
 wait_for_idle_gpu() {
   while true; do
     gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
@@ -111,7 +126,6 @@ cd "$TASK_CODE_DIR"
 export PYTHONPATH=src
 export GWYOLO_CODE_COMMIT
 export CUDA_VISIBLE_DEVICES="${PE_CUDA_VISIBLE_DEVICES:-0}"
-mkdir -p "$OUTPUT_ROOT/logs"
 
 wait_for_idle_gpu
 "$TASK_PYTHON" -m gwyolo.cli dingo-common-batch \
@@ -170,6 +184,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
 artifacts = {
+    "model_compatibility": root / "joint_model_compatibility_audit.json",
     "dingo_batch": root / "dingo/dingo_batch_report.json",
     "amplfi_batch": root / "amplfi/amplfi_batch_report.json",
     "joint_evaluation": root / "paired_pe_robustness_report.json",
@@ -186,8 +201,13 @@ for name, path in artifacts.items():
     }
 joint = identities["joint_evaluation"]["report"]
 promotion = identities["promotion"]["report"]
+compatibility = identities["model_compatibility"]["report"]
 if (
-    joint.get("status")
+    compatibility.get("status") != "joint_pe_models_compatible"
+    or compatibility.get("publication_ready") is not True
+    or compatibility.get("cross_backend_absolute_comparison_allowed") is not True
+    or compatibility.get("test_rows_read") != 0
+    or joint.get("status")
     != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
     or joint.get("dingo_amplfi_joint_gate") is not True
     or joint.get("cross_backend_matched_input_gate") is not True

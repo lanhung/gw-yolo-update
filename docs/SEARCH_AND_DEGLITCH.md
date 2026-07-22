@@ -1030,6 +1030,14 @@ cross-backend input-lineage, prior, waveform, detector, hardware, sky-area and l
 before atomically writing a combined manifest. `scripts/run_joint_paired_pe_validation.sh` wires the
 validation-only native-input smoke to both pinned backend interpreters and this strict joint gate;
 it remains fail-closed until validation-selected model sidecars for both backends are present.
+Before either GPU batch starts, `pe-joint-model-compatibility-audit` replays both standardized
+metadata sidecars, their canonical and native priors, the DINGO initialization model and the frozen
+H1/L1 source contract. It requires the same canonical-prior hash, analysis and native-model
+waveform assumptions, common
+parameter set and source-input definition. An official-native sidecar that records
+`common_prior_equivalent=false` or `cross_backend_absolute_comparison_allowed=false` therefore
+writes an incompatible JSON audit and exits before posterior inference; its within-backend paired
+robustness path remains valid and separate.
 The subsequent `pe-robustness-promote` command applies the pre-result thresholds in
 `configs/pe_robustness_promotion.yaml`. Bias deltas are normalized by each event's clean-posterior
 credible width, while coverage non-inferiority uses paired bootstrap differences. Both backends must
@@ -1109,7 +1117,10 @@ explicitly records
 `scripts/run_dingo_official_native_paired_smoke.sh` can therefore measure only the validation-set
 clean/contaminated/mask-conditioned change within this one backend. It cannot enter
 `pe-robustness-joint-evaluate`, cannot establish an absolute DINGO-versus-AMPLFI ranking, and does
-not relax the common-prior paper gate.
+not relax the common-prior paper gate. Its `pe-robustness-evaluate --within-backend-only` stage
+still enforces every publication provenance and input-lineage check on the three conditions; it
+only disables the requirement that a second backend be present. The resulting report records
+`comparison_scope=strict_within_backend_paired` and keeps both cross-backend gates false.
 
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
@@ -1167,6 +1178,14 @@ backend-neutral prior; `configs/amplfi_common_bbh_training_prior.yaml` is its na
 projection. `amplfi-common-prior-audit` checks all fourteen intrinsic, extrinsic and nuisance
 distributions, their bounds, H1/L1 identity and the native 2,048 Hz/3-second contract. This is a
 semantic gate in addition to file hashes.
+
+`scripts/run_amplfi_within_backend_paired_smoke.sh` consumes the same validation-only paired-input
+receipt independently of DINGO. It replays the AMPLFI native manifest, validation-selected model
+sidecar and native prior, runs the three posterior conditions, then invokes the strict
+`--within-backend-only` evaluator with at least 10,000 paired-bootstrap replicates. Its receipt
+retains coverage, bias, width, fixed-grid sky area, effective-sample rate and latency evidence while
+setting `cross_backend_absolute_comparison_allowed=false`. This lets an AMPLFI downstream-robustness
+result complete even when no scientifically matched DINGO model exists.
 
 The source-safe one-seed overlap-sampling decision is frozen in
 `configs/physical_overlap_sampling_promotion.yaml`. `physical-overlap-sampling-promote` accepts

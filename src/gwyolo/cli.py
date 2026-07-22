@@ -1673,6 +1673,14 @@ def build_parser() -> argparse.ArgumentParser:
     pe_robustness.add_argument(
         "--allow-incomplete-provenance", action="store_true"
     )
+    pe_robustness.add_argument(
+        "--within-backend-only",
+        action="store_true",
+        help=(
+            "validate one backend's publication provenance without permitting an "
+            "absolute DINGO/AMPLFI join"
+        ),
+    )
 
     pe_joint = subparsers.add_parser("pe-robustness-joint-evaluate")
     pe_joint.add_argument("--dingo-batch-report", required=True)
@@ -1782,6 +1790,15 @@ def build_parser() -> argparse.ArgumentParser:
     pe_backend.add_argument("--config", required=True)
     pe_backend.add_argument("--output", required=True)
     pe_backend.add_argument("--allow-incomplete", action="store_true")
+
+    pe_joint_models = subparsers.add_parser("pe-joint-model-compatibility-audit")
+    pe_joint_models.add_argument("--dingo-model-metadata", required=True)
+    pe_joint_models.add_argument("--amplfi-model-metadata", required=True)
+    pe_joint_models.add_argument("--dingo-native-prior", required=True)
+    pe_joint_models.add_argument("--amplfi-native-prior", required=True)
+    pe_joint_models.add_argument("--dingo-model-init", required=True)
+    pe_joint_models.add_argument("--output", required=True)
+    pe_joint_models.add_argument("--allow-incompatible", action="store_true")
 
     pe_model = subparsers.add_parser("pe-backend-model-freeze")
     pe_model.add_argument("--backend", required=True, choices=["DINGO", "AMPLFI"])
@@ -3950,6 +3967,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+                not args.within_backend_only,
             )
         )
     elif args.command == "pe-robustness-joint-evaluate":
@@ -4035,6 +4053,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.output,
                 args.allow_incomplete,
+            )
+        )
+    elif args.command == "pe-joint-model-compatibility-audit":
+        from .pe_backend import run_joint_pe_model_compatibility_audit
+
+        _print(
+            run_joint_pe_model_compatibility_audit(
+                args.dingo_model_metadata,
+                args.amplfi_model_metadata,
+                args.dingo_native_prior,
+                args.amplfi_native_prior,
+                args.dingo_model_init,
+                args.output,
+                args.allow_incompatible,
             )
         )
     elif args.command == "pe-native-condition":

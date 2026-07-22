@@ -174,6 +174,7 @@ wait_for_idle_gpu
   --credible-level "${PE_CREDIBLE_LEVEL:-0.9}" \
   --bootstrap-replicates "${PE_BOOTSTRAP_REPLICATES:-2000}" \
   --bootstrap-seed "${PE_BOOTSTRAP_SEED:-20260721}" \
+  --within-backend-only \
   >"$OUTPUT_ROOT/logs/dingo-native-evaluation.log" 2>&1
 
 "$TASK_PYTHON" - "$OUTPUT_ROOT" <<'PY'
@@ -199,11 +200,16 @@ for label, path in paths.items():
     }
 metadata = json.loads(paths["model_metadata"].read_text(encoding="utf-8"))
 batch = json.loads(paths["posterior_batch"].read_text(encoding="utf-8"))
+robustness = json.loads(paths["robustness"].read_text(encoding="utf-8"))
 if (
     metadata.get("cross_backend_absolute_comparison_allowed") is not False
     or batch.get("status")
     != "real_dingo_official_native_paired_robustness_batch_complete"
     or batch.get("run_identity", {}).get("comparison_mode") != "official_native"
+    or robustness.get("comparison_scope") != "strict_within_backend_paired"
+    or robustness.get("within_backend_provenance_gate") is not True
+    or robustness.get("cross_backend_matched_input_gate") is not False
+    or robustness.get("dingo_amplfi_joint_gate") is not False
 ):
     raise SystemExit("official-native DINGO smoke violated its comparison boundary")
 result = {
