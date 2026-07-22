@@ -9,6 +9,7 @@ import pytest
 from gwyolo.io import canonical_hash, file_sha256
 from gwyolo.mask_audit import (
     _resolve_mask_checkpoint_selection,
+    bind_raw_mask_human_consensus_publication_evidence,
     binary_mask_iou,
     binary_mask_metrics,
     evaluate_gravityspy_mask_audit,
@@ -323,6 +324,226 @@ def test_human_consensus_segmentation_is_validation_only_and_hash_bound(
             test_report_selected,
             tmp_path / "test-report-selected-output.json",
         )
+
+
+def test_raw_mask_publication_binding_requires_frozen_human_consensus_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", commit)
+    task_rows = []
+    annotation_rows = []
+    for index in range(2):
+        weak = tmp_path / f"weak-{index}.npz"
+        blind = tmp_path / f"blind-{index}.npz"
+        np.savez(
+            weak,
+            features=np.asarray([0.8, 0.7, 0.1, 0.0]),
+            glitch_mask=np.asarray([1, 1, 0, 0]),
+        )
+        np.savez(blind, features=np.asarray([0.8, 0.7, 0.1, 0.0]))
+        task_hash = f"task-hash-{index}"
+        task_rows.append(
+            {
+                "audit_id": f"a{index}",
+                "glitch_id": f"g{index}",
+                "ml_label": "Blip",
+                "numeric_sample_path": str(weak),
+                "numeric_sample_sha256": file_sha256(weak),
+                "weak_mask_key": "glitch_mask",
+                "blinded_input_path": str(blind),
+                "blinded_input_sha256": file_sha256(blind),
+                "blinded_input_keys": ["features"],
+                "mask_shape": [4],
+                "required_independent_annotators": 3,
+                "required_annotation_key": "mask",
+                "annotation_task_hash": task_hash,
+            }
+        )
+        for annotator in ("one", "two", "three"):
+            mask = tmp_path / f"human-{index}-{annotator}.npz"
+            np.savez(mask, mask=np.asarray([1, 1, 0, 0]))
+            annotation_rows.append(
+                {
+                    "audit_id": f"a{index}",
+                    "annotator_id": annotator,
+                    "mask_path": str(mask),
+                    "mask_sha256": file_sha256(mask),
+                    "blinded_to_weak_mask": True,
+                    "protocol_version": "v1",
+                    "annotation_task_hash": task_hash,
+                }
+            )
+    tasks = tmp_path / "tasks.jsonl"
+    annotations = tmp_path / "annotations.jsonl"
+    tasks.write_text("".join(json.dumps(row) + "\n" for row in task_rows))
+    annotations.write_text(
+        "".join(json.dumps(row) + "\n" for row in annotation_rows)
+    )
+    audit_path = tmp_path / "audit.json"
+    evaluate_gravityspy_mask_audit(tasks, annotations, audit_path)
+    gold = materialize_gravityspy_mask_consensus(
+        tasks, annotations, audit_path, tmp_path / "gold"
+    )
+    gold_rows = [
+        json.loads(line)
+        for line in Path(gold["manifest_path"]).read_text().splitlines()
+    ]
+
+    model = tmp_path / "model.pt"
+    config = tmp_path / "model.yaml"
+    selection = tmp_path / "selection.json"
+    model.write_bytes(b"model")
+    config.write_text("model: detector-set\n")
+    selection.write_text('{"selection_split":"val"}\n')
+    prediction_rows = []
+    for row in gold_rows:
+        prediction = tmp_path / f"prediction-{row['audit_id']}.npz"
+        np.savez(
+            prediction,
+            mask_probability=np.asarray([0.9, 0.9, 0.1, 0.1], dtype=np.float32),
+        )
+        prediction_rows.append(
+            {
+                "audit_id": row["audit_id"],
+                "glitch_id": row["glitch_id"],
+                "split": "val",
+                "path": str(prediction),
+                "sha256": file_sha256(prediction),
+                "mask_key": "mask_probability",
+                "threshold": 0.5,
+                "checkpoint_selection_split": "val",
+                "threshold_selection_split": "val",
+                "model_path": str(model),
+                "model_sha256": file_sha256(model),
+                "config_path": str(config),
+                "config_sha256": file_sha256(config),
+                "checkpoint_selection_report_path": str(selection),
+                "checkpoint_selection_report_sha256": file_sha256(selection),
+                "threshold_selection_report_path": str(selection),
+                "threshold_selection_report_sha256": file_sha256(selection),
+            }
+        )
+    predictions = tmp_path / "predictions.jsonl"
+    predictions.write_text(
+        "".join(json.dumps(row) + "\n" for row in prediction_rows)
+    )
+    segmentation_path = tmp_path / "segmentation.json"
+    evaluate_gravityspy_mask_segmentation(
+        tmp_path / "gold" / "gravityspy_human_consensus_mask_report.json",
+        predictions,
+        segmentation_path,
+        bootstrap_replicates=100,
+        bootstrap_seed=7,
+    )
+
+    artifact_names = (
+        "source_background_receipt",
+        "background_plan_authorization",
+        "parent_plan",
+        "merge_report",
+        "paired_validation_comparison",
+        "mask_validation_receipt",
+        "mask_timing_receipt",
+        "raw_arm_merge",
+        "mask_arm_merge",
+        "raw_calibration",
+        "mask_calibration",
+    )
+    artifacts = {}
+    for name in artifact_names:
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"artifact": name}))
+        artifacts[name] = {"path": str(path), "sha256": file_sha256(path)}
+    raw_endpoint = tmp_path / "raw-mask-endpoint.json"
+    raw_endpoint.write_text(
+        json.dumps(
+            {
+                "status": "bound_validation_raw_mask_continuous_background_evidence",
+                "passed": True,
+                "mask_locked_test_arm_eligible": True,
+                "scientific_claim_allowed": False,
+                "locked_test_prerequisites_satisfied": False,
+                "test_rows_read": 0,
+                "code_commit": commit,
+                **{
+                    field: artifacts[field]
+                    for field in (
+                        "source_background_receipt",
+                        "background_plan_authorization",
+                        "parent_plan",
+                        "merge_report",
+                        "paired_validation_comparison",
+                        "mask_validation_receipt",
+                        "mask_timing_receipt",
+                    )
+                },
+                "arm_merges": {
+                    "raw": artifacts["raw_arm_merge"],
+                    "mask": artifacts["mask_arm_merge"],
+                },
+                "calibrations": {
+                    "raw": artifacts["raw_calibration"],
+                    "mask": artifacts["mask_calibration"],
+                },
+            }
+        )
+    )
+    passing_config = tmp_path / "passing-gate.yaml"
+    passing_config.write_text(
+        json.dumps(
+            {
+                "human_mask_publication_gate": {
+                    "schema": "human_mask_publication_gate_v1",
+                    "protocol": "frozen-before-results",
+                    "minimum_tasks": 2,
+                    "minimum_unique_glitches": 2,
+                    "minimum_labels": 1,
+                    "minimum_well_supported_labels": 1,
+                    "minimum_support_for_well_supported_label": 2,
+                    "minimum_bootstrap_replicates": 100,
+                    "minimum_macro_iou_lower_95": 0.9,
+                    "minimum_iou_ge_0_5_wilson_lower_95": 0.3,
+                    "require_validation_only": True,
+                    "require_three_blinded_independent_annotators": True,
+                    "require_complete_prediction_coverage": True,
+                }
+            }
+        )
+    )
+    bound = bind_raw_mask_human_consensus_publication_evidence(
+        raw_endpoint,
+        segmentation_path,
+        passing_config,
+        tmp_path / "bound.json",
+    )
+    assert bound["passed"] is True
+    assert bound["observed"] == {
+        "tasks": 2,
+        "unique_glitches": 2,
+        "labels": 1,
+        "well_supported_labels": 1,
+        "well_supported_label_names": ["Blip"],
+        "under_supported_labels": {},
+        "bootstrap_replicates": 100,
+        "macro_iou_lower_95": 1.0,
+        "iou_ge_0_5_wilson_lower_95": pytest.approx(0.3423802275),
+    }
+
+    failing_config = tmp_path / "failing-gate.yaml"
+    failed_gate = json.loads(passing_config.read_text())
+    failed_gate["human_mask_publication_gate"][
+        "minimum_iou_ge_0_5_wilson_lower_95"
+    ] = 0.5
+    failing_config.write_text(json.dumps(failed_gate))
+    failed = bind_raw_mask_human_consensus_publication_evidence(
+        raw_endpoint,
+        segmentation_path,
+        failing_config,
+        tmp_path / "failed.json",
+    )
+    assert failed["passed"] is False
+    assert failed["checks"]["minimum_iou_ge_0_5_wilson_lower_95"] is False
 
 
 def test_detector_set_champion_exports_gold_task_probabilities(tmp_path: Path) -> None:

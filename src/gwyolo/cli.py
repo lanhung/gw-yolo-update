@@ -172,6 +172,16 @@ def build_parser() -> argparse.ArgumentParser:
     raw_mask_endpoint_bind.add_argument("--raw-mask-background-receipt", required=True)
     raw_mask_endpoint_bind.add_argument("--output", required=True)
 
+    raw_mask_human_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-human-endpoint-bind"
+    )
+    raw_mask_human_endpoint_bind.add_argument("--raw-mask-endpoint", required=True)
+    raw_mask_human_endpoint_bind.add_argument(
+        "--human-mask-segmentation-report", required=True
+    )
+    raw_mask_human_endpoint_bind.add_argument("--gate-config", required=True)
+    raw_mask_human_endpoint_bind.add_argument("--output", required=True)
+
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
     candidate_search_frozen.add_argument("--test-time-slide-report", required=True)
@@ -2197,6 +2207,17 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             bind_raw_mask_background_to_authorized_validation_endpoint(
                 args.raw_mask_background_receipt,
+                args.output,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-human-endpoint-bind":
+        from .mask_audit import bind_raw_mask_human_consensus_publication_evidence
+
+        _print(
+            bind_raw_mask_human_consensus_publication_evidence(
+                args.raw_mask_endpoint,
+                args.human_mask_segmentation_report,
+                args.gate_config,
                 args.output,
             )
         )

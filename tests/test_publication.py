@@ -407,7 +407,7 @@ def test_official_validation_protocol_rejects_undersized_independent_endpoint(
     assert len(gate["artifact_replay"]) == 8
 
 
-def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
+def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
     tmp_path: Path,
 ) -> None:
     protocol = (
@@ -444,17 +444,15 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
 
     artifacts = {}
     for label in (
-        "source_receipt",
-        "authorization",
-        "parent_plan",
-        "merge_report",
-        "raw_arm_merge",
-        "mask_arm_merge",
-        "raw_calibration",
-        "mask_calibration",
-        "paired_comparison",
-        "mask_validation",
-        "mask_timing",
+        "raw_mask_endpoint",
+        "human_mask_segmentation",
+        "human_consensus_gold_report",
+        "human_consensus_gold_manifest",
+        "prediction_manifest",
+        "blinded_human_audit",
+        "annotation_manifest",
+        "task_manifest",
+        "gate_config",
     ):
         path = tmp_path / f"{label}.json"
         path.write_text(json.dumps({"label": label}), encoding="utf-8")
@@ -462,32 +460,26 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
     evidence.write_text(
         json.dumps(
             {
-                "status": "bound_validation_raw_mask_continuous_background_evidence",
+                "status": "bound_validation_raw_mask_human_consensus_evidence",
                 "passed": True,
                 "mask_locked_test_arm_eligible": True,
-                "validation_calibration_frozen": True,
-                "background_plan_authorization_id": "authorization-id",
-                "background_plan_purpose_disjoint": True,
-                "background_plan_capacity_authorized": True,
+                "functional_raw_mask_endpoint_passed": True,
+                "human_consensus_segmentation_passed": True,
+                "validation_only": True,
+                "checks": {
+                    "minimum_tasks": True,
+                    "minimum_unique_glitches": True,
+                    "minimum_labels": True,
+                    "minimum_well_supported_labels": True,
+                    "minimum_bootstrap_replicates": True,
+                    "minimum_macro_iou_lower_95": True,
+                    "minimum_iou_ge_0_5_wilson_lower_95": True,
+                },
                 "locked_test_prerequisites_satisfied": False,
                 "test_rows_read": 0,
                 "scientific_claim_allowed": False,
                 "code_commit": "new",
-                "source_background_receipt": artifacts["source_receipt"],
-                "background_plan_authorization": artifacts["authorization"],
-                "parent_plan": artifacts["parent_plan"],
-                "arm_merges": {
-                    "raw": artifacts["raw_arm_merge"],
-                    "mask": artifacts["mask_arm_merge"],
-                },
-                "merge_report": artifacts["merge_report"],
-                "calibrations": {
-                    "raw": artifacts["raw_calibration"],
-                    "mask": artifacts["mask_calibration"],
-                },
-                "paired_validation_comparison": artifacts["paired_comparison"],
-                "mask_validation_receipt": artifacts["mask_validation"],
-                "mask_timing_receipt": artifacts["mask_timing"],
+                **artifacts,
             }
         ),
         encoding="utf-8",
@@ -501,7 +493,7 @@ def test_official_validation_protocol_requires_authorized_raw_mask_receipt(
         row for row in passed["requirements"] if row["id"] == "paired_raw_mask_vt"
     )
     assert gate["state"] == "passed"
-    assert len(gate["artifact_replay"]) == 11
+    assert len(gate["artifact_replay"]) == 9
 
 
 def test_official_validation_protocol_requires_hard_endpoint_scaling_binding(

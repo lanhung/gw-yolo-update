@@ -657,6 +657,23 @@ produce macro and pooled precision, recall, IoU and Dice; paired task bootstrap 
 IoU>=0.5 Wilson interval are reported overall and by glitch family. These remain validation promotion
 evidence only. Search, deglitch and locked-test claims require their separate predeclared endpoints.
 
+The publication ledger additionally requires
+`candidate-search-raw-mask-human-endpoint-bind`. The frozen
+`configs/human_mask_publication_gate.yaml` was committed before human-consensus segmentation
+results exist. It requires at least 90 unique validation glitches, at least 15 represented labels,
+at least 15 labels with three or more audited examples, 10,000 task bootstraps, macro-IoU lower 95%
+bound at least 0.35 and an IoU>=0.5 Wilson lower bound at least 0.40. Under-supported rare labels are
+retained and reported but cannot support a family-specific claim. The binder independently replays
+the complete raw/mask endpoint, blinded tasks and annotations, recomputes the human consensus,
+rehashes every gold and prediction mask and binds the frozen gate config. A continuous-background
+gain without this human-consensus endpoint is diagnostic only and cannot satisfy the paper ledger.
+
+`freeze_human_mask_publication_audit.sh` produces the annotator-facing blinded package, while
+`run_human_mask_publication_evidence.sh` automates audit evaluation, consensus materialization,
+model prediction, 10,000-bootstrap segmentation evaluation and final endpoint binding after three
+independent human annotations per task are available. Human annotations are intentionally not
+fabricated or replaced by model pseudo-labels.
+
 ## Group-safe chirp+glitch overlap scaling curve
 
 The aligned detector-set corpus now has its own scaling experiment; the earlier 2k/5k/10k clean

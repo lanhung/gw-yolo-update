@@ -979,3 +979,306 @@ def evaluate_gravityspy_mask_segmentation(
     }
     atomic_write_json(output, result)
     return result
+
+
+def bind_raw_mask_human_consensus_publication_evidence(
+    raw_mask_endpoint_path: str | Path,
+    segmentation_report_path: str | Path,
+    gate_config_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind functional raw/mask evidence to a frozen human-consensus mask gate."""
+
+    output = Path(output_path).resolve()
+    if output.exists():
+        raise FileExistsError("human-consensus raw/mask endpoint bindings are immutable")
+
+    def replay_json(path_value: str | Path, label: str) -> tuple[Path, dict[str, Any]]:
+        path = Path(path_value).resolve()
+        if not path.is_file():
+            raise ValueError(f"human-consensus binding lacks {label}")
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    def replay_identity(
+        identity: dict[str, Any], label: str
+    ) -> tuple[Path, dict[str, Any]]:
+        path, report = replay_json(str(identity.get("path", "")), label)
+        if str(identity.get("sha256", "")) != file_sha256(path):
+            raise ValueError(f"human-consensus {label} hash mismatch")
+        return path, report
+
+    raw_path, raw = replay_json(raw_mask_endpoint_path, "raw/mask endpoint")
+    if (
+        raw.get("status")
+        != "bound_validation_raw_mask_continuous_background_evidence"
+        or raw.get("passed") is not True
+        or raw.get("mask_locked_test_arm_eligible") is not True
+        or raw.get("scientific_claim_allowed") is not False
+        or raw.get("locked_test_prerequisites_satisfied") is not False
+        or int(raw.get("test_rows_read", -1)) != 0
+        or len(str(raw.get("code_commit", ""))) not in {40, 64}
+    ):
+        raise ValueError("human-consensus binding requires a passing validation raw/mask endpoint")
+    raw_replay_fields = (
+        "source_background_receipt",
+        "background_plan_authorization",
+        "parent_plan",
+        "merge_report",
+        "paired_validation_comparison",
+        "mask_validation_receipt",
+        "mask_timing_receipt",
+    )
+    for field in raw_replay_fields:
+        replay_identity(raw.get(field, {}), f"raw/mask {field}")
+    for arm in ("raw", "mask"):
+        replay_identity(raw.get("arm_merges", {}).get(arm, {}), f"{arm} arm merge")
+        replay_identity(raw.get("calibrations", {}).get(arm, {}), f"{arm} calibration")
+
+    segmentation_path, segmentation = replay_json(
+        segmentation_report_path, "human mask segmentation report"
+    )
+    config_path = Path(gate_config_path).resolve()
+    config = load_yaml(config_path)
+    gate = config.get("human_mask_publication_gate")
+    if not isinstance(gate, dict) or gate.get("schema") != "human_mask_publication_gate_v1":
+        raise ValueError("human mask publication gate config has the wrong schema")
+    integer_fields = (
+        "minimum_tasks",
+        "minimum_unique_glitches",
+        "minimum_labels",
+        "minimum_well_supported_labels",
+        "minimum_support_for_well_supported_label",
+        "minimum_bootstrap_replicates",
+    )
+    if any(int(gate.get(field, 0)) <= 0 for field in integer_fields):
+        raise ValueError("human mask publication gate requires positive count thresholds")
+    minimum_macro_iou_lower = float(gate.get("minimum_macro_iou_lower_95", -1))
+    minimum_iou_success_lower = float(
+        gate.get("minimum_iou_ge_0_5_wilson_lower_95", -1)
+    )
+    if not 0 <= minimum_macro_iou_lower <= 1 or not 0 <= minimum_iou_success_lower <= 1:
+        raise ValueError("human mask publication metric thresholds must lie in [0,1]")
+    if any(
+        gate.get(field) is not True
+        for field in (
+            "require_validation_only",
+            "require_three_blinded_independent_annotators",
+            "require_complete_prediction_coverage",
+        )
+    ):
+        raise ValueError("human mask publication gate cannot relax required safeguards")
+
+    if (
+        segmentation.get("status")
+        != "completed_validation_human_consensus_mask_segmentation"
+        or segmentation.get("promotion_evidence_allowed") is not True
+        or segmentation.get("scientific_claim_allowed") is not False
+        or segmentation.get("test_evaluation") is not False
+        or len(str(segmentation.get("code_commit", ""))) not in {40, 64}
+        or not str(segmentation.get("exact_command", ""))
+    ):
+        raise ValueError("human mask segmentation report has the wrong validation contract")
+    gold_path, gold = replay_json(
+        str(segmentation.get("gold_report_path", "")), "human consensus gold report"
+    )
+    if str(segmentation.get("gold_report_sha256", "")) != file_sha256(gold_path):
+        raise ValueError("human consensus gold report hash mismatch")
+    gold_manifest = Path(str(gold.get("manifest_path", ""))).resolve()
+    prediction_manifest = Path(
+        str(segmentation.get("prediction_manifest_path", ""))
+    ).resolve()
+    if (
+        gold.get("status") != "verified_gravityspy_human_consensus_mask_bank"
+        or gold.get("training_allowed") is not False
+        or not gold_manifest.is_file()
+        or str(gold.get("manifest_sha256", "")) != file_sha256(gold_manifest)
+        or str(segmentation.get("gold_manifest_sha256", ""))
+        != file_sha256(gold_manifest)
+        or not prediction_manifest.is_file()
+        or str(segmentation.get("prediction_manifest_sha256", ""))
+        != file_sha256(prediction_manifest)
+    ):
+        raise ValueError("human-consensus mask manifests failed replay")
+    audit_path, audit = replay_json(
+        str(gold.get("audit_report_path", "")), "blinded human mask audit"
+    )
+    if (
+        str(gold.get("audit_report_sha256", "")) != file_sha256(audit_path)
+        or audit.get("status") != "completed_blinded_gravityspy_human_mask_audit"
+    ):
+        raise ValueError("blinded human mask audit failed replay")
+    task_manifest = Path(str(gold.get("task_manifest_path", ""))).resolve()
+    annotation_manifest = Path(str(gold.get("annotation_manifest_path", ""))).resolve()
+    if (
+        not task_manifest.is_file()
+        or not annotation_manifest.is_file()
+        or str(gold.get("task_manifest_sha256", "")) != file_sha256(task_manifest)
+        or str(gold.get("annotation_manifest_sha256", ""))
+        != file_sha256(annotation_manifest)
+        or str(audit.get("task_manifest_sha256", "")) != file_sha256(task_manifest)
+        or str(audit.get("annotation_manifest_sha256", ""))
+        != file_sha256(annotation_manifest)
+    ):
+        raise ValueError("blinded human mask task or annotation manifest failed replay")
+
+    task_by_id, annotations_by_task = _validated_mask_audit_inputs(
+        task_manifest, annotation_manifest
+    )
+    recomputed, _ = _mask_audit_consensus_records(task_by_id, annotations_by_task)
+    if (
+        audit.get("evaluated_tasks") != recomputed
+        or int(audit.get("tasks", -1)) != len(recomputed)
+    ):
+        raise ValueError("blinded human mask audit metrics failed recomputation")
+    with gold_manifest.open("r", encoding="utf-8") as handle:
+        gold_rows = [json.loads(line) for line in handle if line.strip()]
+    with prediction_manifest.open("r", encoding="utf-8") as handle:
+        prediction_rows = [json.loads(line) for line in handle if line.strip()]
+    gold_ids = {str(row.get("audit_id", "")) for row in gold_rows}
+    prediction_ids = {str(row.get("audit_id", "")) for row in prediction_rows}
+    if (
+        len(gold_ids) != len(gold_rows)
+        or len(prediction_ids) != len(prediction_rows)
+        or gold_ids != set(task_by_id)
+        or prediction_ids != gold_ids
+        or any(
+            row.get("split") != "val"
+            or row.get("training_allowed") is not False
+            or row.get("human_pixel_mask") is not True
+            or not Path(str(row.get("path", ""))).is_file()
+            or str(row.get("sha256", "")) != file_sha256(row["path"])
+            for row in gold_rows
+        )
+        or any(
+            row.get("split") != "val"
+            or not Path(str(row.get("path", ""))).is_file()
+            or str(row.get("sha256", "")) != file_sha256(row["path"])
+            for row in prediction_rows
+        )
+    ):
+        raise ValueError("human-consensus prediction coverage or row artifacts failed replay")
+
+    tasks = int(segmentation.get("tasks", -1))
+    unique_glitches = len({str(row.get("glitch_id", "")) for row in gold_rows})
+    labels = gold.get("labels", {})
+    if not isinstance(labels, dict):
+        raise ValueError("human consensus gold report lacks label counts")
+    label_support = {str(label): int(value) for label, value in labels.items()}
+    support_floor = int(gate["minimum_support_for_well_supported_label"])
+    well_supported_labels = sorted(
+        label for label, count in label_support.items() if count >= support_floor
+    )
+    under_supported_labels = {
+        label: count for label, count in label_support.items() if count < support_floor
+    }
+    bootstrap_replicates = int(segmentation.get("bootstrap_replicates", -1))
+    iou_interval = (
+        segmentation.get("overall", {})
+        .get("macro_paired_task_bootstrap_95", {})
+        .get("iou", [None, None])
+    )
+    iou_success_interval = segmentation.get("overall", {}).get(
+        "iou_ge_0_5_wilson_95", [None, None]
+    )
+    if (
+        tasks != len(gold_rows)
+        or tasks != int(gold.get("tasks", -1))
+        or tasks != len(recomputed)
+        or not isinstance(iou_interval, list)
+        or len(iou_interval) != 2
+        or iou_interval[0] is None
+        or not isinstance(iou_success_interval, list)
+        or len(iou_success_interval) != 2
+        or iou_success_interval[0] is None
+    ):
+        raise ValueError("human mask segmentation metric inventory is incomplete")
+    observed = {
+        "tasks": tasks,
+        "unique_glitches": unique_glitches,
+        "labels": len(labels),
+        "well_supported_labels": len(well_supported_labels),
+        "well_supported_label_names": well_supported_labels,
+        "under_supported_labels": under_supported_labels,
+        "bootstrap_replicates": bootstrap_replicates,
+        "macro_iou_lower_95": float(iou_interval[0]),
+        "iou_ge_0_5_wilson_lower_95": float(iou_success_interval[0]),
+    }
+    checks = {
+        "minimum_tasks": observed["tasks"] >= int(gate["minimum_tasks"]),
+        "minimum_unique_glitches": observed["unique_glitches"]
+        >= int(gate["minimum_unique_glitches"]),
+        "minimum_labels": observed["labels"] >= int(gate["minimum_labels"]),
+        "minimum_well_supported_labels": observed["well_supported_labels"]
+        >= int(gate["minimum_well_supported_labels"]),
+        "minimum_bootstrap_replicates": observed["bootstrap_replicates"]
+        >= int(gate["minimum_bootstrap_replicates"]),
+        "minimum_macro_iou_lower_95": observed["macro_iou_lower_95"]
+        >= minimum_macro_iou_lower,
+        "minimum_iou_ge_0_5_wilson_lower_95": observed[
+            "iou_ge_0_5_wilson_lower_95"
+        ]
+        >= minimum_iou_success_lower,
+    }
+    passed = all(checks.values())
+    result = {
+        "status": "bound_validation_raw_mask_human_consensus_evidence",
+        "passed": passed,
+        "mask_locked_test_arm_eligible": passed,
+        "functional_raw_mask_endpoint_passed": True,
+        "human_consensus_segmentation_passed": passed,
+        "validation_only": True,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "locked_test_prerequisites_satisfied": False,
+        "scientific_claim_allowed": False,
+        "gate_config_hash": canonical_hash(config),
+        "gate_config": {
+            "path": str(config_path),
+            "sha256": file_sha256(config_path),
+        },
+        "thresholds": gate,
+        "observed": observed,
+        "checks": checks,
+        "raw_mask_endpoint": {
+            "path": str(raw_path),
+            "sha256": file_sha256(raw_path),
+        },
+        "human_mask_segmentation": {
+            "path": str(segmentation_path),
+            "sha256": file_sha256(segmentation_path),
+        },
+        "human_consensus_gold_report": {
+            "path": str(gold_path),
+            "sha256": file_sha256(gold_path),
+        },
+        "human_consensus_gold_manifest": {
+            "path": str(gold_manifest),
+            "sha256": file_sha256(gold_manifest),
+        },
+        "prediction_manifest": {
+            "path": str(prediction_manifest),
+            "sha256": file_sha256(prediction_manifest),
+        },
+        "blinded_human_audit": {
+            "path": str(audit_path),
+            "sha256": file_sha256(audit_path),
+        },
+        "annotation_manifest": {
+            "path": str(annotation_manifest),
+            "sha256": file_sha256(annotation_manifest),
+        },
+        "task_manifest": {
+            "path": str(task_manifest),
+            "sha256": file_sha256(task_manifest),
+        },
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+        "environment": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
+    }
+    atomic_write_json(output, result)
+    return result
