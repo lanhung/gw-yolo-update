@@ -19,6 +19,9 @@ from gwyolo.pe import (
     promote_pe_robustness_validation,
     run_joint_pe_robustness_evaluation,
     run_locked_joint_pe_robustness_evaluation,
+    run_locked_paired_pe_robustness_portfolio,
+    run_pe_robustness_evaluation,
+    run_within_backend_pe_robustness_portfolio,
     sky_area_estimator_identity,
     validate_paired_pe_latency,
 )
@@ -436,6 +439,138 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
     assert promotion["promote_to_locked_test"] is True
     assert promotion["scientific_claim_allowed"] is False
 
+    portfolio_batches = {}
+    portfolio_robustness = {}
+    for backend, status, prior, waveform in (
+        (
+            "DINGO",
+            "real_dingo_official_native_paired_robustness_batch_complete",
+            "dingo-native-prior",
+            "SEOBNRv5PHM",
+        ),
+        (
+            "AMPLFI",
+            "real_amplfi_common_batch_complete",
+            "amplfi-native-prior",
+            "ml4gw.waveforms.IMRPhenomPv2",
+        ),
+    ):
+        selected = []
+        for source in rows:
+            if source["backend"] != backend:
+                continue
+            row = dict(source)
+            row["prior_hash"] = prior
+            row["waveform_approximant"] = waveform
+            selected.append(row)
+        manifest = tmp_path / f"{backend.lower()}-portfolio.jsonl"
+        manifest.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+            encoding="utf-8",
+        )
+        batch = tmp_path / f"{backend.lower()}-portfolio-batch.json"
+        batch.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "rows": len(selected),
+                    "paired_injections": 1,
+                    "manifest_path": str(manifest),
+                    "manifest_sha256": file_sha256(manifest),
+                    "run_identity": {"required_split": "val"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        robustness = tmp_path / f"{backend.lower()}-within.json"
+        run_pe_robustness_evaluation(
+            manifest,
+            robustness,
+            credible_level=0.8,
+            bootstrap_replicates=20,
+            require_publication_provenance=True,
+            require_cross_backend_join=False,
+        )
+        portfolio_batches[backend] = batch
+        portfolio_robustness[backend] = robustness
+    portfolio = run_within_backend_pe_robustness_portfolio(
+        portfolio_batches["DINGO"],
+        portfolio_robustness["DINGO"],
+        portfolio_batches["AMPLFI"],
+        portfolio_robustness["AMPLFI"],
+        tmp_path / "portfolio.jsonl",
+        tmp_path / "portfolio.json",
+        credible_level=0.8,
+        bootstrap_replicates=20,
+    )
+    assert portfolio["comparison_scope"] == "matched_event_within_backend_deltas_only"
+    assert portfolio["absolute_cross_backend_comparison_allowed"] is False
+    assert portfolio["matched_event_gate"] is True
+    assert portfolio["native_prior_hashes_equal"] is False
+    assert portfolio["native_waveform_assumptions_equal"] is False
+    portfolio_promotion = promote_pe_robustness_validation(
+        tmp_path / "portfolio.json",
+        promotion_config,
+        tmp_path / "portfolio-promotion.json",
+    )
+    assert portfolio_promotion["passed"] is True
+    assert (
+        portfolio_promotion["evidence_mode"]
+        == "matched_event_within_backend_portfolio"
+    )
+    assert portfolio_promotion["absolute_cross_backend_comparison_allowed"] is False
+
+    amplfi_portfolio_manifest = tmp_path / "amplfi-portfolio.jsonl"
+    mismatched_rows = [
+        json.loads(line)
+        for line in amplfi_portfolio_manifest.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    mismatched_row = next(
+        row for row in mismatched_rows if row["condition"] == "contaminated"
+    )
+    mismatched_row["analysis_input_path"] = str(files["other"])
+    mismatched_row["analysis_input_sha256"] = file_sha256(files["other"])
+    mismatched_manifest = tmp_path / "amplfi-portfolio-mismatched.jsonl"
+    mismatched_manifest.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in mismatched_rows),
+        encoding="utf-8",
+    )
+    mismatched_batch = tmp_path / "amplfi-portfolio-mismatched-batch.json"
+    mismatched_batch.write_text(
+        json.dumps(
+            {
+                "status": "real_amplfi_common_batch_complete",
+                "rows": 3,
+                "paired_injections": 1,
+                "manifest_path": str(mismatched_manifest),
+                "manifest_sha256": file_sha256(mismatched_manifest),
+                "run_identity": {"required_split": "val"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mismatched_robustness = tmp_path / "amplfi-portfolio-mismatched-within.json"
+    run_pe_robustness_evaluation(
+        mismatched_manifest,
+        mismatched_robustness,
+        credible_level=0.8,
+        bootstrap_replicates=20,
+        require_publication_provenance=True,
+        require_cross_backend_join=False,
+    )
+    with pytest.raises(ValueError, match="source event differs across backends"):
+        run_within_backend_pe_robustness_portfolio(
+            portfolio_batches["DINGO"],
+            portfolio_robustness["DINGO"],
+            mismatched_batch,
+            mismatched_robustness,
+            tmp_path / "mismatched-portfolio.jsonl",
+            tmp_path / "mismatched-portfolio.json",
+            credible_level=0.8,
+            bootstrap_replicates=20,
+        )
+
     locked_endpoints = {
         "minimum_paired_pe_injections": 1,
         "pe_credible_level": 0.8,
@@ -523,6 +658,88 @@ def test_publication_pe_requires_cross_backend_matched_inputs_and_lineage(
     assert locked_joint["identical_priors"] is True
     assert locked_joint["identical_waveform_assumptions"] is True
     assert set(locked_joint["coverage"]) == {"DINGO", "AMPLFI"}
+
+    def portfolio_locked_binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(Path(output_path).resolve()),
+            "endpoints": locked_endpoints,
+            "frozen_artifacts": {
+                "validation_pe_promotion": {
+                    "path": str((tmp_path / "portfolio-promotion.json").resolve()),
+                    "sha256": file_sha256(tmp_path / "portfolio-promotion.json"),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access",
+        portfolio_locked_binding,
+    )
+    portfolio_locked_reports = {}
+    for backend, status in (
+        (
+            "DINGO",
+            "real_dingo_official_native_paired_robustness_batch_complete",
+        ),
+        ("AMPLFI", "real_amplfi_common_batch_complete"),
+    ):
+        validation_manifest = tmp_path / f"{backend.lower()}-portfolio.jsonl"
+        validation_rows = [
+            json.loads(line)
+            for line in validation_manifest.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        locked_rows = [
+            {
+                **row,
+                "injection_id": "test-portfolio-i-1",
+                "split": "test",
+                "source_event_hash": "test-portfolio-event-hash",
+            }
+            for row in validation_rows
+        ]
+        locked_manifest = tmp_path / f"{backend.lower()}-portfolio-locked.jsonl"
+        locked_manifest.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in locked_rows),
+            encoding="utf-8",
+        )
+        source_batch = tmp_path / f"{backend.lower()}-portfolio-locked-source.json"
+        source_batch.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "rows": 3,
+                    "paired_injections": 1,
+                    "manifest_path": str(locked_manifest),
+                    "manifest_sha256": file_sha256(locked_manifest),
+                }
+            ),
+            encoding="utf-8",
+        )
+        locked_report = tmp_path / f"{backend.lower()}-portfolio-locked-binding.json"
+        bind_locked_pe_backend_batch(
+            backend,
+            source_batch,
+            tmp_path / "portfolio-promotion.json",
+            tmp_path / "suite-plan.json",
+            tmp_path / "access.json",
+            locked_report,
+        )
+        portfolio_locked_reports[backend] = locked_report
+    locked_portfolio = run_locked_paired_pe_robustness_portfolio(
+        portfolio_locked_reports["DINGO"],
+        portfolio_locked_reports["AMPLFI"],
+        tmp_path / "portfolio-promotion.json",
+        tmp_path / "suite-plan.json",
+        tmp_path / "access.json",
+        tmp_path / "locked-portfolio.json",
+    )
+    assert locked_portfolio["status"] == "locked_paired_pe_robustness_portfolio_complete"
+    assert locked_portfolio["paired_injections"] == 1
+    assert locked_portfolio["absolute_cross_backend_comparison_allowed"] is False
+    assert locked_portfolio["matched_event_gate"] is True
+    assert set(locked_portfolio["coverage"]) == {"DINGO", "AMPLFI"}
 
     promotion_config.write_text(
         promotion_config.read_text(encoding="utf-8").replace(

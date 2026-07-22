@@ -1,6 +1,6 @@
 locked_evaluation_suite:
-  schema: locked_suite_v1
-  corpus_label: GWTC-5.0_O4b_locked_suite_v1
+  schema: locked_suite_v2
+  corpus_label: GWTC-5.0_O4b_locked_suite_v2
   required_split: test
   observing_runs: [O4b]
   catalog_release: GWTC-5.0
@@ -25,7 +25,7 @@ locked_evaluation_suite:
     locked_ood_transfer: robustness/locked_ood_transfer.json
     dingo_batch: pe/dingo_locked_batch_report.json
     amplfi_batch: pe/amplfi_locked_batch_report.json
-    joint_pe: pe/locked_joint_pe_report.json
+    paired_pe_portfolio: pe/locked_paired_pe_portfolio.json
     catalog_diagnostic: catalog/gwtc5_frozen_threshold_diagnostic.json
     suite_receipt: locked_suite_receipt.json
 

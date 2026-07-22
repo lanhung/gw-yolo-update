@@ -24,7 +24,7 @@ _LOCKED_SUITE_OUTPUT_KEYS = {
     "locked_ood_transfer",
     "dingo_batch",
     "amplfi_batch",
-    "joint_pe",
+    "paired_pe_portfolio",
     "catalog_diagnostic",
     "suite_receipt",
 }
@@ -85,8 +85,8 @@ def freeze_locked_evaluation_suite_plan(
         raise ValueError("Locked suite requires a complete validation-freeze evidence audit")
     config = load_yaml(config_path)
     settings = config.get("locked_evaluation_suite")
-    if not isinstance(settings, dict) or settings.get("schema") != "locked_suite_v1":
-        raise ValueError("Configuration requires locked_evaluation_suite schema v1")
+    if not isinstance(settings, dict) or settings.get("schema") != "locked_suite_v2":
+        raise ValueError("Configuration requires locked_evaluation_suite schema v2")
     if str(settings.get("required_split")) != "test":
         raise ValueError("Locked evaluation suite must use the test split")
     if settings.get("observing_runs") != ["O4b"]:
@@ -315,7 +315,7 @@ def finalize_locked_evaluation_suite_receipt(
         "locked_ood_transfer": "locked_detector_set_ood_transfer_evaluation",
         "dingo_batch": "locked_dingo_paired_pe_batch_complete",
         "amplfi_batch": "locked_amplfi_paired_pe_batch_complete",
-        "joint_pe": "locked_joint_paired_pe_complete",
+        "paired_pe_portfolio": "locked_paired_pe_robustness_portfolio_complete",
         "catalog_diagnostic": "locked_gwtc5_catalog_diagnostic",
     }
     expected_inputs = {

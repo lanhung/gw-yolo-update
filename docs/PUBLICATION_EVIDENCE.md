@@ -10,7 +10,8 @@ The validation-freeze protocol is
 [`configs/publication_validation_evidence.yaml`](../configs/publication_validation_evidence.yaml).
 It covers the source-safe aligned corpus, purpose-disjoint endpoint, five-seed model, paired
 fixed-epoch/fixed-update scaling curve, continuous candidate calibration, paired raw/mask
-`<VT>`, calibration perturbations, detector-set OOD/run transfer, paired DINGO/AMPLFI PE and the
+`<VT>`, calibration perturbations, detector-set OOD/run transfer, matched-event within-backend
+DINGO/AMPLFI PE portfolio and the
 still-unopened locked corpus. Missing bindings remain `pending`; malformed reports, failed
 predicates and changed replay artifacts become `failed`.
 
@@ -56,7 +57,8 @@ interpretation can support a paper claim; the aggregation utility cannot authori
 The final protocol is now predeclared in
 [`configs/publication_locked_final_evidence.yaml`](../configs/publication_locked_final_evidence.yaml).
 It requires nine artifacts: the frozen suite plan, exclusive access receipt, raw and mask search
-arms, paired fixed-FAR `<VT>` result, OOD transfer, joint DINGO/AMPLFI PE, catalog diagnostic and
+arms, paired fixed-FAR `<VT>` result, OOD transfer, locked DINGO/AMPLFI within-backend PE portfolio,
+catalog diagnostic and
 the final all-output hash receipt. A non-significant or negative paired result is still a valid
 completed endpoint and is retained; it cannot be replaced by a new threshold or omitted from the
 ledger.

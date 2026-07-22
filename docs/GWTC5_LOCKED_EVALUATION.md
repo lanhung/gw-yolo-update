@@ -44,7 +44,8 @@ Secondary locked endpoints are:
 - BBH strata spanning 2.5--200 solar masses, 10/35-solar-mass features, unequal high-mass systems,
   high-spin/precessing stress cases, BNS and NSBH transfer;
 - latency, GPU/CPU throughput, calibration and OOD/failure flags;
-- AMPLFI/DINGO posterior coverage, width, bias and end-to-end latency on identical raw/cleaned events;
+- AMPLFI/DINGO within-backend posterior coverage, width, bias and end-to-end latency changes on
+  identical raw/cleaned events, without an absolute backend ranking when native priors differ;
 - glitch-overlap recovery, removed glitch energy and injected-chirp projection retention.
 
 Candidate recovery is descriptive. It cannot replace background exposure or injection sensitivity,
@@ -106,11 +107,13 @@ threshold. The resumable wrapper is
 [`scripts/run_locked_catalog_endpoint.sh`](../scripts/run_locked_catalog_endpoint.sh).
 
 For PE, `pe-backend-bind-locked` accepts completed DINGO or AMPLFI test batches only after the
-validation promotion report passes. It requires the locked batch to preserve the validation-fixed
-backend version, model, prior, waveform, detector set, calibration, hardware, latency scope and
-sky-area estimator. `pe-robustness-joint-evaluate-locked` then requires identical test injection
-triplets in both backends and evaluates coverage, bias, posterior width, sky area, effective sample
-rate and latency with the suite's frozen credible level and bootstrap seed. The resumable wrapper is
+matched-event portfolio promotion report passes. It requires each locked batch to preserve its own
+validation-fixed backend version, model, prior, waveform, detector set, calibration, hardware,
+latency scope and sky-area estimator. `pe-robustness-portfolio-evaluate-locked` then requires
+identical test injection triplets and common source bytes/truth across both backends, while computing
+coverage, bias, posterior width, sky area, effective-sample rate and latency changes separately
+inside each fixed backend. Its output permanently forbids an absolute DINGO/AMPLFI ranking. The
+resumable wrapper is
 [`scripts/run_locked_pe_endpoints.sh`](../scripts/run_locked_pe_endpoints.sh).
 
 ## Promotion decision

@@ -1216,6 +1216,238 @@ def run_joint_pe_robustness_evaluation(
     return report
 
 
+def run_within_backend_pe_robustness_portfolio(
+    dingo_batch_report_path: str | Path,
+    dingo_robustness_report_path: str | Path,
+    amplfi_batch_report_path: str | Path,
+    amplfi_robustness_report_path: str | Path,
+    manifest_output_path: str | Path,
+    output_path: str | Path,
+    credible_level: float = 0.9,
+    bootstrap_replicates: int = 10000,
+    bootstrap_seed: int = 20260721,
+    required_split: str = "val",
+) -> dict[str, Any]:
+    """Join matched events while retaining only within-backend PE deltas.
+
+    This path is intentionally distinct from an absolute DINGO/AMPLFI comparison:
+    each backend keeps one fixed native prior and waveform across clean,
+    contaminated and mask-conditioned conditions, while source events and truths
+    must match across backends.
+    """
+
+    if required_split not in {"val", "test"}:
+        raise ValueError("PE portfolio split must be val or test")
+    if bootstrap_replicates < 1:
+        raise ValueError("PE portfolio bootstrap count must be positive")
+    specifications = {
+        "DINGO": {
+            "batch": Path(dingo_batch_report_path).resolve(),
+            "robustness": Path(dingo_robustness_report_path).resolve(),
+            "batch_statuses": {
+                "real_dingo_common_batch_complete",
+                "real_dingo_official_native_paired_robustness_batch_complete",
+            },
+        },
+        "AMPLFI": {
+            "batch": Path(amplfi_batch_report_path).resolve(),
+            "robustness": Path(amplfi_robustness_report_path).resolve(),
+            "batch_statuses": {"real_amplfi_common_batch_complete"},
+        },
+    }
+    source_batch_reports: dict[str, Any] = {}
+    source_within_reports: dict[str, Any] = {}
+    backend_rows: dict[str, list[dict[str, Any]]] = {}
+    backend_evaluations: dict[str, dict[str, Any]] = {}
+    backend_keys: dict[str, set[tuple[str, str]]] = {}
+    backend_identities: dict[str, Any] = {}
+    for backend, specification in specifications.items():
+        batch_path = specification["batch"]
+        robustness_path = specification["robustness"]
+        if not batch_path.is_file() or not robustness_path.is_file():
+            raise FileNotFoundError(f"{backend} PE portfolio source report is absent")
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        robustness = json.loads(robustness_path.read_text(encoding="utf-8"))
+        manifest = Path(str(batch.get("manifest_path", ""))).resolve()
+        if (
+            batch.get("status") not in specification["batch_statuses"]
+            or batch.get("run_identity", {}).get("required_split") != required_split
+            or not manifest.is_file()
+            or batch.get("manifest_sha256") != file_sha256(manifest)
+            or robustness.get("status") != "paired_pe_contamination_mask_robustness"
+            or robustness.get("comparison_scope") != "strict_within_backend_paired"
+            or robustness.get("within_backend_provenance_gate") is not True
+            or robustness.get("cross_backend_matched_input_gate") is not False
+            or robustness.get("dingo_amplfi_joint_gate") is not False
+            or robustness.get("publication_provenance_required") is not True
+            or Path(str(robustness.get("manifest_path", ""))).resolve() != manifest
+            or robustness.get("manifest_sha256") != file_sha256(manifest)
+        ):
+            raise ValueError(f"{backend} strict within-backend evidence failed replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if (
+            not rows
+            or len(rows) != int(batch.get("rows", -1))
+            or any(str(row.get("backend", "")).upper() != backend for row in rows)
+            or any(str(row.get("split")) != required_split for row in rows)
+        ):
+            raise ValueError(f"{backend} PE portfolio manifest identity failed")
+        keys = {
+            (str(row.get("injection_id", "")), str(row.get("condition", "")))
+            for row in rows
+        }
+        injections = {injection for injection, _ in keys}
+        expected_keys = {
+            (injection, condition)
+            for injection in injections
+            for condition in ROBUSTNESS_CONDITIONS
+        }
+        if (
+            not injections
+            or keys != expected_keys
+            or len(keys) != len(rows)
+            or len(injections) != int(batch.get("paired_injections", -1))
+        ):
+            raise ValueError(f"{backend} PE portfolio lacks complete unique triplets")
+        evaluation = evaluate_pe_robustness_rows(
+            rows,
+            credible_level,
+            bootstrap_replicates,
+            bootstrap_seed,
+            True,
+            False,
+        )
+        prior_hashes = {str(row["prior_hash"]) for row in rows}
+        waveforms = {str(row["waveform_approximant"]) for row in rows}
+        model_hashes = {str(row["backend_model_hash"]) for row in rows}
+        detector_sets = {
+            json.dumps(row["detector_set"], sort_keys=True) for row in rows
+        }
+        if any(len(values) != 1 for values in (prior_hashes, waveforms, model_hashes, detector_sets)):
+            raise ValueError(f"{backend} model/prior/waveform identity changes within portfolio")
+        backend_rows[backend] = rows
+        backend_evaluations[backend] = evaluation
+        backend_keys[backend] = keys
+        backend_identities[backend] = {
+            "prior_hash": next(iter(prior_hashes)),
+            "waveform_approximant": next(iter(waveforms)),
+            "backend_model_hash": next(iter(model_hashes)),
+            "detector_set": json.loads(next(iter(detector_sets))),
+        }
+        source_batch_reports[backend] = {
+            "path": str(batch_path),
+            "sha256": file_sha256(batch_path),
+            "manifest_path": str(manifest),
+            "manifest_sha256": file_sha256(manifest),
+        }
+        source_within_reports[backend] = {
+            "path": str(robustness_path),
+            "sha256": file_sha256(robustness_path),
+        }
+
+    if backend_keys["DINGO"] != backend_keys["AMPLFI"]:
+        raise ValueError("PE portfolio backends use different injection conditions")
+    shared_fields = (
+        "source_event_hash",
+        "analysis_input_sha256",
+        "base_injection_manifest_sha256",
+        "input_sample_rate_hz",
+        "input_duration_seconds",
+        "input_post_trigger_seconds",
+        "input_ifos",
+        "truth",
+    )
+    by_backend = {
+        backend: {
+            (str(row["injection_id"]), str(row["condition"])): row for row in rows
+        }
+        for backend, rows in backend_rows.items()
+    }
+    for key in sorted(backend_keys["DINGO"]):
+        dingo = by_backend["DINGO"][key]
+        amplfi = by_backend["AMPLFI"][key]
+        inconsistent = [field for field in shared_fields if dingo.get(field) != amplfi.get(field)]
+        if inconsistent:
+            raise ValueError(
+                f"PE portfolio source event differs across backends for {key}: {inconsistent}"
+            )
+
+    condition_order = {condition: index for index, condition in enumerate(ROBUSTNESS_CONDITIONS)}
+    combined_rows = sorted(
+        backend_rows["DINGO"] + backend_rows["AMPLFI"],
+        key=lambda row: (
+            str(row["injection_id"]),
+            condition_order[str(row["condition"])],
+            str(row["backend"]).upper(),
+        ),
+    )
+    manifest_output = Path(manifest_output_path).resolve()
+    report_output = Path(output_path).resolve()
+    protected = {
+        value[field]
+        for value in source_batch_reports.values()
+        for field in ("path", "manifest_path")
+    } | {value["path"] for value in source_within_reports.values()}
+    if str(manifest_output) in protected or str(report_output) in protected:
+        raise ValueError("PE portfolio outputs may not overwrite source evidence")
+    if manifest_output == report_output:
+        raise ValueError("PE portfolio manifest and report outputs must be distinct")
+    atomic_write_text(
+        manifest_output,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in combined_rows),
+    )
+    common_ids = sorted({injection for injection, _ in backend_keys["DINGO"]})
+    result = {
+        "status": "paired_dingo_amplfi_within_backend_portfolio_complete",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "this matched-event portfolio measures only within-backend condition deltas; "
+            "it cannot rank absolute DINGO versus AMPLFI posterior performance"
+        ),
+        "comparison_scope": "matched_event_within_backend_deltas_only",
+        "absolute_cross_backend_comparison_allowed": False,
+        "matched_event_gate": True,
+        "within_backend_provenance_gate": True,
+        "dingo_amplfi_joint_gate": False,
+        "cross_backend_matched_input_gate": False,
+        "publication_provenance_required": True,
+        "required_split": required_split,
+        "test_rows_read": 0 if required_split == "val" else len(combined_rows),
+        "backends": ["AMPLFI", "DINGO"],
+        "backend_identities": backend_identities,
+        "native_prior_hashes_equal": (
+            backend_identities["DINGO"]["prior_hash"]
+            == backend_identities["AMPLFI"]["prior_hash"]
+        ),
+        "native_waveform_assumptions_equal": (
+            backend_identities["DINGO"]["waveform_approximant"]
+            == backend_identities["AMPLFI"]["waveform_approximant"]
+        ),
+        "common_injection_ids": common_ids,
+        "common_injection_count": len(common_ids),
+        "rows": len(combined_rows),
+        "manifest_path": str(manifest_output),
+        "manifest_sha256": file_sha256(manifest_output),
+        "credible_level": credible_level,
+        "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_seed": bootstrap_seed,
+        "coverage": {
+            backend: evaluation["coverage"][backend]
+            for backend, evaluation in backend_evaluations.items()
+        },
+        "paired_summaries": {
+            backend: evaluation["paired_summaries"][backend]
+            for backend, evaluation in backend_evaluations.items()
+        },
+        "source_batch_reports": source_batch_reports,
+        "source_within_backend_reports": source_within_reports,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_output, result)
+    return result
+
+
 _LOCKED_PE_FIXED_PROVENANCE_FIELDS = tuple(
     field for field in PUBLICATION_PROVENANCE_FIELDS if field != "source_event_hash"
 )
@@ -1243,11 +1475,28 @@ def _replay_locked_pe_validation_promotion(
     ):
         raise ValueError("locked PE requires a passing replayable validation promotion")
     joint = json.loads(joint_path.read_text(encoding="utf-8"))
+    evidence_mode = promotion.get("evidence_mode", "absolute_common_prior_joint")
+    absolute_joint = (
+        evidence_mode == "absolute_common_prior_joint"
+        and joint.get("status")
+        == "paired_dingo_amplfi_pe_robustness_evaluation_complete"
+        and joint.get("dingo_amplfi_joint_gate") is True
+        and joint.get("cross_backend_matched_input_gate") is True
+    )
+    within_backend_portfolio = (
+        evidence_mode == "matched_event_within_backend_portfolio"
+        and joint.get("status")
+        == "paired_dingo_amplfi_within_backend_portfolio_complete"
+        and joint.get("comparison_scope")
+        == "matched_event_within_backend_deltas_only"
+        and joint.get("matched_event_gate") is True
+        and joint.get("within_backend_provenance_gate") is True
+        and joint.get("absolute_cross_backend_comparison_allowed") is False
+        and joint.get("dingo_amplfi_joint_gate") is False
+        and joint.get("cross_backend_matched_input_gate") is False
+    )
     if (
-        joint.get("status")
-        != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
-        or joint.get("dingo_amplfi_joint_gate") is not True
-        or joint.get("cross_backend_matched_input_gate") is not True
+        not (absolute_joint or within_backend_portfolio)
         or joint.get("publication_provenance_required") is not True
         or Path(str(joint.get("manifest_path", ""))).resolve() != manifest_path
         or joint.get("manifest_sha256") != file_sha256(manifest_path)
@@ -1279,18 +1528,21 @@ def bind_locked_pe_backend_batch(
     settings = {
         "DINGO": (
             "dingo_batch",
-            "real_dingo_common_batch_complete",
+            {
+                "real_dingo_common_batch_complete",
+                "real_dingo_official_native_paired_robustness_batch_complete",
+            },
             "locked_dingo_paired_pe_batch_complete",
         ),
         "AMPLFI": (
             "amplfi_batch",
-            "real_amplfi_common_batch_complete",
+            {"real_amplfi_common_batch_complete"},
             "locked_amplfi_paired_pe_batch_complete",
         ),
     }
     if backend_name not in settings:
         raise ValueError("locked PE backend must be DINGO or AMPLFI")
-    output_key, expected_status, locked_status = settings[backend_name]
+    output_key, expected_statuses, locked_status = settings[backend_name]
     output_path = Path(output).resolve()
     if output_path.exists():
         raise FileExistsError("locked PE backend bindings are immutable")
@@ -1323,7 +1575,7 @@ def bind_locked_pe_backend_batch(
     batch = json.loads(batch_path.read_text(encoding="utf-8"))
     manifest_path = Path(str(batch.get("manifest_path", ""))).resolve()
     if (
-        batch.get("status") != expected_status
+        batch.get("status") not in expected_statuses
         or not manifest_path.is_file()
         or batch.get("manifest_sha256") != file_sha256(manifest_path)
     ):
@@ -1538,6 +1790,207 @@ def run_locked_joint_pe_robustness_evaluation(
     return result
 
 
+def run_locked_paired_pe_robustness_portfolio(
+    dingo_locked_report: str | Path,
+    amplfi_locked_report: str | Path,
+    validation_promotion_report: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Evaluate the locked matched-event, within-backend DINGO/AMPLFI portfolio."""
+
+    from .evaluation_lock import validate_locked_evaluation_suite_access
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("locked paired PE portfolio outputs are immutable")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan, access_log, "paired_pe_portfolio", output_path
+    )
+    promotion_path, promotion, _ = _replay_locked_pe_validation_promotion(
+        validation_promotion_report
+    )
+    if promotion.get("evidence_mode") != "matched_event_within_backend_portfolio":
+        raise ValueError("locked paired PE portfolio requires portfolio validation promotion")
+    promotion_identity = suite_access["frozen_artifacts"].get(
+        "validation_pe_promotion", {}
+    )
+    if (
+        Path(str(promotion_identity.get("path", ""))).resolve() != promotion_path
+        or promotion_identity.get("sha256") != file_sha256(promotion_path)
+    ):
+        raise ValueError("locked PE portfolio promotion differs from the access receipt")
+
+    specifications = {
+        "DINGO": (
+            Path(dingo_locked_report).resolve(),
+            "dingo_batch",
+            "locked_dingo_paired_pe_batch_complete",
+        ),
+        "AMPLFI": (
+            Path(amplfi_locked_report).resolve(),
+            "amplfi_batch",
+            "locked_amplfi_paired_pe_batch_complete",
+        ),
+    }
+    rows_by_backend: dict[str, list[dict[str, Any]]] = {}
+    keys_by_backend: dict[str, set[tuple[str, str]]] = {}
+    source_reports: dict[str, Any] = {}
+    evaluations: dict[str, dict[str, Any]] = {}
+    for backend, (report_path, output_key, expected_status) in specifications.items():
+        binding = validate_locked_evaluation_suite_access(
+            locked_suite_plan, access_log, output_key, report_path
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest_path = Path(str(report.get("manifest_path", ""))).resolve()
+        if (
+            report.get("status") != expected_status
+            or report.get("endpoint_complete") is not True
+            or report.get("locked_suite_access") != binding
+            or not manifest_path.is_file()
+            or report.get("manifest_sha256") != file_sha256(manifest_path)
+            or Path(
+                str(report.get("validation_promotion_report", {}).get("path", ""))
+            ).resolve()
+            != promotion_path
+            or report.get("validation_promotion_report", {}).get("sha256")
+            != file_sha256(promotion_path)
+        ):
+            raise ValueError(f"locked {backend} PE portfolio binding failed replay")
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        keys = {
+            (str(row.get("injection_id", "")), str(row.get("condition", "")))
+            for row in rows
+        }
+        injections = {injection for injection, _ in keys}
+        expected_keys = {
+            (injection, condition)
+            for injection in injections
+            for condition in ROBUSTNESS_CONDITIONS
+        }
+        if (
+            not rows
+            or len(rows) != int(report.get("rows", -1))
+            or any(str(row.get("split")) != "test" for row in rows)
+            or any(str(row.get("backend", "")).upper() != backend for row in rows)
+            or keys != expected_keys
+            or len(keys) != len(rows)
+            or len(injections) != int(report.get("paired_injections", -1))
+        ):
+            raise ValueError(f"locked {backend} PE portfolio manifest is incomplete")
+        evaluation = evaluate_pe_robustness_rows(
+            rows,
+            float(suite_access["endpoints"]["pe_credible_level"]),
+            int(suite_access["endpoints"]["bootstrap_replicates"]),
+            int(suite_access["endpoints"]["bootstrap_seed"]),
+            True,
+            False,
+        )
+        rows_by_backend[backend] = rows
+        keys_by_backend[backend] = keys
+        evaluations[backend] = evaluation
+        source_reports[backend] = {
+            "path": str(report_path),
+            "sha256": file_sha256(report_path),
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": file_sha256(manifest_path),
+        }
+
+    if keys_by_backend["DINGO"] != keys_by_backend["AMPLFI"]:
+        raise ValueError("locked PE portfolio backends use different injection conditions")
+    indexed = {
+        backend: {
+            (str(row["injection_id"]), str(row["condition"])): row for row in rows
+        }
+        for backend, rows in rows_by_backend.items()
+    }
+    shared_fields = (
+        "source_event_hash",
+        "analysis_input_sha256",
+        "base_injection_manifest_sha256",
+        "input_sample_rate_hz",
+        "input_duration_seconds",
+        "input_post_trigger_seconds",
+        "input_ifos",
+        "truth",
+    )
+    for key in sorted(keys_by_backend["DINGO"]):
+        dingo = indexed["DINGO"][key]
+        amplfi = indexed["AMPLFI"][key]
+        inconsistent = [field for field in shared_fields if dingo.get(field) != amplfi.get(field)]
+        if inconsistent:
+            raise ValueError(
+                f"locked PE portfolio source event differs for {key}: {inconsistent}"
+            )
+    paired_injections = len({injection for injection, _ in keys_by_backend["DINGO"]})
+    if paired_injections < int(suite_access["endpoints"]["minimum_paired_pe_injections"]):
+        raise ValueError("locked paired PE portfolio has too few common injections")
+    backend_identities = {}
+    for backend, rows in rows_by_backend.items():
+        identities = {
+            field: sorted(
+                {
+                    json.dumps(row[field], sort_keys=True)
+                    if isinstance(row[field], (dict, list))
+                    else str(row[field])
+                    for row in rows
+                }
+            )
+            for field in (
+                "prior_hash",
+                "waveform_approximant",
+                "backend_model_hash",
+                "detector_set",
+            )
+        }
+        if any(len(values) != 1 for values in identities.values()):
+            raise ValueError(f"locked {backend} PE identity changes within the portfolio")
+        backend_identities[backend] = {
+            field: values[0] for field, values in identities.items()
+        }
+    result = {
+        "status": "locked_paired_pe_robustness_portfolio_complete",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "comparison_scope": "matched_event_within_backend_deltas_only",
+        "absolute_cross_backend_comparison_allowed": False,
+        "matched_event_gate": True,
+        "within_backend_provenance_gate": True,
+        "paired_injections": paired_injections,
+        "backend_identities": backend_identities,
+        "coverage": {
+            backend: evaluation["coverage"][backend]
+            for backend, evaluation in evaluations.items()
+        },
+        "bias": {
+            backend: evaluation["paired_summaries"][backend]["parameters"]
+            for backend, evaluation in evaluations.items()
+        },
+        "posterior_width": {
+            backend: evaluation["paired_summaries"][backend]["parameters"]
+            for backend, evaluation in evaluations.items()
+        },
+        "latency": {
+            backend: evaluation["paired_summaries"][backend]["resources"].get(
+                "latency_mask_minus_contaminated_seconds"
+            )
+            for backend, evaluation in evaluations.items()
+        },
+        "dingo_batch": source_reports["DINGO"],
+        "amplfi_batch": source_reports["AMPLFI"],
+        "validation_promotion_report": {
+            "path": str(promotion_path),
+            "sha256": file_sha256(promotion_path),
+        },
+        "locked_suite_access": suite_access,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def promote_pe_robustness_validation(
     joint_report_path: str | Path,
     config_path: str | Path,
@@ -1547,14 +2000,35 @@ def promote_pe_robustness_validation(
 
     joint_path = Path(joint_report_path).resolve()
     report = json.loads(joint_path.read_text(encoding="utf-8"))
+    status = report.get("status")
+    absolute_joint = (
+        status == "paired_dingo_amplfi_pe_robustness_evaluation_complete"
+        and report.get("dingo_amplfi_joint_gate") is True
+        and report.get("cross_backend_matched_input_gate") is True
+    )
+    within_backend_portfolio = (
+        status == "paired_dingo_amplfi_within_backend_portfolio_complete"
+        and report.get("comparison_scope")
+        == "matched_event_within_backend_deltas_only"
+        and report.get("matched_event_gate") is True
+        and report.get("within_backend_provenance_gate") is True
+        and report.get("absolute_cross_backend_comparison_allowed") is False
+        and report.get("dingo_amplfi_joint_gate") is False
+        and report.get("cross_backend_matched_input_gate") is False
+    )
     if (
-        report.get("status")
-        != "paired_dingo_amplfi_pe_robustness_evaluation_complete"
-        or report.get("dingo_amplfi_joint_gate") is not True
-        or report.get("cross_backend_matched_input_gate") is not True
+        not (absolute_joint or within_backend_portfolio)
         or report.get("publication_provenance_required") is not True
     ):
-        raise ValueError("PE promotion requires a strict completed joint validation report")
+        raise ValueError(
+            "PE promotion requires a strict absolute joint or matched-event "
+            "within-backend validation portfolio"
+        )
+    evidence_mode = (
+        "absolute_common_prior_joint"
+        if absolute_joint
+        else "matched_event_within_backend_portfolio"
+    )
     manifest = Path(str(report.get("manifest_path", ""))).resolve()
     if not manifest.is_file() or file_sha256(manifest) != report.get("manifest_sha256"):
         raise ValueError("PE promotion joint manifest hash mismatch")
@@ -1637,7 +2111,10 @@ def promote_pe_robustness_validation(
             "passed": int(report.get("bootstrap_replicates", -1)) >= minimum_bootstraps,
         },
         "validation_only": {"passed": True},
-        "joint_input_gate": {"passed": True},
+        "input_scope_gate": {
+            "mode": evidence_mode,
+            "passed": True,
+        },
     }
     backend_checks: dict[str, Any] = {}
     for backend in required_backends:
@@ -1767,6 +2244,8 @@ def promote_pe_robustness_validation(
             "this is a validation-only promotion decision; a frozen one-time locked-test "
             "evaluation is still required"
         ),
+        "evidence_mode": evidence_mode,
+        "absolute_cross_backend_comparison_allowed": absolute_joint,
         "joint_report_path": str(joint_path),
         "joint_report_sha256": file_sha256(joint_path),
         "joint_manifest_path": str(manifest),

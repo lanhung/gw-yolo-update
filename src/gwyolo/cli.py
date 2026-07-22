@@ -1691,6 +1691,20 @@ def build_parser() -> argparse.ArgumentParser:
     pe_joint.add_argument("--bootstrap-replicates", type=int, default=2000)
     pe_joint.add_argument("--bootstrap-seed", type=int, default=20260720)
 
+    pe_portfolio = subparsers.add_parser("pe-robustness-portfolio-evaluate")
+    pe_portfolio.add_argument("--dingo-batch-report", required=True)
+    pe_portfolio.add_argument("--dingo-robustness-report", required=True)
+    pe_portfolio.add_argument("--amplfi-batch-report", required=True)
+    pe_portfolio.add_argument("--amplfi-robustness-report", required=True)
+    pe_portfolio.add_argument("--manifest-output", required=True)
+    pe_portfolio.add_argument("--output", required=True)
+    pe_portfolio.add_argument("--credible-level", type=float, default=0.9)
+    pe_portfolio.add_argument("--bootstrap-replicates", type=int, default=10000)
+    pe_portfolio.add_argument("--bootstrap-seed", type=int, default=20260721)
+    pe_portfolio.add_argument(
+        "--required-split", choices=("val", "test"), default="val"
+    )
+
     pe_promotion = subparsers.add_parser("pe-robustness-promote")
     pe_promotion.add_argument("--joint-report", required=True)
     pe_promotion.add_argument("--config", required=True)
@@ -1713,6 +1727,16 @@ def build_parser() -> argparse.ArgumentParser:
     pe_locked_joint.add_argument("--locked-suite-plan", required=True)
     pe_locked_joint.add_argument("--access-log", required=True)
     pe_locked_joint.add_argument("--output", required=True)
+
+    pe_locked_portfolio = subparsers.add_parser(
+        "pe-robustness-portfolio-evaluate-locked"
+    )
+    pe_locked_portfolio.add_argument("--dingo-locked-report", required=True)
+    pe_locked_portfolio.add_argument("--amplfi-locked-report", required=True)
+    pe_locked_portfolio.add_argument("--validation-promotion-report", required=True)
+    pe_locked_portfolio.add_argument("--locked-suite-plan", required=True)
+    pe_locked_portfolio.add_argument("--access-log", required=True)
+    pe_locked_portfolio.add_argument("--output", required=True)
 
     pe_inputs = subparsers.add_parser("pe-input-materialize")
     pe_inputs.add_argument("--clean-manifest", required=True)
@@ -3984,6 +4008,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_seed,
             )
         )
+    elif args.command == "pe-robustness-portfolio-evaluate":
+        from .pe import run_within_backend_pe_robustness_portfolio
+
+        _print(
+            run_within_backend_pe_robustness_portfolio(
+                args.dingo_batch_report,
+                args.dingo_robustness_report,
+                args.amplfi_batch_report,
+                args.amplfi_robustness_report,
+                args.manifest_output,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+                args.required_split,
+            )
+        )
     elif args.command == "pe-robustness-promote":
         from .pe import promote_pe_robustness_validation
 
@@ -4012,6 +4053,19 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_locked_joint_pe_robustness_evaluation(
+                args.dingo_locked_report,
+                args.amplfi_locked_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
+    elif args.command == "pe-robustness-portfolio-evaluate-locked":
+        from .pe import run_locked_paired_pe_robustness_portfolio
+
+        _print(
+            run_locked_paired_pe_robustness_portfolio(
                 args.dingo_locked_report,
                 args.amplfi_locked_report,
                 args.validation_promotion_report,

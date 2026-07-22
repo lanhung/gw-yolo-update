@@ -164,18 +164,29 @@ publication_evidence:
         - {path_field: known_calibration_scores_path, sha256_field: known_calibration_scores_sha256}
         - {path_field: heldout_evaluation_scores_path, sha256_field: heldout_evaluation_scores_sha256}
 
-    - id: paired_dingo_amplfi_pe
+    - id: paired_dingo_amplfi_pe_portfolio
       group: pe
-      description: Identical-event DINGO/AMPLFI raw/contaminated/mask-conditioned validation.
+      description: Matched-event DINGO/AMPLFI within-backend raw/contaminated/mask validation.
       checks:
-        - {field: status, op: equals, value: validation_only_joint_paired_pe_complete}
+        - {field: status, op: equals, value: validation_only_paired_pe_portfolio_complete}
+        - {field: passed, op: equals, value: true}
         - {field: promote_to_locked_test, op: equals, value: true}
         - {field: scientific_claim_allowed, op: equals, value: false}
-        - {field: artifacts.dingo_batch, op: nonempty}
-        - {field: artifacts.amplfi_batch, op: nonempty}
-        - {field: artifacts.joint_evaluation, op: nonempty}
+        - {field: comparison_scope, op: equals, value: matched_event_within_backend_deltas_only}
+        - {field: absolute_cross_backend_comparison_allowed, op: equals, value: false}
+        - {field: matched_event_gate, op: equals, value: true}
+        - {field: within_backend_provenance_gate, op: equals, value: true}
+        - {field: paired_injections, op: at_least, value: 100}
+        - {field: bootstrap_replicates, op: at_least, value: 10000}
+        - {field: test_rows_read, op: equals, value: 0}
+        - {field: artifacts.dingo_within_summary, op: nonempty}
+        - {field: artifacts.amplfi_within_summary, op: nonempty}
+        - {field: artifacts.portfolio, op: nonempty}
         - {field: artifacts.promotion, op: nonempty}
       replay_artifacts:
+        - {path_field: artifacts.dingo_within_summary.path, sha256_field: artifacts.dingo_within_summary.sha256}
+        - {path_field: artifacts.amplfi_within_summary.path, sha256_field: artifacts.amplfi_within_summary.sha256}
+        - {path_field: artifacts.portfolio.path, sha256_field: artifacts.portfolio.sha256}
         - {path_field: artifacts.promotion.path, sha256_field: artifacts.promotion.sha256}
 
     - id: locked_corpus_unopened

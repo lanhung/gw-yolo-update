@@ -1023,13 +1023,13 @@ The AMPLFI runner is now unit-tested at the orchestration, hash, resume, archite
 contract boundaries. A real checkpoint-load smoke remains mandatory; a fake subprocess used by the
 CPU orchestration test is not posterior evidence and cannot enable a scientific claim.
 
-After both batch reports exist, `pe-robustness-joint-evaluate` is the only supported publication
-join path. It verifies the two batch-report and manifest hashes, requires identical injection and
-condition sets with complete clean/contaminated/mask-conditioned triplets, then executes the full
-cross-backend input-lineage, prior, waveform, detector, hardware, sky-area and latency-scope gates
-before atomically writing a combined manifest. `scripts/run_joint_paired_pe_validation.sh` wires the
-validation-only native-input smoke to both pinned backend interpreters and this strict joint gate;
-it remains fail-closed until validation-selected model sidecars for both backends are present.
+After both batch reports exist, there are two non-interchangeable publication paths.
+`pe-robustness-joint-evaluate` is the absolute comparison path: it verifies both batch-report and
+manifest hashes, requires identical injection/condition sets and enforces common prior, analysis
+and native-model waveform, detector, hardware, sky-area and latency-scope gates.
+`scripts/run_joint_paired_pe_validation.sh` wires the validation-only native-input smoke to this
+strict gate and remains fail-closed until genuinely matched validation-selected model sidecars are
+present.
 Before either GPU batch starts, `pe-joint-model-compatibility-audit` replays both standardized
 metadata sidecars, their canonical and native priors, the DINGO initialization model and the frozen
 H1/L1 source contract. It requires the same canonical-prior hash, analysis and native-model
@@ -1038,6 +1038,18 @@ parameter set and source-input definition. An official-native sidecar that recor
 `common_prior_equivalent=false` or `cross_backend_absolute_comparison_allowed=false` therefore
 writes an incompatible JSON audit and exits before posterior inference; its within-backend paired
 robustness path remains valid and separate.
+
+The second path is `pe-robustness-portfolio-evaluate`. It reopens both strict within-backend
+manifests and posterior files, recomputes the paired bootstrap statistics, and requires identical
+injection/condition keys, common source-input hashes and truth across backends. Each backend must
+hold one model, native prior, waveform and detector identity fixed across all three conditions.
+Different native priors or waveforms are allowed only because no absolute backend subtraction or
+ranking is emitted. The report records
+`comparison_scope=matched_event_within_backend_deltas_only` and
+`absolute_cross_backend_comparison_allowed=false`. The same frozen promotion thresholds for sample
+size, coverage, normalized bias, posterior width, sky area, ESS rate and latency apply to both
+backends. `scripts/run_paired_pe_portfolio_validation.sh` produces the validation receipt; a
+three-event smoke remains below the 100-event gate and cannot unlock O4b.
 The subsequent `pe-robustness-promote` command applies the pre-result thresholds in
 `configs/pe_robustness_promotion.yaml`. Bias deltas are normalized by each event's clean-posterior
 credible width, while coverage non-inferiority uses paired bootstrap differences. Both backends must

@@ -38,7 +38,7 @@ import sys
 plan = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 if plan.get("status") != "frozen_locked_evaluation_suite_plan":
     raise SystemExit("locked suite plan is invalid")
-for key in ("dingo_batch", "amplfi_batch", "joint_pe"):
+for key in ("dingo_batch", "amplfi_batch", "paired_pe_portfolio"):
     print(plan["outputs"][key])
 for key in ("dingo_locked_source_batch_report", "amplfi_locked_source_batch_report"):
     print(plan["inputs"][key])
@@ -50,7 +50,7 @@ if (( ${#locked_outputs[@]} != 5 )); then
 fi
 dingo_output=${locked_outputs[0]}
 amplfi_output=${locked_outputs[1]}
-joint_output=${locked_outputs[2]}
+portfolio_output=${locked_outputs[2]}
 DINGO_LOCKED_BATCH_REPORT=${locked_outputs[3]}
 AMPLFI_LOCKED_BATCH_REPORT=${locked_outputs[4]}
 for input in "$DINGO_LOCKED_BATCH_REPORT" "$AMPLFI_LOCKED_BATCH_REPORT"; do
@@ -83,17 +83,17 @@ bind_backend() {
 bind_backend DINGO "$DINGO_LOCKED_BATCH_REPORT" "$dingo_output"
 bind_backend AMPLFI "$AMPLFI_LOCKED_BATCH_REPORT" "$amplfi_output"
 
-if [[ ! -s "$joint_output" ]]; then
-  mkdir -p "$(dirname "$joint_output")"
+if [[ ! -s "$portfolio_output" ]]; then
+  mkdir -p "$(dirname "$portfolio_output")"
   (
     cd "$TASK_CODE_DIR"
     export PYTHONPATH=src
-    "$TASK_PYTHON" -m gwyolo.cli pe-robustness-joint-evaluate-locked \
+    "$TASK_PYTHON" -m gwyolo.cli pe-robustness-portfolio-evaluate-locked \
       --dingo-locked-report "$dingo_output" \
       --amplfi-locked-report "$amplfi_output" \
       --validation-promotion-report "$VALIDATION_PE_PROMOTION_REPORT" \
       --locked-suite-plan "$LOCKED_SUITE_PLAN" \
       --access-log "$LOCKED_ACCESS_LOG" \
-      --output "$joint_output"
+      --output "$portfolio_output"
   )
 fi

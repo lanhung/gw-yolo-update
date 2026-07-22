@@ -101,20 +101,22 @@ publication_evidence:
         - {path_field: locked_score_manifest.path, sha256_field: locked_score_manifest.sha256}
         - {path_field: checkpoint.path, sha256_field: checkpoint.sha256}
 
-    - id: locked_joint_dingo_amplfi_pe
+    - id: locked_dingo_amplfi_pe_portfolio
       group: pe
-      description: Identical locked events compare raw, contaminated and mask-conditioned PE arms.
+      description: Matched locked events measure within-backend raw/contaminated/mask PE deltas.
       checks:
-        - {field: status, op: equals, value: locked_joint_paired_pe_complete}
+        - {field: status, op: equals, value: locked_paired_pe_robustness_portfolio_complete}
         - {field: endpoint_complete, op: equals, value: true}
         - {field: paired_injections, op: at_least, value: 100}
-        - {field: identical_priors, op: equals, value: true}
-        - {field: identical_waveform_assumptions, op: equals, value: true}
+        - {field: comparison_scope, op: equals, value: matched_event_within_backend_deltas_only}
+        - {field: absolute_cross_backend_comparison_allowed, op: equals, value: false}
+        - {field: matched_event_gate, op: equals, value: true}
+        - {field: within_backend_provenance_gate, op: equals, value: true}
         - {field: coverage, op: nonempty}
         - {field: bias, op: nonempty}
         - {field: posterior_width, op: nonempty}
         - {field: latency, op: nonempty}
-        - {field: locked_suite_access.output_key, op: equals, value: joint_pe}
+        - {field: locked_suite_access.output_key, op: equals, value: paired_pe_portfolio}
       replay_artifacts:
         - {path_field: dingo_batch.path, sha256_field: dingo_batch.sha256}
         - {path_field: amplfi_batch.path, sha256_field: amplfi_batch.sha256}

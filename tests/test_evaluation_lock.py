@@ -50,7 +50,7 @@ def _locked_suite_config(path) -> None:
         "locked_ood_transfer": "robustness/ood.json",
         "dingo_batch": "pe/dingo.json",
         "amplfi_batch": "pe/amplfi.json",
-        "joint_pe": "pe/joint.json",
+        "paired_pe_portfolio": "pe/portfolio.json",
         "catalog_diagnostic": "catalog/diagnostic.json",
         "suite_receipt": "suite.json",
     }
@@ -72,8 +72,8 @@ def _locked_suite_config(path) -> None:
     }
     path.write_text(
         "locked_evaluation_suite:\n"
-        "  schema: locked_suite_v1\n"
-        "  corpus_label: GWTC-5.0_O4b_locked_suite_v1\n"
+        "  schema: locked_suite_v2\n"
+        "  corpus_label: GWTC-5.0_O4b_locked_suite_v2\n"
         "  required_split: test\n"
         "  observing_runs: [O4b]\n"
         "  catalog_release: GWTC-5.0\n"
@@ -305,7 +305,7 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         test_manifest,
         freeze_path,
         access_path,
-        "GWTC-5.0_O4b_locked_suite_v1",
+        "GWTC-5.0_O4b_locked_suite_v2",
     )
     comparison = tmp_path / "train.jsonl"
     _write(
@@ -364,7 +364,7 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         "locked_ood_transfer": "locked_detector_set_ood_transfer_evaluation",
         "dingo_batch": "locked_dingo_paired_pe_batch_complete",
         "amplfi_batch": "locked_amplfi_paired_pe_batch_complete",
-        "joint_pe": "locked_joint_paired_pe_complete",
+        "paired_pe_portfolio": "locked_paired_pe_robustness_portfolio_complete",
         "catalog_diagnostic": "locked_gwtc5_catalog_diagnostic",
     }
     expected_inputs = {

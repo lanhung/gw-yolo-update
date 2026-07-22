@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).parents[1] / "scripts/run_paired_pe_portfolio_validation.sh"
+
+
+def test_paired_pe_portfolio_fails_closed_when_inputs_are_unset() -> None:
+    completed = subprocess.run(
+        ["bash", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert completed.returncode == 2
+    assert "TASK_PYTHON" in completed.stderr
+
+
+def test_paired_pe_portfolio_is_validation_only_and_forbids_absolute_ranking() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "pe-robustness-portfolio-evaluate" in source
+    assert "pe-robustness-promote" in source
+    assert "--required-split val" in source
+    assert "matched_event_within_backend_deltas_only" in source
+    assert "absolute_cross_backend_comparison_allowed" in source
+    assert "within_backend_provenance_gate" in source
+    assert "PE_BOOTSTRAP_REPLICATES:-10000" in source
+    assert "test_rows_read" in source
+    assert "--required-split test" not in source
+    assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source
