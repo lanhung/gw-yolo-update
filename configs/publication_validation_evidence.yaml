@@ -1,0 +1,142 @@
+publication_evidence:
+  schema: publication_evidence_v1
+  protocol: gw_yolo_validation_freeze_v1
+  phase: validation_freeze
+  groups: [data, model, search, robustness, pe, governance]
+  requirements:
+    - id: source_safe_corpus
+      group: data
+      description: Source-file/GPS/glitch-disjoint aligned H1/L1/V1 corpus.
+      checks:
+        - {field: status, op: equals, value: verified_group_safe_gravityspy_aligned_network_corpus}
+        - {field: passed, op: equals, value: true}
+        - {field: split_audit.cross_split_overlaps, op: all_empty}
+        - {field: train_manifest_sha256, op: nonempty}
+        - {field: validation_manifest_sha256, op: nonempty}
+      replay_artifacts:
+        - {path_field: train_report_path, sha256_field: train_report_sha256}
+        - {path_field: validation_report_path, sha256_field: validation_report_sha256}
+
+    - id: independent_validation_endpoint
+      group: data
+      description: Frozen purpose-disjoint O4a validation calibration/injection endpoint.
+      checks:
+        - {field: status, op: equals, value: frozen_gps_and_purpose_disjoint_validation_endpoint}
+        - {field: passed, op: equals, value: true}
+        - {field: purpose_gps_block_overlap, op: equals, value: 0}
+        - {field: test_rows_read, op: equals, value: 0}
+        - {field: test_evaluation, op: equals, value: null}
+      replay_artifacts:
+        - {path_field: candidate_calibration_background_manifest_path, sha256_field: candidate_calibration_background_manifest_sha256}
+        - {path_field: injection_arrival_manifest_path, sha256_field: injection_arrival_manifest_sha256}
+
+    - id: five_seed_model
+      group: model
+      description: Validation-selected source-safe real-glitch model over five independent seeds.
+      checks:
+        - {field: status, op: equals, value: completed_five_seed_source_safe_overlap_validation}
+        - {field: passed, op: equals, value: true}
+        - {field: seeds, op: length_at_least, value: 5}
+        - {field: test_data_opened, op: equals, value: false}
+        - {field: code_commit, op: nonempty}
+        - {field: exact_command, op: nonempty}
+        - {field: environment, op: nonempty}
+        - {field: common_artifact_hashes, op: nonempty}
+      replay_artifacts:
+        - {path_field: selected_checkpoint_path, sha256_field: selected_checkpoint_sha256}
+
+    - id: group_safe_data_scaling
+      group: model
+      description: Paired five-seed fixed-epoch and fixed-update physical scaling curve.
+      checks:
+        - {field: status, op: equals, value: completed_group_safe_physical_overlap_data_scaling_curve}
+        - {field: passed, op: equals, value: true}
+        - {field: minimum_seeds, op: at_least, value: 5}
+        - {field: paired_seeds, op: length_at_least, value: 5}
+        - {field: promotion_checks.fixed_epochs, op: nonempty}
+        - {field: promotion_checks.fixed_optimizer_updates, op: nonempty}
+        - {field: test_rows_read, op: equals, value: 0}
+        - {field: code_commit, op: nonempty}
+      replay_artifacts:
+        - {path_field: subset_report_path, sha256_field: subset_report_sha256}
+
+    - id: continuous_candidate_calibration
+      group: search
+      description: Frozen validation threshold with target continuous-background exposure.
+      checks:
+        - {field: status, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: publication_calibration_eligible, op: equals, value: true}
+        - {field: slide_schedule_audit.passed, op: equals, value: true}
+        - {field: test_evaluation, op: equals, value: null}
+        - {field: validation_injection_diagnostic, op: nonempty}
+        - {field: code_commit, op: nonempty}
+      replay_artifacts:
+        - {path_field: validation_time_slide_report_path, sha256_field: validation_time_slide_report_sha256}
+        - {path_field: validation_injection_ranking_report_path, sha256_field: validation_injection_ranking_report_sha256}
+
+    - id: paired_raw_mask_vt
+      group: search
+      description: Fixed-FAR paired raw/mask validation gain with clean non-inferiority and timing.
+      checks:
+        - {field: status, op: equals, value: validation_only_paired_raw_mask_candidate_calibration_comparison}
+        - {field: passed, op: equals, value: true}
+        - {field: mask_locked_test_arm_eligible, op: equals, value: true}
+        - {field: locked_test_prerequisites_satisfied, op: equals, value: false}
+        - {field: test_rows_read, op: equals, value: 0}
+        - {field: scientific_claim_allowed, op: equals, value: false}
+        - {field: code_commit, op: nonempty}
+
+    - id: calibration_perturbation_robustness
+      group: robustness
+      description: Time-domain calibration-envelope perturbations with fresh transforms.
+      checks:
+        - {field: status, op: equals, value: completed_validation_calibration_perturbation_robustness}
+        - {field: passed, op: equals, value: true}
+        - {field: physical_time_domain_perturbation, op: equals, value: true}
+        - {field: fresh_time_frequency_transform, op: equals, value: true}
+        - {field: detector_strata, op: nonempty}
+        - {field: test_rows_read, op: equals, value: 0}
+
+    - id: detector_set_ood_transfer
+      group: robustness
+      description: Detector-set leave-family-out and observing-run transfer without retuning.
+      checks:
+        - {field: status, op: equals, value: known_family_embedding_heldout_ood_validation}
+        - {field: architecture, op: equals, value: detector_set}
+        - {field: ood_score_method, op: equals, value: logit_energy}
+        - {field: ood_score_fit.heldout_scores_used_for_method_or_fit_selection, op: equals, value: false}
+        - {field: ood_evaluation.calibration.unknown_scores_used_for_selection, op: equals, value: false}
+        - {field: ood_evaluation.observing_run_strata, op: length_at_least, value: 2}
+        - {field: ood_evaluation.unknown_false_acceptance, op: nonempty}
+        - {field: test_evaluation, op: equals, value: null}
+      replay_artifacts:
+        - {path_field: checkpoint_path, sha256_field: checkpoint_sha256}
+        - {path_field: known_calibration_scores_path, sha256_field: known_calibration_scores_sha256}
+        - {path_field: heldout_evaluation_scores_path, sha256_field: heldout_evaluation_scores_sha256}
+
+    - id: paired_dingo_amplfi_pe
+      group: pe
+      description: Identical-event DINGO/AMPLFI raw/contaminated/mask-conditioned validation.
+      checks:
+        - {field: status, op: equals, value: validation_only_joint_paired_pe_complete}
+        - {field: promote_to_locked_test, op: equals, value: true}
+        - {field: scientific_claim_allowed, op: equals, value: false}
+        - {field: artifacts.dingo_batch, op: nonempty}
+        - {field: artifacts.amplfi_batch, op: nonempty}
+        - {field: artifacts.joint_evaluation, op: nonempty}
+        - {field: artifacts.promotion, op: nonempty}
+      replay_artifacts:
+        - {path_field: artifacts.promotion.path, sha256_field: artifacts.promotion.sha256}
+
+    - id: locked_corpus_unopened
+      group: governance
+      description: O4b/GWTC-5 corpus frozen and still unopened before the final one-time evaluation.
+      checks:
+        - {field: status, op: equals, value: locked_evaluation_corpus_unopened}
+        - {field: evaluation_opened, op: equals, value: false}
+        - {field: access_log_exists, op: equals, value: false}
+        - {field: scientific_claim_allowed, op: equals, value: false}
+        - {field: test_metrics, op: equals, value: null}
+        - {field: code_commit, op: nonempty}
+      replay_artifacts:
+        - {path_field: manifest_path, sha256_field: manifest_sha256}

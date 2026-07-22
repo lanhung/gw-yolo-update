@@ -1714,6 +1714,18 @@ def build_parser() -> argparse.ArgumentParser:
     ood_train.add_argument("--heldout-evaluation-manifest", required=True)
     ood_train.add_argument("--output-dir", required=True)
     ood_train.add_argument("--seed", type=int)
+
+    publication = subparsers.add_parser("publication-evidence-audit")
+    publication.add_argument("--config", required=True)
+    publication.add_argument(
+        "--evidence",
+        action="append",
+        default=[],
+        metavar="REQUIREMENT_ID=REPORT.json",
+    )
+    publication.add_argument("--output", required=True)
+    publication.add_argument("--markdown")
+    publication.add_argument("--require-ready", action="store_true")
     return parser
 
 
@@ -3862,6 +3874,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.heldout_evaluation_manifest,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "publication-evidence-audit":
+        from .publication import run_publication_evidence_audit
+
+        _print(
+            run_publication_evidence_audit(
+                args.config,
+                args.evidence,
+                args.output,
+                args.markdown,
+                args.require_ready,
             )
         )
     else:

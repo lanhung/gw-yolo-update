@@ -484,6 +484,7 @@ def test_paired_raw_mask_calibration_comparison_has_hand_calculated_vt_gain(
         "observed_absolute_weighted_efficiency_gain"
     ] == 1.0
     assert result["mask_locked_test_arm_eligible"] is True
+    assert result["passed"] is True
     assert result["locked_test_prerequisites_satisfied"] is False
 
 

@@ -833,6 +833,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     }
     result = {
         "status": "validation_only_paired_raw_mask_candidate_calibration_comparison",
+        "passed": gain_gate["passed"],
         "scientific_claim_allowed": False,
         "locked_test_allowed": False,
         "test_rows_read": 0,
