@@ -935,6 +935,8 @@ def run_apply_candidate_timing_calibration(
     calibration_report: str | Path,
     output: str | Path,
     scoring_compatibility_report: str | Path | None = None,
+    calibration_perturbation_plan: str | Path | None = None,
+    calibration_timing_compatibility_report: str | Path | None = None,
 ) -> dict[str, Any]:
     with Path(calibration_report).open("r", encoding="utf-8") as handle:
         calibration = json.load(handle)
@@ -949,22 +951,71 @@ def run_apply_candidate_timing_calibration(
     calibration_commit = str(calibration_scoring.get("code_commit", ""))
     candidate_commit = str(candidate_scoring.get("code_commit", ""))
     cross_commit_compatibility = None
+    calibration_timing_transfer = None
     if (
         calibration_scoring.get("available")
         and candidate_provenance.get("available")
         and calibration_commit != candidate_commit
     ):
-        if scoring_compatibility_report is None:
-            raise ValueError(
-                "cross-commit timing calibration requires a scoring compatibility report"
+        if scoring_compatibility_report is not None and any(
+            value is not None
+            for value in (
+                calibration_perturbation_plan,
+                calibration_timing_compatibility_report,
             )
-        from .code_compatibility import validate_candidate_scoring_compatibility
+        ):
+            raise ValueError("choose generic or calibration timing compatibility, not both")
+        if scoring_compatibility_report is not None:
+            from .code_compatibility import validate_candidate_scoring_compatibility
 
-        cross_commit_compatibility = validate_candidate_scoring_compatibility(
-            scoring_compatibility_report,
-            calibration_commit,
-            candidate_commit,
-        )
+            cross_commit_compatibility = validate_candidate_scoring_compatibility(
+                scoring_compatibility_report,
+                calibration_commit,
+                candidate_commit,
+            )
+        elif (
+            calibration_perturbation_plan is not None
+            and calibration_timing_compatibility_report is not None
+        ):
+            from .code_compatibility import (
+                validate_calibration_timing_transfer_compatibility,
+            )
+
+            plan_path = Path(calibration_perturbation_plan).resolve()
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            perturbation = candidate_scoring.get("calibration_perturbation")
+            perturbation_role = (
+                perturbation.get("role") if isinstance(perturbation, dict) else None
+            )
+            if (
+                plan.get("status")
+                != "frozen_validation_calibration_perturbation_plan"
+                or plan.get("passed") is not True
+                or plan.get("test_rows_read") != 0
+                or not isinstance(perturbation, dict)
+                or perturbation.get("plan_sha256") != file_sha256(plan_path)
+                or perturbation.get("scenario_id") not in plan.get("scenario_ids", [])
+                or perturbation_role not in {"background", "injection"}
+                or perturbation.get("manifest_sha256")
+                != plan.get("manifests", {})
+                .get(str(perturbation_role), {})
+                .get("sha256")
+                or candidate_scoring.get("physical_time_domain_perturbation") is not True
+                or candidate_scoring.get("fresh_time_frequency_transform") is not True
+            ):
+                raise ValueError("candidate scoring is not bound to the frozen calibration plan")
+            calibration_timing_transfer = (
+                validate_calibration_timing_transfer_compatibility(
+                    calibration_timing_compatibility_report,
+                    calibration_commit,
+                    candidate_commit,
+                )
+            )
+        else:
+            raise ValueError(
+                "cross-commit timing calibration requires generic compatibility or a "
+                "frozen calibration plan plus timing-transfer compatibility"
+            )
     provenance_matches = bool(
         calibration_scoring.get("available")
         and candidate_provenance.get("available")
@@ -975,6 +1026,7 @@ def run_apply_candidate_timing_calibration(
         and (
             calibration_commit == candidate_commit
             or cross_commit_compatibility is not None
+            or calibration_timing_transfer is not None
         )
     )
     calibrated = 0
@@ -1029,6 +1081,26 @@ def run_apply_candidate_timing_calibration(
         "cross_commit_scoring_compatibility_report_sha256": (
             file_sha256(scoring_compatibility_report)
             if scoring_compatibility_report is not None
+            else None
+        ),
+        "calibration_timing_transfer_compatibility_report_sha256": (
+            file_sha256(calibration_timing_compatibility_report)
+            if calibration_timing_compatibility_report is not None
+            else None
+        ),
+        "calibration_timing_transfer_compatibility_report_path": (
+            str(Path(calibration_timing_compatibility_report).resolve())
+            if calibration_timing_compatibility_report is not None
+            else None
+        ),
+        "calibration_perturbation_plan_sha256": (
+            file_sha256(calibration_perturbation_plan)
+            if calibration_perturbation_plan is not None
+            else None
+        ),
+        "calibration_perturbation_plan_path": (
+            str(Path(calibration_perturbation_plan).resolve())
+            if calibration_perturbation_plan is not None
             else None
         ),
         "output_path": str(output_path),

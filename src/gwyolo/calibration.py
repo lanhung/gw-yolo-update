@@ -510,20 +510,70 @@ def freeze_calibration_perturbation_scenario_result(
     ):
         raise ValueError("Calibration scenario background/injection model identity differs")
 
+    controlled_transfers = []
     for role in ("background", "injection"):
         score_name = f"{role}_score"
         timing_name = f"{role}_timing"
         score_path, score = inputs[score_name]
         _, timing = inputs[timing_name]
         scoring = timing.get("candidate_extraction_provenance", {}).get("scoring", {})
+        calibration_scoring = timing.get("calibration_scoring_provenance", {})
+        cross_commit = scoring.get("code_commit") != calibration_scoring.get(
+            "code_commit"
+        )
         if (
             timing.get("uncalibrated_candidates") != 0
             or timing.get("scoring_provenance_matches") is not True
             or scoring.get("score_report_sha256") != file_sha256(score_path)
             or scoring.get("trigger_manifest_sha256") != score.get("triggers_sha256")
             or timing.get("output_sha256") != file_sha256(timing["output_path"])
+            or (
+                cross_commit
+                and (
+                    not timing.get(
+                        "calibration_timing_transfer_compatibility_report_sha256"
+                    )
+                    or timing.get("calibration_perturbation_plan_sha256") != plan_sha
+                )
+            )
         ):
             raise ValueError(f"Calibration scenario {role} candidate/timing chain is invalid")
+        if cross_commit:
+            transfer_path = Path(
+                str(
+                    timing.get(
+                        "calibration_timing_transfer_compatibility_report_path", ""
+                    )
+                )
+            ).resolve()
+            transfer = json.loads(transfer_path.read_text(encoding="utf-8"))
+            if (
+                file_sha256(transfer_path)
+                != timing.get(
+                    "calibration_timing_transfer_compatibility_report_sha256"
+                )
+                or transfer.get("status")
+                != "calibration_timing_transfer_implementation_compatibility"
+                or transfer.get("passed") is not True
+                or transfer.get("differences") != []
+                or transfer.get("reference_commit")
+                != calibration_scoring.get("code_commit")
+                or transfer.get("candidate_commit") != scoring.get("code_commit")
+            ):
+                raise ValueError("Calibration timing transfer proof failed replay")
+            controlled_transfers.append(
+                {
+                    "reference_commit": transfer["reference_commit"],
+                    "candidate_commit": transfer["candidate_commit"],
+                    "path": str(transfer_path),
+                    "sha256": file_sha256(transfer_path),
+                }
+            )
+    if controlled_transfers and (
+        len(controlled_transfers) != 2
+        or controlled_transfers[0] != controlled_transfers[1]
+    ):
+        raise ValueError("Background/injection calibration timing transfers differ")
     background_timing = inputs["background_timing"][1]
     injection_timing = inputs["injection_timing"][1]
     timing_sha = background_timing.get("calibration_report_sha256")
@@ -613,6 +663,9 @@ def freeze_calibration_perturbation_scenario_result(
         "plan": _artifact(plan_file),
         "model_identity": final_identity,
         "timing_calibration_report_sha256": timing_sha,
+        "controlled_code_transfer": (
+            controlled_transfers[0] if controlled_transfers else None
+        ),
         "background_exposure": {
             "equivalent_live_time_years": float(background["equivalent_live_time_years"]),
             "background_pairing_method": background.get("background_pairing_method"),
@@ -708,13 +761,49 @@ def evaluate_calibration_perturbation_robustness(
         scenario_id = str(receipt.get("scenario_id", ""))
         if scenario_id in receipts:
             raise ValueError("Calibration robustness has duplicate scenario receipts")
+        baseline_identity = baseline.get("identity", {})
+        receipt_identity = receipt.get("model_identity", {})
+        shared_identity_fields = (
+            "candidate_checkpoint_sha256",
+            "candidate_config_sha256",
+            "timing_calibration_report_sha256",
+            "physical_delay_limit_seconds",
+            "empirical_timing_uncertainty_seconds",
+            "reference_ifo",
+            "second_ifo",
+        )
+        code_changed = receipt_identity.get(
+            "candidate_code_commit"
+        ) != baseline_identity.get("candidate_code_commit")
+        transfer = receipt.get("controlled_code_transfer")
+        transfer_path = (
+            Path(str(transfer.get("path", ""))).resolve()
+            if isinstance(transfer, dict)
+            else None
+        )
         if (
             receipt.get("status") != "frozen_validation_calibration_perturbation_scenario_result"
             or receipt.get("passed") is not True
             or receipt.get("test_rows_read") != 0
             or receipt.get("threshold_fitted_or_selected") is not False
             or receipt.get("plan", {}).get("sha256") != plan_sha
-            or receipt.get("model_identity") != baseline.get("identity")
+            or any(
+                receipt_identity.get(field) != baseline_identity.get(field)
+                for field in shared_identity_fields
+            )
+            or (
+                code_changed
+                and (
+                    transfer_path is None
+                    or not transfer_path.is_file()
+                    or file_sha256(transfer_path) != transfer.get("sha256")
+                    or transfer.get("reference_commit")
+                    != baseline_identity.get("candidate_code_commit")
+                    or transfer.get("candidate_commit")
+                    != receipt_identity.get("candidate_code_commit")
+                )
+            )
+            or (not code_changed and transfer is not None)
         ):
             raise ValueError("Calibration scenario receipt does not match the baseline")
         receipts[scenario_id] = (receipt_path, receipt)

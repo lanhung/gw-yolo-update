@@ -14,6 +14,7 @@ from gwyolo.candidates import (
     candidate_proposal_coverage,
     extract_temporal_clusters,
     merge_candidate_time_slide_shards,
+    run_apply_candidate_timing_calibration,
     run_candidate_block_permutations,
     run_candidate_time_slides,
     select_candidate_proposal_threshold,
@@ -776,3 +777,104 @@ def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator()
     assert rows[1]["ranking_score"] == 0.0
     assert rows[1]["candidate_pair_found"] is False
     assert report["candidate_pair_found"] == 1
+
+
+def test_calibration_stress_can_reuse_frozen_timing_only_with_narrow_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gwyolo.io import file_sha256
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "status": "frozen_validation_calibration_perturbation_plan",
+                "passed": True,
+                "test_rows_read": 0,
+                "scenario_ids": ["stress"],
+                "manifests": {"background": {"sha256": "background-manifest"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidates = tmp_path / "candidates.jsonl"
+    candidates.write_text(
+        json.dumps(
+            {
+                "candidate_id": "c1",
+                "timing_method": "strain",
+                "timing_resolution_seconds": 0.001,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    current_scoring = {
+        "available": True,
+        "checkpoint_sha256": "checkpoint",
+        "config_sha256": "config",
+        "code_commit": "candidate-commit",
+        "calibration_perturbation": {
+            "plan_sha256": file_sha256(plan_path),
+            "scenario_id": "stress",
+            "role": "background",
+            "manifest_sha256": "background-manifest",
+        },
+        "physical_time_domain_perturbation": True,
+        "fresh_time_frequency_transform": True,
+    }
+    (tmp_path / "candidate_extraction_report.json").write_text(
+        json.dumps(
+            {
+                "manifest_sha256": file_sha256(candidates),
+                "chirp_threshold": 0.3,
+                "minimum_bins": 1,
+                "source_scoring_provenance": current_scoring,
+            }
+        ),
+        encoding="utf-8",
+    )
+    timing = tmp_path / "timing.json"
+    timing.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_candidate_timing_calibration",
+                "source_scoring_provenance": {
+                    "available": True,
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "code_commit": "reference-commit",
+                },
+                "methods": {
+                    "strain": {
+                        "calibration_gate_passed": True,
+                        "maximum_resolution_seconds": 0.002,
+                        "empirical_timing_uncertainty_seconds": 0.003,
+                        "uncertainty_quantile": 0.99,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    transfer = tmp_path / "transfer.json"
+    transfer.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    monkeypatch.setattr(
+        "gwyolo.code_compatibility.validate_calibration_timing_transfer_compatibility",
+        lambda *args: {"passed": True},
+    )
+
+    result = run_apply_candidate_timing_calibration(
+        candidates,
+        timing,
+        tmp_path / "calibrated.jsonl",
+        calibration_perturbation_plan=plan_path,
+        calibration_timing_compatibility_report=transfer,
+    )
+
+    assert result["scoring_provenance_matches"] is True
+    assert result["uncalibrated_candidates"] == 0
+    assert result["calibration_perturbation_plan_sha256"] == file_sha256(plan_path)
+    assert result["calibration_timing_transfer_compatibility_report_sha256"] == file_sha256(
+        transfer
+    )

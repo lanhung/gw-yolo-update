@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from gwyolo.code_compatibility import (
+    audit_calibration_timing_transfer_compatibility,
     audit_candidate_scoring_implementation_compatibility,
+    validate_calibration_timing_transfer_compatibility,
     validate_candidate_scoring_compatibility,
 )
 
@@ -143,6 +145,87 @@ def run_apply_candidate_timing_calibration(value):
         audit_candidate_scoring_implementation_compatibility(
             reference,
             changed_extraction,
+            reference_commit,
+            changed_commit,
+            mismatch,
+        )
+
+
+def _timing_candidates_source(offset: int = 1) -> str:
+    return f"""\
+def _active_runs(value):
+    return value
+
+def _parabolic_offset(value):
+    return value + {offset}
+
+def extract_temporal_clusters(value):
+    return value
+
+def _clusters_from_scored_row(value):
+    return value
+
+def build_injection_candidate_rankings(value):
+    return value
+
+def _cluster_network_rows(value):
+    return value
+
+def run_candidate_block_permutations(value):
+    return value
+
+def unrelated_calibration_orchestration(value):
+    return value
+"""
+
+
+def test_calibration_timing_transfer_compares_only_predeclared_core_functions(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    reference_commit = _repository(
+        reference,
+        "def network_ranking(value):\n    return value\n",
+        candidates=_timing_candidates_source(),
+    )
+    candidate_commit = _repository(
+        candidate,
+        "def network_ranking(value):\n    return value\n\nCALIBRATION = True\n",
+        candidates=_timing_candidates_source().replace(
+            "return value\n\ndef unrelated", "return value\n\ndef new_wrapper(value):\n    return value\n\ndef unrelated", 1
+        ),
+    )
+    report_path = tmp_path / "timing-transfer.json"
+
+    report = audit_calibration_timing_transfer_compatibility(
+        reference,
+        candidate,
+        reference_commit,
+        candidate_commit,
+        report_path,
+    )
+
+    assert report["passed"] is True
+    assert report["compared_functions"] == 8
+    assert (
+        validate_calibration_timing_transfer_compatibility(
+            report_path, reference_commit, candidate_commit
+        )
+        == report
+    )
+
+    changed = tmp_path / "changed"
+    changed_commit = _repository(
+        changed,
+        "def network_ranking(value):\n    return value\n",
+        candidates=_timing_candidates_source(offset=2),
+    )
+    mismatch = tmp_path / "timing-mismatch.json"
+    with pytest.raises(ValueError, match="timing/ranking semantics"):
+        audit_calibration_timing_transfer_compatibility(
+            reference,
+            changed,
             reference_commit,
             changed_commit,
             mismatch,

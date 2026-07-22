@@ -1017,6 +1017,8 @@ def build_parser() -> argparse.ArgumentParser:
     timing_apply.add_argument("--candidates", required=True)
     timing_apply.add_argument("--calibration-report", required=True)
     timing_apply.add_argument("--scoring-compatibility-report")
+    timing_apply.add_argument("--calibration-perturbation-plan")
+    timing_apply.add_argument("--calibration-timing-compatibility-report")
     timing_apply.add_argument("--output", required=True)
 
     scoring_compatibility = subparsers.add_parser(
@@ -1027,6 +1029,15 @@ def build_parser() -> argparse.ArgumentParser:
     scoring_compatibility.add_argument("--reference-commit", required=True)
     scoring_compatibility.add_argument("--candidate-commit", required=True)
     scoring_compatibility.add_argument("--output", required=True)
+
+    calibration_timing_compatibility = subparsers.add_parser(
+        "calibration-timing-transfer-compatibility-audit"
+    )
+    calibration_timing_compatibility.add_argument("--reference-code-dir", required=True)
+    calibration_timing_compatibility.add_argument("--candidate-code-dir", required=True)
+    calibration_timing_compatibility.add_argument("--reference-commit", required=True)
+    calibration_timing_compatibility.add_argument("--candidate-commit", required=True)
+    calibration_timing_compatibility.add_argument("--output", required=True)
 
     injection_candidates = subparsers.add_parser("injection-candidate-extract")
     injection_candidates.add_argument("--injection-triggers", required=True)
@@ -3003,6 +3014,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.calibration_report,
                 args.output,
                 args.scoring_compatibility_report,
+                args.calibration_perturbation_plan,
+                args.calibration_timing_compatibility_report,
             )
         )
     elif args.command == "candidate-scoring-compatibility-audit":
@@ -3012,6 +3025,20 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             audit_candidate_scoring_implementation_compatibility(
+                args.reference_code_dir,
+                args.candidate_code_dir,
+                args.reference_commit,
+                args.candidate_commit,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-timing-transfer-compatibility-audit":
+        from .code_compatibility import (
+            audit_calibration_timing_transfer_compatibility,
+        )
+
+        _print(
+            audit_calibration_timing_transfer_compatibility(
                 args.reference_code_dir,
                 args.candidate_code_dir,
                 args.reference_commit,

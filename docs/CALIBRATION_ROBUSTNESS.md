@@ -46,6 +46,36 @@ python -m gwyolo.cli injection-score \
   --calibration-scenario envelope_plus
 ```
 
+If the frozen empirical timing calibration was produced by an earlier code commit, do not use the
+generic whole-scorer compatibility escape hatch: the calibration-aware preprocessing is
+intentionally different. First freeze a narrower implementation proof that compares the AST hashes
+of the predeclared candidate timing, network-ranking and block-clustering functions:
+
+```bash
+python -m gwyolo.cli calibration-timing-transfer-compatibility-audit \
+  --reference-code-dir /immutable/checkout-at-timing-commit \
+  --candidate-code-dir /immutable/checkout-at-calibration-commit \
+  --reference-commit <timing-code-commit> \
+  --candidate-commit <calibration-code-commit> \
+  --output /artifacts/calibration_timing_transfer_compatibility.json
+```
+
+Apply the original timing calibration to both scenario candidate streams only with that proof and
+the exact frozen perturbation plan:
+
+```bash
+python -m gwyolo.cli candidate-timing-apply \
+  --candidates /artifacts/calibration/envelope_plus/background/candidates.jsonl \
+  --calibration-report /artifacts/baseline/candidate_timing_calibration.json \
+  --calibration-perturbation-plan /artifacts/calibration_perturbation_plan.json \
+  --calibration-timing-compatibility-report /artifacts/calibration_timing_transfer_compatibility.json \
+  --output /artifacts/calibration/envelope_plus/background/calibrated.jsonl
+```
+
+The transfer audit permits only the controlled calibration preprocessing change; any change to
+candidate peak extraction, network ranking or block clustering fails closed. The candidate report
+also requires the same checkpoint and model-config hashes as the original timing calibration.
+
 The committed O4a envelope is deliberately labelled a conservative bounded stress test. It is not
 an official calibration-posterior sample and cannot be described as one. A paper may either retain
 the stress-test interpretation or replace it before freezing with official, hash-bound per-run/IFO

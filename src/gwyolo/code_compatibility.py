@@ -18,6 +18,18 @@ _EXCLUDED_ORCHESTRATION_MODULES = {
 _NORMALIZED_ORCHESTRATION_FUNCTIONS = {
     "src/gwyolo/candidates.py": {"run_apply_candidate_timing_calibration"},
 }
+_CALIBRATION_TIMING_TRANSFER_FUNCTIONS = {
+    "src/gwyolo/candidates.py": {
+        "_active_runs",
+        "_parabolic_offset",
+        "extract_temporal_clusters",
+        "_clusters_from_scored_row",
+        "build_injection_candidate_rankings",
+        "_cluster_network_rows",
+        "run_candidate_block_permutations",
+    },
+    "src/gwyolo/trigger.py": {"network_ranking"},
+}
 
 
 def _git_commit(root: Path) -> str:
@@ -66,6 +78,135 @@ def _implementation_inventory(root: Path) -> dict[str, str]:
     if not inventory:
         raise ValueError("candidate scoring implementation inventory is empty")
     return inventory
+
+
+def _selected_function_inventory(
+    root: Path, targets: dict[str, set[str]]
+) -> dict[str, str]:
+    inventory = {}
+    for relative, names in sorted(targets.items()):
+        path = root / relative
+        if not path.is_file():
+            raise ValueError(f"timing-transfer source is absent: {path}")
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        missing = sorted(names - set(functions))
+        if missing:
+            raise ValueError(f"timing-transfer functions are absent in {relative}: {missing}")
+        for name in sorted(names):
+            inventory[f"{relative}:{name}"] = canonical_hash(
+                ast.dump(functions[name], annotate_fields=True, include_attributes=False),
+                64,
+            )
+    return inventory
+
+
+def audit_calibration_timing_transfer_compatibility(
+    reference_code_dir: str | Path,
+    candidate_code_dir: str | Path,
+    reference_commit: str,
+    candidate_commit: str,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Prove calibration stresses preserve frozen candidate timing/ranking semantics."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("Calibration timing-transfer reports are immutable")
+    reference_root = Path(reference_code_dir).resolve()
+    candidate_root = Path(candidate_code_dir).resolve()
+    if (
+        _git_commit(reference_root) != reference_commit
+        or _git_commit(candidate_root) != candidate_commit
+    ):
+        raise ValueError("Calibration timing-transfer checkout commit mismatch")
+    reference = _selected_function_inventory(
+        reference_root, _CALIBRATION_TIMING_TRANSFER_FUNCTIONS
+    )
+    candidate = _selected_function_inventory(
+        candidate_root, _CALIBRATION_TIMING_TRANSFER_FUNCTIONS
+    )
+    differences = [
+        {
+            "function": name,
+            "reference_sha256": reference.get(name),
+            "candidate_sha256": candidate.get(name),
+        }
+        for name in sorted(set(reference) | set(candidate))
+        if reference.get(name) != candidate.get(name)
+    ]
+    result = {
+        "status": "calibration_timing_transfer_implementation_compatibility",
+        "passed": not differences,
+        "scientific_claim_allowed": False,
+        "scope": "candidate timing extraction, network ranking, and block clustering only",
+        "allowed_scoring_change": (
+            "frozen frequency-dependent calibration response before fresh whitening and transform"
+        ),
+        "reference_code_dir": str(reference_root),
+        "reference_commit": reference_commit,
+        "candidate_code_dir": str(candidate_root),
+        "candidate_commit": candidate_commit,
+        "function_targets": {
+            path: sorted(names)
+            for path, names in sorted(_CALIBRATION_TIMING_TRANSFER_FUNCTIONS.items())
+        },
+        "compared_functions": len(reference),
+        "reference_inventory_hash": canonical_hash(reference, 64),
+        "candidate_inventory_hash": canonical_hash(candidate, 64),
+        "differences": differences,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    if differences:
+        raise ValueError("Calibration stress changes frozen timing/ranking semantics")
+    return result
+
+
+def validate_calibration_timing_transfer_compatibility(
+    report_path: str | Path,
+    reference_commit: str,
+    candidate_commit: str,
+) -> dict[str, Any]:
+    """Replay the narrow calibration timing-transfer implementation proof."""
+
+    import json
+
+    path = Path(report_path)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        report.get("status")
+        != "calibration_timing_transfer_implementation_compatibility"
+        or report.get("passed") is not True
+        or report.get("differences") != []
+        or report.get("reference_commit") != reference_commit
+        or report.get("candidate_commit") != candidate_commit
+        or report.get("reference_inventory_hash")
+        != report.get("candidate_inventory_hash")
+        or int(report.get("compared_functions", 0))
+        != sum(len(names) for names in _CALIBRATION_TIMING_TRANSFER_FUNCTIONS.values())
+    ):
+        raise ValueError("Calibration timing-transfer compatibility report failed replay")
+    reference_root = Path(str(report.get("reference_code_dir", ""))).resolve()
+    candidate_root = Path(str(report.get("candidate_code_dir", ""))).resolve()
+    reference = _selected_function_inventory(
+        reference_root, _CALIBRATION_TIMING_TRANSFER_FUNCTIONS
+    )
+    candidate = _selected_function_inventory(
+        candidate_root, _CALIBRATION_TIMING_TRANSFER_FUNCTIONS
+    )
+    if (
+        _git_commit(reference_root) != reference_commit
+        or _git_commit(candidate_root) != candidate_commit
+        or canonical_hash(reference, 64) != report["reference_inventory_hash"]
+        or canonical_hash(candidate, 64) != report["candidate_inventory_hash"]
+    ):
+        raise ValueError("Calibration timing-transfer source inventory changed")
+    return report
 
 
 def audit_candidate_scoring_implementation_compatibility(
