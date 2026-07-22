@@ -6,7 +6,7 @@ claims. Instead, it binds each predeclared gate to one JSON report, recomputes t
 replays selected model/manifest hashes, evaluates declared predicates and writes both a
 machine-readable audit and an optional Markdown table.
 
-The current validation-freeze protocol is
+The validation-freeze protocol is
 [`configs/publication_validation_evidence.yaml`](../configs/publication_validation_evidence.yaml).
 It covers the source-safe aligned corpus, purpose-disjoint endpoint, five-seed model, paired
 fixed-epoch/fixed-update scaling curve, continuous candidate calibration, paired raw/mask
@@ -37,3 +37,11 @@ exclusive access receipt and locked search/PE reports exist, may set
 `locked_final_evidence_complete=true`, but the ledger still keeps
 `scientific_claim_allowed=false`. Only the immutable locked result reports and their statistical
 interpretation can support a paper claim; the aggregation utility cannot authorize one.
+
+The final protocol is now predeclared in
+[`configs/publication_locked_final_evidence.yaml`](../configs/publication_locked_final_evidence.yaml).
+It requires nine artifacts: the frozen suite plan, exclusive access receipt, raw and mask search
+arms, paired fixed-FAR `<VT>` result, OOD transfer, joint DINGO/AMPLFI PE, catalog diagnostic and
+the final all-output hash receipt. A non-significant or negative paired result is still a valid
+completed endpoint and is retained; it cannot be replaced by a new threshold or omitted from the
+ledger.

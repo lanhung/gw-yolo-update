@@ -26,6 +26,7 @@ from .search import (
     run_search_calibration,
     run_search_comparison,
     run_paired_raw_mask_candidate_calibration_comparison,
+    run_paired_locked_raw_mask_candidate_search_comparison,
     run_validation_injection_diagnostic,
 )
 from .scaling import run_curve_fit, run_scale_plan
@@ -140,6 +141,23 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_frozen.add_argument("--bootstrap-replicates", type=int, default=10000)
     candidate_search_frozen.add_argument("--seed", type=int, default=20260721)
     candidate_search_frozen.add_argument("--output", required=True)
+    candidate_search_frozen.add_argument("--locked-suite-plan")
+    candidate_search_frozen.add_argument("--access-log")
+    candidate_search_frozen.add_argument(
+        "--output-key", choices=("raw_candidate_search", "mask_candidate_search")
+    )
+
+    paired_locked_search = subparsers.add_parser(
+        "candidate-search-raw-mask-compare-locked"
+    )
+    paired_locked_search.add_argument("--raw-locked-report", required=True)
+    paired_locked_search.add_argument("--mask-locked-report", required=True)
+    paired_locked_search.add_argument("--validation-comparison-report", required=True)
+    paired_locked_search.add_argument("--locked-suite-plan", required=True)
+    paired_locked_search.add_argument("--access-log", required=True)
+    paired_locked_search.add_argument("--output", required=True)
+    paired_locked_search.add_argument("--bootstrap-replicates", type=int, default=10000)
+    paired_locked_search.add_argument("--seed", type=int, default=20260722)
 
     search_validation = subparsers.add_parser("search-validation-injections")
     search_validation.add_argument("--calibration-report", required=True)
@@ -1457,6 +1475,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat to freeze physical group counts; defaults to injection/waveform/GPS/family",
     )
 
+    locked_suite_freeze = subparsers.add_parser("locked-evaluation-suite-freeze")
+    locked_suite_freeze.add_argument("--validation-evidence-report", required=True)
+    locked_suite_freeze.add_argument("--config", required=True)
+    locked_suite_freeze.add_argument("--output-root", required=True)
+    locked_suite_freeze.add_argument("--code-commit", required=True)
+    locked_suite_freeze.add_argument("--output", required=True)
+
+    locked_suite_finalize = subparsers.add_parser(
+        "locked-evaluation-suite-finalize"
+    )
+    locked_suite_finalize.add_argument("--plan", required=True)
+    locked_suite_finalize.add_argument("--access-log", required=True)
+    locked_suite_finalize.add_argument("--output", required=True)
+
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
     evaluation_open.add_argument("--code-commit", required=True)
@@ -1859,6 +1891,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output_key,
             )
         )
     elif args.command == "candidate-search-calibrate":
@@ -1894,6 +1929,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.minimum_test_live_time_years,
                 args.minimum_test_injections,
+                args.bootstrap_replicates,
+                args.seed,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-compare-locked":
+        _print(
+            run_paired_locked_raw_mask_candidate_search_comparison(
+                args.raw_locked_report,
+                args.mask_locked_report,
+                args.validation_comparison_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
                 args.bootstrap_replicates,
                 args.seed,
             )
@@ -3540,6 +3588,28 @@ def main(argv: list[str] | None = None) -> int:
                     "gps_block",
                     "source_family",
                 ),
+            )
+        )
+    elif args.command == "locked-evaluation-suite-freeze":
+        from .evaluation_lock import freeze_locked_evaluation_suite_plan
+
+        _print(
+            freeze_locked_evaluation_suite_plan(
+                args.validation_evidence_report,
+                args.config,
+                args.output_root,
+                args.code_commit,
+                args.output,
+            )
+        )
+    elif args.command == "locked-evaluation-suite-finalize":
+        from .evaluation_lock import finalize_locked_evaluation_suite_receipt
+
+        _print(
+            finalize_locked_evaluation_suite_receipt(
+                args.plan,
+                args.access_log,
+                args.output,
             )
         )
     elif args.command == "evaluation-corpus-open-once":

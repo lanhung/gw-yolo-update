@@ -892,12 +892,45 @@ def run_frozen_candidate_search_evaluation(
     minimum_test_injections: int,
     bootstrap_replicates: int = 10000,
     seed: int = 20260721,
+    locked_suite_plan: str | Path | None = None,
+    access_log: str | Path | None = None,
+    output_key: str | None = None,
 ) -> dict[str, Any]:
     """Apply a frozen candidate threshold once to disjoint locked-test artifacts."""
 
     output_path = Path(output)
     if output_path.exists():
         raise FileExistsError("frozen candidate search output already exists")
+    suite_values = (locked_suite_plan, access_log, output_key)
+    if any(value is not None for value in suite_values) and not all(
+        value is not None for value in suite_values
+    ):
+        raise ValueError("locked suite plan, access log and output key are all required")
+    locked_suite_access = None
+    if locked_suite_plan is not None:
+        from .evaluation_lock import validate_locked_evaluation_suite_access
+
+        if output_key not in {"raw_candidate_search", "mask_candidate_search"}:
+            raise ValueError("locked candidate output key must identify the raw or mask arm")
+        locked_suite_access = validate_locked_evaluation_suite_access(
+            locked_suite_plan,
+            access_log,
+            str(output_key),
+            output_path,
+        )
+        endpoints = locked_suite_access["endpoints"]
+        if (
+            not np.isclose(
+                minimum_test_live_time_years,
+                float(endpoints["minimum_test_live_time_years"]),
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or minimum_test_injections != int(endpoints["minimum_test_injections"])
+            or bootstrap_replicates != int(endpoints["bootstrap_replicates"])
+            or seed != int(endpoints["bootstrap_seed"])
+        ):
+            raise ValueError("locked candidate endpoint settings differ from the suite plan")
     if minimum_test_live_time_years <= 0 or minimum_test_injections <= 0:
         raise ValueError("locked candidate endpoint minima must be positive")
     with Path(calibration_report).open("r", encoding="utf-8") as handle:
@@ -910,6 +943,13 @@ def run_frozen_candidate_search_evaluation(
         raise ValueError(
             "candidate search calibration lacks a complete target-exposure frozen schedule"
         )
+    if locked_suite_access is not None and not np.isclose(
+        float(frozen["target_far_per_year"]),
+        float(locked_suite_access["endpoints"]["target_far_per_year"]),
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("frozen calibration target FAR differs from the locked suite plan")
     slide, background = _verified_candidate_search_artifact(
         test_time_slide_report,
         "subwindow_clustered_time_slide_integration_only",
@@ -999,6 +1039,252 @@ def run_frozen_candidate_search_evaluation(
         "test_evaluation": evaluation,
         "bootstrap_replicates": bootstrap_replicates,
         "seed": seed,
+        "locked_suite_access": locked_suite_access,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def run_paired_locked_raw_mask_candidate_search_comparison(
+    raw_locked_report: str | Path,
+    mask_locked_report: str | Path,
+    validation_comparison_report: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260722,
+) -> dict[str, Any]:
+    """Compute the predeclared paired raw/mask locked-test VT endpoint once."""
+
+    from .evaluation_lock import validate_locked_evaluation_suite_access
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("paired locked raw/mask output already exists")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan,
+        access_log,
+        "paired_raw_mask_search",
+        output_path,
+    )
+    endpoints = suite_access["endpoints"]
+    if (
+        bootstrap_replicates != int(endpoints["bootstrap_replicates"])
+        or seed != int(endpoints["bootstrap_seed"])
+    ):
+        raise ValueError("paired locked bootstrap settings differ from the suite plan")
+
+    validation_path = Path(validation_comparison_report).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    gain_gate = validation.get("continuous_background_mask_gain_gate", {})
+    if (
+        validation.get("status")
+        != "validation_only_paired_raw_mask_candidate_calibration_comparison"
+        or validation.get("passed") is not True
+        or validation.get("mask_locked_test_arm_eligible") is not True
+        or validation.get("test_rows_read") != 0
+        or validation.get("test_evaluation") is not None
+        or gain_gate.get("passed") is not True
+    ):
+        raise ValueError("locked paired endpoint requires the passing frozen validation gate")
+
+    def load_arm(
+        report_value: str | Path, arm: str, output_key: str
+    ) -> tuple[
+        Path,
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
+        report_path = Path(report_value).resolve()
+        binding = validate_locked_evaluation_suite_access(
+            locked_suite_plan, access_log, output_key, report_path
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("status") != "locked_candidate_search_evaluation"
+            or report.get("candidate_endpoint_gates_passed") is not True
+            or report.get("threshold_source")
+            != "frozen_validation_candidate_search_calibration"
+            or report.get("locked_suite_access") != binding
+        ):
+            raise ValueError(f"{arm} locked candidate report failed suite replay")
+        calibration_path = Path(str(report.get("calibration_report_path", ""))).resolve()
+        ranking_path = Path(
+            str(report.get("test_injection_ranking_report_path", ""))
+        ).resolve()
+        slide_path = Path(str(report.get("test_time_slide_report_path", ""))).resolve()
+        if (
+            not calibration_path.is_file()
+            or report.get("calibration_report_sha256") != file_sha256(calibration_path)
+            or not ranking_path.is_file()
+            or report.get("test_injection_ranking_report_sha256")
+            != file_sha256(ranking_path)
+            or not slide_path.is_file()
+            or report.get("test_time_slide_report_sha256") != file_sha256(slide_path)
+        ):
+            raise ValueError(f"{arm} locked candidate dependencies changed")
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        ranking, rows = _verified_candidate_search_artifact(
+            ranking_path, "physical_network_injection_candidate_rankings", "test"
+        )
+        slide, _ = _verified_candidate_search_artifact(
+            slide_path, "subwindow_clustered_time_slide_integration_only", "test"
+        )
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("publication_calibration_eligible") is not True
+            or not np.isclose(
+                float(calibration["target_far_per_year"]),
+                float(endpoints["target_far_per_year"]),
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or report.get("identity") != _candidate_search_identity(slide, ranking)
+        ):
+            raise ValueError(f"{arm} locked threshold or physical identity failed replay")
+        return report_path, report, calibration, rows, slide
+
+    raw = load_arm(raw_locked_report, "raw", "raw_candidate_search")
+    mask = load_arm(mask_locked_report, "mask", "mask_candidate_search")
+    raw_path, raw_report, raw_calibration, raw_rows, raw_slide = raw
+    mask_path, mask_report, mask_calibration, mask_rows, mask_slide = mask
+
+    expected_calibrations = {
+        "raw": (raw_calibration, validation.get("raw_calibration_report", {})),
+        "mask": (mask_calibration, validation.get("mask_calibration_report", {})),
+    }
+    for arm, (calibration, identity) in expected_calibrations.items():
+        report_calibration_path = Path(
+            raw_report["calibration_report_path"]
+            if arm == "raw"
+            else mask_report["calibration_report_path"]
+        ).resolve()
+        if (
+            Path(str(identity.get("path", ""))).resolve() != report_calibration_path
+            or identity.get("sha256") != file_sha256(report_calibration_path)
+            or calibration.get("test_evaluation") is not None
+        ):
+            raise ValueError(f"{arm} locked arm differs from the validation-frozen threshold")
+
+    common_identity_fields = (
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "physical_delay_limit_seconds",
+        "reference_ifo",
+        "second_ifo",
+    )
+    if any(
+        raw_report["identity"].get(field) != mask_report["identity"].get(field)
+        for field in common_identity_fields
+    ):
+        raise ValueError("raw/mask locked arms differ in model or physics identity")
+    common_exposure_fields = (
+        "background_manifest_sha256",
+        "background_pairing_method",
+        "equivalent_live_time_years",
+        "input_gps_blocks",
+        "reference_ifo",
+        "shifted_ifo",
+        "slide_schedule_sha256",
+        "slide_schedule_id",
+        "slide_count",
+    )
+    if any(raw_slide.get(field) != mask_slide.get(field) for field in common_exposure_fields):
+        raise ValueError("raw/mask locked arms do not share the same physical exposure")
+
+    raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
+    mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
+    if (
+        len(raw_by_id) != len(raw_rows)
+        or len(mask_by_id) != len(mask_rows)
+        or set(raw_by_id) != set(mask_by_id)
+    ):
+        raise ValueError("raw/mask locked arms do not share unique injection IDs")
+    identity_fields = (
+        "waveform_id",
+        "source_family",
+        "stratum",
+        "gps_block",
+        "gps_time",
+        "vt_weight",
+        "vt_weight_unit",
+    )
+    joined = []
+    for injection_id in sorted(raw_by_id):
+        raw_row = raw_by_id[injection_id]
+        mask_row = mask_by_id[injection_id]
+        if any(raw_row.get(field) != mask_row.get(field) for field in identity_fields):
+            raise ValueError(f"raw/mask locked injection identity differs: {injection_id}")
+        joined.append(
+            {
+                **raw_row,
+                "raw_score": float(raw_row["ranking_score"]),
+                "mask_score": float(mask_row["ranking_score"]),
+            }
+        )
+    if len(joined) < int(endpoints["minimum_test_injections"]):
+        raise ValueError("paired locked endpoint has too few injections")
+    if float(raw_slide["equivalent_live_time_years"]) < float(
+        endpoints["minimum_test_live_time_years"]
+    ):
+        raise ValueError("paired locked endpoint has insufficient background exposure")
+
+    paired = paired_vt_comparison(
+        joined,
+        float(raw_calibration["calibration"]["threshold"]),
+        float(mask_calibration["calibration"]["threshold"]),
+        "raw_score",
+        "mask_score",
+        bootstrap_replicates,
+        seed,
+    )
+    total_vt = float(sum(float(row.get("vt_weight", 1.0)) for row in joined))
+    absolute_gain = float(paired["delta_recovered_vt_b_minus_a"]) / total_vt
+    frozen_minimum_gain = float(
+        gain_gate["minimum_absolute_weighted_efficiency_gain"]
+    )
+    primary_endpoint = {
+        "metric": "paired_delta_recovered_vt_at_common_far",
+        "observed_absolute_weighted_efficiency_gain": absolute_gain,
+        "frozen_minimum_absolute_weighted_efficiency_gain": frozen_minimum_gain,
+        "paired_delta_recovered_vt_lower_95": float(paired["paired_bootstrap_95"][0]),
+        "significant_mask_advantage": bool(
+            absolute_gain >= frozen_minimum_gain
+            and float(paired["paired_bootstrap_95"][0]) > 0
+        ),
+    }
+    result = {
+        "status": "locked_paired_raw_mask_candidate_search_comparison",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "the paired locked endpoint must be combined with the full predeclared locked "
+            "OOD, PE, catalog and reproducibility evidence audit before a paper claim"
+        ),
+        "threshold_refits_on_test": 0,
+        "target_far_per_year": float(endpoints["target_far_per_year"]),
+        "paired_injections": len(joined),
+        "background_live_time_years": float(raw_slide["equivalent_live_time_years"]),
+        "total_vt_weight": total_vt,
+        "paired_vt": paired,
+        "primary_endpoint_result": primary_endpoint,
+        "raw_locked_report": {"path": str(raw_path), "sha256": file_sha256(raw_path)},
+        "mask_locked_report": {"path": str(mask_path), "sha256": file_sha256(mask_path)},
+        "validation_comparison_report": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "locked_suite_access": suite_access,
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        "locked_test_rows_read": len(raw_rows) + len(mask_rows),
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)

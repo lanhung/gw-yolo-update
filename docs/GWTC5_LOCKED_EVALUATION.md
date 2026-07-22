@@ -50,6 +50,35 @@ Secondary locked endpoints are:
 Candidate recovery is descriptive. It cannot replace background exposure or injection sensitivity,
 and a miss is retained rather than removed from the event set.
 
+The machine-readable contract is
+[`configs/locked_evaluation_suite_gwtc5.yaml`](../configs/locked_evaluation_suite_gwtc5.yaml).
+It fixes the primary metric, 0.1/year target FAR, at least 23.02585093 years of equivalent test
+background, at least 3,000 paired injections, at least 100 PE injections, 10,000 paired bootstrap
+replicates and seed 20260722. It also names every output path before any locked score is read.
+
+The sequence is fail-closed:
+
+```bash
+python -m gwyolo.cli locked-evaluation-suite-freeze \
+  --validation-evidence-report /artifacts/validation-evidence-ready.json \
+  --config configs/locked_evaluation_suite_gwtc5.yaml \
+  --output-root /artifacts/gwtc5-locked-final \
+  --code-commit "$(git rev-parse HEAD)" \
+  --output /artifacts/gwtc5-locked-suite-plan.json
+
+# evaluation-corpus-open-once must include
+# --artifact locked_suite_plan=/artifacts/gwtc5-locked-suite-plan.json and must
+# predeclare the plan's suite_receipt output. It may run only after all validation gates pass.
+```
+
+After the exclusive access receipt exists,
+[`scripts/run_locked_search_endpoints.sh`](../scripts/run_locked_search_endpoints.sh) applies the two
+validation-frozen thresholds and writes the paired raw/mask `<VT>` endpoint. The script obtains
+all endpoint settings and output paths from the frozen plan; it accepts no replacement test
+threshold. Once OOD, PE and catalog endpoints are also complete,
+`locked-evaluation-suite-finalize` hashes all eight outputs into the predeclared suite receipt.
+The locked-final publication ledger must then pass all nine requirements before interpretation.
+
 ## Promotion decision
 
 The current model is not ready to unlock O4b. Its first three real-noise physical injections produced

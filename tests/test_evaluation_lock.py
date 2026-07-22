@@ -1,18 +1,76 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from gwyolo.evaluation_lock import (
     freeze_evaluation_corpus,
+    freeze_locked_evaluation_suite_plan,
+    finalize_locked_evaluation_suite_receipt,
     open_evaluation_corpus_once,
+    validate_locked_evaluation_suite_access,
 )
 
 
 def _write(path, rows):
     path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _complete_validation_evidence(path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "status": "publication_evidence_ready",
+                "publication_ready": True,
+                "phase": "validation_freeze",
+                "scientific_claim_allowed": False,
+                "summary": {
+                    "required_total": 3,
+                    "required_passed": 3,
+                    "required_pending": 0,
+                    "required_failed": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _locked_suite_config(path) -> None:
+    outputs = {
+        "raw_candidate_search": "search/raw.json",
+        "mask_candidate_search": "search/mask.json",
+        "paired_raw_mask_search": "search/paired.json",
+        "locked_ood_transfer": "robustness/ood.json",
+        "dingo_batch": "pe/dingo.json",
+        "amplfi_batch": "pe/amplfi.json",
+        "joint_pe": "pe/joint.json",
+        "catalog_diagnostic": "catalog/diagnostic.json",
+        "suite_receipt": "suite.json",
+    }
+    path.write_text(
+        "locked_evaluation_suite:\n"
+        "  schema: locked_suite_v1\n"
+        "  corpus_label: GWTC-5.0_O4b_locked_suite_v1\n"
+        "  required_split: test\n"
+        "  observing_runs: [O4b]\n"
+        "  catalog_release: GWTC-5.0\n"
+        "  outputs:\n"
+        + "".join(f"    {key}: {value}\n" for key, value in outputs.items())
+        + "  endpoints:\n"
+        "    primary_search_metric: paired_delta_recovered_vt_at_common_far\n"
+        "    threshold_policy: validation_frozen_no_test_retuning\n"
+        "    target_far_per_year: 0.1\n"
+        "    minimum_test_live_time_years: 23.02585093\n"
+        "    minimum_test_injections: 3000\n"
+        "    minimum_paired_pe_injections: 100\n"
+        "    bootstrap_replicates: 10000\n"
+        "    bootstrap_seed: 20260722\n",
         encoding="utf-8",
     )
 
@@ -175,3 +233,139 @@ def test_open_evaluation_corpus_once_rejects_group_overlap_before_access(tmp_pat
             "frozen command",
         )
     assert not access.exists()
+
+
+def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> None:
+    evidence = tmp_path / "validation_evidence.json"
+    config = tmp_path / "suite.yaml"
+    output_root = tmp_path / "locked-results"
+    plan_path = tmp_path / "locked-suite-plan.json"
+    _complete_validation_evidence(evidence)
+    _locked_suite_config(config)
+
+    plan = freeze_locked_evaluation_suite_plan(
+        evidence, config, output_root, "abc123", plan_path
+    )
+    assert plan["status"] == "frozen_locked_evaluation_suite_plan"
+    assert plan["locked_corpus_opened"] is False
+    assert plan["test_rows_read"] == 0
+    assert plan["outputs"]["raw_candidate_search"] == str(
+        (output_root / "search/raw.json").resolve()
+    )
+
+    test_manifest = tmp_path / "test.jsonl"
+    _write(
+        test_manifest,
+        [
+            {
+                "split": "test",
+                "injection_id": "test-i0",
+                "waveform_id": "test-w0",
+                "gps_block": "test-g0",
+                "source_family": "BBH",
+            }
+        ],
+    )
+    access_path = tmp_path / "access.json"
+    freeze_path = tmp_path / "corpus-freeze.json"
+    freeze_evaluation_corpus(
+        test_manifest,
+        freeze_path,
+        access_path,
+        "GWTC-5.0_O4b_locked_suite_v1",
+    )
+    comparison = tmp_path / "train.jsonl"
+    _write(
+        comparison,
+        [
+            {
+                "split": "train",
+                "injection_id": "train-i0",
+                "waveform_id": "train-w0",
+                "gps_block": "train-g0",
+            }
+        ],
+    )
+    artifacts = {"locked_suite_plan": plan_path}
+    for label in ("config", "model", "threshold_calibration", "ood_policy"):
+        path = tmp_path / label
+        path.write_text(label, encoding="utf-8")
+        artifacts[label] = path
+    open_evaluation_corpus_once(
+        freeze_path,
+        "abc123",
+        artifacts,
+        (comparison,),
+        plan["outputs"]["suite_receipt"],
+        "python -m gwyolo.cli locked-suite-run ...",
+    )
+
+    binding = validate_locked_evaluation_suite_access(
+        plan_path,
+        access_path,
+        "raw_candidate_search",
+        plan["outputs"]["raw_candidate_search"],
+    )
+    assert binding["code_commit"] == "abc123"
+    assert binding["output_key"] == "raw_candidate_search"
+    with pytest.raises(ValueError, match="not predeclared"):
+        validate_locked_evaluation_suite_access(
+            plan_path, access_path, "raw_candidate_search", tmp_path / "other.json"
+        )
+
+    expected_statuses = {
+        "raw_candidate_search": "locked_candidate_search_evaluation",
+        "mask_candidate_search": "locked_candidate_search_evaluation",
+        "paired_raw_mask_search": "locked_paired_raw_mask_candidate_search_comparison",
+        "locked_ood_transfer": "locked_detector_set_ood_transfer_evaluation",
+        "dingo_batch": "locked_dingo_paired_pe_batch_complete",
+        "amplfi_batch": "locked_amplfi_paired_pe_batch_complete",
+        "joint_pe": "locked_joint_paired_pe_complete",
+        "catalog_diagnostic": "locked_gwtc5_catalog_diagnostic",
+    }
+    for key, status in expected_statuses.items():
+        path = Path(plan["outputs"][key])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "locked_suite_access": validate_locked_evaluation_suite_access(
+                        plan_path, access_path, key, path
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+    receipt = finalize_locked_evaluation_suite_receipt(
+        plan_path, access_path, plan["outputs"]["suite_receipt"]
+    )
+    assert receipt["passed"] is True
+    assert receipt["all_predeclared_outputs_present"] is True
+    assert len(receipt["outputs"]) == 8
+
+
+def test_freeze_locked_suite_rejects_incomplete_validation_and_unsafe_output(
+    tmp_path,
+) -> None:
+    evidence = tmp_path / "validation_evidence.json"
+    config = tmp_path / "suite.yaml"
+    _complete_validation_evidence(evidence)
+    _locked_suite_config(config)
+    report = json.loads(evidence.read_text(encoding="utf-8"))
+    report["publication_ready"] = False
+    evidence.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete validation-freeze"):
+        freeze_locked_evaluation_suite_plan(
+            evidence, config, tmp_path / "results", "abc123", tmp_path / "plan.json"
+        )
+
+    _complete_validation_evidence(evidence)
+    text = config.read_text(encoding="utf-8").replace(
+        "search/raw.json", "../escaped.json"
+    )
+    config.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="safe relative path"):
+        freeze_locked_evaluation_suite_plan(
+            evidence, config, tmp_path / "results", "abc123", tmp_path / "plan.json"
+        )

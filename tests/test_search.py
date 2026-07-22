@@ -1,5 +1,6 @@
 import math
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ from gwyolo.search import (
     far_upper_limit_zero_count,
     paired_vt_comparison,
     run_paired_raw_mask_candidate_calibration_comparison,
+    run_paired_locked_raw_mask_candidate_search_comparison,
     run_frozen_search_evaluation,
     run_candidate_search_calibration,
     run_frozen_candidate_search_evaluation,
@@ -174,6 +176,189 @@ def test_candidate_search_freezes_validation_then_evaluates_disjoint_test(tmp_pa
     assert result["candidate_endpoint_gates_passed"] is True
     assert result["test_evaluation"]["background"]["far_per_year"] == 0.1
     assert result["test_evaluation"]["injections"]["recovered"] == 1
+
+
+def test_paired_locked_raw_mask_endpoint_computes_hand_calculated_vt(
+    tmp_path, monkeypatch
+) -> None:
+    endpoints = {
+        "target_far_per_year": 0.1,
+        "minimum_test_live_time_years": 20.0,
+        "minimum_test_injections": 4,
+        "bootstrap_replicates": 100,
+        "bootstrap_seed": 7,
+    }
+
+    def binding(_plan, _access, output_key, output_path):
+        return {
+            "plan_path": str((tmp_path / "plan.json").resolve()),
+            "plan_sha256": "p" * 64,
+            "access_log_path": str((tmp_path / "access.json").resolve()),
+            "access_log_sha256": "a" * 64,
+            "output_key": output_key,
+            "output_path": str(Path(output_path).resolve()),
+            "code_commit": "deadbee",
+            "corpus_label": "GWTC-5.0_O4b_locked_suite_v1",
+            "endpoints": endpoints,
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access", binding
+    )
+    common_identity = {
+        "candidate_checkpoint_sha256": "c" * 64,
+        "candidate_config_sha256": "f" * 64,
+        "candidate_code_commit": "deadbee",
+        "physical_delay_limit_seconds": 0.01,
+        "empirical_timing_uncertainty_seconds": 0.001,
+    }
+    calibrations = {}
+    ranking_reports = {}
+    slide_reports = {}
+    locked_reports = {}
+    for arm, scores, threshold in (
+        ("raw", [0.1, 0.2, 0.3, 0.4], 0.9),
+        ("mask", [0.9, 0.9, 0.9, 0.9], 0.5),
+    ):
+        calibration_path = tmp_path / f"{arm}-calibration.json"
+        calibration_path.write_text(
+            json.dumps(
+                {
+                    "status": "frozen_validation_candidate_search_calibration",
+                    "test_evaluation": None,
+                    "publication_calibration_eligible": True,
+                    "target_far_per_year": 0.1,
+                    "calibration": {"threshold": threshold},
+                }
+            ),
+            encoding="utf-8",
+        )
+        calibrations[arm] = calibration_path
+        rows = [
+            {
+                "split": "test",
+                "injection_id": f"i{index}",
+                "waveform_id": f"w{index}",
+                "source_family": "BBH",
+                "stratum": "glitch_overlap",
+                "gps_block": f"g{index}",
+                "gps_time": 1000 + index,
+                "vt_weight": float(index + 1),
+                "vt_weight_unit": "Gpc3_yr",
+                "ranking_score": score,
+            }
+            for index, score in enumerate(scores)
+        ]
+        ranking_manifest = tmp_path / f"{arm}-rankings.jsonl"
+        ranking_manifest.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        timing_hash = ("1" if arm == "raw" else "2") * 64
+        ranking_report = {
+            "status": "physical_network_injection_candidate_rankings",
+            "split": "test",
+            "manifest_path": str(ranking_manifest),
+            "manifest_sha256": file_sha256(ranking_manifest),
+            "reference_ifo": "H1",
+            "second_ifo": "L1",
+            "timing_calibration_consistent": True,
+            "candidate_scoring_provenance_consistent": True,
+            "timing_calibration_report_sha256": timing_hash,
+            **common_identity,
+        }
+        ranking_path = tmp_path / f"{arm}-ranking-report.json"
+        ranking_path.write_text(json.dumps(ranking_report), encoding="utf-8")
+        ranking_reports[arm] = ranking_path
+        background_manifest = tmp_path / f"{arm}-background.jsonl"
+        background_manifest.write_text(
+            json.dumps({"split": "test", "ranking_score": 0.01}) + "\n",
+            encoding="utf-8",
+        )
+        slide_report = {
+            "status": "subwindow_clustered_time_slide_integration_only",
+            "split": "test",
+            "manifest_path": str(background_manifest),
+            "manifest_sha256": file_sha256(background_manifest),
+            "background_manifest_sha256": "b" * 64,
+            "background_pairing_method": "hash_threshold_v1",
+            "equivalent_live_time_years": 25.0,
+            "input_gps_blocks": ["test-gps-block"],
+            "reference_ifo": "H1",
+            "shifted_ifo": "L1",
+            "slide_schedule_sha256": "s" * 64,
+            "slide_schedule_id": "schedule-1",
+            "slide_count": 100,
+            "publication_timing_gate_passed": True,
+            "timing_calibration_report_sha256": timing_hash,
+            **common_identity,
+        }
+        slide_path = tmp_path / f"{arm}-slide-report.json"
+        slide_path.write_text(json.dumps(slide_report), encoding="utf-8")
+        slide_reports[arm] = slide_path
+        locked_path = tmp_path / f"{arm}-locked.json"
+        locked_report = {
+            "status": "locked_candidate_search_evaluation",
+            "candidate_endpoint_gates_passed": True,
+            "threshold_source": "frozen_validation_candidate_search_calibration",
+            "calibration_report_path": str(calibration_path),
+            "calibration_report_sha256": file_sha256(calibration_path),
+            "test_injection_ranking_report_path": str(ranking_path),
+            "test_injection_ranking_report_sha256": file_sha256(ranking_path),
+            "test_time_slide_report_path": str(slide_path),
+            "test_time_slide_report_sha256": file_sha256(slide_path),
+            "identity": {
+                **common_identity,
+                "timing_calibration_report_sha256": timing_hash,
+                "reference_ifo": "H1",
+                "second_ifo": "L1",
+            },
+            "locked_suite_access": binding(
+                None, None, f"{arm}_candidate_search", locked_path
+            ),
+        }
+        locked_path.write_text(json.dumps(locked_report), encoding="utf-8")
+        locked_reports[arm] = locked_path
+
+    validation_path = tmp_path / "validation-comparison.json"
+    validation_path.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_paired_raw_mask_candidate_calibration_comparison",
+                "passed": True,
+                "mask_locked_test_arm_eligible": True,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "continuous_background_mask_gain_gate": {
+                    "passed": True,
+                    "minimum_absolute_weighted_efficiency_gain": 0.05,
+                },
+                "raw_calibration_report": {
+                    "path": str(calibrations["raw"]),
+                    "sha256": file_sha256(calibrations["raw"]),
+                },
+                "mask_calibration_report": {
+                    "path": str(calibrations["mask"]),
+                    "sha256": file_sha256(calibrations["mask"]),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_paired_locked_raw_mask_candidate_search_comparison(
+        locked_reports["raw"],
+        locked_reports["mask"],
+        validation_path,
+        tmp_path / "plan.json",
+        tmp_path / "access.json",
+        tmp_path / "paired.json",
+        bootstrap_replicates=100,
+        seed=7,
+    )
+    assert result["paired_vt"]["method_a"]["recovered_vt"] == 0.0
+    assert result["paired_vt"]["method_b"]["recovered_vt"] == 10.0
+    assert result["paired_vt"]["delta_recovered_vt_b_minus_a"] == 10.0
+    assert result["primary_endpoint_result"]["significant_mask_advantage"] is True
+    assert result["threshold_refits_on_test"] == 0
 
 
 def test_candidate_search_calibration_accepts_frozen_block_permutations(

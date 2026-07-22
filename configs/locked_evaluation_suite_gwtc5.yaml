@@ -1,0 +1,42 @@
+locked_evaluation_suite:
+  schema: locked_suite_v1
+  corpus_label: GWTC-5.0_O4b_locked_suite_v1
+  required_split: test
+  observing_runs: [O4b]
+  catalog_release: GWTC-5.0
+
+  # Paths are relative to the externally configured immutable output root. None
+  # may exist when the suite plan is frozen.
+  outputs:
+    raw_candidate_search: search/raw_locked_candidate_search.json
+    mask_candidate_search: search/mask_locked_candidate_search.json
+    paired_raw_mask_search: search/paired_raw_mask_locked_vt.json
+    locked_ood_transfer: robustness/locked_ood_transfer.json
+    dingo_batch: pe/dingo_locked_batch_report.json
+    amplfi_batch: pe/amplfi_locked_batch_report.json
+    joint_pe: pe/locked_joint_pe_report.json
+    catalog_diagnostic: catalog/gwtc5_frozen_threshold_diagnostic.json
+    suite_receipt: locked_suite_receipt.json
+
+  endpoints:
+    primary_search_metric: paired_delta_recovered_vt_at_common_far
+    threshold_policy: validation_frozen_no_test_retuning
+    target_far_per_year: 0.1
+    # 90% Poisson upper-limit support for zero surviving background counts at
+    # 0.1/year requires approximately 23.026 years of equivalent exposure.
+    minimum_test_live_time_years: 23.02585093
+    minimum_test_injections: 3000
+    minimum_paired_pe_injections: 100
+    bootstrap_replicates: 10000
+    bootstrap_seed: 20260722
+    uncertainty: paired_nonparametric_bootstrap_95
+    catalog_role: descriptive_secondary_endpoint_only
+    required_detector_subsets: [H1+L1, H1+V1, L1+V1, H1+L1+V1]
+    required_source_families: [BBH, BNS, NSBH]
+    required_stress_strata:
+      - glitch_overlap
+      - missing_detector
+      - calibration_perturbation
+      - waveform_systematics
+      - high_mass_unequal_mass
+      - high_spin_precessing
