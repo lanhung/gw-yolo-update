@@ -142,6 +142,12 @@ def test_overlap_train_epoch_stops_at_exact_update_budget() -> None:
         maximum_optimizer_updates=1,
     )
     assert result["optimizer_updates"] == 1
+    assert result["component_losses"][
+        "clean_chirp_distillation"
+    ] == pytest.approx(np.log(2.0))
+    assert result["component_losses"][
+        "clean_glitch_distillation"
+    ] == pytest.approx(np.log(2.0))
 
 
 def test_overlap_data_scaling_requires_paired_gain_under_both_controls(

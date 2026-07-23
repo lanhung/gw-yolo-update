@@ -1677,11 +1677,17 @@ def _train_epoch(
     q_count: int,
     settings: dict[str, Any],
     maximum_optimizer_updates: int | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     model.train()
     teacher.eval()
     clean_batches = iter(clean_loader)
     losses = []
+    component_losses: dict[str, list[float]] = {
+        "overlap": [],
+        "clean_chirp": [],
+        "clean_chirp_distillation": [],
+        "clean_glitch_distillation": [],
+    }
     for overlap_features, overlap_targets, overlap_availability in overlap_loader:
         if maximum_optimizer_updates is not None and len(losses) >= maximum_optimizer_updates:
             break
@@ -1725,7 +1731,16 @@ def _train_epoch(
             teacher_logits = _forward(
                 teacher, teacher_architecture, clean_features, clean_availability
             )
+            teacher_chirp = torch.sigmoid(teacher_logits[:, 0:1])
             teacher_glitch = torch.sigmoid(teacher_logits[:, 1:2])
+        chirp_distillation = torch_functional.binary_cross_entropy_with_logits(
+            clean_logits[:, 0:1], teacher_chirp, reduction="none"
+        )
+        chirp_distillation = (chirp_distillation * clean_mask).sum() / (
+            clean_mask.sum()
+            * clean_logits.shape[-2]
+            * clean_logits.shape[-1]
+        ).clamp_min(1.0)
         glitch_distillation = torch_functional.binary_cross_entropy_with_logits(
             clean_logits[:, 1:2], teacher_glitch, reduction="none"
         )
@@ -1735,13 +1750,31 @@ def _train_epoch(
         loss = (
             overlap_loss
             + float(settings.get("clean_chirp_weight", 1.0)) * clean_chirp_loss
+            + float(
+                settings.get("clean_chirp_distillation_weight", 0.0)
+            )
+            * chirp_distillation
             + float(settings.get("clean_glitch_distillation_weight", 0.25))
             * glitch_distillation
         )
         loss.backward()
         optimizer.step()
         losses.append(float(loss.detach().cpu()))
-    return {"loss": float(np.mean(losses)), "optimizer_updates": len(losses)}
+        for name, value in (
+            ("overlap", overlap_loss),
+            ("clean_chirp", clean_chirp_loss),
+            ("clean_chirp_distillation", chirp_distillation),
+            ("clean_glitch_distillation", glitch_distillation),
+        ):
+            component_losses[name].append(float(value.detach().cpu()))
+    return {
+        "loss": float(np.mean(losses)),
+        "optimizer_updates": len(losses),
+        "component_losses": {
+            name: float(np.mean(values))
+            for name, values in component_losses.items()
+        },
+    }
 
 
 def resolve_overlap_training_control(
@@ -1816,6 +1849,30 @@ def run_physical_overlap_finetune(
     settings = config.get("overlap_training")
     if not isinstance(settings, dict):
         raise ValueError("Configuration requires overlap_training")
+    clean_loss_weights = {
+        "clean_chirp_weight": float(
+            settings.get("clean_chirp_weight", 1.0)
+        ),
+        "clean_chirp_distillation_weight": float(
+            settings.get("clean_chirp_distillation_weight", 0.0)
+        ),
+        "clean_glitch_distillation_weight": float(
+            settings.get("clean_glitch_distillation_weight", 0.25)
+        ),
+    }
+    if (
+        any(
+            not np.isfinite(value) or value < 0
+            for value in clean_loss_weights.values()
+        )
+        or clean_loss_weights["clean_chirp_weight"]
+        + clean_loss_weights["clean_chirp_distillation_weight"]
+        <= 0
+    ):
+        raise ValueError(
+            "Overlap clean/distillation loss weights must be non-negative "
+            "with a positive chirp anchor"
+        )
     seed = int(settings.get("seed", 0) if seed_override is None else seed_override)
     run_identity = {
         "config_hash": canonical_hash(config),
