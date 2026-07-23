@@ -31,8 +31,9 @@ def test_paired_pe_smoke_records_independent_source_receipts() -> None:
     script = Path(__file__).parents[1] / "scripts/run_paired_pe_smoke.sh"
     source = script.read_text(encoding="utf-8")
     for variable in (
-        "GWYOLO_MODEL_SELECTION_OVERLAP_MANIFEST",
-        "GWYOLO_MODEL_SELECTION_VALIDATION_MANIFEST",
+        "GWYOLO_MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST",
+        "GWYOLO_MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST",
+        "GWYOLO_MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST",
         "GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
         "GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT",
         "GWYOLO_INDEPENDENT_OVERLAP_AUDIT",

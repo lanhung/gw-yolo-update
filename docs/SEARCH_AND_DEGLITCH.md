@@ -1077,8 +1077,9 @@ injections and remains ineligible for a scientific claim.
 `scripts/run_promoted_paired_pe_smoke.sh` is the five-seed handoff. It resolves the selected
 checkpoint back to exactly one hash-listed finetune report, chooses the matching uniform or
 family-balanced configuration, and re-hashes the selected checkpoint, configuration and the
-historical overlap/clean validation manifests that actually selected that model. Those two
-model-selection inputs are deliberately distinct from the subsequent paired-PE evaluation inputs.
+historical training-overlap, validation-overlap, and clean-validation manifests that actually
+selected that model. Those three model-selection inputs are deliberately distinct from the
+subsequent paired-PE evaluation inputs.
 
 `scripts/run_independent_pe_overlap.sh` materializes the paired-PE validation overlap from the
 frozen GPS- and purpose-disjoint injection endpoint and the source-safe Gravity Spy validation

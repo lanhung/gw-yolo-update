@@ -35,6 +35,9 @@ def test_paired_pe_publication_validation_is_serial_and_validation_only() -> Non
     assert "PRIOR_SMOKE_PORTFOLIO_SUMMARY" in source
     assert "prior paired PE smoke portfolio did not pass the runtime proof gate" in source
     assert "prior paired PE smoke artifact changed" in source
+    assert "MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" in source
+    assert "MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" in source
+    assert "MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" in source
     assert 'summary.get("test_rows_read") != 0' in source
     assert "absolute_cross_backend_comparison_allowed" in source
     assert "--required-split test" not in source

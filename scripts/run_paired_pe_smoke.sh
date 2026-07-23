@@ -171,8 +171,15 @@ missing = [str(path) for path in reports.values() if not path.is_file()]
 if missing:
     raise FileNotFoundError(f"paired PE smoke reports are missing: {missing}")
 receipt_variables = {
-    "model_selection_overlap_manifest": "GWYOLO_MODEL_SELECTION_OVERLAP_MANIFEST",
-    "model_selection_validation_manifest": "GWYOLO_MODEL_SELECTION_VALIDATION_MANIFEST",
+    "model_selection_train_overlap_manifest": (
+        "GWYOLO_MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST"
+    ),
+    "model_selection_validation_overlap_manifest": (
+        "GWYOLO_MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST"
+    ),
+    "model_selection_clean_validation_manifest": (
+        "GWYOLO_MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST"
+    ),
     "independent_validation_endpoint": "GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
     "independent_pe_overlap": "GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT",
     "independent_overlap_audit": "GWYOLO_INDEPENDENT_OVERLAP_AUDIT",

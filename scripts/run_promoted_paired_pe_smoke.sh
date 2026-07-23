@@ -8,8 +8,9 @@ required=(
   FIVE_SEED_SUMMARY
   UNIFORM_CONFIG
   FAMILY_BALANCED_CONFIG
-  MODEL_SELECTION_OVERLAP_MANIFEST
-  MODEL_SELECTION_VALIDATION_MANIFEST
+  MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST
+  MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST
+  MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST
   INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   INDEPENDENT_PE_OVERLAP_REPORT
   INDEPENDENT_OVERLAP_AUDIT
@@ -28,8 +29,9 @@ for path in \
   "$FIVE_SEED_SUMMARY" \
   "$UNIFORM_CONFIG" \
   "$FAMILY_BALANCED_CONFIG" \
-  "$MODEL_SELECTION_OVERLAP_MANIFEST" \
-  "$MODEL_SELECTION_VALIDATION_MANIFEST" \
+  "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
+  "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
+  "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" \
   "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$INDEPENDENT_PE_OVERLAP_REPORT" \
   "$INDEPENDENT_OVERLAP_AUDIT" \
@@ -50,8 +52,9 @@ if ! selection_output=$(
     "$FIVE_SEED_SUMMARY" \
     "$UNIFORM_CONFIG" \
     "$FAMILY_BALANCED_CONFIG" \
-    "$MODEL_SELECTION_OVERLAP_MANIFEST" \
-    "$MODEL_SELECTION_VALIDATION_MANIFEST" <<'PY'
+    "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
+    "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
+    "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -66,7 +69,14 @@ def digest(path):
     return value.hexdigest()
 
 
-summary_path, uniform, balanced, selection_overlap, selection_validation = sys.argv[1:]
+(
+    summary_path,
+    uniform,
+    balanced,
+    selection_train_overlap,
+    selection_validation_overlap,
+    selection_clean_validation,
+) = sys.argv[1:]
 summary = json.loads(pathlib.Path(summary_path).read_text(encoding="utf-8"))
 if (
     summary.get("status") != "completed_five_seed_source_safe_overlap_validation"
@@ -101,8 +111,9 @@ report_path, report = matches[0]
 expected = {
     "checkpoint_sha256": digest(selected_checkpoint),
     "config_file_sha256": digest(config),
-    "overlap_validation_manifest_sha256": digest(selection_overlap),
-    "clean_validation_manifest_sha256": digest(selection_validation),
+    "overlap_train_manifest_sha256": digest(selection_train_overlap),
+    "overlap_validation_manifest_sha256": digest(selection_validation_overlap),
+    "clean_validation_manifest_sha256": digest(selection_clean_validation),
 }
 if any(str(report.get(field)) != value for field, value in expected.items()):
     raise SystemExit("selected model report differs from paired PE inputs/configuration")
@@ -127,7 +138,7 @@ fi
   "$INDEPENDENT_OVERLAP_AUDIT" \
   "$OVERLAP_MANIFEST" \
   "$INJECTION_MANIFEST" \
-  "$MODEL_SELECTION_OVERLAP_MANIFEST" <<'PY'
+  "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -226,8 +237,9 @@ export GWYOLO_OVERLAP_MANIFEST="$OVERLAP_MANIFEST"
 export GWYOLO_INJECTION_MANIFEST="$INJECTION_MANIFEST"
 export GWYOLO_MODEL_REPORT="${selection[0]}"
 export GWYOLO_MODEL_CONFIG="${selection[1]}"
-export GWYOLO_MODEL_SELECTION_OVERLAP_MANIFEST="$MODEL_SELECTION_OVERLAP_MANIFEST"
-export GWYOLO_MODEL_SELECTION_VALIDATION_MANIFEST="$MODEL_SELECTION_VALIDATION_MANIFEST"
+export GWYOLO_MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST="$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST"
+export GWYOLO_MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST="$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST"
+export GWYOLO_MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST="$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST"
 export GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT="$INDEPENDENT_VALIDATION_ENDPOINT_REPORT"
 export GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT="$INDEPENDENT_PE_OVERLAP_REPORT"
 export GWYOLO_INDEPENDENT_OVERLAP_AUDIT="$INDEPENDENT_OVERLAP_AUDIT"
