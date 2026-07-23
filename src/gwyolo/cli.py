@@ -1701,6 +1701,24 @@ def build_parser() -> argparse.ArgumentParser:
     locked_suite_finalize.add_argument("--access-log", required=True)
     locked_suite_finalize.add_argument("--output", required=True)
 
+    locked_stream_freeze = subparsers.add_parser(
+        "locked-o4b-streaming-execution-freeze"
+    )
+    locked_stream_freeze.add_argument("--suite-plan", required=True)
+    locked_stream_freeze.add_argument("--corpus-freeze", required=True)
+    locked_stream_freeze.add_argument("--availability-manifest", required=True)
+    locked_stream_freeze.add_argument("--availability-report", required=True)
+    locked_stream_freeze.add_argument("--inventory-manifest", required=True)
+    locked_stream_freeze.add_argument("--inventory-report", required=True)
+    locked_stream_freeze.add_argument("--work-root", required=True)
+    locked_stream_freeze.add_argument("--shard-manifest", required=True)
+    locked_stream_freeze.add_argument("--output", required=True)
+    locked_stream_freeze.add_argument("--code-commit", required=True)
+    locked_stream_freeze.add_argument("--blocks-per-shard", type=int, default=1)
+    locked_stream_freeze.add_argument(
+        "--minimum-free-kb", type=int, default=8 * 1024 * 1024
+    )
+
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
     evaluation_open.add_argument("--code-commit", required=True)
@@ -4144,6 +4162,25 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_root,
                 args.code_commit,
                 args.output,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-execution-freeze":
+        from .evaluation_lock import freeze_locked_o4b_streaming_execution_plan
+
+        _print(
+            freeze_locked_o4b_streaming_execution_plan(
+                args.suite_plan,
+                args.corpus_freeze,
+                args.availability_manifest,
+                args.availability_report,
+                args.inventory_manifest,
+                args.inventory_report,
+                args.work_root,
+                args.shard_manifest,
+                args.output,
+                args.code_commit,
+                args.blocks_per_shard,
+                args.minimum_free_kb,
             )
         )
     elif args.command == "locked-evaluation-suite-finalize":

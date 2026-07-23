@@ -40,6 +40,54 @@ def test_overlap_pairing_is_unique_detector_compatible_and_deterministic() -> No
     assert all(set(g.get("available_ifos", [g["ifo"]])) <= set(i["ifos"]) for g, i in first)
 
 
+def test_overlap_pairing_uses_maximum_detector_subset_flow() -> None:
+    glitches = [
+        {
+            "split": "train",
+            "glitch_id": "single-h1",
+            "network_gps_block": "g0",
+            "ifo": "H1",
+            "available_ifos": ["H1"],
+        },
+        {
+            "split": "train",
+            "glitch_id": "network-h1l1",
+            "network_gps_block": "g1",
+            "ifo": "H1",
+            "available_ifos": ["H1", "L1"],
+        },
+    ]
+    injections = [
+        {
+            "split": "train",
+            "injection_id": "broad",
+            "waveform_id": "w0",
+            "ifos": ["H1", "L1"],
+        },
+        {
+            "split": "train",
+            "injection_id": "h1-only",
+            "waveform_id": "w1",
+            "ifos": ["H1"],
+        },
+    ]
+
+    pairs = pair_overlap_rows(glitches, injections, "train", seed=4)
+    mapping = {glitch["glitch_id"]: injection["injection_id"] for glitch, injection in pairs}
+    assert mapping == {"single-h1": "h1-only", "network-h1l1": "broad"}
+
+    incompatible = [
+        {
+            "split": "train",
+            "injection_id": "l1-only",
+            "waveform_id": "w2",
+            "ifos": ["L1"],
+        }
+    ]
+    with pytest.raises(ValueError, match="No detector-compatible"):
+        pair_overlap_rows(glitches, incompatible, "train", seed=4)
+
+
 def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

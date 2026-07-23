@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
@@ -58,7 +58,270 @@ _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
     "validation_ood_report",
     "validation_pe_promotion",
     "catalog_metadata",
+    "locked_execution_plan",
 }
+
+
+def freeze_locked_o4b_streaming_execution_plan(
+    suite_plan_path: str | Path,
+    corpus_freeze_path: str | Path,
+    availability_manifest_path: str | Path,
+    availability_report_path: str | Path,
+    inventory_manifest_path: str | Path,
+    inventory_report_path: str | Path,
+    work_root: str | Path,
+    shard_manifest_path: str | Path,
+    output_path: str | Path,
+    code_commit: str,
+    blocks_per_shard: int = 1,
+    minimum_free_kb: int = 8 * 1024 * 1024,
+) -> dict[str, Any]:
+    """Freeze the post-access O4b streaming order without reading test strain.
+
+    The plan binds every score-blind availability block to its single predeclared
+    injection and to an immutable shard/work-directory identity.  It deliberately
+    contains no scores, DQ-driven replacement policy or result-dependent stopping
+    rule.  The resulting report is intended to be included as
+    ``locked_execution_plan`` in the one-time access receipt.
+    """
+
+    if blocks_per_shard < 1 or minimum_free_kb < 1024 * 1024:
+        raise ValueError("locked streaming resource limits are invalid")
+    if not code_commit.strip():
+        raise ValueError("locked streaming execution requires an exact code commit")
+
+    suite_file = Path(suite_plan_path).resolve()
+    freeze_file = Path(corpus_freeze_path).resolve()
+    availability_manifest = Path(availability_manifest_path).resolve()
+    availability_report_file = Path(availability_report_path).resolve()
+    inventory_manifest = Path(inventory_manifest_path).resolve()
+    inventory_report_file = Path(inventory_report_path).resolve()
+    shard_manifest = Path(shard_manifest_path).resolve()
+    target = Path(output_path).resolve()
+    work = Path(work_root).resolve()
+    required_files = (
+        suite_file,
+        freeze_file,
+        availability_manifest,
+        availability_report_file,
+        inventory_manifest,
+        inventory_report_file,
+    )
+    if any(not path.is_file() for path in required_files):
+        raise FileNotFoundError("locked streaming plan inputs are absent")
+
+    suite = json.loads(suite_file.read_text(encoding="utf-8"))
+    freeze = json.loads(freeze_file.read_text(encoding="utf-8"))
+    availability_report = json.loads(
+        availability_report_file.read_text(encoding="utf-8")
+    )
+    inventory_report = json.loads(inventory_report_file.read_text(encoding="utf-8"))
+    access_log = Path(str(freeze.get("access_log_path", ""))).resolve()
+    suite_root = Path(str(suite.get("output_root", ""))).resolve()
+    if (
+        suite.get("status") != "frozen_locked_evaluation_suite_plan"
+        or suite.get("passed") is not True
+        or suite.get("locked_corpus_opened") is not False
+        or suite.get("test_rows_read") != 0
+        or suite.get("code_commit") != code_commit
+        or suite.get("corpus_label") != "GWTC-5.0_O4b_locked_suite_v2"
+        or freeze.get("status") != "locked_evaluation_corpus_unopened"
+        or freeze.get("evaluation_opened") is not False
+        or freeze.get("candidate_scores_inspected") is not False
+        or freeze.get("corpus_label") != suite.get("corpus_label")
+        or Path(str(freeze.get("manifest_path", ""))).resolve()
+        != inventory_manifest
+        or freeze.get("manifest_sha256") != file_sha256(inventory_manifest)
+        or access_log.exists()
+    ):
+        raise ValueError("locked suite/corpus is not at the unopened execution boundary")
+    if work == suite_root or suite_root not in work.parents:
+        raise ValueError("locked streaming work root must be a child of the suite output root")
+    declared_paths = {
+        Path(str(path)).resolve()
+        for inventory in (suite.get("inputs", {}), suite.get("outputs", {}))
+        for path in inventory.values()
+    }
+    if work in declared_paths or shard_manifest in declared_paths or target in declared_paths:
+        raise ValueError("locked streaming control paths collide with suite artifacts")
+    if work.exists():
+        raise FileExistsError("locked streaming work root already exists")
+
+    if (
+        availability_report.get("status")
+        != "score_blind_gwtc5_o4b_availability_inventory"
+        or availability_report.get("passed") is not True
+        or availability_report.get("manifest_sha256")
+        != file_sha256(availability_manifest)
+        or Path(str(availability_report.get("manifest_path", ""))).resolve()
+        != availability_manifest
+        or Path(str(availability_report.get("access_log_path", ""))).resolve()
+        != access_log
+        or availability_report.get("candidate_scores_inspected") is not False
+        or int(availability_report.get("test_strain_rows_read", -1)) != 0
+        or inventory_report.get("status")
+        != "score_blind_gwtc5_locked_injection_inventory"
+        or inventory_report.get("passed") is not True
+        or inventory_report.get("manifest_sha256") != file_sha256(inventory_manifest)
+        or Path(str(inventory_report.get("manifest_path", ""))).resolve()
+        != inventory_manifest
+        or inventory_report.get("availability_manifest_sha256")
+        != file_sha256(availability_manifest)
+        or Path(str(inventory_report.get("access_log_path", ""))).resolve()
+        != access_log
+        or inventory_report.get("post_access_dq_replacement_allowed") is not False
+        or inventory_report.get("candidate_scores_inspected") is not False
+        or int(inventory_report.get("test_strain_rows_read", -1)) != 0
+    ):
+        raise ValueError("locked score-blind inventory evidence failed replay")
+
+    availability_rows = _load_jsonl(availability_manifest)
+    injection_rows = _load_jsonl(inventory_manifest)
+    by_availability: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(availability_rows):
+        identity = str(row.get("availability_id", ""))
+        sources = row.get("sources")
+        if not identity or identity in by_availability or not isinstance(sources, dict):
+            raise ValueError(f"locked availability identity is invalid at row {index}")
+        available_ifos = [str(value) for value in row.get("available_ifos", [])]
+        if available_ifos != sorted(sources) or len(available_ifos) < 2:
+            raise ValueError(f"locked availability sources are incomplete at row {index}")
+        for ifo, source in sources.items():
+            if (
+                ifo not in {"H1", "L1", "V1"}
+                or not isinstance(source, dict)
+                or str(source.get("detector")) != ifo
+                or not str(source.get("hdf5_url", "")).startswith("https://gwosc.org/")
+                or not str(source.get("detail_url", "")).startswith("https://gwosc.org/")
+            ):
+                raise ValueError(f"locked availability source is invalid at row {index}")
+        by_availability[identity] = row
+
+    ordered_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    injection_ids: set[str] = set()
+    for index, injection in enumerate(injection_rows):
+        availability_id = str(injection.get("availability_id", ""))
+        injection_id = str(injection.get("injection_id", ""))
+        availability = by_availability.get(availability_id)
+        if (
+            availability is None
+            or not injection_id
+            or injection_id in injection_ids
+            or injection.get("split") != "test"
+            or injection.get("observing_run") != "O4b"
+            or str(injection.get("gps_block")) != str(availability.get("gps_block"))
+            or list(injection.get("ifos", [])) != list(availability.get("available_ifos", []))
+        ):
+            raise ValueError(f"locked injection/availability join failed at row {index}")
+        injection_ids.add(injection_id)
+        ordered_rows.append((injection, availability))
+    if len(ordered_rows) != len(by_availability):
+        raise ValueError("locked streaming requires one injection per availability block")
+
+    shard_rows = []
+    for shard_index, start in enumerate(range(0, len(ordered_rows), blocks_per_shard)):
+        batch = ordered_rows[start : start + blocks_per_shard]
+        sources = []
+        for injection, availability in batch:
+            for ifo in availability["available_ifos"]:
+                source = availability["sources"][ifo]
+                sources.append(
+                    {
+                        "availability_id": availability["availability_id"],
+                        "ifo": ifo,
+                        "gps_start": source["gps_start"],
+                        "duration": source["duration"],
+                        "hdf5_url": source["hdf5_url"],
+                        "detail_url": source["detail_url"],
+                    }
+                )
+        shard_rows.append(
+            {
+                "schema": "locked_o4b_stream_shard_v1",
+                "shard_index": shard_index,
+                "row_start": start,
+                "row_stop_exclusive": start + len(batch),
+                "work_dir": str(work / f"shard-{shard_index:05d}"),
+                "availability_ids": [str(value[1]["availability_id"]) for value in batch],
+                "injection_ids": [str(value[0]["injection_id"]) for value in batch],
+                "waveform_ids": [str(value[0]["waveform_id"]) for value in batch],
+                "gps_blocks": [str(value[0]["gps_block"]) for value in batch],
+                "source_files": sources,
+                "post_access_dq_replacement_allowed": False,
+                "result_dependent_stopping_allowed": False,
+                "source_eviction_required_after_verified_reduction": True,
+            }
+        )
+
+    identity = {
+        "suite_plan_path": str(suite_file),
+        "suite_plan_sha256": file_sha256(suite_file),
+        "corpus_freeze_path": str(freeze_file),
+        "corpus_freeze_sha256": file_sha256(freeze_file),
+        "availability_manifest_path": str(availability_manifest),
+        "availability_manifest_sha256": file_sha256(availability_manifest),
+        "availability_report_path": str(availability_report_file),
+        "availability_report_sha256": file_sha256(availability_report_file),
+        "inventory_manifest_path": str(inventory_manifest),
+        "inventory_manifest_sha256": file_sha256(inventory_manifest),
+        "inventory_report_path": str(inventory_report_file),
+        "inventory_report_sha256": file_sha256(inventory_report_file),
+        "work_root": str(work),
+        "shard_manifest_path": str(shard_manifest),
+        "blocks_per_shard": blocks_per_shard,
+        "minimum_free_kb": minimum_free_kb,
+        "code_commit": code_commit,
+    }
+    if target.is_file():
+        completed = json.loads(target.read_text(encoding="utf-8"))
+        if completed.get("freeze_identity") != identity:
+            raise ValueError("existing locked streaming execution plan has another identity")
+        if (
+            not shard_manifest.is_file()
+            or completed.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+        ):
+            raise ValueError("locked streaming shard manifest changed after freezing")
+        return completed
+    if target.exists() or shard_manifest.exists():
+        raise FileExistsError("partial locked streaming execution plan exists")
+    atomic_write_text(
+        shard_manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in shard_rows),
+    )
+    report = {
+        "status": "frozen_locked_o4b_streaming_execution_plan",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "evaluation_opened": False,
+        "test_strain_rows_read": 0,
+        "candidate_scores_inspected": False,
+        "corpus_label": suite["corpus_label"],
+        "freeze_identity": identity,
+        "access_log_path": str(access_log),
+        "access_log_exists": False,
+        "rows": len(ordered_rows),
+        "unique_injections": len(injection_ids),
+        "unique_gps_blocks": len({str(row[0]["gps_block"]) for row in ordered_rows}),
+        "shards": len(shard_rows),
+        "blocks_per_shard": blocks_per_shard,
+        "maximum_concurrent_shards": 1,
+        "minimum_free_kb": minimum_free_kb,
+        "post_access_dq_replacement_allowed": False,
+        "result_dependent_stopping_allowed": False,
+        "source_eviction_required_after_verified_reduction": True,
+        "shard_manifest_path": str(shard_manifest),
+        "shard_manifest_sha256": file_sha256(shard_manifest),
+        "code_commit": code_commit,
+        **execution_provenance(),
+    }
+    report["runtime_provenance"] = {
+        "runtime_code_commit": report.pop("code_commit"),
+        "exact_command": report.pop("exact_command"),
+        "environment": report.pop("environment"),
+    }
+    report["code_commit"] = code_commit
+    atomic_write_json(target, report)
+    return report
 
 
 def freeze_locked_evaluation_suite_plan(
@@ -509,6 +772,46 @@ def open_evaluation_corpus_once(
     missing_artifacts = sorted(_REQUIRED_FROZEN_ARTIFACTS - set(frozen_artifacts))
     if missing_artifacts:
         raise ValueError(f"missing frozen evaluation artifacts: {missing_artifacts}")
+
+    # A suite-bound opening is irreversible, so reject an incomplete final
+    # dependency inventory before the exclusive access receipt is written.
+    if "locked_suite_plan" in frozen_artifacts:
+        suite_plan_path = Path(frozen_artifacts["locked_suite_plan"]).resolve()
+        suite_plan = json.loads(suite_plan_path.read_text(encoding="utf-8"))
+        required_suite_artifacts = set(
+            map(str, suite_plan.get("required_frozen_artifacts", []))
+        ) | {"locked_suite_plan"}
+        missing_suite_artifacts = sorted(required_suite_artifacts - set(frozen_artifacts))
+        if (
+            suite_plan.get("status") != "frozen_locked_evaluation_suite_plan"
+            or suite_plan.get("passed") is not True
+            or suite_plan.get("code_commit") != code_commit
+            or suite_plan.get("corpus_label") != freeze.get("corpus_label")
+            or missing_suite_artifacts
+        ):
+            raise ValueError(
+                "locked suite opening lacks its complete frozen artifact inventory: "
+                f"{missing_suite_artifacts}"
+            )
+        execution_path = Path(frozen_artifacts["locked_execution_plan"]).resolve()
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        if (
+            execution.get("status")
+            != "frozen_locked_o4b_streaming_execution_plan"
+            or execution.get("passed") is not True
+            or execution.get("evaluation_opened") is not False
+            or execution.get("candidate_scores_inspected") is not False
+            or execution.get("test_strain_rows_read") != 0
+            or execution.get("code_commit") != code_commit
+            or execution.get("corpus_label") != freeze.get("corpus_label")
+            or execution.get("freeze_identity", {}).get("suite_plan_sha256")
+            != file_sha256(suite_plan_path)
+            or execution.get("freeze_identity", {}).get("corpus_freeze_sha256")
+            != file_sha256(freeze_path)
+            or Path(str(execution.get("access_log_path", ""))).resolve()
+            != Path(str(freeze.get("access_log_path", ""))).resolve()
+        ):
+            raise ValueError("locked streaming execution plan failed pre-access replay")
 
     manifest = Path(freeze["manifest_path"]).resolve()
     if file_sha256(manifest) != freeze["manifest_sha256"]:

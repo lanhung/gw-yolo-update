@@ -86,8 +86,57 @@ if [[ ! -e "$LOCKED_SUITE_PLAN_OUTPUT" ]]; then
     --output "$LOCKED_SUITE_PLAN_OUTPUT"
 fi
 
+# Freeze the exact post-access streaming order while O4b is still unopened.
+# This reads only the score-blind availability/injection metadata already bound
+# by LOCKED_CORPUS_UNOPENED; it never downloads strain or creates the access log.
+locked_streaming_plan=${LOCKED_STREAMING_PLAN_OUTPUT:-${LOCKED_SUITE_PLAN_OUTPUT%.json}-streaming-execution.json}
+locked_streaming_shards=${LOCKED_STREAMING_SHARD_MANIFEST:-${LOCKED_SUITE_PLAN_OUTPUT%.json}-streaming-shards.jsonl}
+locked_streaming_work_root=${LOCKED_STREAMING_WORK_ROOT:-$LOCKED_SUITE_OUTPUT_ROOT/execution}
+mapfile -t locked_inventory_paths < <(
+  "$TASK_PYTHON" - "$LOCKED_CORPUS_UNOPENED" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for key in (
+    "availability_manifest_path",
+    "availability_report_path",
+    "manifest_path",
+    "inventory_report_path",
+):
+    value = report.get(key)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"locked corpus contract lacks {key}")
+    print(value)
+PY
+)
+if (( ${#locked_inventory_paths[@]} != 4 )); then
+  echo "locked corpus contract did not resolve four streaming inputs" >&2
+  exit 3
+fi
+if [[ ! -e "$locked_streaming_plan" ]]; then
+  cd "$TASK_CODE_DIR"
+  export PYTHONPATH=src
+  export GWYOLO_CODE_COMMIT
+  "$TASK_PYTHON" -m gwyolo.cli locked-o4b-streaming-execution-freeze \
+    --suite-plan "$LOCKED_SUITE_PLAN_OUTPUT" \
+    --corpus-freeze "$LOCKED_CORPUS_UNOPENED" \
+    --availability-manifest "${locked_inventory_paths[0]}" \
+    --availability-report "${locked_inventory_paths[1]}" \
+    --inventory-manifest "${locked_inventory_paths[2]}" \
+    --inventory-report "${locked_inventory_paths[3]}" \
+    --work-root "$locked_streaming_work_root" \
+    --shard-manifest "$locked_streaming_shards" \
+    --code-commit "$GWYOLO_CODE_COMMIT" \
+    --blocks-per-shard "${LOCKED_BLOCKS_PER_SHARD:-1}" \
+    --minimum-free-kb "${LOCKED_MINIMUM_FREE_KB:-8388608}" \
+    --output "$locked_streaming_plan"
+fi
+
 "$TASK_PYTHON" - "$ledger" "$LOCKED_SUITE_PLAN_OUTPUT" \
-  "$LOCKED_CORPUS_UNOPENED" "$GWYOLO_CODE_COMMIT" <<'PY'
+  "$LOCKED_CORPUS_UNOPENED" "$GWYOLO_CODE_COMMIT" \
+  "$locked_streaming_plan" "$locked_streaming_shards" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -100,9 +149,12 @@ def digest(path):
 
 ledger_path, plan_path, unopened_path = map(pathlib.Path, sys.argv[1:4])
 commit = sys.argv[4]
+streaming_path = pathlib.Path(sys.argv[5])
+shards_path = pathlib.Path(sys.argv[6])
 ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
 plan = json.loads(plan_path.read_text(encoding="utf-8"))
 unopened = json.loads(unopened_path.read_text(encoding="utf-8"))
+streaming = json.loads(streaming_path.read_text(encoding="utf-8"))
 access_log = pathlib.Path(unopened["access_log_path"])
 if (
     ledger.get("status") != "publication_evidence_ready"
@@ -116,6 +168,16 @@ if (
     or plan.get("validation_evidence", {}).get("sha256") != digest(ledger_path)
     or plan.get("code_commit") != commit
     or unopened.get("evaluation_opened") is not False
+    or streaming.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+    or streaming.get("passed") is not True
+    or streaming.get("evaluation_opened") is not False
+    or streaming.get("candidate_scores_inspected") is not False
+    or streaming.get("test_strain_rows_read") != 0
+    or streaming.get("code_commit") != commit
+    or streaming.get("freeze_identity", {}).get("suite_plan_sha256")
+    != digest(plan_path)
+    or streaming.get("shard_manifest_sha256") != digest(shards_path)
+    or streaming.get("rows") != unopened.get("rows")
     or access_log.exists()
 ):
     raise SystemExit("publication validation-to-locked freeze replay failed")

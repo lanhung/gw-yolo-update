@@ -15,6 +15,7 @@ locked_evaluation_suite:
     - validation_ood_report
     - validation_pe_promotion
     - catalog_metadata
+    - locked_execution_plan
 
   # Paths are relative to the externally configured immutable output root. None
   # may exist when the suite plan is frozen.

@@ -15,7 +15,7 @@ publication_evidence:
         - {field: candidate_scores_inspected, op: equals, value: false}
         - {field: inputs, op: length_at_least, value: 14}
         - {field: outputs, op: length_at_least, value: 9}
-        - {field: required_frozen_artifacts, op: length_at_least, value: 10}
+        - {field: required_frozen_artifacts, op: length_at_least, value: 11}
         - {field: endpoints.primary_search_metric, op: equals, value: paired_delta_recovered_vt_at_common_far}
         - {field: endpoints.threshold_policy, op: equals, value: validation_frozen_no_test_retuning}
         - {field: code_commit, op: nonempty}
@@ -31,11 +31,13 @@ publication_evidence:
         - {field: evaluation_opened, op: equals, value: true}
         - {field: test_metrics, op: equals, value: null}
         - {field: frozen_artifacts.locked_suite_plan, op: nonempty}
+        - {field: frozen_artifacts.locked_execution_plan, op: nonempty}
         - {field: comparison_manifest_audits, op: nonempty}
         - {field: code_commit, op: nonempty}
         - {field: predeclared_evaluation_output, op: nonempty}
       replay_artifacts:
         - {path_field: frozen_artifacts.locked_suite_plan.path, sha256_field: frozen_artifacts.locked_suite_plan.sha256}
+        - {path_field: frozen_artifacts.locked_execution_plan.path, sha256_field: frozen_artifacts.locked_execution_plan.sha256}
         - {path_field: freeze_report_path, sha256_field: freeze_report_sha256}
 
     - id: locked_raw_candidate_search

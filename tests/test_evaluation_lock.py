@@ -7,12 +7,14 @@ import pytest
 
 from gwyolo.evaluation_lock import (
     freeze_evaluation_corpus,
+    freeze_locked_o4b_streaming_execution_plan,
     freeze_locked_evaluation_suite_plan,
     finalize_locked_evaluation_suite_receipt,
     open_evaluation_corpus_once,
     validate_locked_evaluation_suite_access,
     validate_locked_evaluation_suite_input,
 )
+from gwyolo.io import file_sha256
 
 
 def _write(path, rows):
@@ -90,6 +92,7 @@ def _locked_suite_config(path) -> None:
         "    - validation_ood_report\n"
         "    - validation_pe_promotion\n"
         "    - catalog_metadata\n"
+        "    - locked_execution_plan\n"
         "  outputs:\n"
         + "".join(f"    {key}: {value}\n" for key, value in outputs.items())
         + "  inputs:\n"
@@ -342,6 +345,39 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         path = tmp_path / label
         path.write_text(label, encoding="utf-8")
         artifacts[label] = path
+    locked_execution = tmp_path / "locked_execution_plan"
+    locked_execution.write_text(
+        json.dumps(
+            {
+                "status": "frozen_locked_o4b_streaming_execution_plan",
+                "passed": True,
+                "evaluation_opened": False,
+                "candidate_scores_inspected": False,
+                "test_strain_rows_read": 0,
+                "code_commit": "abc123",
+                "corpus_label": "GWTC-5.0_O4b_locked_suite_v2",
+                "access_log_path": str(access_path.resolve()),
+                "freeze_identity": {
+                    "suite_plan_sha256": file_sha256(plan_path),
+                    "corpus_freeze_sha256": file_sha256(freeze_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifacts["locked_execution_plan"] = locked_execution
+    withheld_execution = artifacts.pop("locked_execution_plan")
+    with pytest.raises(ValueError, match="complete frozen artifact inventory"):
+        open_evaluation_corpus_once(
+            freeze_path,
+            "abc123",
+            artifacts,
+            (comparison,),
+            plan["outputs"]["suite_receipt"],
+            "python -m gwyolo.cli locked-suite-run ...",
+        )
+    assert not access_path.exists()
+    artifacts["locked_execution_plan"] = withheld_execution
     open_evaluation_corpus_once(
         freeze_path,
         "abc123",
@@ -432,6 +468,158 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
     assert len(receipt["outputs"]) == 8
 
 
+def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
+    tmp_path,
+) -> None:
+    evidence = tmp_path / "validation_evidence.json"
+    config = tmp_path / "suite.yaml"
+    suite_root = tmp_path / "locked-results"
+    suite_plan = tmp_path / "locked-suite-plan.json"
+    _complete_validation_evidence(evidence)
+    _locked_suite_config(config)
+    freeze_locked_evaluation_suite_plan(
+        evidence, config, suite_root, "abc123", suite_plan
+    )
+
+    access = tmp_path / "access.json"
+    availability_manifest = tmp_path / "availability.jsonl"
+    availability_rows = []
+    injection_rows = []
+    for index, gps_start in enumerate((1400000000, 1400004096)):
+        availability_id = f"availability-{index}"
+        gps_block = f"O4b:{gps_start}:4096"
+        sources = {
+            ifo: {
+                "detector": ifo,
+                "gps_start": gps_start,
+                "duration": 4096,
+                "hdf5_url": f"https://gwosc.org/archive/{ifo}-{gps_start}-4096.hdf5",
+                "detail_url": f"https://gwosc.org/archive/{ifo}-{gps_start}-4096.json",
+            }
+            for ifo in ("H1", "L1")
+        }
+        availability_rows.append(
+            {
+                "availability_id": availability_id,
+                "gps_block": gps_block,
+                "available_ifos": ["H1", "L1"],
+                "sources": sources,
+            }
+        )
+        injection_rows.append(
+            {
+                "availability_id": availability_id,
+                "injection_id": f"injection-{index}",
+                "waveform_id": f"waveform-{index}",
+                "gps_block": gps_block,
+                "split": "test",
+                "observing_run": "O4b",
+                "ifos": ["H1", "L1"],
+            }
+        )
+    _write(availability_manifest, availability_rows)
+    inventory_manifest = tmp_path / "inventory.jsonl"
+    _write(inventory_manifest, injection_rows)
+
+    availability_report = tmp_path / "availability-report.json"
+    availability_report.write_text(
+        json.dumps(
+            {
+                "status": "score_blind_gwtc5_o4b_availability_inventory",
+                "passed": True,
+                "manifest_path": str(availability_manifest.resolve()),
+                "manifest_sha256": file_sha256(availability_manifest),
+                "access_log_path": str(access.resolve()),
+                "candidate_scores_inspected": False,
+                "test_strain_rows_read": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    inventory_report = tmp_path / "inventory-report.json"
+    inventory_report.write_text(
+        json.dumps(
+            {
+                "status": "score_blind_gwtc5_locked_injection_inventory",
+                "passed": True,
+                "manifest_path": str(inventory_manifest.resolve()),
+                "manifest_sha256": file_sha256(inventory_manifest),
+                "availability_manifest_sha256": file_sha256(availability_manifest),
+                "access_log_path": str(access.resolve()),
+                "post_access_dq_replacement_allowed": False,
+                "candidate_scores_inspected": False,
+                "test_strain_rows_read": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    corpus_freeze = tmp_path / "corpus-freeze.json"
+    corpus_freeze.write_text(
+        json.dumps(
+            {
+                "status": "locked_evaluation_corpus_unopened",
+                "evaluation_opened": False,
+                "candidate_scores_inspected": False,
+                "corpus_label": "GWTC-5.0_O4b_locked_suite_v2",
+                "manifest_path": str(inventory_manifest.resolve()),
+                "manifest_sha256": file_sha256(inventory_manifest),
+                "access_log_path": str(access.resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard_manifest = tmp_path / "streaming-shards.jsonl"
+    report_path = tmp_path / "streaming-plan.json"
+    result = freeze_locked_o4b_streaming_execution_plan(
+        suite_plan,
+        corpus_freeze,
+        availability_manifest,
+        availability_report,
+        inventory_manifest,
+        inventory_report,
+        suite_root / "execution",
+        shard_manifest,
+        report_path,
+        "abc123",
+        blocks_per_shard=1,
+    )
+    replay = freeze_locked_o4b_streaming_execution_plan(
+        suite_plan,
+        corpus_freeze,
+        availability_manifest,
+        availability_report,
+        inventory_manifest,
+        inventory_report,
+        suite_root / "execution",
+        shard_manifest,
+        report_path,
+        "abc123",
+        blocks_per_shard=1,
+    )
+
+    assert replay == result
+    assert result["rows"] == 2
+    assert result["shards"] == 2
+    assert result["maximum_concurrent_shards"] == 1
+    assert result["post_access_dq_replacement_allowed"] is False
+    rows = [json.loads(line) for line in shard_manifest.read_text().splitlines()]
+    assert rows[0]["injection_ids"] == ["injection-0"]
+    assert len(rows[0]["source_files"]) == 2
+    assert rows[1]["gps_blocks"] == ["O4b:1400004096:4096"]
+    access.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="unopened execution boundary"):
+        freeze_locked_o4b_streaming_execution_plan(
+            suite_plan,
+            corpus_freeze,
+            availability_manifest,
+            availability_report,
+            inventory_manifest,
+            inventory_report,
+            suite_root / "execution",
+            shard_manifest,
+            report_path,
+            "abc123",
+        )
 def test_freeze_locked_suite_rejects_incomplete_validation_and_unsafe_output(
     tmp_path,
 ) -> None:

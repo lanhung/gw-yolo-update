@@ -88,7 +88,7 @@ def pair_overlap_rows(
     seed: int,
     limit: int | None = None,
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    """Build a deterministic one-use pairing without changing either split identity."""
+    """Build a maximum-cardinality detector-compatible one-use pairing."""
 
     if split not in {"train", "val", "test"}:
         raise ValueError(f"Unsupported overlap split: {split}")
@@ -100,38 +100,94 @@ def pair_overlap_rows(
     _require_unique(injections, ("injection_id", "waveform_id"), "injection manifest")
     if limit is not None and limit <= 0:
         raise ValueError("Overlap limit must be positive")
-    requested = min(len(glitches), len(injections)) if limit is None else limit
-    if requested > min(len(glitches), len(injections)):
+    requested = limit
+    if requested is not None and requested > min(len(glitches), len(injections)):
         raise ValueError("Overlap limit exceeds the available unique physical groups")
 
     rng = np.random.default_rng(seed)
-    glitch_order = rng.permutation(len(glitches)).tolist()
-    injection_order = rng.permutation(len(injections)).tolist()
-    remaining = set(injection_order)
-    supported = {index: set(_supported_ifos(injections[index])) for index in injection_order}
-    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for glitch_index in glitch_order:
-        glitch = glitches[glitch_index]
-        required_ifos = set(_glitch_available_ifos(glitch))
-        match = next(
-            (
-                index
-                for index in injection_order
-                if index in remaining and required_ifos <= supported[index]
-            ),
-            None,
-        )
-        if match is None:
-            continue
-        remaining.remove(match)
-        pairs.append((glitch, injections[match]))
-        if len(pairs) == requested:
+    glitch_groups: dict[tuple[str, ...], list[int]] = {}
+    for index in rng.permutation(len(glitches)).tolist():
+        key = tuple(sorted(_glitch_available_ifos(glitches[index])))
+        glitch_groups.setdefault(key, []).append(index)
+    injection_groups: dict[tuple[str, ...], list[int]] = {}
+    for index in rng.permutation(len(injections)).tolist():
+        key = tuple(sorted(_supported_ifos(injections[index])))
+        injection_groups.setdefault(key, []).append(index)
+
+    # The detector universe has only seven non-empty H1/L1/V1 subsets.  A
+    # category-level integral max flow is therefore exact and avoids an O(N^2)
+    # physical-row graph while preventing a greedy broad-detector assignment
+    # from starving a more constrained glitch category.
+    source = ("source",)
+    sink = ("sink",)
+    glitch_nodes = {key: ("glitch", *key) for key in sorted(glitch_groups)}
+    injection_nodes = {key: ("injection", *key) for key in sorted(injection_groups)}
+    residual: dict[tuple[str, ...], dict[tuple[str, ...], int]] = {}
+
+    def add_edge(left: tuple[str, ...], right: tuple[str, ...], capacity: int) -> None:
+        residual.setdefault(left, {})[right] = capacity
+        residual.setdefault(right, {}).setdefault(left, 0)
+
+    for key, node in glitch_nodes.items():
+        add_edge(source, node, len(glitch_groups[key]))
+    compatible_edges: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    maximum_capacity = min(len(glitches), len(injections))
+    for glitch_key, glitch_node in glitch_nodes.items():
+        for injection_key, injection_node in injection_nodes.items():
+            if set(glitch_key) <= set(injection_key):
+                add_edge(glitch_node, injection_node, maximum_capacity)
+                compatible_edges.append((glitch_key, injection_key))
+    for key, node in injection_nodes.items():
+        add_edge(node, sink, len(injection_groups[key]))
+
+    while True:
+        parent: dict[tuple[str, ...], tuple[str, ...] | None] = {source: None}
+        queue = [source]
+        for node in queue:
+            for neighbor in sorted(residual.get(node, {})):
+                if residual[node][neighbor] > 0 and neighbor not in parent:
+                    parent[neighbor] = node
+                    queue.append(neighbor)
+            if sink in parent:
+                break
+        if sink not in parent:
             break
-    if len(pairs) != requested:
+        increment = maximum_capacity
+        node = sink
+        while parent[node] is not None:
+            prior = parent[node]
+            increment = min(increment, residual[prior][node])
+            node = prior
+        node = sink
+        while parent[node] is not None:
+            prior = parent[node]
+            residual[prior][node] -= increment
+            residual[node][prior] += increment
+            node = prior
+
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    glitch_cursor = {key: 0 for key in glitch_groups}
+    injection_cursor = {key: 0 for key in injection_groups}
+    for glitch_key, injection_key in compatible_edges:
+        matched = residual[injection_nodes[injection_key]][glitch_nodes[glitch_key]]
+        for _ in range(matched):
+            glitch_index = glitch_groups[glitch_key][glitch_cursor[glitch_key]]
+            injection_index = injection_groups[injection_key][
+                injection_cursor[injection_key]
+            ]
+            glitch_cursor[glitch_key] += 1
+            injection_cursor[injection_key] += 1
+            pairs.append((glitches[glitch_index], injections[injection_index]))
+    if pairs:
+        order = rng.permutation(len(pairs)).tolist()
+        pairs = [pairs[index] for index in order]
+    if requested is not None and len(pairs) < requested:
         raise ValueError(
             f"Only {len(pairs)} of {requested} requested pairs have a shared detector"
         )
-    return pairs
+    if not pairs:
+        raise ValueError("No detector-compatible physical overlap pairs are available")
+    return pairs if requested is None else pairs[:requested]
 
 
 def _load_gravityspy_sample(
@@ -431,6 +487,22 @@ def materialize_physical_overlaps(
         "artifact_version": OVERLAP_ARTIFACT_VERSION,
         "split": split,
         "rows": len(records),
+        "pairing_policy": (
+            "maximum_cardinality_detector_subset_flow_v1"
+            if limit is None
+            else "strict_predeclared_pair_limit_v1"
+        ),
+        "predeclared_pair_limit": limit,
+        "eligible_input_rows": {
+            "glitches": sum(row.get("split") == split for row in glitch_rows),
+            "injections": sum(row.get("split") == split for row in injection_rows),
+        },
+        "unpaired_input_rows": {
+            "glitches": sum(row.get("split") == split for row in glitch_rows)
+            - len(records),
+            "injections": sum(row.get("split") == split for row in injection_rows)
+            - len(records),
+        },
         "unique_physical_counts": {
             "mixtures": len(records),
             "injections": len({row["injection_id"] for row in records}),
