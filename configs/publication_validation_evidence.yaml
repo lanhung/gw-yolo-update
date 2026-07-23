@@ -180,7 +180,9 @@ publication_evidence:
         - {field: passed, op: equals, value: true}
         - {field: physical_time_domain_perturbation, op: equals, value: true}
         - {field: fresh_time_frequency_transform, op: equals, value: true}
-        - {field: detector_strata, op: nonempty}
+        - {field: detector_strata, op: length_at_least, value: 4}
+        - {field: required_detector_subsets, op: length_at_least, value: 4}
+        - {field: required_detector_subsets_covered, op: equals, value: true}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: scenario_threshold_refits, op: equals, value: 0}
         - {field: scenario_count, op: at_least, value: 7}

@@ -468,15 +468,23 @@ def freeze_calibration_perturbation_scenario_result(
         "injection_ranking": _load_bound_json(injection_ranking_report_path),
     }
     expected_statuses = {
-        "background_score": "real_o4a_domain_transfer_diagnostic",
-        "injection_score": "physical_waveform_real_noise_domain_transfer_diagnostic",
-        "background_timing": "candidate_timing_calibration_applied",
-        "injection_timing": "candidate_timing_calibration_applied",
-        "background_search": "subwindow_clustered_time_slide_integration_only",
-        "injection_ranking": "physical_network_injection_candidate_rankings",
+        "background_score": {"real_o4a_domain_transfer_diagnostic"},
+        "injection_score": {
+            "physical_waveform_real_noise_domain_transfer_diagnostic"
+        },
+        "background_timing": {"candidate_timing_calibration_applied"},
+        "injection_timing": {"candidate_timing_calibration_applied"},
+        "background_search": {
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_block_permutation_background",
+        },
+        "injection_ranking": {
+            "physical_network_injection_candidate_rankings",
+            "physical_variable_detector_set_injection_candidate_rankings",
+        },
     }
     for name, (_, report) in inputs.items():
-        if report.get("status") != expected_statuses[name]:
+        if report.get("status") not in expected_statuses[name]:
             raise ValueError(f"Calibration scenario {name} has the wrong status")
 
     plan_sha = file_sha256(plan_file)
@@ -583,6 +591,21 @@ def freeze_calibration_perturbation_scenario_result(
 
     _, background = inputs["background_search"]
     _, ranking = inputs["injection_ranking"]
+    variable_detector_set = (
+        background.get("status")
+        == "variable_detector_set_block_permutation_background"
+        and ranking.get("status")
+        == "physical_variable_detector_set_injection_candidate_rankings"
+    )
+    if variable_detector_set != (
+        background.get("status")
+        == "variable_detector_set_block_permutation_background"
+        or ranking.get("status")
+        == "physical_variable_detector_set_injection_candidate_rankings"
+    ):
+        raise ValueError(
+            "Calibration scenario background/ranking detector policies differ"
+        )
     if (
         background.get("split") != "val"
         or background.get("publication_timing_gate_passed") is not True
@@ -611,46 +634,78 @@ def freeze_calibration_perturbation_scenario_result(
         "config_sha256": "candidate_config_sha256",
         "code_commit": "candidate_code_commit",
     }
-    final_identity = {
+    common_identity = {
         candidate_field: background.get(candidate_field)
         for candidate_field in candidate_identity_fields.values()
     } | {
         "timing_calibration_report_sha256": background.get("timing_calibration_report_sha256"),
-        "physical_delay_limit_seconds": background.get("physical_delay_limit_seconds"),
         "empirical_timing_uncertainty_seconds": background.get(
             "empirical_timing_uncertainty_seconds"
         ),
-        "reference_ifo": background.get("reference_ifo"),
-        "second_ifo": background.get("shifted_ifo"),
     }
+    if variable_detector_set:
+        network_fields = (
+            "required_detector_subsets",
+            "pairwise_light_travel_time_seconds",
+            "pairwise_allowed_peak_separation_seconds",
+        )
+        final_identity = {
+            **common_identity,
+            "network_coherence_policy": {
+                field: background.get(field) for field in network_fields
+            },
+            "detector_set_policy": (
+                "single_model_explicit_missing_ifo_validity_v1"
+            ),
+        }
+    else:
+        final_identity = {
+            **common_identity,
+            "physical_delay_limit_seconds": background.get(
+                "physical_delay_limit_seconds"
+            ),
+            "reference_ifo": background.get("reference_ifo"),
+            "second_ifo": background.get("shifted_ifo"),
+        }
     if any(
         final_identity[candidate_field] != score_reports["background_score"].get(score_field)
         or ranking.get(candidate_field) != final_identity[candidate_field]
         for score_field, candidate_field in candidate_identity_fields.items()
     ):
         raise ValueError("Calibration scenario final candidate identity differs from scores")
-    if (
-        any(
-            final_identity[field] is None
-            for field in (
-                "timing_calibration_report_sha256",
-                "physical_delay_limit_seconds",
-                "empirical_timing_uncertainty_seconds",
-                "reference_ifo",
-                "second_ifo",
-            )
+    common_timing_fields = (
+        "timing_calibration_report_sha256",
+        "empirical_timing_uncertainty_seconds",
+    )
+    identity_invalid = any(
+        final_identity[field] is None for field in common_timing_fields
+    ) or any(
+        ranking.get(field) != final_identity[field]
+        for field in common_timing_fields
+    )
+    if variable_detector_set:
+        network_policy = final_identity["network_coherence_policy"]
+        identity_invalid = identity_invalid or any(
+            network_policy[field] is None
+            or ranking.get(field) != network_policy[field]
+            for field in network_policy
         )
-        or any(
-            ranking.get(field) != final_identity[field]
-            for field in (
-                "timing_calibration_report_sha256",
-                "physical_delay_limit_seconds",
-                "empirical_timing_uncertainty_seconds",
-                "reference_ifo",
-            )
+    else:
+        pair_fields = (
+            "physical_delay_limit_seconds",
+            "reference_ifo",
         )
-        or ranking.get("second_ifo") != final_identity["second_ifo"]
-    ):
+        identity_invalid = (
+            identity_invalid
+            or any(final_identity[field] is None for field in pair_fields)
+            or final_identity["second_ifo"] is None
+            or any(
+                ranking.get(field) != final_identity[field]
+                for field in pair_fields
+            )
+            or ranking.get("second_ifo") != final_identity["second_ifo"]
+        )
+    if identity_invalid:
         raise ValueError("Calibration scenario final timing/detector identity differs")
 
     result = {
@@ -717,6 +772,9 @@ def evaluate_calibration_perturbation_robustness(
     minimum_injection_gps_blocks = int(
         settings.get("minimum_injection_gps_blocks", 25)
     )
+    required_detector_subsets = [
+        str(value) for value in settings.get("required_detector_subsets", [])
+    ]
     seed = int(settings.get("seed", 0))
     if (
         minimum_scenarios < 1
@@ -724,6 +782,9 @@ def evaluate_calibration_perturbation_robustness(
         or maximum_far_multiplier < 1
         or bootstrap_replicates < 1
         or minimum_injection_gps_blocks < 2
+        or len(required_detector_subsets)
+        != len(set(required_detector_subsets))
+        or any(not value for value in required_detector_subsets)
         or seed < 1
     ):
         raise ValueError("Calibration robustness policy is invalid")
@@ -768,15 +829,24 @@ def evaluate_calibration_perturbation_robustness(
             raise ValueError("Calibration robustness has duplicate scenario receipts")
         baseline_identity = baseline.get("identity", {})
         receipt_identity = receipt.get("model_identity", {})
-        shared_identity_fields = (
+        shared_identity_fields = [
             "candidate_checkpoint_sha256",
             "candidate_config_sha256",
             "timing_calibration_report_sha256",
-            "physical_delay_limit_seconds",
             "empirical_timing_uncertainty_seconds",
-            "reference_ifo",
-            "second_ifo",
-        )
+        ]
+        if baseline_identity.get("detector_set_policy") is not None:
+            shared_identity_fields.extend(
+                ["network_coherence_policy", "detector_set_policy"]
+            )
+        else:
+            shared_identity_fields.extend(
+                [
+                    "physical_delay_limit_seconds",
+                    "reference_ifo",
+                    "second_ifo",
+                ]
+            )
         code_changed = receipt_identity.get(
             "candidate_code_commit"
         ) != baseline_identity.get("candidate_code_commit")
@@ -976,7 +1046,14 @@ def evaluate_calibration_perturbation_robustness(
                 "receipt": _artifact(receipt_path),
             }
         )
-    passed = all(row["passed"] for row in scenario_results)
+    required_detector_subsets_covered = all(
+        detector_strata.get(subset, {}).get("scenario_count")
+        == len(scenario_results)
+        for subset in required_detector_subsets
+    )
+    passed = all(row["passed"] for row in scenario_results) and (
+        required_detector_subsets_covered
+    )
     injection_bootstrap_independence = scenario_results[0][
         "injection_bootstrap_independence"
     ]
@@ -998,6 +1075,7 @@ def evaluate_calibration_perturbation_robustness(
             "maximum_far_multiplier_of_target": maximum_far_multiplier,
             "bootstrap_replicates": bootstrap_replicates,
             "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
+            "required_detector_subsets": required_detector_subsets,
             "seed": seed,
         },
         "scenario_count": len(scenario_results),
@@ -1005,6 +1083,10 @@ def evaluate_calibration_perturbation_robustness(
         "injection_bootstrap_independence": injection_bootstrap_independence,
         "detector_strata": dict(sorted(detector_strata.items())),
         "detector_strata_audited": dict(sorted(detector_strata.items())),
+        "required_detector_subsets": required_detector_subsets,
+        "required_detector_subsets_covered": (
+            required_detector_subsets_covered
+        ),
         "physical_time_domain_perturbation": True,
         "fresh_time_frequency_transform": True,
         "envelope_interpretation": plan.get("envelope_interpretation"),

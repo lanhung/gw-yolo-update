@@ -404,7 +404,7 @@ def test_calibration_robustness_uses_one_fixed_threshold_and_hand_calculated_far
         assert scenario["scenario_weighted_efficiency"] == pytest.approx(1.0)
 
 
-def test_calibration_scenario_receipt_closes_physical_candidate_chain(
+def test_calibration_scenario_receipt_closes_variable_detector_candidate_chain(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "config.yaml"
@@ -476,14 +476,17 @@ def test_calibration_scenario_receipt_closes_physical_candidate_chain(
         "candidate_config_sha256": "model-config",
         "candidate_code_commit": "commit",
         "timing_calibration_report_sha256": timing_sha,
-        "physical_delay_limit_seconds": 0.01,
         "empirical_timing_uncertainty_seconds": 0.002,
-        "reference_ifo": "H1",
+    }
+    detector_subsets = ["H1+L1", "H1+V1", "L1+V1", "H1+L1+V1"]
+    physical_limits = {"H1-L1": 0.01, "H1-V1": 0.027, "L1-V1": 0.026}
+    allowed_separations = {
+        key: value + 0.004 for key, value in physical_limits.items()
     }
     background_search = _write_json(
         tmp_path / "search-report.json",
         {
-            "status": "subwindow_clustered_time_slide_integration_only",
+            "status": "variable_detector_set_block_permutation_background",
             "split": "val",
             "publication_timing_gate_passed": True,
             "candidate_timing_empirically_calibrated": True,
@@ -492,7 +495,9 @@ def test_calibration_scenario_receipt_closes_physical_candidate_chain(
             "manifest_path": str(search_manifest),
             "manifest_sha256": file_sha256(search_manifest),
             "equivalent_live_time_years": 1.0,
-            "shifted_ifo": "L1",
+            "required_detector_subsets": detector_subsets,
+            "pairwise_light_travel_time_seconds": physical_limits,
+            "pairwise_allowed_peak_separation_seconds": allowed_separations,
             **common_identity,
         },
     )
@@ -501,7 +506,9 @@ def test_calibration_scenario_receipt_closes_physical_candidate_chain(
     injection_ranking = _write_json(
         tmp_path / "ranking-report.json",
         {
-            "status": "physical_network_injection_candidate_rankings",
+            "status": (
+                "physical_variable_detector_set_injection_candidate_rankings"
+            ),
             "split": "val",
             "timing_calibration_consistent": True,
             "candidate_scoring_provenance_consistent": True,
@@ -509,7 +516,9 @@ def test_calibration_scenario_receipt_closes_physical_candidate_chain(
             "injection_trigger_manifest_sha256": file_sha256(trigger_paths["injection"]),
             "manifest_path": str(ranking_manifest),
             "manifest_sha256": file_sha256(ranking_manifest),
-            "second_ifo": "L1",
+            "required_detector_subsets": detector_subsets,
+            "pairwise_light_travel_time_seconds": physical_limits,
+            "pairwise_allowed_peak_separation_seconds": allowed_separations,
             **common_identity,
         },
     )
@@ -528,7 +537,40 @@ def test_calibration_scenario_receipt_closes_physical_candidate_chain(
     assert receipt["passed"] is True
     assert receipt["scenario_id"] == scenario_id
     assert receipt["threshold_fitted_or_selected"] is False
-    assert receipt["model_identity"]["second_ifo"] == "L1"
+    assert (
+        receipt["model_identity"]["detector_set_policy"]
+        == "single_model_explicit_missing_ifo_validity_v1"
+    )
+    assert receipt["model_identity"]["network_coherence_policy"][
+        "required_detector_subsets"
+    ] == detector_subsets
+
+
+def test_calibration_robustness_rejects_missing_required_detector_subset(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, receipts, config = _make_robustness_inputs(tmp_path)
+    content = config.read_text(encoding="utf-8")
+    config.write_text(
+        content.replace(
+            "  seed: 1234\n",
+            "  required_detector_subsets: [H1+L1, H1+V1]\n"
+            "  seed: 1234\n",
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_calibration_perturbation_robustness(
+        plan,
+        baseline,
+        receipts,
+        config,
+        tmp_path / "missing-detector-subset.json",
+    )
+
+    assert result["passed"] is False
+    assert result["required_detector_subsets_covered"] is False
+    assert result["required_detector_subsets"] == ["H1+L1", "H1+V1"]
 
 
 def test_calibration_robustness_rejects_missing_or_refitted_scenario(

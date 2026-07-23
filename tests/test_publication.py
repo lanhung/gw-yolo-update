@@ -630,6 +630,76 @@ def test_official_validation_protocol_requires_variable_detector_calibration(
     }
 
 
+def test_official_validation_protocol_requires_all_calibration_detector_strata(
+    tmp_path: Path,
+) -> None:
+    protocol = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "publication_validation_evidence.yaml"
+    )
+    artifacts = {}
+    for label in ("plan", "baseline"):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        artifacts[label] = {"path": str(path), "sha256": file_sha256(path)}
+    evidence = tmp_path / "calibration-robustness.json"
+    report = {
+        "status": "completed_validation_calibration_perturbation_robustness",
+        "passed": True,
+        "physical_time_domain_perturbation": True,
+        "fresh_time_frequency_transform": True,
+        "detector_strata": {"H1+L1": {"scenario_count": 7}},
+        "required_detector_subsets": ["H1+L1"],
+        "required_detector_subsets_covered": True,
+        "test_rows_read": 0,
+        "scenario_threshold_refits": 0,
+        "scenario_count": 7,
+        "injection_bootstrap_independence": {
+            "status": "injection_bootstrap_independence_audit_v1",
+            "passed": True,
+            "method": "gps_block_then_paired_injection_hierarchical_bootstrap_v1",
+            "physical_groups": 25,
+        },
+        "scientific_claim_allowed": False,
+        "plan": artifacts["plan"],
+        "baseline_calibration": artifacts["baseline"],
+    }
+    evidence.write_text(json.dumps(report), encoding="utf-8")
+    failed = run_publication_evidence_audit(
+        protocol,
+        [f"calibration_perturbation_robustness={evidence}"],
+        tmp_path / "failed-single-pair-calibration.json",
+    )
+    gate = next(
+        row
+        for row in failed["requirements"]
+        if row["id"] == "calibration_perturbation_robustness"
+    )
+    assert gate["state"] == "failed"
+    assert {
+        row["field"] for row in gate["checks"] if row["passed"] is False
+    } == {"detector_strata", "required_detector_subsets"}
+
+    subsets = ["H1+L1", "H1+V1", "L1+V1", "H1+L1+V1"]
+    report["detector_strata"] = {
+        subset: {"scenario_count": 7} for subset in subsets
+    }
+    report["required_detector_subsets"] = subsets
+    evidence.write_text(json.dumps(report), encoding="utf-8")
+    passed = run_publication_evidence_audit(
+        protocol,
+        [f"calibration_perturbation_robustness={evidence}"],
+        tmp_path / "passed-detector-set-calibration.json",
+    )
+    gate = next(
+        row
+        for row in passed["requirements"]
+        if row["id"] == "calibration_perturbation_robustness"
+    )
+    assert gate["state"] == "passed"
+
+
 def test_official_validation_protocol_requires_hard_endpoint_scaling_binding(
     tmp_path: Path,
 ) -> None:

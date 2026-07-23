@@ -13,6 +13,7 @@ required_variables=(
   CHECKPOINT
   MODEL_CONFIG
   COHERENCE_CONFIG
+  NETWORK_CONFIG
   TIMING_CALIBRATION_REPORT
   BLOCK_SCHEDULE
   BASELINE_CALIBRATION_REPORT
@@ -35,6 +36,7 @@ for input in \
   "$CHECKPOINT" \
   "$MODEL_CONFIG" \
   "$COHERENCE_CONFIG" \
+  "$NETWORK_CONFIG" \
   "$TIMING_CALIBRATION_REPORT" \
   "$BLOCK_SCHEDULE" \
   "$BASELINE_CALIBRATION_REPORT"; do
@@ -61,11 +63,12 @@ second_ifo=${SECOND_IFO:-L1}
 cluster_window_seconds=${CLUSTER_WINDOW_SECONDS:-0.1}
 truth_association_window_seconds=${TRUTH_ASSOCIATION_WINDOW_SECONDS:-0.25}
 
-"$TASK_PYTHON" - \
+detector_set_mode=$("$TASK_PYTHON" - \
   "$TASK_CODE_DIR" "$GWYOLO_CODE_COMMIT" \
   "$REFERENCE_CODE_DIR" "$REFERENCE_CODE_COMMIT" \
   "$CALIBRATION_PLAN" "$BACKGROUND_MANIFEST" "$INJECTION_MANIFEST" \
-  "$CHECKPOINT" "$MODEL_CONFIG" "$TIMING_CALIBRATION_REPORT" \
+  "$CHECKPOINT" "$MODEL_CONFIG" "$NETWORK_CONFIG" \
+  "$TIMING_CALIBRATION_REPORT" \
   "$BLOCK_SCHEDULE" "$BASELINE_CALIBRATION_REPORT" \
   "$PHYSICAL_DELAY_LIMIT_SECONDS" "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS" \
   "$COINCIDENCE_WINDOW_SECONDS" <<'PY'
@@ -86,6 +89,7 @@ import sys
     injection_path,
     checkpoint_path,
     model_config_path,
+    network_config_path,
     timing_path,
     schedule_path,
     baseline_path,
@@ -106,6 +110,32 @@ schedule = json.loads(pathlib.Path(schedule_path).read_text(encoding="utf-8"))
 baseline = json.loads(pathlib.Path(baseline_path).read_text(encoding="utf-8"))
 identity = baseline.get("identity", {})
 expected_window = float(physical_delay) + 2 * float(timing_uncertainty)
+variable_detector_set = (
+    schedule.get("status")
+    == "frozen_detector_set_block_permutation_schedule"
+)
+expected_schedule_kind = (
+    "variable_detector_set_block_permutation"
+    if variable_detector_set
+    else "gps_block_permutation"
+)
+detector_identity_valid = (
+    identity.get("detector_set_policy")
+    == "single_model_explicit_missing_ifo_validity_v1"
+    and schedule.get("network_config_sha256")
+    == digest(network_config_path)
+    if variable_detector_set
+    else (
+        identity.get("physical_delay_limit_seconds")
+        == float(physical_delay)
+        and math.isclose(
+            expected_window,
+            float(coincidence_window),
+            rel_tol=0,
+            abs_tol=1e-12,
+        )
+    )
+)
 if (
     git_head(task_dir) != task_commit
     or git_head(reference_dir) != reference_commit
@@ -121,20 +151,27 @@ if (
     or baseline.get("status") != "frozen_validation_candidate_search_calibration"
     or baseline.get("publication_calibration_eligible") is not True
     or baseline.get("slide_schedule_audit", {}).get("passed") is not True
+    or baseline.get("slide_schedule_audit", {}).get("schedule_kind")
+    != expected_schedule_kind
     or identity.get("candidate_checkpoint_sha256") != digest(checkpoint_path)
     or identity.get("candidate_config_sha256") != digest(model_config_path)
     or identity.get("timing_calibration_report_sha256") != digest(timing_path)
-    or identity.get("physical_delay_limit_seconds") != float(physical_delay)
     or identity.get("empirical_timing_uncertainty_seconds")
     != float(timing_uncertainty)
-    or schedule.get("status") != "frozen_candidate_block_permutation_schedule"
+    or schedule.get("status")
+    not in {
+        "frozen_candidate_block_permutation_schedule",
+        "frozen_detector_set_block_permutation_schedule",
+    }
     or schedule.get("background_manifest_sha256") != digest(background_path)
     or baseline.get("slide_schedule_audit", {}).get("schedule_sha256")
     != digest(schedule_path)
-    or not math.isclose(expected_window, float(coincidence_window), rel_tol=0, abs_tol=1e-12)
+    or not detector_identity_valid
 ):
     raise SystemExit("calibration robustness inputs do not replay one frozen baseline")
+print("1" if variable_detector_set else "0")
 PY
+)
 
 mkdir -p "$OUTPUT_ROOT"
 timing_transfer="$OUTPUT_ROOT/calibration_timing_transfer_compatibility.json"
@@ -265,11 +302,28 @@ for scenario_id in "${scenario_ids[@]}"; do
     )
   fi
 
-  ranking_report="$injection_root/rankings/val_injection_candidate_ranking_report.json"
+  if [[ "$detector_set_mode" == 1 ]]; then
+    ranking_report="$injection_root/rankings/val_variable_detector_set_injection_candidate_ranking_report.json"
+  else
+    ranking_report="$injection_root/rankings/val_injection_candidate_ranking_report.json"
+  fi
   if [[ ! -s "$ranking_report" ]]; then
-    (
-      cd "$TASK_CODE_DIR"
-      export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+    if [[ "$detector_set_mode" == 1 ]]; then
+      (
+        cd "$TASK_CODE_DIR"
+        export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+        "$TASK_PYTHON" -m gwyolo.cli detector-set-injection-candidate-rank \
+          --injection-triggers "$injection_root/score/injection_triggers.jsonl" \
+          --candidates "$injection_calibrated" \
+          --config "$NETWORK_CONFIG" \
+          --output-dir "$injection_root/rankings" \
+          --split val \
+          --empirical-timing-uncertainty-seconds "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS"
+      )
+    else
+      (
+        cd "$TASK_CODE_DIR"
+        export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
       "$TASK_PYTHON" -m gwyolo.cli injection-candidate-rank \
         --injection-triggers "$injection_root/score/injection_triggers.jsonl" \
         --candidates "$injection_calibrated" \
@@ -280,27 +334,46 @@ for scenario_id in "${scenario_ids[@]}"; do
         --physical-delay-limit-seconds "$PHYSICAL_DELAY_LIMIT_SECONDS" \
         --empirical-timing-uncertainty-seconds "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS" \
         --truth-association-window-seconds "$truth_association_window_seconds"
-    )
+      )
+    fi
   fi
 
-  background_search="$background_root/search/val_candidate_time_slide_report.json"
+  if [[ "$detector_set_mode" == 1 ]]; then
+    background_search="$background_root/search/val_detector_set_block_permutation_report.json"
+  else
+    background_search="$background_root/search/val_candidate_time_slide_report.json"
+  fi
   if [[ ! -s "$background_search" ]]; then
-    (
-      cd "$TASK_CODE_DIR"
-      export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
-      "$TASK_PYTHON" -m gwyolo.cli candidate-block-permutations \
-        --candidates "$background_calibrated" \
-        --background-manifest "$BACKGROUND_MANIFEST" \
-        --schedule "$BLOCK_SCHEDULE" \
-        --output-dir "$background_root/search" \
-        --split val \
-        --reference-ifo "$reference_ifo" \
-        --shifted-ifo "$second_ifo" \
-        --coincidence-window-seconds "$COINCIDENCE_WINDOW_SECONDS" \
-        --cluster-window-seconds "$cluster_window_seconds" \
-        --physical-delay-limit-seconds "$PHYSICAL_DELAY_LIMIT_SECONDS" \
-        --empirical-timing-uncertainty-seconds "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS"
-    )
+    if [[ "$detector_set_mode" == 1 ]]; then
+      (
+        cd "$TASK_CODE_DIR"
+        export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+        "$TASK_PYTHON" -m gwyolo.cli detector-set-block-permutations \
+          --candidates "$background_calibrated" \
+          --background-manifest "$BACKGROUND_MANIFEST" \
+          --schedule "$BLOCK_SCHEDULE" \
+          --output-dir "$background_root/search" \
+          --empirical-timing-uncertainty-seconds "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS" \
+          --cluster-window-seconds "$cluster_window_seconds"
+      )
+    else
+      (
+        cd "$TASK_CODE_DIR"
+        export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
+        "$TASK_PYTHON" -m gwyolo.cli candidate-block-permutations \
+          --candidates "$background_calibrated" \
+          --background-manifest "$BACKGROUND_MANIFEST" \
+          --schedule "$BLOCK_SCHEDULE" \
+          --output-dir "$background_root/search" \
+          --split val \
+          --reference-ifo "$reference_ifo" \
+          --shifted-ifo "$second_ifo" \
+          --coincidence-window-seconds "$COINCIDENCE_WINDOW_SECONDS" \
+          --cluster-window-seconds "$cluster_window_seconds" \
+          --physical-delay-limit-seconds "$PHYSICAL_DELAY_LIMIT_SECONDS" \
+          --empirical-timing-uncertainty-seconds "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS"
+      )
+    fi
   fi
 
   receipt="$scenario_root/scenario_receipt.json"

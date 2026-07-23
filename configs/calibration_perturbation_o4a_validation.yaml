@@ -30,4 +30,9 @@ calibration_robustness:
   maximum_far_multiplier_of_target: 2.0
   bootstrap_replicates: 10000
   minimum_injection_gps_blocks: 25
+  required_detector_subsets:
+    - H1+L1
+    - H1+V1
+    - L1+V1
+    - H1+L1+V1
   seed: 20260722
