@@ -892,6 +892,48 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_corpus_audit.add_argument("--validation-report", required=True)
     gravityspy_network_corpus_audit.add_argument("--output", required=True)
 
+    detector_validation_background = subparsers.add_parser(
+        "detector-validation-background-export"
+    )
+    detector_validation_background.add_argument(
+        "--network-manifest", required=True
+    )
+    detector_validation_background.add_argument(
+        "--corpus-audit", required=True
+    )
+    detector_validation_background.add_argument("--output-dir", required=True)
+    detector_validation_background.add_argument(
+        "--analysis-duration-seconds", type=float, default=4.0
+    )
+    detector_validation_background.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_background.add_argument(
+        "--minimum-per-detector-subset", type=int, default=25
+    )
+    detector_validation_background.add_argument(
+        "--require-ready", action="store_true"
+    )
+    detector_validation_injections = subparsers.add_parser(
+        "detector-validation-injection-plan"
+    )
+    detector_validation_injections.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_validation_injections.add_argument(
+        "--background-report", required=True
+    )
+    detector_validation_injections.add_argument("--output-dir", required=True)
+    detector_validation_injections.add_argument(
+        "--injections-per-detector-subset", type=int, default=100
+    )
+    detector_validation_injections.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_injections.add_argument(
+        "--seed", type=int, default=20260723
+    )
+
     gravityspy_network_resplit = subparsers.add_parser(
         "gravityspy-network-corpus-resplit"
     )
@@ -3441,6 +3483,47 @@ def main(argv: list[str] | None = None) -> int:
         _print(
             audit_gravityspy_network_numeric_corpus(
                 args.train_report, args.validation_report, args.output
+            )
+        )
+    elif args.command == "detector-validation-background-export":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            export_network_numeric_validation_background,
+        )
+
+        _print(
+            export_network_numeric_validation_background(
+                args.network_manifest,
+                args.corpus_audit,
+                args.output_dir,
+                args.analysis_duration_seconds,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.minimum_per_detector_subset,
+                args.require_ready,
+            )
+        )
+    elif args.command == "detector-validation-injection-plan":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            plan_detector_stratified_validation_injections,
+        )
+
+        _print(
+            plan_detector_stratified_validation_injections(
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                args.injections_per_detector_subset,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.seed,
             )
         )
     elif args.command == "gravityspy-network-corpus-resplit":
