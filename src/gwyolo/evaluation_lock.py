@@ -60,6 +60,11 @@ _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
     "catalog_metadata",
     "locked_execution_plan",
 }
+_LOCKED_STREAM_SHARD_ARTIFACT_KEYS = {
+    "mask_candidate_rows",
+    "ood_score_rows",
+    "raw_candidate_rows",
+}
 
 
 def freeze_locked_o4b_streaming_execution_plan(
@@ -322,6 +327,195 @@ def freeze_locked_o4b_streaming_execution_plan(
     report["code_commit"] = code_commit
     atomic_write_json(target, report)
     return report
+
+
+def audit_locked_o4b_streaming_completion(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    receipt_manifest_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Fail closed unless every frozen O4b shard was processed and retained.
+
+    The data-plane worker writes one receipt row per frozen shard. This reducer
+    does not choose shards or inspect endpoint values: it replays the exact
+    pre-access order, hashes every raw/mask/OOD artifact, verifies source
+    eviction, and publishes a complete artifact inventory for downstream locked
+    endpoint reducers. Empty shard artifacts are allowed because null results
+    must be retained.
+    """
+
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    receipts_file = Path(receipt_manifest_path).resolve()
+    target = Path(output_path).resolve()
+    if target.exists():
+        raise FileExistsError("locked streaming completion audits are immutable")
+    if not plan_file.is_file() or not access_file.is_file() or not receipts_file.is_file():
+        raise FileNotFoundError("locked streaming completion inputs are absent")
+
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or plan.get("evaluation_opened") is not False
+        or plan.get("candidate_scores_inspected") is not False
+        or plan.get("result_dependent_stopping_allowed") is not False
+        or plan.get("post_access_dq_replacement_allowed") is not False
+        or plan.get("maximum_concurrent_shards") != 1
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("evaluation_opened") is not True
+        or access.get("corpus_label") != plan.get("corpus_label")
+        or access.get("code_commit") != plan.get("code_commit")
+        or Path(str(plan.get("access_log_path", ""))).resolve() != access_file
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+    ):
+        raise ValueError("locked streaming access/plan binding failed replay")
+
+    shards = _load_jsonl(shard_manifest)
+    receipts = _load_jsonl(receipts_file)
+    if (
+        len(shards) != int(plan.get("shards", -1))
+        or len(receipts) != len(shards)
+        or int(plan.get("rows", -1))
+        != sum(int(row["row_stop_exclusive"]) - int(row["row_start"]) for row in shards)
+    ):
+        raise ValueError("locked streaming receipts do not cover every frozen shard")
+
+    artifact_inventory: dict[str, list[dict[str, Any]]] = {
+        key: [] for key in sorted(_LOCKED_STREAM_SHARD_ARTIFACT_KEYS)
+    }
+    processed_injections: list[str] = []
+    processed_availability: list[str] = []
+    for expected_index, (shard, receipt) in enumerate(zip(shards, receipts)):
+        work_dir = Path(str(shard.get("work_dir", ""))).resolve()
+        expected_rows = int(shard["row_stop_exclusive"]) - int(shard["row_start"])
+        identity_fields = (
+            "shard_index",
+            "row_start",
+            "row_stop_exclusive",
+            "availability_ids",
+            "injection_ids",
+            "waveform_ids",
+            "gps_blocks",
+        )
+        if (
+            int(shard.get("shard_index", -1)) != expected_index
+            or int(receipt.get("shard_index", -1)) != expected_index
+            or receipt.get("status") != "completed_locked_o4b_stream_shard"
+            or receipt.get("passed") is not True
+            or receipt.get("test_rows_processed") != expected_rows
+            or receipt.get("result_dependent_stopping_used") is not False
+            or receipt.get("post_access_dq_replacement_used") is not False
+            or receipt.get("negative_and_null_results_retained") is not True
+            or any(receipt.get(field) != shard.get(field) for field in identity_fields)
+            or receipt.get("streaming_plan_sha256") != file_sha256(plan_file)
+            or receipt.get("access_log_sha256") != file_sha256(access_file)
+        ):
+            raise ValueError(
+                f"locked streaming shard receipt failed identity replay: {expected_index}"
+            )
+
+        artifacts = receipt.get("artifacts")
+        if not isinstance(artifacts, dict) or set(artifacts) != _LOCKED_STREAM_SHARD_ARTIFACT_KEYS:
+            raise ValueError(
+                f"locked streaming shard artifact inventory is incomplete: {expected_index}"
+            )
+        for label in sorted(_LOCKED_STREAM_SHARD_ARTIFACT_KEYS):
+            entry = artifacts[label]
+            if not isinstance(entry, dict):
+                raise ValueError(f"locked streaming shard artifact is invalid: {label}")
+            artifact_path = Path(str(entry.get("path", ""))).resolve()
+            rows = entry.get("rows")
+            if (
+                not artifact_path.is_file()
+                or work_dir not in artifact_path.parents
+                or entry.get("sha256") != file_sha256(artifact_path)
+                or isinstance(rows, bool)
+                or not isinstance(rows, int)
+                or rows < 0
+            ):
+                raise ValueError(
+                    f"locked streaming shard artifact failed replay: "
+                    f"{expected_index}/{label}"
+                )
+            artifact_inventory[label].append(
+                {
+                    "shard_index": expected_index,
+                    "path": str(artifact_path),
+                    "sha256": entry["sha256"],
+                    "rows": rows,
+                }
+            )
+
+        eviction = receipt.get("source_eviction")
+        expected_sources = len(shard.get("source_files", []))
+        if (
+            not isinstance(eviction, dict)
+            or eviction.get("status") != "verified_locked_source_eviction"
+            or eviction.get("passed") is not True
+            or eviction.get("source_files_removed") != expected_sources
+            or eviction.get("source_files_retained") != 0
+            or eviction.get("source_files_sha256")
+            != canonical_hash(shard.get("source_files", []), length=64)
+        ):
+            raise ValueError(
+                f"locked streaming shard source eviction failed replay: {expected_index}"
+            )
+        processed_injections.extend(map(str, shard["injection_ids"]))
+        processed_availability.extend(map(str, shard["availability_ids"]))
+
+    if (
+        len(processed_injections) != int(plan["rows"])
+        or len(set(processed_injections)) != len(processed_injections)
+        or len(set(processed_availability)) != len(processed_availability)
+    ):
+        raise ValueError("locked streaming completion repeats or omits physical rows")
+
+    result = {
+        "status": "completed_locked_o4b_streaming_execution_audit",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "all_predeclared_shards_reduced": True,
+        "negative_and_null_results_retained": True,
+        "result_dependent_stopping_used": False,
+        "post_access_dq_replacement_used": False,
+        "expected_shards": len(shards),
+        "completed_shards": len(receipts),
+        "failed_shards": [],
+        "rows": len(processed_injections),
+        "unique_injections": len(set(processed_injections)),
+        "unique_availability_blocks": len(set(processed_availability)),
+        "execution_plan": {
+            "path": str(plan_file),
+            "sha256": file_sha256(plan_file),
+        },
+        "access_log": {
+            "path": str(access_file),
+            "sha256": file_sha256(access_file),
+        },
+        "receipt_manifest": {
+            "path": str(receipts_file),
+            "sha256": file_sha256(receipts_file),
+        },
+        "artifact_inventory": artifact_inventory,
+        "code_commit": plan["code_commit"],
+        **execution_provenance(),
+    }
+    result["runtime_provenance"] = {
+        "runtime_code_commit": result.pop("code_commit"),
+        "exact_command": result.pop("exact_command"),
+        "environment": result.pop("environment"),
+    }
+    result["code_commit"] = plan["code_commit"]
+    atomic_write_json(target, result)
+    return result
 
 
 def freeze_locked_evaluation_suite_plan(

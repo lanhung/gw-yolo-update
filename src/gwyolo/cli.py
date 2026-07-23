@@ -1719,6 +1719,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--minimum-free-kb", type=int, default=8 * 1024 * 1024
     )
 
+    locked_stream_audit = subparsers.add_parser(
+        "locked-o4b-streaming-completion-audit"
+    )
+    locked_stream_audit.add_argument("--execution-plan", required=True)
+    locked_stream_audit.add_argument("--access-log", required=True)
+    locked_stream_audit.add_argument("--receipt-manifest", required=True)
+    locked_stream_audit.add_argument("--output", required=True)
+
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
     evaluation_open.add_argument("--code-commit", required=True)
@@ -4181,6 +4189,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.code_commit,
                 args.blocks_per_shard,
                 args.minimum_free_kb,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-completion-audit":
+        from .evaluation_lock import audit_locked_o4b_streaming_completion
+
+        _print(
+            audit_locked_o4b_streaming_completion(
+                args.execution_plan,
+                args.access_log,
+                args.receipt_manifest,
+                args.output,
             )
         )
     elif args.command == "locked-evaluation-suite-finalize":

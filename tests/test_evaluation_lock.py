@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from gwyolo.evaluation_lock import (
+    audit_locked_o4b_streaming_completion,
     freeze_evaluation_corpus,
     freeze_locked_o4b_streaming_execution_plan,
     freeze_locked_evaluation_suite_plan,
@@ -14,7 +15,7 @@ from gwyolo.evaluation_lock import (
     validate_locked_evaluation_suite_access,
     validate_locked_evaluation_suite_input,
 )
-from gwyolo.io import file_sha256
+from gwyolo.io import canonical_hash, file_sha256
 
 
 def _write(path, rows):
@@ -606,7 +607,97 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     assert rows[0]["injection_ids"] == ["injection-0"]
     assert len(rows[0]["source_files"]) == 2
     assert rows[1]["gps_blocks"] == ["O4b:1400004096:4096"]
-    access.write_text("{}", encoding="utf-8")
+    access.write_text(
+        json.dumps(
+            {
+                "status": "locked_evaluation_corpus_opened_once",
+                "evaluation_opened": True,
+                "corpus_label": result["corpus_label"],
+                "code_commit": "abc123",
+                "frozen_artifacts": {
+                    "locked_execution_plan": {
+                        "path": str(report_path.resolve()),
+                        "sha256": file_sha256(report_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipts = []
+    for shard in rows:
+        work_dir = Path(shard["work_dir"])
+        work_dir.mkdir(parents=True)
+        artifacts = {}
+        for label in (
+            "raw_candidate_rows",
+            "mask_candidate_rows",
+            "ood_score_rows",
+        ):
+            artifact = work_dir / f"{label}.jsonl"
+            artifact.write_text("", encoding="utf-8")
+            artifacts[label] = {
+                "path": str(artifact.resolve()),
+                "sha256": file_sha256(artifact),
+                "rows": 0,
+            }
+        receipts.append(
+            {
+                "status": "completed_locked_o4b_stream_shard",
+                "passed": True,
+                **{
+                    key: shard[key]
+                    for key in (
+                        "shard_index",
+                        "row_start",
+                        "row_stop_exclusive",
+                        "availability_ids",
+                        "injection_ids",
+                        "waveform_ids",
+                        "gps_blocks",
+                    )
+                },
+                "test_rows_processed": (
+                    shard["row_stop_exclusive"] - shard["row_start"]
+                ),
+                "result_dependent_stopping_used": False,
+                "post_access_dq_replacement_used": False,
+                "negative_and_null_results_retained": True,
+                "streaming_plan_sha256": file_sha256(report_path),
+                "access_log_sha256": file_sha256(access),
+                "artifacts": artifacts,
+                "source_eviction": {
+                    "status": "verified_locked_source_eviction",
+                    "passed": True,
+                    "source_files_removed": len(shard["source_files"]),
+                    "source_files_retained": 0,
+                    "source_files_sha256": canonical_hash(
+                        shard["source_files"], length=64
+                    ),
+                },
+            }
+        )
+    receipt_manifest = tmp_path / "streaming-receipts.jsonl"
+    _write(receipt_manifest, receipts)
+    completion = audit_locked_o4b_streaming_completion(
+        report_path,
+        access,
+        receipt_manifest,
+        tmp_path / "streaming-completion.json",
+    )
+    assert completion["passed"] is True
+    assert completion["completed_shards"] == 2
+    assert completion["unique_injections"] == 2
+    assert len(completion["artifact_inventory"]["raw_candidate_rows"]) == 2
+
+    _write(receipt_manifest, receipts[:-1])
+    with pytest.raises(ValueError, match="cover every frozen shard"):
+        audit_locked_o4b_streaming_completion(
+            report_path,
+            access,
+            receipt_manifest,
+            tmp_path / "incomplete-streaming-completion.json",
+        )
     with pytest.raises(ValueError, match="unopened execution boundary"):
         freeze_locked_o4b_streaming_execution_plan(
             suite_plan,
