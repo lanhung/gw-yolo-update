@@ -117,19 +117,30 @@ robustness = yaml.safe_load(
     pathlib.Path(robustness_config_path).read_text(encoding="utf-8")
 )["calibration_robustness"]
 required_subsets = set(robustness.get("required_detector_subsets", []))
-observed_subsets = set()
+minimum_per_subset = int(
+    robustness.get("minimum_injections_per_detector_subset", 1)
+)
+observed_subsets = {}
 with pathlib.Path(injection_path).open("r", encoding="utf-8") as handle:
     for line in handle:
         if line.strip():
             row = json.loads(line)
-            observed_subsets.add(
-                "+".join(row.get("valid_ifos", row.get("ifos", [])))
+            subset = "+".join(
+                row.get("valid_ifos", row.get("ifos", []))
             )
-missing_subsets = sorted(required_subsets - observed_subsets)
-if missing_subsets:
+            observed_subsets[subset] = observed_subsets.get(subset, 0) + 1
+undersized_subsets = {
+    subset: observed_subsets.get(subset, 0)
+    for subset in sorted(required_subsets)
+    if observed_subsets.get(subset, 0) < minimum_per_subset
+}
+if undersized_subsets:
     raise SystemExit(
-        "calibration robustness injection corpus lacks detector strata: "
-        + ", ".join(missing_subsets)
+        "calibration robustness injection corpus has undersized detector strata: "
+        + ", ".join(
+            f"{subset}={count}/{minimum_per_subset}"
+            for subset, count in undersized_subsets.items()
+        )
     )
 identity = baseline.get("identity", {})
 expected_window = float(physical_delay) + 2 * float(timing_uncertainty)

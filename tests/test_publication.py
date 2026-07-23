@@ -652,6 +652,8 @@ def test_official_validation_protocol_requires_all_calibration_detector_strata(
         "detector_strata": {"H1+L1": {"scenario_count": 7}},
         "required_detector_subsets": ["H1+L1"],
         "required_detector_subsets_covered": True,
+        "minimum_injections_per_detector_subset": 25,
+        "required_detector_subset_minimums_passed": True,
         "test_rows_read": 0,
         "scenario_threshold_refits": 0,
         "scenario_count": 7,

@@ -570,7 +570,37 @@ def test_calibration_robustness_rejects_missing_required_detector_subset(
 
     assert result["passed"] is False
     assert result["required_detector_subsets_covered"] is False
+    assert result["required_detector_subset_minimums_passed"] is False
     assert result["required_detector_subsets"] == ["H1+L1", "H1+V1"]
+
+
+def test_calibration_robustness_rejects_undersized_detector_subset(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, receipts, config = _make_robustness_inputs(tmp_path)
+    content = config.read_text(encoding="utf-8")
+    config.write_text(
+        content.replace(
+            "  seed: 1234\n",
+            "  required_detector_subsets: [H1+L1]\n"
+            "  minimum_injections_per_detector_subset: 3\n"
+            "  seed: 1234\n",
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_calibration_perturbation_robustness(
+        plan,
+        baseline,
+        receipts,
+        config,
+        tmp_path / "undersized-detector-subset.json",
+    )
+
+    assert result["passed"] is False
+    assert result["required_detector_subsets_covered"] is True
+    assert result["required_detector_subset_minimums_passed"] is False
+    assert result["detector_strata"]["H1+L1"]["injections"] == 2
 
 
 def test_calibration_robustness_rejects_missing_or_refitted_scenario(

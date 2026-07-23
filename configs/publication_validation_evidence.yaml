@@ -183,6 +183,8 @@ publication_evidence:
         - {field: detector_strata, op: length_at_least, value: 4}
         - {field: required_detector_subsets, op: length_at_least, value: 4}
         - {field: required_detector_subsets_covered, op: equals, value: true}
+        - {field: minimum_injections_per_detector_subset, op: at_least, value: 25}
+        - {field: required_detector_subset_minimums_passed, op: equals, value: true}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: scenario_threshold_refits, op: equals, value: 0}
         - {field: scenario_count, op: at_least, value: 7}

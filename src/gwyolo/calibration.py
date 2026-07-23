@@ -775,6 +775,9 @@ def evaluate_calibration_perturbation_robustness(
     required_detector_subsets = [
         str(value) for value in settings.get("required_detector_subsets", [])
     ]
+    minimum_injections_per_detector_subset = int(
+        settings.get("minimum_injections_per_detector_subset", 1)
+    )
     seed = int(settings.get("seed", 0))
     if (
         minimum_scenarios < 1
@@ -785,6 +788,7 @@ def evaluate_calibration_perturbation_robustness(
         or len(required_detector_subsets)
         != len(set(required_detector_subsets))
         or any(not value for value in required_detector_subsets)
+        or minimum_injections_per_detector_subset < 1
         or seed < 1
     ):
         raise ValueError("Calibration robustness policy is invalid")
@@ -1051,8 +1055,14 @@ def evaluate_calibration_perturbation_robustness(
         == len(scenario_results)
         for subset in required_detector_subsets
     )
+    required_detector_subset_minimums_passed = all(
+        int(detector_strata.get(subset, {}).get("injections", 0))
+        >= minimum_injections_per_detector_subset
+        for subset in required_detector_subsets
+    )
     passed = all(row["passed"] for row in scenario_results) and (
         required_detector_subsets_covered
+        and required_detector_subset_minimums_passed
     )
     injection_bootstrap_independence = scenario_results[0][
         "injection_bootstrap_independence"
@@ -1076,6 +1086,9 @@ def evaluate_calibration_perturbation_robustness(
             "bootstrap_replicates": bootstrap_replicates,
             "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
             "required_detector_subsets": required_detector_subsets,
+            "minimum_injections_per_detector_subset": (
+                minimum_injections_per_detector_subset
+            ),
             "seed": seed,
         },
         "scenario_count": len(scenario_results),
@@ -1086,6 +1099,12 @@ def evaluate_calibration_perturbation_robustness(
         "required_detector_subsets": required_detector_subsets,
         "required_detector_subsets_covered": (
             required_detector_subsets_covered
+        ),
+        "minimum_injections_per_detector_subset": (
+            minimum_injections_per_detector_subset
+        ),
+        "required_detector_subset_minimums_passed": (
+            required_detector_subset_minimums_passed
         ),
         "physical_time_domain_perturbation": True,
         "fresh_time_frequency_transform": True,

@@ -35,4 +35,5 @@ calibration_robustness:
     - H1+V1
     - L1+V1
     - H1+L1+V1
+  minimum_injections_per_detector_subset: 25
   seed: 20260722
