@@ -13,6 +13,7 @@ from gwyolo.amplfi_adapter import (
     audit_amplfi_background_capacity,
     audit_amplfi_common_prior_projection,
     export_amplfi_group_safe_background,
+    freeze_amplfi_training_bank,
     freeze_amplfi_training_stage_config,
     merge_amplfi_streamed_background_extension,
     run_amplfi_background_capacity_audit,
@@ -376,6 +377,119 @@ def test_amplfi_stream_extension_rejects_plan_without_base_exclusion(
         merge_amplfi_streamed_background_extension(
             base, plan, [tmp_path / "not-read"], tmp_path / "output"
         )
+
+
+def test_amplfi_training_bank_freezes_base_and_extension_without_copy(
+    tmp_path: Path,
+) -> None:
+    base_source = tmp_path / "base-train.hdf5"
+    extension_source = tmp_path / "extension-val.hdf5"
+    base_source.write_bytes(b"base train strain")
+    extension_source.write_bytes(b"extension validation strain")
+
+    def export_report(path: Path, source: Path, split: str) -> dict[str, str]:
+        payload = {
+            "status": "group_safe_amplfi_background",
+            "split_file_counts": {
+                "train": int(split == "train"),
+                "val": int(split == "val"),
+                "test": 0,
+            },
+            "files": [
+                {
+                    "path": str(source),
+                    "sha256": file_sha256(source),
+                    "split": split,
+                }
+            ],
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return {"path": str(path), "sha256": file_sha256(path)}
+
+    base_export = export_report(tmp_path / "base-export.json", base_source, "train")
+    extension_export = export_report(
+        tmp_path / "extension-export.json", extension_source, "val"
+    )
+    base_manifest = tmp_path / "base-manifest.jsonl"
+    base_manifest.write_text('{"split":"train"}\n', encoding="utf-8")
+    base_merge = tmp_path / "base-merge.json"
+    base_merge.write_text(
+        json.dumps(
+            {
+                "status": "verified_streamed_amplfi_background_bank",
+                "passed": True,
+                "test_strain_rows_read": 0,
+                "test_rows_exported": 0,
+                "background_manifest_path": str(base_manifest),
+                "background_manifest_sha256": file_sha256(base_manifest),
+                "shards": [{"export": base_export}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    merged_manifest = tmp_path / "merged-manifest.jsonl"
+    merged_manifest.write_text(
+        '{"split":"train"}\n{"split":"val"}\n', encoding="utf-8"
+    )
+    extension_merge = tmp_path / "extension-merge.json"
+    extension_merge.write_text(
+        json.dumps(
+            {
+                "status": "verified_extended_streamed_amplfi_background_bank",
+                "passed": True,
+                "test_strain_rows_read": 0,
+                "test_rows_exported": 0,
+                "base_merge_report_path": str(base_merge),
+                "base_merge_report_sha256": file_sha256(base_merge),
+                "extension_shards": [{"export": extension_export}],
+                "background_manifest_path": str(merged_manifest),
+                "background_manifest_sha256": file_sha256(merged_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    capacity = tmp_path / "capacity.json"
+    capacity.write_text(
+        json.dumps(
+            {
+                "status": "amplfi_background_capacity_ready",
+                "passed": True,
+                "test_strain_rows_read": 0,
+                "manifest_sha256": file_sha256(merged_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt = tmp_path / "extension-receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "status": "verified_capacity_ready_amplfi_background_extension",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "stream_merge_report_path": str(extension_merge),
+                "stream_merge_report_sha256": file_sha256(extension_merge),
+                "capacity_report_path": str(capacity),
+                "capacity_report_sha256": file_sha256(capacity),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "training-bank"
+    report = freeze_amplfi_training_bank(receipt, output)
+
+    assert report["status"] == "frozen_hash_bound_amplfi_training_bank"
+    assert report["file_counts"] == {"train": 1, "val": 1}
+    assert report["source_bytes"] == base_source.stat().st_size + extension_source.stat().st_size
+    links = [output / item["relative_path"] for item in report["files"]]
+    assert all(path.is_symlink() for path in links)
+    assert {path.read_bytes() for path in links} == {
+        base_source.read_bytes(),
+        extension_source.read_bytes(),
+    }
+    assert (output / "amplfi_training_bank_report.json").is_file()
 
 
 def test_amplfi_training_stage_freezes_hand_calculated_compute_budget(

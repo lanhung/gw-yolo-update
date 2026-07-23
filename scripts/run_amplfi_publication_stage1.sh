@@ -3,7 +3,7 @@ set -euo pipefail
 
 required=(
   TASK_PYTHON AMPLFI_PYTHON AMPLFI_CLI TASK_CODE_DIR GWYOLO_CODE_COMMIT
-  BACKGROUND_RECEIPT BACKGROUND_DATA_DIR OUTPUT_ROOT
+  BACKGROUND_RECEIPT BACKGROUND_DATA_DIR BACKGROUND_BANK_REPORT OUTPUT_ROOT
 )
 for variable in "${required[@]}"; do
   if [[ -z "${!variable:-}" ]]; then
@@ -11,7 +11,12 @@ for variable in "${required[@]}"; do
     exit 2
   fi
 done
-for path in "$TASK_PYTHON" "$AMPLFI_PYTHON" "$AMPLFI_CLI" "$BACKGROUND_RECEIPT"; do
+for path in \
+  "$TASK_PYTHON" \
+  "$AMPLFI_PYTHON" \
+  "$AMPLFI_CLI" \
+  "$BACKGROUND_RECEIPT" \
+  "$BACKGROUND_BANK_REPORT"; do
   if [[ ! -s "$path" ]]; then
     echo "required AMPLFI stage-1 input is absent: $path" >&2
     exit 2
@@ -38,7 +43,8 @@ export AMPLFI_DATADIR="$BACKGROUND_DATA_DIR"
 export AMPLFI_OUTDIR="$OUTPUT_ROOT/training"
 export GWYOLO_AMPLFI_TRAINING_PRIOR="$TASK_CODE_DIR/configs/amplfi_common_bbh_training_prior.yaml"
 
-"$TASK_PYTHON" - "$BACKGROUND_RECEIPT" "$BACKGROUND_DATA_DIR" <<'PY'
+"$TASK_PYTHON" - \
+  "$BACKGROUND_RECEIPT" "$BACKGROUND_DATA_DIR" "$BACKGROUND_BANK_REPORT" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -49,13 +55,22 @@ def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
-receipt_path, bank_value = sys.argv[1:]
+receipt_path, bank_value, bank_report_value = sys.argv[1:]
 bank = pathlib.Path(bank_value).resolve()
 receipt = json.loads(pathlib.Path(receipt_path).read_text(encoding="utf-8"))
 merge_path = pathlib.Path(receipt.get("stream_merge_report_path", ""))
 capacity_path = pathlib.Path(receipt.get("capacity_report_path", ""))
+receipt_status = receipt.get("status")
+status_to_merge = {
+    "verified_capacity_ready_amplfi_training_background": (
+        "verified_streamed_amplfi_background_bank"
+    ),
+    "verified_capacity_ready_amplfi_background_extension": (
+        "verified_extended_streamed_amplfi_background_bank"
+    ),
+}
 if (
-    receipt.get("status") != "verified_capacity_ready_amplfi_training_background"
+    receipt_status not in status_to_merge
     or receipt.get("passed") is not True
     or receipt.get("scientific_claim_allowed") is not False
     or receipt.get("test_rows_read") != 0
@@ -68,7 +83,7 @@ if (
 merge = json.loads(merge_path.read_text(encoding="utf-8"))
 capacity = json.loads(capacity_path.read_text(encoding="utf-8"))
 if (
-    merge.get("status") != "verified_streamed_amplfi_background_bank"
+    merge.get("status") != status_to_merge[receipt_status]
     or merge.get("passed") is not True
     or merge.get("test_rows_exported") != 0
     or capacity.get("status") != "amplfi_background_capacity_ready"
@@ -77,25 +92,36 @@ if (
     or capacity.get("manifest_sha256") != merge.get("background_manifest_sha256")
 ):
     raise SystemExit("AMPLFI background merge/capacity identity failed")
-exported = 0
-for shard in merge.get("shards", []):
-    report_path = pathlib.Path(shard["export"]["path"])
-    if digest(report_path) != shard["export"]["sha256"]:
-        raise SystemExit("AMPLFI shard export report changed")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if int(report.get("split_file_counts", {}).get("test", -1)) != 0:
-        raise SystemExit("AMPLFI training bank contains a test export")
-    for row in report.get("files", []):
-        path = pathlib.Path(row["path"]).resolve()
-        try:
-            path.relative_to(bank)
-        except ValueError as error:
-            raise SystemExit("AMPLFI export escapes the declared bank") from error
-        if not path.is_file() or digest(path) != row["sha256"]:
-            raise SystemExit("AMPLFI exported background changed")
-        exported += 1
-if exported != int(merge.get("exported_files", -1)):
-    raise SystemExit("AMPLFI exported-file count differs from the merge")
+bank_report_path = pathlib.Path(bank_report_value).resolve()
+bank_report = json.loads(bank_report_path.read_text(encoding="utf-8"))
+if (
+    bank_report.get("status") != "frozen_hash_bound_amplfi_training_bank"
+    or bank_report.get("passed") is not True
+    or bank_report.get("test_rows_read") != 0
+    or bank_report.get("test_files_linked") != 0
+    or pathlib.Path(bank_report.get("background_receipt_path", "")).resolve()
+    != pathlib.Path(receipt_path).resolve()
+    or bank_report.get("background_receipt_sha256") != digest(receipt_path)
+    or pathlib.Path(bank_report.get("bank_root", "")).resolve() != bank
+    or bank_report.get("background_manifest_sha256")
+    != merge.get("background_manifest_sha256")
+):
+    raise SystemExit("AMPLFI frozen training bank failed receipt replay")
+files = bank_report.get("files", [])
+if not files:
+    raise SystemExit("AMPLFI frozen training bank is empty")
+for row in files:
+    relative = pathlib.Path(row["relative_path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SystemExit("AMPLFI frozen bank contains an unsafe relative path")
+    path = bank / relative
+    resolved = path.resolve()
+    if (
+        row.get("split") not in {"train", "val"}
+        or not path.is_file()
+        or digest(resolved) != row["source_sha256"]
+    ):
+        raise SystemExit("AMPLFI frozen training file changed")
 PY
 
 resolved_config="$OUTPUT_ROOT/amplfi_publication_stage1.yaml"
@@ -135,7 +161,8 @@ if [[ ! -s "$training_marker" ]]; then
     resume_args+=(--ckpt_path "${last_checkpoints[0]}")
   fi
   "$AMPLFI_CLI" fit --config "$resolved_config" "${resume_args[@]}"
-  "$TASK_PYTHON" - "$resolved_config" "$BACKGROUND_RECEIPT" "$GWYOLO_CODE_COMMIT" "$training_marker" <<'PY'
+  "$TASK_PYTHON" - "$resolved_config" "$BACKGROUND_RECEIPT" \
+    "$BACKGROUND_BANK_REPORT" "$GWYOLO_CODE_COMMIT" "$training_marker" <<'PY'
 import hashlib
 import json
 import os
@@ -143,13 +170,16 @@ import pathlib
 import sys
 
 
-config, background, commit, target_value = sys.argv[1:]
+config, background, bank_report, commit, target_value = sys.argv[1:]
 result = {
     "status": "amplfi_publication_stage1_training_process_complete",
     "scientific_claim_allowed": False,
     "test_rows_read": 0,
     "resolved_config_sha256": hashlib.sha256(pathlib.Path(config).read_bytes()).hexdigest(),
     "background_receipt_sha256": hashlib.sha256(pathlib.Path(background).read_bytes()).hexdigest(),
+    "background_bank_report_sha256": hashlib.sha256(
+        pathlib.Path(bank_report).read_bytes()
+    ).hexdigest(),
     "code_commit": commit,
 }
 target = pathlib.Path(target_value)
@@ -174,7 +204,7 @@ selection_report="$OUTPUT_ROOT/amplfi_validation_selection.json"
 if [[ ! -s "$selection_report" ]]; then
   "$TASK_PYTHON" -m gwyolo.cli pe-lightning-checkpoint-select \
     --training-config "$resolved_config" \
-    --training-data-manifest "$BACKGROUND_RECEIPT" \
+    --training-data-manifest "$BACKGROUND_BANK_REPORT" \
     --metrics-csv "${metrics_files[0]}" \
     --checkpoint-index "$checkpoint_index" \
     --output "$selection_report" \
@@ -208,7 +238,7 @@ if [[ ! -s "$metadata" ]]; then
     --backend AMPLFI \
     --model "$checkpoint" \
     --training-config "$resolved_config" \
-    --training-data-manifest "$BACKGROUND_RECEIPT" \
+    --training-data-manifest "$BACKGROUND_BANK_REPORT" \
     --analysis-prior configs/pe_common_bbh_analysis_prior.yaml \
     --native-prior configs/amplfi_common_bbh_training_prior.yaml \
     --prior-projection-report "$prior_report" \
@@ -226,7 +256,8 @@ if [[ ! -s "$metadata" ]]; then
     --output "$metadata"
 fi
 
-"$TASK_PYTHON" - "$stage_report" "$BACKGROUND_RECEIPT" "$selection_report" \
+"$TASK_PYTHON" - "$stage_report" "$BACKGROUND_RECEIPT" "$BACKGROUND_BANK_REPORT" \
+  "$selection_report" \
   "$load_report" "$metadata" "$GWYOLO_CODE_COMMIT" \
   "$OUTPUT_ROOT/amplfi_publication_stage1_receipt.json" <<'PY'
 import hashlib
@@ -240,7 +271,16 @@ def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
-stage_path, background_path, selection_path, load_path, metadata_path, commit, target_value = sys.argv[1:]
+(
+    stage_path,
+    background_path,
+    bank_report_path,
+    selection_path,
+    load_path,
+    metadata_path,
+    commit,
+    target_value,
+) = sys.argv[1:]
 stage = json.loads(pathlib.Path(stage_path).read_text(encoding="utf-8"))
 selection = json.loads(pathlib.Path(selection_path).read_text(encoding="utf-8"))
 load = json.loads(pathlib.Path(load_path).read_text(encoding="utf-8"))
@@ -265,6 +305,8 @@ result = {
     "test_rows_read": 0,
     "stage_config_report_sha256": digest(stage_path),
     "background_receipt_sha256": digest(background_path),
+    "background_bank_report_path": str(pathlib.Path(bank_report_path).resolve()),
+    "background_bank_report_sha256": digest(bank_report_path),
     "selection_report_sha256": digest(selection_path),
     "model_load_report_sha256": digest(load_path),
     "model_metadata_path": str(pathlib.Path(metadata_path).resolve()),

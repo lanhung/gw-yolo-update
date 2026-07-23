@@ -13,6 +13,9 @@ def test_amplfi_stage1_is_capacity_selection_and_model_load_gated() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     for token in (
         "verified_capacity_ready_amplfi_training_background",
+        "verified_capacity_ready_amplfi_background_extension",
+        "frozen_hash_bound_amplfi_training_bank",
+        "BACKGROUND_BANK_REPORT",
         "publication_stage_1",
         "--minimum-publication-epochs 100",
         "--minimum-validation-points 50",
@@ -23,6 +26,8 @@ def test_amplfi_stage1_is_capacity_selection_and_model_load_gated() -> None:
         "test_rows_read",
     ):
         assert token in source
+    assert '--training-data-manifest "$BACKGROUND_BANK_REPORT"' in source
+    assert '"background_bank_report_sha256"' in source
 
 
 def test_amplfi_stage1_embedded_python_compiles() -> None:

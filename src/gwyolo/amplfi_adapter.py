@@ -584,6 +584,168 @@ def merge_amplfi_streamed_background_extension(
     return result
 
 
+def freeze_amplfi_training_bank(
+    background_receipt_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Freeze one hash-bound AMPLFI bank view without copying strain arrays."""
+
+    receipt_path = Path(background_receipt_path).resolve()
+    output = Path(output_dir).resolve()
+    if output.exists():
+        raise FileExistsError(f"AMPLFI training bank output already exists: {output}")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    status_to_merge = {
+        "verified_capacity_ready_amplfi_training_background": (
+            "verified_streamed_amplfi_background_bank"
+        ),
+        "verified_capacity_ready_amplfi_background_extension": (
+            "verified_extended_streamed_amplfi_background_bank"
+        ),
+    }
+    receipt_status = str(receipt.get("status", ""))
+    expected_merge_status = status_to_merge.get(receipt_status)
+    merge_path = Path(str(receipt.get("stream_merge_report_path", ""))).resolve()
+    capacity_path = Path(str(receipt.get("capacity_report_path", ""))).resolve()
+    if (
+        expected_merge_status is None
+        or receipt.get("passed") is not True
+        or receipt.get("scientific_claim_allowed") is not False
+        or int(receipt.get("test_rows_read", -1)) != 0
+        or not merge_path.is_file()
+        or receipt.get("stream_merge_report_sha256") != file_sha256(merge_path)
+        or not capacity_path.is_file()
+        or receipt.get("capacity_report_sha256") != file_sha256(capacity_path)
+    ):
+        raise ValueError("AMPLFI background receipt failed training-bank replay")
+    merge = json.loads(merge_path.read_text(encoding="utf-8"))
+    capacity = json.loads(capacity_path.read_text(encoding="utf-8"))
+    if (
+        merge.get("status") != expected_merge_status
+        or merge.get("passed") is not True
+        or int(merge.get("test_strain_rows_read", -1)) != 0
+        or int(merge.get("test_rows_exported", -1)) != 0
+        or capacity.get("status") != "amplfi_background_capacity_ready"
+        or capacity.get("passed") is not True
+        or int(capacity.get("test_strain_rows_read", -1)) != 0
+        or capacity.get("manifest_sha256")
+        != merge.get("background_manifest_sha256")
+    ):
+        raise ValueError("AMPLFI merge/capacity reports failed training-bank replay")
+
+    shard_records: list[dict[str, Any]]
+    source_reports: list[dict[str, str]] = []
+    if expected_merge_status == "verified_streamed_amplfi_background_bank":
+        shard_records = list(merge.get("shards", []))
+    else:
+        base_path = Path(str(merge.get("base_merge_report_path", ""))).resolve()
+        if (
+            not base_path.is_file()
+            or merge.get("base_merge_report_sha256") != file_sha256(base_path)
+        ):
+            raise ValueError("AMPLFI extension base merge report changed")
+        base = json.loads(base_path.read_text(encoding="utf-8"))
+        if (
+            base.get("status") != "verified_streamed_amplfi_background_bank"
+            or base.get("passed") is not True
+            or int(base.get("test_rows_exported", -1)) != 0
+        ):
+            raise ValueError("AMPLFI extension base merge is not publication-safe")
+        shard_records = list(base.get("shards", [])) + list(
+            merge.get("extension_shards", [])
+        )
+    if not shard_records:
+        raise ValueError("AMPLFI training bank has no hash-bound shards")
+
+    files: list[dict[str, Any]] = []
+    source_paths: set[str] = set()
+    target_names: set[tuple[str, str]] = set()
+    for shard in shard_records:
+        identity = shard.get("export", {})
+        report_path = Path(str(identity.get("path", ""))).resolve()
+        if (
+            not report_path.is_file()
+            or identity.get("sha256") != file_sha256(report_path)
+        ):
+            raise ValueError("AMPLFI training-bank export report changed")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("status") != "group_safe_amplfi_background"
+            or int(report.get("split_file_counts", {}).get("test", -1)) != 0
+        ):
+            raise ValueError("AMPLFI training-bank export contains a test split")
+        source_reports.append(
+            {"path": str(report_path), "sha256": file_sha256(report_path)}
+        )
+        for item in report.get("files", []):
+            split = str(item.get("split", ""))
+            if split not in {"train", "val"}:
+                raise ValueError("AMPLFI training-bank file has a non-training split")
+            source = Path(str(item.get("path", ""))).resolve()
+            expected_hash = str(item.get("sha256", ""))
+            if (
+                not source.is_file()
+                or file_sha256(source) != expected_hash
+                or str(source) in source_paths
+            ):
+                raise ValueError("AMPLFI training-bank source file failed replay")
+            split_dir = "validation" if split == "val" else split
+            target_name = f"{expected_hash[:16]}-{source.name}"
+            if (split_dir, target_name) in target_names:
+                raise ValueError("AMPLFI training-bank target identity collided")
+            source_paths.add(str(source))
+            target_names.add((split_dir, target_name))
+            files.append(
+                {
+                    "source_path": str(source),
+                    "source_sha256": expected_hash,
+                    "split": split,
+                    "relative_path": f"{split_dir}/background/{target_name}",
+                    "size_bytes": source.stat().st_size,
+                }
+            )
+    if not files:
+        raise ValueError("AMPLFI training bank has no exported files")
+    file_counts = {
+        split: sum(item["split"] == split for item in files)
+        for split in ("train", "val")
+    }
+    if any(count <= 0 for count in file_counts.values()):
+        raise ValueError("AMPLFI training bank requires train and validation files")
+
+    temporary = output.with_name(output.name + ".part")
+    if temporary.exists():
+        raise FileExistsError(f"stale AMPLFI training bank temporary exists: {temporary}")
+    for item in files:
+        target = temporary / item["relative_path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(item["source_path"])
+    result = {
+        "status": "frozen_hash_bound_amplfi_training_bank",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_files_linked": 0,
+        "background_receipt_path": str(receipt_path),
+        "background_receipt_sha256": file_sha256(receipt_path),
+        "background_receipt_status": receipt_status,
+        "stream_merge_report_path": str(merge_path),
+        "stream_merge_report_sha256": file_sha256(merge_path),
+        "background_manifest_path": merge["background_manifest_path"],
+        "background_manifest_sha256": merge["background_manifest_sha256"],
+        "bank_root": str(output),
+        "link_mode": "absolute_symbolic_links_no_strain_copy",
+        "source_export_reports": source_reports,
+        "files": files,
+        "file_counts": file_counts,
+        "source_bytes": sum(int(item["size_bytes"]) for item in files),
+        **execution_provenance(),
+    }
+    atomic_write_json(temporary / "amplfi_training_bank_report.json", result)
+    temporary.replace(output)
+    return result
+
+
 def freeze_amplfi_training_stage_config(
     base_config_path: str | Path,
     stage_policy_path: str | Path,

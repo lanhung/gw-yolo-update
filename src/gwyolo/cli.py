@@ -2463,6 +2463,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--shard-dir", action="append", required=True
     )
     amplfi_extension_merge.add_argument("--output-dir", required=True)
+    amplfi_training_bank = subparsers.add_parser("amplfi-training-bank-freeze")
+    amplfi_training_bank.add_argument("--background-receipt", required=True)
+    amplfi_training_bank.add_argument("--output-dir", required=True)
 
     amplfi_stage = subparsers.add_parser("amplfi-training-stage-freeze")
     amplfi_stage.add_argument("--base-config", required=True)
@@ -5433,6 +5436,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.base_merge_report,
                 args.extension_plan,
                 args.shard_dir,
+                args.output_dir,
+            )
+        )
+    elif args.command == "amplfi-training-bank-freeze":
+        from .amplfi_adapter import freeze_amplfi_training_bank
+
+        _print(
+            freeze_amplfi_training_bank(
+                args.background_receipt,
                 args.output_dir,
             )
         )

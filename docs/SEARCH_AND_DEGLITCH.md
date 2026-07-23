@@ -804,6 +804,14 @@ a passing 200k/50k-second background receipt, trains under pinned AMPLFI 0.6.0, 
 from the complete validation trajectory, loads the real model/scaler on CUDA and freezes standardized
 metadata. The 800-epoch stage remains unpromoted until stage 1 supplies actual validation evidence.
 
+When the frozen base bank needs a source-disjoint capacity extension,
+`amplfi-training-bank-freeze` replays the base and extension merge/capacity receipts and every export
+hash, then creates one immutable train/validation directory view using symbolic links. No strain
+array is duplicated and no test export is admitted. The bank report, rather than an incidental
+machine directory, is the training-data identity used for checkpoint selection and model metadata.
+`scripts/run_amplfi_extension_stage1_successor.sh` performs this no-copy freeze before invoking the
+same publication-stage-1 training gate.
+
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
 `validation_selected_checkpoint`, says `selection_split: validation`, is explicitly
