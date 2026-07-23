@@ -14,6 +14,7 @@ from gwyolo.amplfi_adapter import (
     audit_amplfi_common_prior_projection,
     export_amplfi_group_safe_background,
     freeze_amplfi_training_stage_config,
+    merge_amplfi_streamed_background_extension,
     run_amplfi_background_capacity_audit,
     run_amplfi_common_batch,
 )
@@ -148,6 +149,233 @@ def test_amplfi_background_capacity_writes_failure_report_before_nonzero(
     assert report["status"] == "amplfi_background_capacity_insufficient"
     assert report["checks"]["train"]["duration_passed"] is False
     assert report["checks"]["val"]["duration_passed"] is False
+
+
+def test_amplfi_stream_extension_is_source_disjoint_and_capacity_auditable(
+    tmp_path: Path,
+) -> None:
+    base_manifest = tmp_path / "base.jsonl"
+    base_rows = [
+        {
+            "window_id": "base-train",
+            "split": "train",
+            "ifos": ["H1", "L1"],
+            "gps_block": "gps:1000:32",
+            "pair_id": "base-pair",
+            "gps_start": 1000,
+            "gps_end": 1032,
+        },
+        {
+            "window_id": "base-val",
+            "split": "val",
+            "ifos": ["H1", "L1"],
+            "gps_block": "gps:1100:32",
+            "pair_id": "base-val-pair",
+            "gps_start": 1100,
+            "gps_end": 1132,
+        },
+    ]
+    base_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in base_rows),
+        encoding="utf-8",
+    )
+    parent_plan = tmp_path / "base-plan.json"
+    parent_plan.write_text('{"frozen":true}\n', encoding="utf-8")
+    base_merge = tmp_path / "base-merge.json"
+    base_merge.write_text(
+        json.dumps(
+            {
+                "status": "verified_streamed_amplfi_background_bank",
+                "passed": True,
+                "recoverable": True,
+                "test_strain_rows_read": 0,
+                "test_rows_exported": 0,
+                "parent_plan_sha256": file_sha256(parent_plan),
+                "background_manifest_path": str(base_manifest),
+                "background_manifest_sha256": file_sha256(base_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    extension_plan = tmp_path / "extension-plan.json"
+    extension_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "selection_rule": "stratified_exclusion_complement_v1",
+                "candidate_scores_inspected": False,
+                "test_data_opened": False,
+                "locked_evaluation_data": False,
+                "run": "O4a",
+                "detectors": ["H1", "L1"],
+                "selected_pairs": 1,
+                "pairs": [{"pair_id": "extension-pair", "gps_start": 2000}],
+                "exclusion_plans": [
+                    {"sha256": file_sha256(parent_plan)}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = tmp_path / "shard-0"
+    (shard / "download").mkdir(parents=True)
+    (shard / "background").mkdir()
+    shard_plan = shard / "acquisition_plan.json"
+    shard_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "parent_plan_sha256": file_sha256(extension_plan),
+                "pairs": [{"pair_id": "extension-pair", "gps_start": 2000}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    batch = shard / "download" / "batch_download_report.json"
+    batch.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "plan_sha256": file_sha256(shard_plan),
+            }
+        ),
+        encoding="utf-8",
+    )
+    extension_manifest = shard / "background" / "background.jsonl"
+    extension_manifest.write_text(
+        json.dumps(
+            {
+                "window_id": "extension-train",
+                "split": "train",
+                "ifos": ["H1", "L1"],
+                "gps_block": "gps:2000:32",
+                "pair_id": "extension-pair",
+                "gps_start": 2000,
+                "gps_end": 2032,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    background = shard / "background" / "background_plan_report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "passed": True,
+                "split_strategy": "hash_threshold_v1",
+                "splits": {"test": {"windows": 0}},
+                "source_batch_report_sha256s": [file_sha256(batch)],
+                "manifest_path": str(extension_manifest),
+                "manifest_sha256": file_sha256(extension_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    exported = shard / "exported.hdf5"
+    exported.write_bytes(b"verified exported strain")
+    export = shard / "amplfi_export_report.json"
+    export.write_text(
+        json.dumps(
+            {
+                "status": "group_safe_amplfi_background",
+                "manifest_sha256": file_sha256(extension_manifest),
+                "split_file_counts": {"train": 1, "val": 0, "test": 0},
+                "files": [
+                    {"path": str(exported), "sha256": file_sha256(exported)}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    eviction = shard / "source_eviction_report.json"
+    eviction.write_text(
+        json.dumps(
+            {
+                "status": "verified_exported_amplfi_source_eviction",
+                "recoverable": True,
+                "amplfi_export_report_sha256": file_sha256(export),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = merge_amplfi_streamed_background_extension(
+        base_merge,
+        extension_plan,
+        [shard],
+        tmp_path / "merged",
+    )
+
+    assert result["passed"] is True
+    assert result["extension_source_pairs"] == 1
+    assert result["background_windows"] == 3
+    assert result["test_rows_exported"] == 0
+    capacity = audit_amplfi_background_capacity(
+        result["background_manifest_path"],
+        _capacity_policy(tmp_path),
+    )
+    assert capacity["passed"] is True
+
+
+def test_amplfi_stream_extension_rejects_plan_without_base_exclusion(
+    tmp_path: Path,
+) -> None:
+    base_manifest = tmp_path / "base.jsonl"
+    base_manifest.write_text(
+        json.dumps(
+            {
+                "window_id": "base",
+                "split": "train",
+                "ifos": ["H1", "L1"],
+                "gps_block": "gps:1000:32",
+                "pair_id": "base-pair",
+                "gps_start": 1000,
+                "gps_end": 1032,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    base = tmp_path / "base.json"
+    base.write_text(
+        json.dumps(
+            {
+                "status": "verified_streamed_amplfi_background_bank",
+                "passed": True,
+                "recoverable": True,
+                "test_strain_rows_read": 0,
+                "test_rows_exported": 0,
+                "parent_plan_sha256": "required-parent",
+                "background_manifest_path": str(base_manifest),
+                "background_manifest_sha256": file_sha256(base_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "selection_rule": "stratified_exclusion_complement_v1",
+                "candidate_scores_inspected": False,
+                "test_data_opened": False,
+                "locked_evaluation_data": False,
+                "run": "O4a",
+                "detectors": ["H1", "L1"],
+                "pairs": [{"pair_id": "new", "gps_start": 2000}],
+                "exclusion_plans": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="does not exclude"):
+        merge_amplfi_streamed_background_extension(
+            base, plan, [tmp_path / "not-read"], tmp_path / "output"
+        )
 
 
 def test_amplfi_training_stage_freezes_hand_calculated_compute_budget(

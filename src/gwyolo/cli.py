@@ -2396,6 +2396,15 @@ def build_parser() -> argparse.ArgumentParser:
     amplfi_capacity.add_argument("--manifest", required=True)
     amplfi_capacity.add_argument("--policy", required=True)
     amplfi_capacity.add_argument("--output", required=True)
+    amplfi_extension_merge = subparsers.add_parser(
+        "amplfi-background-extension-merge"
+    )
+    amplfi_extension_merge.add_argument("--base-merge-report", required=True)
+    amplfi_extension_merge.add_argument("--extension-plan", required=True)
+    amplfi_extension_merge.add_argument(
+        "--shard-dir", action="append", required=True
+    )
+    amplfi_extension_merge.add_argument("--output-dir", required=True)
 
     amplfi_stage = subparsers.add_parser("amplfi-training-stage-freeze")
     amplfi_stage.add_argument("--base-config", required=True)
@@ -5306,6 +5315,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.manifest,
                 args.policy,
                 args.output,
+            )
+        )
+    elif args.command == "amplfi-background-extension-merge":
+        from .amplfi_adapter import (
+            merge_amplfi_streamed_background_extension,
+        )
+
+        _print(
+            merge_amplfi_streamed_background_extension(
+                args.base_merge_report,
+                args.extension_plan,
+                args.shard_dir,
+                args.output_dir,
             )
         )
     elif args.command == "amplfi-training-stage-freeze":
