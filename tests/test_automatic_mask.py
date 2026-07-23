@@ -86,8 +86,6 @@ def test_automatic_mask_audit_replays_isolated_components_and_binds_endpoint(
     np.savez_compressed(
         source_injection,
         signal=signal,
-        noise=np.zeros_like(signal),
-        strain=signal,
         ifos=np.asarray(["H1", "L1"]),
         sample_rate=np.asarray(64),
         context_gps_start=np.asarray(0.0),

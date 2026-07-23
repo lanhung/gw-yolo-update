@@ -275,15 +275,39 @@ def _active_injection_signals(
     output_samples: int,
     minimum_ifo_mask_snr: float | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    context = load_materialized_context(row)
-    source_ifos = list(context["ifos"])
+    artifact = Path(row["materialized_path"])
+    if file_sha256(artifact) != str(row["materialized_sha256"]):
+        raise ValueError("materialized array hash mismatch")
+    with np.load(artifact, allow_pickle=False) as arrays:
+        source_rate = int(arrays["sample_rate"])
+        source_ifos = [str(value) for value in arrays["ifos"].tolist()]
+        start = int(arrays["analysis_start_index"])
+        stop = int(arrays["analysis_stop_index"])
+        if "signal" in arrays:
+            source_signal = np.asarray(arrays["signal"], dtype=np.float64)
+        elif "signal_scaled" in arrays and "signal_peak_scale" in arrays:
+            source_signal = np.asarray(
+                arrays["signal_scaled"], dtype=np.float64
+            ) * np.asarray(arrays["signal_peak_scale"], dtype=np.float64)[:, None]
+        else:
+            raise ValueError(
+                "materialized artifact lacks a supported signal representation"
+            )
+    if (
+        source_signal.ndim != 2
+        or source_signal.shape[0] != len(source_ifos)
+        or not 0 <= start < stop <= source_signal.shape[1]
+        or source_rate <= 0
+        or not np.isfinite(source_signal).all()
+    ):
+        raise ValueError("materialized injection signal contract is invalid")
     missing = sorted(set(active_ifos) - set(source_ifos))
     if missing:
         raise ValueError(f"Injection {row['injection_id']} does not support {missing}")
     scale = float(row.get("training_signal_scale", 1.0))
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError("training_signal_scale must be finite and positive")
-    signal = np.asarray(context["signal"], dtype=np.float64) * scale
+    signal = source_signal * scale
     target_signal = signal
     if minimum_ifo_mask_snr is not None:
         if "optimal_snr_by_ifo" not in row:
@@ -295,20 +319,18 @@ def _active_injection_signals(
             minimum_ifo_mask_snr,
             signal_scale=scale,
         )
-    start = int(context["analysis_start_index"])
-    stop = int(context["analysis_stop_index"])
     physical = np.zeros((len(model_ifos), output_samples), dtype=np.float64)
     target = np.zeros_like(physical)
     for ifo in active_ifos:
         source_index = source_ifos.index(ifo)
         physical_ifo = _fft_downsample(
             signal[source_index, start:stop],
-            int(context["sample_rate"]),
+            source_rate,
             target_sample_rate,
         )
         target_ifo = _fft_downsample(
             target_signal[source_index, start:stop],
-            int(context["sample_rate"]),
+            source_rate,
             target_sample_rate,
         )
         if physical_ifo.shape != (output_samples,) or target_ifo.shape != (output_samples,):
