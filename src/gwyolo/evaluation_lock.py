@@ -66,7 +66,8 @@ _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
 }
 _LOCKED_STREAM_SHARD_ARTIFACT_KEYS = {
     "mask_candidate_rows",
-    "ood_score_rows",
+    "ood_source_rows",
+    "pe_input_rows",
     "raw_candidate_rows",
 }
 
@@ -78,6 +79,8 @@ def freeze_locked_o4b_streaming_execution_plan(
     availability_report_path: str | Path,
     inventory_manifest_path: str | Path,
     inventory_report_path: str | Path,
+    pe_retention_config_path: str | Path,
+    validation_pe_promotion_path: str | Path,
     work_root: str | Path,
     shard_manifest_path: str | Path,
     output_path: str | Path,
@@ -105,6 +108,8 @@ def freeze_locked_o4b_streaming_execution_plan(
     availability_report_file = Path(availability_report_path).resolve()
     inventory_manifest = Path(inventory_manifest_path).resolve()
     inventory_report_file = Path(inventory_report_path).resolve()
+    pe_retention_config_file = Path(pe_retention_config_path).resolve()
+    validation_pe_promotion_file = Path(validation_pe_promotion_path).resolve()
     shard_manifest = Path(shard_manifest_path).resolve()
     target = Path(output_path).resolve()
     work = Path(work_root).resolve()
@@ -115,6 +120,8 @@ def freeze_locked_o4b_streaming_execution_plan(
         availability_report_file,
         inventory_manifest,
         inventory_report_file,
+        pe_retention_config_file,
+        validation_pe_promotion_file,
     )
     if any(not path.is_file() for path in required_files):
         raise FileNotFoundError("locked streaming plan inputs are absent")
@@ -227,6 +234,119 @@ def freeze_locked_o4b_streaming_execution_plan(
     if len(ordered_rows) != len(by_availability):
         raise ValueError("locked streaming requires one injection per availability block")
 
+    pe_retention_config = load_yaml(pe_retention_config_file).get(
+        "locked_pe_retention"
+    )
+    if (
+        not isinstance(pe_retention_config, dict)
+        or pe_retention_config.get("schema") != "locked_pe_retention_v1"
+        or pe_retention_config.get("population") != "BBH"
+        or pe_retention_config.get("conditions")
+        != ["clean", "contaminated", "mask_conditioned"]
+        or pe_retention_config.get("selection_method")
+        != "gps_block_first_then_hash_rank_v1"
+        or pe_retention_config.get("post_access_replacement_allowed") is not False
+        or pe_retention_config.get("score_dependent_selection_allowed") is not False
+    ):
+        raise ValueError("locked PE retention policy is invalid")
+    required_pe_ifos = [
+        str(value) for value in pe_retention_config.get("required_ifos", [])
+    ]
+    minimum_pe = int(pe_retention_config.get("minimum_paired_injections", 0))
+    retention_pool = int(pe_retention_config.get("retention_pool_injections", 0))
+    minimum_pe_blocks = int(pe_retention_config.get("minimum_gps_blocks", 0))
+    pe_selection_seed = int(pe_retention_config.get("selection_seed", -1))
+    if (
+        required_pe_ifos != ["H1", "L1"]
+        or minimum_pe
+        != int(suite.get("endpoints", {}).get("minimum_paired_pe_injections", -1))
+        or retention_pool < minimum_pe
+        or minimum_pe_blocks < 1
+        or pe_selection_seed < 0
+    ):
+        raise ValueError("locked PE retention resource thresholds are invalid")
+    common_prior = (
+        pe_retention_config_file.parent
+        / str(pe_retention_config.get("common_prior", ""))
+    ).resolve()
+    if not common_prior.is_file():
+        raise FileNotFoundError("locked PE common prior is absent")
+    from .pe import _replay_locked_pe_validation_promotion
+
+    promotion_path, _, promotion_rows = _replay_locked_pe_validation_promotion(
+        validation_pe_promotion_file
+    )
+    validation_prior_hashes = {
+        str(row.get("prior_hash", "")) for row in promotion_rows
+    }
+    if file_sha256(common_prior) not in validation_prior_hashes:
+        raise ValueError(
+            "locked PE retention prior was not used by the validation portfolio"
+        )
+    prior = load_yaml(common_prior)
+    prior_distributions = prior.get("distributions")
+    if (
+        prior.get("population") != "BBH"
+        or not isinstance(prior_distributions, dict)
+        or not prior_distributions
+    ):
+        raise ValueError("locked PE common prior is invalid")
+
+    def pe_truth(row: dict[str, Any]) -> dict[str, float]:
+        mass_1 = float(row["mass_1_detector_msun"])
+        mass_2 = float(row["mass_2_detector_msun"])
+        if mass_1 < mass_2 or mass_2 <= 0:
+            raise ValueError("locked PE truth has invalid detector-frame masses")
+        return {
+            "chirp_mass": (mass_1 * mass_2) ** (3.0 / 5.0)
+            / (mass_1 + mass_2) ** (1.0 / 5.0),
+            "mass_ratio": mass_2 / mass_1,
+            "luminosity_distance": float(row["luminosity_distance_mpc"]),
+            "theta_jn": float(row["inclination"]),
+            "ra": float(row["right_ascension"]),
+            "dec": float(row["declination"]),
+            "psi": float(row["polarization"]),
+        }
+
+    pe_eligible: list[dict[str, Any]] = []
+    for row in injection_rows:
+        if row.get("source_family") != "BBH" or not set(required_pe_ifos) <= set(
+            map(str, row.get("ifos", []))
+        ):
+            continue
+        truth = pe_truth(row)
+        if any(
+            parameter not in truth
+            or not float(specification["minimum"])
+            <= truth[parameter]
+            <= float(specification["maximum"])
+            for parameter, specification in prior_distributions.items()
+        ):
+            continue
+        pe_eligible.append(row)
+    pe_eligible.sort(
+        key=lambda row: hashlib.sha256(
+            f"pe_source_v1\0{pe_selection_seed}\0{row['injection_id']}".encode()
+        ).hexdigest()
+    )
+    first_by_block: dict[str, dict[str, Any]] = {}
+    for row in pe_eligible:
+        first_by_block.setdefault(str(row["gps_block"]), row)
+    diverse = list(first_by_block.values())
+    diverse_ids = {str(row["injection_id"]) for row in diverse}
+    pe_ordered = diverse + [
+        row for row in pe_eligible if str(row["injection_id"]) not in diverse_ids
+    ]
+    selected_pe_rows = pe_ordered[:retention_pool]
+    selected_pe_ids = [str(row["injection_id"]) for row in selected_pe_rows]
+    if (
+        len(selected_pe_ids) < minimum_pe
+        or len({str(row["gps_block"]) for row in selected_pe_rows})
+        < minimum_pe_blocks
+    ):
+        raise ValueError("locked PE retention pool cannot satisfy the frozen minimum")
+    selected_pe_id_set = set(selected_pe_ids)
+
     shard_rows = []
     for shard_index, start in enumerate(range(0, len(ordered_rows), blocks_per_shard)):
         batch = ordered_rows[start : start + blocks_per_shard]
@@ -253,6 +373,11 @@ def freeze_locked_o4b_streaming_execution_plan(
                 "work_dir": str(work / f"shard-{shard_index:05d}"),
                 "availability_ids": [str(value[1]["availability_id"]) for value in batch],
                 "injection_ids": [str(value[0]["injection_id"]) for value in batch],
+                "pe_retention_injection_ids": [
+                    str(value[0]["injection_id"])
+                    for value in batch
+                    if str(value[0]["injection_id"]) in selected_pe_id_set
+                ],
                 "waveform_ids": [str(value[0]["waveform_id"]) for value in batch],
                 "gps_blocks": [str(value[0]["gps_block"]) for value in batch],
                 "source_files": sources,
@@ -292,6 +417,11 @@ def freeze_locked_o4b_streaming_execution_plan(
                     / f"shard-{shard_index:05d}"
                     / "locked_manifest_preparation_report.json"
                 ),
+                "artifact_publication_report_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_artifact_publication_report.json"
+                ),
                 "artifact_paths": {
                     label: str(
                         work / f"shard-{shard_index:05d}" / f"{label}.jsonl"
@@ -320,6 +450,12 @@ def freeze_locked_o4b_streaming_execution_plan(
         "inventory_manifest_sha256": file_sha256(inventory_manifest),
         "inventory_report_path": str(inventory_report_file),
         "inventory_report_sha256": file_sha256(inventory_report_file),
+        "pe_retention_config_path": str(pe_retention_config_file),
+        "pe_retention_config_sha256": file_sha256(pe_retention_config_file),
+        "validation_pe_promotion_path": str(promotion_path),
+        "validation_pe_promotion_sha256": file_sha256(promotion_path),
+        "common_pe_prior_path": str(common_prior),
+        "common_pe_prior_sha256": file_sha256(common_prior),
         "work_root": str(work),
         "shard_manifest_path": str(shard_manifest),
         "blocks_per_shard": blocks_per_shard,
@@ -360,6 +496,30 @@ def freeze_locked_o4b_streaming_execution_plan(
         "blocks_per_shard": blocks_per_shard,
         "maximum_concurrent_shards": 1,
         "minimum_free_kb": minimum_free_kb,
+        "pe_retention": {
+            "population": "BBH",
+            "required_ifos": required_pe_ifos,
+            "conditions": pe_retention_config["conditions"],
+            "minimum_paired_injections": minimum_pe,
+            "retention_pool_injections": len(selected_pe_ids),
+            "minimum_gps_blocks": minimum_pe_blocks,
+            "selection_seed": pe_selection_seed,
+            "selection_method": pe_retention_config["selection_method"],
+            "selected_injection_ids": selected_pe_ids,
+            "selected_ids_hash": canonical_hash(selected_pe_ids, length=64),
+            "eligible_before_pool_limit": len(pe_eligible),
+            "post_access_replacement_allowed": False,
+            "score_dependent_selection_allowed": False,
+            "common_prior": {
+                "path": str(common_prior),
+                "sha256": file_sha256(common_prior),
+            },
+            "validation_promotion": {
+                "path": str(promotion_path),
+                "sha256": file_sha256(promotion_path),
+            },
+            "validation_prior_hashes": sorted(validation_prior_hashes),
+        },
         "post_access_dq_replacement_allowed": False,
         "result_dependent_stopping_allowed": False,
         "source_eviction_required_after_verified_reduction": True,
@@ -375,6 +535,27 @@ def freeze_locked_o4b_streaming_execution_plan(
         ),
         "post_dq_weight_report_path": str(
             work / "locked-post-dq-injection-weight-report.json"
+        ),
+        "merged_pe_input_manifest_path": str(
+            work / "locked-retained-pe-inputs.jsonl"
+        ),
+        "merged_raw_background_candidates_path": str(
+            work / "merged-raw-background-candidates.jsonl"
+        ),
+        "merged_raw_injection_candidates_path": str(
+            work / "merged-raw-injection-candidates.jsonl"
+        ),
+        "merged_mask_background_candidates_path": str(
+            work / "merged-mask-background-candidates.jsonl"
+        ),
+        "merged_mask_injection_candidates_path": str(
+            work / "merged-mask-injection-candidates.jsonl"
+        ),
+        "injection_null_outcomes_path": str(
+            work / "locked-injection-null-outcomes.jsonl"
+        ),
+        "suite_input_merge_report_path": str(
+            work / "locked-suite-input-merge-report.json"
         ),
         "code_commit": code_commit,
         **execution_provenance(),
@@ -992,6 +1173,9 @@ def finalize_locked_o4b_streaming_shard(
     preparation_report_path = Path(
         str(shard["manifest_preparation_report_path"])
     ).resolve()
+    publication_report_path = Path(
+        str(shard["artifact_publication_report_path"])
+    ).resolve()
     eviction_path = Path(str(shard["source_eviction_report_path"])).resolve()
     receipt_path = Path(str(shard["receipt_path"])).resolve()
     if any(
@@ -1000,6 +1184,7 @@ def finalize_locked_o4b_streaming_shard(
             source_dir,
             source_report_path,
             preparation_report_path,
+            publication_report_path,
             eviction_path,
             receipt_path,
         )
@@ -1009,6 +1194,8 @@ def finalize_locked_o4b_streaming_shard(
         raise FileNotFoundError("locked shard source download report is absent")
     if not preparation_report_path.is_file():
         raise FileNotFoundError("locked shard manifest preparation report is absent")
+    if not publication_report_path.is_file():
+        raise FileNotFoundError("locked shard artifact publication report is absent")
     preparation = json.loads(preparation_report_path.read_text(encoding="utf-8"))
     if (
         preparation.get("status")
@@ -1070,6 +1257,26 @@ def finalize_locked_o4b_streaming_shard(
             "sha256": file_sha256(path),
             "rows": len(rows),
         }
+    publication = json.loads(publication_report_path.read_text(encoding="utf-8"))
+    if (
+        publication.get("status")
+        != "published_locked_o4b_streaming_shard_artifacts"
+        or publication.get("passed") is not True
+        or publication.get("shard_index") != shard_index
+        or publication.get("candidate_rows_filtered_by_score") is not False
+        or publication.get("all_candidate_instances_retained") is not True
+        or publication.get("negative_and_null_results_retained") is not True
+        or publication.get("run_identity", {}).get("execution_plan_sha256")
+        != file_sha256(plan_file)
+        or publication.get("run_identity", {}).get("access_log_sha256")
+        != file_sha256(access_file)
+        or publication.get("run_identity", {}).get(
+            "manifest_preparation_report_sha256"
+        )
+        != file_sha256(preparation_report_path)
+        or publication.get("artifacts") != artifact_entries
+    ):
+        raise ValueError("locked shard artifact publication failed finalization replay")
 
     source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
     source_files = source_report.get("files")
@@ -1216,6 +1423,10 @@ def finalize_locked_o4b_streaming_shard(
         "manifest_preparation_report": {
             "path": str(preparation_report_path),
             "sha256": file_sha256(preparation_report_path),
+        },
+        "artifact_publication_report": {
+            "path": str(publication_report_path),
+            "sha256": file_sha256(publication_report_path),
         },
         "source_eviction": {
             "status": eviction["status"],
@@ -1494,8 +1705,12 @@ def audit_locked_o4b_streaming_completion(
         preparation_report_path = Path(
             str(shard.get("manifest_preparation_report_path", ""))
         ).resolve()
+        publication_report_path = Path(
+            str(shard.get("artifact_publication_report_path", ""))
+        ).resolve()
         source_report = receipt.get("source_download_report")
         preparation_report = receipt.get("manifest_preparation_report")
+        publication_report = receipt.get("artifact_publication_report")
         if (
             not isinstance(source_report, dict)
             or source_report_path != Path(str(source_report.get("path", ""))).resolve()
@@ -1507,6 +1722,12 @@ def audit_locked_o4b_streaming_completion(
             or not preparation_report_path.is_file()
             or preparation_report.get("sha256")
             != file_sha256(preparation_report_path)
+            or not isinstance(publication_report, dict)
+            or publication_report_path
+            != Path(str(publication_report.get("path", ""))).resolve()
+            or not publication_report_path.is_file()
+            or publication_report.get("sha256")
+            != file_sha256(publication_report_path)
         ):
             raise ValueError(
                 f"locked streaming shard source report failed replay: {expected_index}"

@@ -115,6 +115,20 @@ if (( ${#locked_inventory_paths[@]} != 4 )); then
   echo "locked corpus contract did not resolve four streaming inputs" >&2
   exit 3
 fi
+validation_pe_promotion=$(
+  "$TASK_PYTHON" - "$PAIRED_DINGO_AMPLFI_PE_PORTFOLIO" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+identity = summary.get("artifacts", {}).get("promotion", {})
+path = pathlib.Path(str(identity.get("path", ""))).resolve()
+if not path.is_file():
+    raise SystemExit("validation PE promotion artifact is absent")
+print(path)
+PY
+)
 if [[ ! -e "$locked_streaming_plan" ]]; then
   cd "$TASK_CODE_DIR"
   export PYTHONPATH=src
@@ -126,6 +140,8 @@ if [[ ! -e "$locked_streaming_plan" ]]; then
     --availability-report "${locked_inventory_paths[1]}" \
     --inventory-manifest "${locked_inventory_paths[2]}" \
     --inventory-report "${locked_inventory_paths[3]}" \
+    --pe-retention-config "$TASK_CODE_DIR/configs/locked_pe_retention.yaml" \
+    --validation-pe-promotion "$validation_pe_promotion" \
     --work-root "$locked_streaming_work_root" \
     --shard-manifest "$locked_streaming_shards" \
     --code-commit "$GWYOLO_CODE_COMMIT" \

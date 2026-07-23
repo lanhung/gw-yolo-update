@@ -1713,6 +1713,8 @@ def build_parser() -> argparse.ArgumentParser:
     locked_stream_freeze.add_argument("--availability-report", required=True)
     locked_stream_freeze.add_argument("--inventory-manifest", required=True)
     locked_stream_freeze.add_argument("--inventory-report", required=True)
+    locked_stream_freeze.add_argument("--pe-retention-config", required=True)
+    locked_stream_freeze.add_argument("--validation-pe-promotion", required=True)
     locked_stream_freeze.add_argument("--work-root", required=True)
     locked_stream_freeze.add_argument("--shard-manifest", required=True)
     locked_stream_freeze.add_argument("--output", required=True)
@@ -1787,6 +1789,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--streaming-completion-audit", required=True
     )
     locked_stream_post_dq.add_argument("--code-commit", required=True)
+
+    locked_stream_publish = subparsers.add_parser(
+        "locked-o4b-streaming-shard-publish"
+    )
+    locked_stream_publish.add_argument("--execution-plan", required=True)
+    locked_stream_publish.add_argument("--access-log", required=True)
+    locked_stream_publish.add_argument("--shard-index", type=int, required=True)
+    locked_stream_publish.add_argument(
+        "--raw-background-candidates", required=True
+    )
+    locked_stream_publish.add_argument("--raw-injection-candidates", required=True)
+    locked_stream_publish.add_argument(
+        "--mask-background-candidates", required=True
+    )
+    locked_stream_publish.add_argument("--mask-injection-candidates", required=True)
+    locked_stream_publish.add_argument("--ood-source-manifest", required=True)
+    locked_stream_publish.add_argument("--pe-input-manifest", required=True)
+    locked_stream_publish.add_argument("--code-commit", required=True)
+
+    locked_stream_suite_merge = subparsers.add_parser(
+        "locked-o4b-streaming-suite-inputs-merge"
+    )
+    locked_stream_suite_merge.add_argument("--suite-plan", required=True)
+    locked_stream_suite_merge.add_argument("--execution-plan", required=True)
+    locked_stream_suite_merge.add_argument("--access-log", required=True)
+    locked_stream_suite_merge.add_argument(
+        "--streaming-completion-audit", required=True
+    )
+    locked_stream_suite_merge.add_argument(
+        "--post-dq-weight-report", required=True
+    )
+    locked_stream_suite_merge.add_argument("--code-commit", required=True)
 
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
@@ -4244,6 +4278,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.availability_report,
                 args.inventory_manifest,
                 args.inventory_report,
+                args.pe_retention_config,
+                args.validation_pe_promotion,
                 args.work_root,
                 args.shard_manifest,
                 args.output,
@@ -4321,6 +4357,38 @@ def main(argv: list[str] | None = None) -> int:
                 args.execution_plan,
                 args.access_log,
                 args.streaming_completion_audit,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-publish":
+        from .locked_streaming import publish_locked_o4b_streaming_shard_artifacts
+
+        _print(
+            publish_locked_o4b_streaming_shard_artifacts(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.raw_background_candidates,
+                args.raw_injection_candidates,
+                args.mask_background_candidates,
+                args.mask_injection_candidates,
+                args.ood_source_manifest,
+                args.pe_input_manifest,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-suite-inputs-merge":
+        from .locked_streaming import (
+            merge_locked_o4b_streaming_suite_input_sources,
+        )
+
+        _print(
+            merge_locked_o4b_streaming_suite_input_sources(
+                args.suite_plan,
+                args.execution_plan,
+                args.access_log,
+                args.streaming_completion_audit,
+                args.post_dq_weight_report,
                 args.code_commit,
             )
         )

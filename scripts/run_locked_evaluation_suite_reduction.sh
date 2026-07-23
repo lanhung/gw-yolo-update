@@ -89,14 +89,16 @@ if (
     raise SystemExit("locked reduction plan/access identity failed replay")
 print(suite["outputs"]["suite_receipt"])
 print(execution["post_dq_weight_report_path"])
+print(execution["suite_input_merge_report_path"])
 PY
 )
-if (( ${#suite_identity[@]} != 2 )); then
+if (( ${#suite_identity[@]} != 3 )); then
   echo "locked reduction did not resolve its suite/weight outputs" >&2
   exit 3
 fi
 suite_receipt=${suite_identity[0]}
 post_dq_weight_report=${suite_identity[1]}
+suite_input_merge_report=${suite_identity[2]}
 
 if [[ ! -s "$STREAMING_COMPLETION_AUDIT_OUTPUT" ]]; then
   (
@@ -157,6 +159,38 @@ if (
     or report.get("code_commit") != sys.argv[2]
 ):
     raise SystemExit("locked post-DQ injection weighting did not pass")
+PY
+
+if [[ ! -s "$suite_input_merge_report" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT
+    "$TASK_PYTHON" -m gwyolo.cli locked-o4b-streaming-suite-inputs-merge \
+      --suite-plan "$LOCKED_SUITE_PLAN" \
+      --execution-plan "$LOCKED_EXECUTION_PLAN" \
+      --access-log "$LOCKED_ACCESS_LOG" \
+      --streaming-completion-audit "$STREAMING_COMPLETION_AUDIT_OUTPUT" \
+      --post-dq-weight-report "$post_dq_weight_report" \
+      --code-commit "$GWYOLO_CODE_COMMIT"
+  )
+fi
+
+"$TASK_PYTHON" - "$suite_input_merge_report" "$GWYOLO_CODE_COMMIT" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (
+    report.get("status") != "merged_locked_o4b_streaming_suite_input_sources"
+    or report.get("passed") is not True
+    or report.get("candidate_rows_filtered_by_score") is not False
+    or report.get("all_candidate_instances_retained") is not True
+    or report.get("negative_and_null_results_retained") is not True
+    or report.get("raw_mask_shared_physical_denominator") is not True
+    or report.get("code_commit") != sys.argv[2]
+):
+    raise SystemExit("locked suite input source merge did not pass")
 PY
 
 env \

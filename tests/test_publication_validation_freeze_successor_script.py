@@ -28,6 +28,8 @@ def test_publication_validation_freeze_never_opens_locked_data() -> None:
     assert "run_publication_validation_ledger.sh" in source
     assert "locked-evaluation-suite-freeze" in source
     assert "locked-o4b-streaming-execution-freeze" in source
+    assert "--pe-retention-config" in source
+    assert "--validation-pe-promotion" in source
     assert "frozen_locked_o4b_streaming_execution_plan" in source
     assert "required_passed\") != 10" in source
     assert "access_log.exists()" in source

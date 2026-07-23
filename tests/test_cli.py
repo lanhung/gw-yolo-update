@@ -138,6 +138,86 @@ def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
     )
 
 
+def test_locked_streaming_publication_and_merge_cli_route_exact_inputs() -> None:
+    publish_target = (
+        "gwyolo.locked_streaming.publish_locked_o4b_streaming_shard_artifacts"
+    )
+    with patch(publish_target, return_value={}) as publish:
+        assert (
+            main(
+                [
+                    "locked-o4b-streaming-shard-publish",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--shard-index",
+                    "7",
+                    "--raw-background-candidates",
+                    "raw-bg.jsonl",
+                    "--raw-injection-candidates",
+                    "raw-inj.jsonl",
+                    "--mask-background-candidates",
+                    "mask-bg.jsonl",
+                    "--mask-injection-candidates",
+                    "mask-inj.jsonl",
+                    "--ood-source-manifest",
+                    "ood.jsonl",
+                    "--pe-input-manifest",
+                    "pe.jsonl",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    publish.assert_called_once_with(
+        "execution.json",
+        "access.json",
+        7,
+        "raw-bg.jsonl",
+        "raw-inj.jsonl",
+        "mask-bg.jsonl",
+        "mask-inj.jsonl",
+        "ood.jsonl",
+        "pe.jsonl",
+        "abc123",
+    )
+
+    merge_target = (
+        "gwyolo.locked_streaming.merge_locked_o4b_streaming_suite_input_sources"
+    )
+    with patch(merge_target, return_value={}) as merge:
+        assert (
+            main(
+                [
+                    "locked-o4b-streaming-suite-inputs-merge",
+                    "--suite-plan",
+                    "suite.json",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--streaming-completion-audit",
+                    "completion.json",
+                    "--post-dq-weight-report",
+                    "weights.json",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    merge.assert_called_once_with(
+        "suite.json",
+        "execution.json",
+        "access.json",
+        "completion.json",
+        "weights.json",
+        "abc123",
+    )
+
+
 def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
     target = "gwyolo.arrival_timing.run_detector_arrival_timing_validation_stratification"
     with patch(target, return_value={}) as stratify:

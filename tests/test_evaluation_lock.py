@@ -22,6 +22,10 @@ from gwyolo.evaluation_lock import (
     validate_locked_evaluation_suite_input,
 )
 from gwyolo.io import file_sha256
+from gwyolo.locked_streaming import (
+    merge_locked_o4b_streaming_suite_input_sources,
+    publish_locked_o4b_streaming_shard_artifacts,
+)
 
 
 def _write(path, rows):
@@ -49,6 +53,90 @@ def _complete_validation_evidence(path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _pe_retention_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    common_prior = tmp_path / "common-prior.yaml"
+    common_prior.write_text(
+        "population: BBH\n"
+        "distributions:\n"
+        "  chirp_mass: {minimum: 1.0, maximum: 200.0}\n"
+        "  mass_ratio: {minimum: 0.01, maximum: 1.0}\n"
+        "  luminosity_distance: {minimum: 1.0, maximum: 10000.0}\n"
+        "  theta_jn: {minimum: 0.0, maximum: 3.2}\n"
+        "  ra: {minimum: 0.0, maximum: 6.3}\n"
+        "  dec: {minimum: -1.6, maximum: 1.6}\n"
+        "  psi: {minimum: 0.0, maximum: 3.2}\n",
+        encoding="utf-8",
+    )
+    retention = tmp_path / "pe-retention.yaml"
+    retention.write_text(
+        "locked_pe_retention:\n"
+        "  schema: locked_pe_retention_v1\n"
+        "  population: BBH\n"
+        f"  common_prior: {common_prior.name}\n"
+        "  required_ifos: [H1, L1]\n"
+        "  conditions: [clean, contaminated, mask_conditioned]\n"
+        "  minimum_paired_injections: 1\n"
+        "  retention_pool_injections: 2\n"
+        "  minimum_gps_blocks: 1\n"
+        "  selection_seed: 20260721\n"
+        "  selection_method: gps_block_first_then_hash_rank_v1\n"
+        "  post_access_replacement_allowed: false\n"
+        "  score_dependent_selection_allowed: false\n",
+        encoding="utf-8",
+    )
+    joint_manifest = tmp_path / "validation-pe.jsonl"
+    _write(
+        joint_manifest,
+        [
+            {
+                "split": "val",
+                "backend": "DINGO",
+                "prior_hash": file_sha256(common_prior),
+            }
+        ],
+    )
+    joint_report = tmp_path / "validation-pe-joint.json"
+    joint_report.write_text(
+        json.dumps(
+            {
+                "status": "paired_dingo_amplfi_within_backend_portfolio_complete",
+                "comparison_scope": "matched_event_within_backend_deltas_only",
+                "matched_event_gate": True,
+                "within_backend_provenance_gate": True,
+                "absolute_cross_backend_comparison_allowed": False,
+                "dingo_amplfi_joint_gate": False,
+                "cross_backend_matched_input_gate": False,
+                "publication_provenance_required": True,
+                "manifest_path": str(joint_manifest.resolve()),
+                "manifest_sha256": file_sha256(joint_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    promotion_config = tmp_path / "promotion.yaml"
+    promotion_config.write_text("pe_robustness_promotion: {}\n", encoding="utf-8")
+    promotion = tmp_path / "validation-pe-promotion.json"
+    promotion.write_text(
+        json.dumps(
+            {
+                "status": "pe_robustness_validation_promotion_decision",
+                "passed": True,
+                "promote_to_locked_test": True,
+                "scientific_claim_allowed": False,
+                "evidence_mode": "matched_event_within_backend_portfolio",
+                "joint_report_path": str(joint_report.resolve()),
+                "joint_report_sha256": file_sha256(joint_report),
+                "joint_manifest_path": str(joint_manifest.resolve()),
+                "joint_manifest_sha256": file_sha256(joint_manifest),
+                "config_path": str(promotion_config.resolve()),
+                "config_sha256": file_sha256(promotion_config),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return retention, promotion
 
 
 def _locked_suite_config(path) -> None:
@@ -111,7 +199,7 @@ def _locked_suite_config(path) -> None:
         "    minimum_test_live_time_years: 23.02585093\n"
         "    minimum_test_injections: 3000\n"
         "    minimum_injection_gps_blocks: 25\n"
-        "    minimum_paired_pe_injections: 100\n"
+        "    minimum_paired_pe_injections: 1\n"
         "    minimum_locked_ood_rows: 500\n"
         "    minimum_background_gps_blocks: 25\n"
         "    minimum_background_shifts: 25\n"
@@ -613,6 +701,13 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "gps_time": gps_start + 2048.0,
                 "required_context_duration_seconds": 256.0,
                 "source_family": "BBH",
+                "mass_1_detector_msun": 40.0,
+                "mass_2_detector_msun": 30.0,
+                "luminosity_distance_mpc": 1000.0,
+                "inclination": 1.0,
+                "right_ascension": 2.0,
+                "declination": 0.2,
+                "polarization": 0.5,
                 "proposal_family_fraction": 1.0,
                 "proposal_comoving_volume_mpc3": 100.0,
                 "source_frame_time_factor": 0.5,
@@ -671,6 +766,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     )
     shard_manifest = tmp_path / "streaming-shards.jsonl"
     report_path = tmp_path / "streaming-plan.json"
+    pe_retention_config, validation_pe_promotion = _pe_retention_inputs(tmp_path)
     result = freeze_locked_o4b_streaming_execution_plan(
         suite_plan,
         corpus_freeze,
@@ -678,6 +774,8 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         availability_report,
         inventory_manifest,
         inventory_report,
+        pe_retention_config,
+        validation_pe_promotion,
         suite_root / "execution",
         shard_manifest,
         report_path,
@@ -692,6 +790,8 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         availability_report,
         inventory_manifest,
         inventory_report,
+        pe_retention_config,
+        validation_pe_promotion,
         suite_root / "execution",
         shard_manifest,
         report_path,
@@ -721,6 +821,10 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "corpus_label": result["corpus_label"],
                 "code_commit": "abc123",
                 "frozen_artifacts": {
+                    "locked_suite_plan": {
+                        "path": str(suite_plan.resolve()),
+                        "sha256": file_sha256(suite_plan),
+                    },
                     "locked_execution_plan": {
                         "path": str(report_path.resolve()),
                         "sha256": file_sha256(report_path),
@@ -835,13 +939,123 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
             assert shard_prepared["post_access_dq_replacement_used"] is False
         work_dir = Path(shard["work_dir"])
         work_dir.mkdir(parents=True, exist_ok=True)
-        for label in (
-            "raw_candidate_rows",
-            "mask_candidate_rows",
-            "ood_score_rows",
-        ):
-            artifact = Path(shard["artifact_paths"][label])
-            artifact.write_text("", encoding="utf-8")
+        source_inputs = [
+            work_dir / f"{label}.jsonl"
+            for label in (
+                "raw-background-candidates",
+                "raw-injection-candidates",
+                "mask-background-candidates",
+                "mask-injection-candidates",
+                "ood-source",
+                "pe-input",
+            )
+        ]
+        candidate_payloads = [[], [], [], [], [], []]
+        if shard["shard_index"] == 0:
+            background_row = json.loads(
+                Path(shard["background_manifest_path"])
+                .read_text(encoding="utf-8")
+                .splitlines()[0]
+            )
+            common_background = {
+                "window_id": background_row["window_id"],
+                "gps_block": background_row["gps_block"],
+                "ifo": "H1",
+                "split": "test",
+                "gps_peak": float(background_row["gps_start"]) + 1.0,
+            }
+            common_injection = {
+                "injection_id": "injection-0",
+                "waveform_id": "waveform-0",
+                "gps_block": shard["gps_blocks"][0],
+                "ifo": "H1",
+                "split": "test",
+                "gps_peak": 1400002048.0,
+            }
+            candidate_payloads[0] = [
+                {
+                    **common_background,
+                    "candidate_id": f"raw-bg-{index}",
+                    "chirp_score": 0.4 + index / 10,
+                }
+                for index in range(2)
+            ]
+            candidate_payloads[1] = [
+                {
+                    **common_injection,
+                    "candidate_id": f"raw-inj-{index}",
+                    "chirp_score": 0.6 + index / 10,
+                }
+                for index in range(2)
+            ]
+            candidate_payloads[2] = [
+                {
+                    **common_background,
+                    "candidate_id": "mask-bg-0",
+                    "chirp_score": 0.5,
+                }
+            ]
+            candidate_payloads[3] = [
+                {
+                    **common_injection,
+                    "candidate_id": "mask-inj-0",
+                    "chirp_score": 0.8,
+                }
+            ]
+            pe_payload = []
+            for condition in ("clean", "contaminated", "mask_conditioned"):
+                array_path = work_dir / f"pe-{condition}.npz"
+                np.savez_compressed(
+                    array_path,
+                    strain=np.ones((2, 64), dtype=np.float32),
+                    asd=np.ones((2, 33), dtype=np.float64),
+                    asd_frequencies=np.arange(33, dtype=np.float64),
+                    ifos=np.asarray(["H1", "L1"]),
+                    sample_rate=np.asarray(4, dtype=np.int64),
+                    condition=np.asarray(condition),
+                    injection_id=np.asarray("injection-0"),
+                )
+                pe_payload.append(
+                    {
+                        "injection_id": "injection-0",
+                        "waveform_id": "waveform-0",
+                        "gps_block": shard["gps_blocks"][0],
+                        "split": "test",
+                        "condition": condition,
+                        "input_ifos": ["H1", "L1"],
+                        "analysis_input_path": str(array_path.resolve()),
+                        "analysis_input_sha256": file_sha256(array_path),
+                    }
+                )
+            candidate_payloads[5] = pe_payload
+        for artifact, payload in zip(source_inputs, candidate_payloads):
+            _write(artifact, payload)
+        if shard["shard_index"] == 0:
+            _write(source_inputs[5], candidate_payloads[5][:-1])
+            with pytest.raises(
+                ValueError, match="source eviction is forbidden"
+            ):
+                publish_locked_o4b_streaming_shard_artifacts(
+                    report_path,
+                    access,
+                    shard["shard_index"],
+                    *source_inputs,
+                    "abc123",
+                )
+            _write(source_inputs[5], candidate_payloads[5])
+        published = publish_locked_o4b_streaming_shard_artifacts(
+            report_path,
+            access,
+            shard["shard_index"],
+            *source_inputs,
+            "abc123",
+        )
+        assert published["passed"] is True
+        assert published["all_candidate_instances_retained"] is True
+        if shard["shard_index"] == 0:
+            assert published["row_counts"]["raw_background_candidates"] == 2
+            assert published["row_counts"]["raw_injection_candidates"] == 2
+            assert published["row_counts"]["pe_retained_injections"] == 1
         receipts.append(
             finalize_locked_o4b_streaming_shard(
                 report_path,
@@ -892,6 +1106,41 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     )
     assert null_weight["vt_weight"] is None
     assert null_weight["vt_measure"] == "unavailable_post_dq_null"
+    suite_inputs = merge_locked_o4b_streaming_suite_input_sources(
+        suite_plan,
+        report_path,
+        access,
+        result["completion_audit_path"],
+        result["post_dq_weight_report_path"],
+        "abc123",
+    )
+    assert suite_inputs["passed"] is True
+    assert suite_inputs["background_windows"] == weights["background_windows"]
+    assert suite_inputs["eligible_injections"] == 1
+    assert suite_inputs["unavailable_injections"] == 1
+    assert suite_inputs["ood_sources"] == 0
+    assert suite_inputs["raw_background_candidates"] == 2
+    assert suite_inputs["raw_injection_candidates"] == 2
+    assert suite_inputs["mask_background_candidates"] == 1
+    assert suite_inputs["mask_injection_candidates"] == 1
+    merged_injections = [
+        json.loads(line)
+        for line in Path(
+            suite_inputs["artifacts"]["raw_injection_candidates"]["path"]
+        )
+        .read_text()
+        .splitlines()
+    ]
+    assert len(merged_injections) == 2
+    assert all(
+        row["vt_weight"] == pytest.approx(eligible_weight["vt_weight"])
+        for row in merged_injections
+    )
+    assert Path(
+        suite_inputs["artifacts"]["raw_background_manifest"]["path"]
+    ).read_text() == Path(
+        suite_inputs["artifacts"]["mask_background_manifest"]["path"]
+    ).read_text()
 
     with pytest.raises(ValueError, match="unopened execution boundary"):
         freeze_locked_o4b_streaming_execution_plan(
@@ -901,6 +1150,8 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
             availability_report,
             inventory_manifest,
             inventory_report,
+            pe_retention_config,
+            validation_pe_promotion,
             suite_root / "execution",
             shard_manifest,
             report_path,
