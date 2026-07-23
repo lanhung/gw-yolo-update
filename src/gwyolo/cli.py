@@ -1805,6 +1805,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     locked_stream_publish.add_argument("--mask-injection-candidates", required=True)
     locked_stream_publish.add_argument("--ood-source-manifest", required=True)
+    locked_stream_publish.add_argument(
+        "--injection-trigger-manifest", required=True
+    )
     locked_stream_publish.add_argument("--pe-input-manifest", required=True)
     locked_stream_publish.add_argument("--code-commit", required=True)
 
@@ -4373,6 +4376,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.mask_background_candidates,
                 args.mask_injection_candidates,
                 args.ood_source_manifest,
+                args.injection_trigger_manifest,
                 args.pe_input_manifest,
                 args.code_commit,
             )

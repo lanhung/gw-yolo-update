@@ -163,6 +163,8 @@ def test_locked_streaming_publication_and_merge_cli_route_exact_inputs() -> None
                     "mask-inj.jsonl",
                     "--ood-source-manifest",
                     "ood.jsonl",
+                    "--injection-trigger-manifest",
+                    "triggers.jsonl",
                     "--pe-input-manifest",
                     "pe.jsonl",
                     "--code-commit",
@@ -180,6 +182,7 @@ def test_locked_streaming_publication_and_merge_cli_route_exact_inputs() -> None
         "mask-bg.jsonl",
         "mask-inj.jsonl",
         "ood.jsonl",
+        "triggers.jsonl",
         "pe.jsonl",
         "abc123",
     )

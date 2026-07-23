@@ -947,10 +947,11 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "mask-background-candidates",
                 "mask-injection-candidates",
                 "ood-source",
+                "injection-trigger",
                 "pe-input",
             )
         ]
-        candidate_payloads = [[], [], [], [], [], []]
+        candidate_payloads = [[], [], [], [], [], [], []]
         if shard["shard_index"] == 0:
             background_row = json.loads(
                 Path(shard["background_manifest_path"])
@@ -1027,11 +1028,26 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                         "analysis_input_sha256": file_sha256(array_path),
                     }
                 )
-            candidate_payloads[5] = pe_payload
+            candidate_payloads[5] = [
+                {
+                    "injection_id": "injection-0",
+                    "waveform_id": "waveform-0",
+                    "gps_block": shard["gps_blocks"][0],
+                    "gps_time": 1400002048.0,
+                    "split": "test",
+                    "source_family": "BBH",
+                    "valid_ifos": ["H1", "L1"],
+                    "detector_arrival_gps": {
+                        "H1": 1400002048.001,
+                        "L1": 1400002047.998,
+                    },
+                }
+            ]
+            candidate_payloads[6] = pe_payload
         for artifact, payload in zip(source_inputs, candidate_payloads):
             _write(artifact, payload)
         if shard["shard_index"] == 0:
-            _write(source_inputs[5], candidate_payloads[5][:-1])
+            _write(source_inputs[6], candidate_payloads[6][:-1])
             with pytest.raises(
                 ValueError, match="source eviction is forbidden"
             ):
@@ -1042,7 +1058,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                     *source_inputs,
                     "abc123",
                 )
-            _write(source_inputs[5], candidate_payloads[5])
+            _write(source_inputs[6], candidate_payloads[6])
         published = publish_locked_o4b_streaming_shard_artifacts(
             report_path,
             access,
@@ -1056,6 +1072,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
             assert published["row_counts"]["raw_background_candidates"] == 2
             assert published["row_counts"]["raw_injection_candidates"] == 2
             assert published["row_counts"]["pe_retained_injections"] == 1
+            assert published["row_counts"]["injection_triggers"] == 1
         receipts.append(
             finalize_locked_o4b_streaming_shard(
                 report_path,

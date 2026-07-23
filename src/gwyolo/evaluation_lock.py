@@ -65,6 +65,7 @@ _LOCKED_SUITE_REQUIRED_FROZEN_ARTIFACTS = {
     "locked_execution_plan",
 }
 _LOCKED_STREAM_SHARD_ARTIFACT_KEYS = {
+    "injection_trigger_rows",
     "mask_candidate_rows",
     "ood_source_rows",
     "pe_input_rows",
@@ -538,6 +539,9 @@ def freeze_locked_o4b_streaming_execution_plan(
         ),
         "merged_pe_input_manifest_path": str(
             work / "locked-retained-pe-inputs.jsonl"
+        ),
+        "merged_injection_trigger_manifest_path": str(
+            work / "locked-injection-triggers.jsonl"
         ),
         "merged_raw_background_candidates_path": str(
             work / "merged-raw-background-candidates.jsonl"

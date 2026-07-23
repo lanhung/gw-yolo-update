@@ -12,6 +12,7 @@ from .runtime import execution_provenance
 
 
 SHARD_ARTIFACT_KEYS = {
+    "injection_trigger_rows",
     "raw_candidate_rows",
     "mask_candidate_rows",
     "ood_source_rows",
@@ -90,6 +91,7 @@ def publish_locked_o4b_streaming_shard_artifacts(
     mask_background_candidates_path: str | Path,
     mask_injection_candidates_path: str | Path,
     ood_source_manifest_path: str | Path,
+    injection_trigger_manifest_path: str | Path,
     pe_input_manifest_path: str | Path,
     code_commit: str,
 ) -> dict[str, Any]:
@@ -129,6 +131,7 @@ def publish_locked_o4b_streaming_shard_artifacts(
         "mask_background": Path(mask_background_candidates_path).resolve(),
         "mask_injection": Path(mask_injection_candidates_path).resolve(),
         "ood_source": Path(ood_source_manifest_path).resolve(),
+        "injection_trigger": Path(injection_trigger_manifest_path).resolve(),
         "pe_input": Path(pe_input_manifest_path).resolve(),
     }
     if any(not path.is_file() or work_dir not in path.parents for path in sources.values()):
@@ -148,6 +151,59 @@ def publish_locked_o4b_streaming_shard_artifacts(
         raise ValueError("locked shard background windows repeat identities")
     if len(recipes) != len(_load_jsonl(recipe_path, allow_empty=True)):
         raise ValueError("locked shard eligible recipes repeat identities")
+    outcomes = {
+        str(row["injection_id"]): row
+        for row in _load_jsonl(
+            Path(str(shard["availability_outcome_path"])), allow_empty=True
+        )
+    }
+    if len(outcomes) != len(shard["injection_ids"]):
+        raise ValueError("locked shard availability outcomes are incomplete")
+
+    trigger_rows = []
+    trigger_ids = set()
+    for index, source in enumerate(
+        _load_jsonl(sources["injection_trigger"], allow_empty=True)
+    ):
+        injection_id = str(source.get("injection_id", ""))
+        recipe = recipes.get(injection_id)
+        valid_ifos = [str(value) for value in source.get("valid_ifos", [])]
+        arrivals = source.get("detector_arrival_gps")
+        gps_time = source.get("gps_time")
+        if (
+            recipe is None
+            or injection_id in trigger_ids
+            or source.get("split") != "test"
+            or str(source.get("waveform_id", "")) != str(recipe["waveform_id"])
+            or str(source.get("gps_block", "")) != str(recipe["gps_block"])
+            or valid_ifos != [str(value) for value in recipe["ifos"]]
+            or not isinstance(arrivals, dict)
+            or set(arrivals) != set(valid_ifos)
+            or isinstance(gps_time, bool)
+            or not isinstance(gps_time, (int, float))
+            or not math.isfinite(float(gps_time))
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or abs(float(value) - float(gps_time)) > 0.05
+                for value in arrivals.values()
+            )
+        ):
+            raise ValueError(
+                f"locked injection trigger is invalid at row {index}"
+            )
+        trigger_ids.add(injection_id)
+        trigger_rows.append(
+            {
+                **source,
+                "shard_index": shard_index,
+                "availability_id": recipe["availability_id"],
+                "locked_row_kind": "injection_trigger",
+            }
+        )
+    if trigger_ids != set(recipes):
+        raise ValueError("locked injection triggers omit eligible DQ injections")
 
     def candidates(
         path: Path,
@@ -272,12 +328,6 @@ def publish_locked_o4b_streaming_shard_artifacts(
             }
         )
 
-    outcomes = {
-        str(row["injection_id"]): row
-        for row in _load_jsonl(
-            Path(str(shard["availability_outcome_path"])), allow_empty=True
-        )
-    }
     selected_pe_ids = {
         str(value) for value in shard.get("pe_retention_injection_ids", [])
     }
@@ -372,6 +422,7 @@ def publish_locked_o4b_streaming_shard_artifacts(
     ):
         raise ValueError("locked shard artifact paths were not frozen")
     outputs = {
+        "injection_trigger_rows": trigger_rows,
         "raw_candidate_rows": raw_rows,
         "mask_candidate_rows": mask_rows,
         "ood_source_rows": ood_rows,
@@ -426,6 +477,7 @@ def publish_locked_o4b_streaming_shard_artifacts(
                 for row in mask_rows
             ),
             "ood_sources": len(ood_rows),
+            "injection_triggers": len(trigger_rows),
             "pe_input_rows": len(pe_rows),
             "pe_retained_injections": len(eligible_pe_ids),
             "pe_selected_but_dq_unavailable": len(
@@ -536,6 +588,7 @@ def merge_locked_o4b_streaming_suite_input_sources(
     raw_rows = []
     mask_rows = []
     ood_rows = []
+    trigger_rows = []
     pe_rows = []
     publication_reports = []
     for expected_index, shard in enumerate(shards):
@@ -571,6 +624,7 @@ def merge_locked_o4b_streaming_suite_input_sources(
             )
         )
         for label, target in (
+            ("injection_trigger_rows", trigger_rows),
             ("raw_candidate_rows", raw_rows),
             ("mask_candidate_rows", mask_rows),
             ("ood_source_rows", ood_rows),
@@ -640,6 +694,22 @@ def merge_locked_o4b_streaming_suite_input_sources(
     }
     if retained_pe_ids != selected_pe_ids & eligible_ids:
         raise ValueError("locked suite PE retained pool differs from frozen DQ intersection")
+    trigger_ids = [str(row["injection_id"]) for row in trigger_rows]
+    if (
+        len(trigger_ids) != len(set(trigger_ids))
+        or set(trigger_ids) != eligible_ids
+    ):
+        raise ValueError("locked suite injection triggers differ from post-DQ eligibility")
+    for row in trigger_rows:
+        weight = weight_by_id[str(row["injection_id"])]
+        row.update(
+            {
+                "vt_weight": weight["vt_weight"],
+                "vt_weight_unit": weight["vt_weight_unit"],
+                "vt_measure": weight["vt_measure"],
+                "post_dq_weight_manifest_sha256": file_sha256(weight_manifest),
+            }
+        )
 
     def split_candidates(
         rows: list[dict[str, Any]], kind: str
@@ -681,6 +751,9 @@ def merge_locked_o4b_streaming_suite_input_sources(
         "pe_input_manifest": Path(
             str(plan["merged_pe_input_manifest_path"])
         ).resolve(),
+        "injection_trigger_manifest": Path(
+            str(plan["merged_injection_trigger_manifest_path"])
+        ).resolve(),
     }
     if any(
         path.parent != work_root
@@ -693,6 +766,7 @@ def merge_locked_o4b_streaming_suite_input_sources(
             "mask_injection_candidates",
             "null_outcomes",
             "pe_input_manifest",
+            "injection_trigger_manifest",
         }
     ):
         raise ValueError("locked suite staging output escaped the frozen work root")
@@ -708,6 +782,7 @@ def merge_locked_o4b_streaming_suite_input_sources(
         "mask_background_manifest": background_rows,
         "ood_source_manifest": ood_rows,
         "pe_input_manifest": pe_rows,
+        "injection_trigger_manifest": trigger_rows,
     }
     for label, rows in payloads.items():
         _write_immutable_jsonl(output_paths[label], rows)
@@ -741,6 +816,7 @@ def merge_locked_o4b_streaming_suite_input_sources(
         "ood_sources": len(ood_rows),
         "pe_retained_injections": len(retained_pe_ids),
         "pe_input_rows": len(pe_rows),
+        "injection_triggers": len(trigger_rows),
         "endpoint_source_readiness": {
             "minimum_background_gps_blocks": (
                 len({str(row["gps_block"]) for row in background_rows})
