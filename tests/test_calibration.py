@@ -174,6 +174,67 @@ def test_calibration_plan_rejects_purpose_overlap_and_changed_manifest(
         )
 
 
+def test_publication_calibration_config_covers_early_run_detector_strata(
+    tmp_path: Path,
+) -> None:
+    background = tmp_path / "background.jsonl"
+    background.write_text(
+        json.dumps(
+            {
+                "window_id": "o4a-background",
+                "split": "val",
+                "observing_run": "O4a",
+                "gps_block": "O4a:background",
+                "ifos": ["H1", "L1"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    injection = tmp_path / "injections.jsonl"
+    injection.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "injection_id": f"{run}-injection",
+                    "split": "val",
+                    "observing_run": run,
+                    "gps_block": f"{run}:injection",
+                    "ifos": (
+                        ["H1", "L1", "V1"]
+                        if run == "O3b"
+                        else ["H1", "V1"]
+                    ),
+                }
+            )
+            + "\n"
+            for run in ("O1", "O2", "O3a", "O3b")
+        ),
+        encoding="utf-8",
+    )
+    config = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "calibration_perturbation_o4a_validation.yaml"
+    )
+
+    plan = freeze_calibration_perturbation_plan(
+        background, injection, config, tmp_path / "plan.json"
+    )
+
+    assert plan["observing_runs"] == ["O1", "O2", "O3a", "O3b", "O4a"]
+    assert set(plan["run_template_assignments"]) == {
+        "O1",
+        "O2",
+        "O3a",
+        "O3b",
+        "O4a",
+    }
+    assert len(set(plan["run_template_assignments"].values())) == 1
+    assert plan["candidate_scores_inspected"] is False
+    assert plan["test_rows_read"] == 0
+
+
 def test_calibration_response_rejects_nonphysical_envelope() -> None:
     with pytest.raises(ValueError, match="envelope is invalid"):
         apply_frequency_dependent_calibration_response(
