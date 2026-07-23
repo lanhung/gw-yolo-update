@@ -461,12 +461,59 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
             json.dumps(value),
             encoding="utf-8",
         )
+    streaming_completion = tmp_path / "streaming-completion.json"
+    streaming_completion.write_text(
+        json.dumps(
+            {
+                "status": "completed_locked_o4b_streaming_execution_audit",
+                "passed": True,
+                "all_predeclared_shards_reduced": True,
+                "negative_and_null_results_retained": True,
+                "result_dependent_stopping_used": False,
+                "post_access_dq_replacement_used": False,
+                "expected_shards": 1,
+                "completed_shards": 1,
+                "failed_shards": [],
+                "rows": 1,
+                "code_commit": "abc123",
+                "execution_plan": {
+                    "path": str(locked_execution.resolve()),
+                    "sha256": file_sha256(locked_execution),
+                },
+                "access_log": {
+                    "path": str(access_path.resolve()),
+                    "sha256": file_sha256(access_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    incomplete_streaming = json.loads(streaming_completion.read_text(encoding="utf-8"))
+    incomplete_streaming["completed_shards"] = 0
+    streaming_completion.write_text(
+        json.dumps(incomplete_streaming), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="complete all-shard streaming audit"):
+        finalize_locked_evaluation_suite_receipt(
+            plan_path,
+            access_path,
+            streaming_completion,
+            plan["outputs"]["suite_receipt"],
+        )
+    incomplete_streaming["completed_shards"] = 1
+    streaming_completion.write_text(
+        json.dumps(incomplete_streaming), encoding="utf-8"
+    )
     receipt = finalize_locked_evaluation_suite_receipt(
-        plan_path, access_path, plan["outputs"]["suite_receipt"]
+        plan_path,
+        access_path,
+        streaming_completion,
+        plan["outputs"]["suite_receipt"],
     )
     assert receipt["passed"] is True
     assert receipt["all_predeclared_outputs_present"] is True
     assert len(receipt["outputs"]) == 8
+    assert receipt["streaming_completion_audit"]["completed_shards"] == 1
 
 
 def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(

@@ -1699,6 +1699,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     locked_suite_finalize.add_argument("--plan", required=True)
     locked_suite_finalize.add_argument("--access-log", required=True)
+    locked_suite_finalize.add_argument(
+        "--streaming-completion-audit", required=True
+    )
     locked_suite_finalize.add_argument("--output", required=True)
 
     locked_stream_freeze = subparsers.add_parser(
@@ -4209,6 +4212,7 @@ def main(argv: list[str] | None = None) -> int:
             finalize_locked_evaluation_suite_receipt(
                 args.plan,
                 args.access_log,
+                args.streaming_completion_audit,
                 args.output,
             )
         )

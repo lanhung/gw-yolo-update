@@ -768,6 +768,7 @@ def validate_locked_evaluation_suite_input(
 def finalize_locked_evaluation_suite_receipt(
     plan_path: str | Path,
     access_log_path: str | Path,
+    streaming_completion_audit_path: str | Path,
     output_path: str | Path,
 ) -> dict[str, Any]:
     """Hash every predeclared locked output into one immutable completion receipt."""
@@ -779,6 +780,31 @@ def finalize_locked_evaluation_suite_receipt(
         plan_path, access_log_path, "suite_receipt", target
     )
     plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+    access_file = Path(access_log_path).resolve()
+    streaming_file = Path(streaming_completion_audit_path).resolve()
+    if not streaming_file.is_file():
+        raise FileNotFoundError("locked streaming completion audit is absent")
+    streaming = json.loads(streaming_file.read_text(encoding="utf-8"))
+    frozen_execution = suite_binding["frozen_artifacts"].get("locked_execution_plan", {})
+    if (
+        streaming.get("status")
+        != "completed_locked_o4b_streaming_execution_audit"
+        or streaming.get("passed") is not True
+        or streaming.get("all_predeclared_shards_reduced") is not True
+        or streaming.get("negative_and_null_results_retained") is not True
+        or streaming.get("result_dependent_stopping_used") is not False
+        or streaming.get("post_access_dq_replacement_used") is not False
+        or streaming.get("failed_shards") != []
+        or streaming.get("completed_shards") != streaming.get("expected_shards")
+        or streaming.get("code_commit") != suite_binding["code_commit"]
+        or streaming.get("execution_plan", {}).get("path")
+        != frozen_execution.get("path")
+        or streaming.get("execution_plan", {}).get("sha256")
+        != frozen_execution.get("sha256")
+        or streaming.get("access_log", {}).get("path") != str(access_file)
+        or streaming.get("access_log", {}).get("sha256") != file_sha256(access_file)
+    ):
+        raise ValueError("locked suite lacks a complete all-shard streaming audit")
     expected_statuses = {
         "raw_candidate_search": "locked_candidate_search_evaluation",
         "mask_candidate_search": "locked_candidate_search_evaluation",
@@ -877,6 +903,12 @@ def finalize_locked_evaluation_suite_receipt(
         ),
         "outputs": outputs,
         "endpoint_outcomes": endpoint_outcomes,
+        "streaming_completion_audit": {
+            "path": str(streaming_file),
+            "sha256": file_sha256(streaming_file),
+            "completed_shards": streaming["completed_shards"],
+            "rows": streaming["rows"],
+        },
         "locked_suite_access": suite_binding,
         "code_commit": suite_binding["code_commit"],
         **execution_provenance(),
