@@ -9,7 +9,9 @@ import pytest
 from gwyolo.detector_validation_data import (
     export_network_numeric_validation_background,
     freeze_source_disjoint_detector_acquisition_plan,
+    merge_streamed_detector_validation_backgrounds,
     plan_detector_stratified_validation_injections,
+    seal_streamed_detector_validation_shard,
 )
 from gwyolo.io import file_sha256
 
@@ -294,3 +296,235 @@ def test_detector_acquisition_plan_excludes_frozen_sources_and_prior_plan(
     assert {row["gps_start"] for row in result["pairs"]} == {1200, 1300}
     assert result["candidate_scores_inspected"] is False
     assert result["test_data_opened"] is False
+
+
+def _write_streamed_shard(
+    tmp_path: Path,
+    subset: list[str],
+    gps: int,
+) -> Path:
+    label = "-".join(subset)
+    root = tmp_path / f"stream-{label}"
+    root.mkdir()
+    pair_id = f"O3b-{gps}-{label}"
+    parent = root / "parent.json"
+    parent.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "selection_rule": "source_file_and_gps_disjoint_stratified_v1",
+                "locked_evaluation_data": False,
+                "candidate_scores_inspected": False,
+                "test_data_opened": False,
+                "run": "O3b",
+                "detectors": subset,
+                "selected_pairs": 1,
+                "pairs": [{"pair_id": pair_id, "gps_start": gps}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    shard = root / "shard.json"
+    shard.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "parent_plan_sha256": file_sha256(parent),
+                "detectors": subset,
+                "selected_pairs": 1,
+                "pairs": [{"pair_id": pair_id, "gps_start": gps}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    batch = root / "batch.json"
+    batch.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "plan_sha256": file_sha256(shard),
+                "selected_pairs": 1,
+                "verified_files": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    background_manifest = root / "background.jsonl"
+    background_manifest.write_text(
+        json.dumps({"window_id": pair_id, "gps_block": f"gps:{gps}:256"})
+        + "\n",
+        encoding="utf-8",
+    )
+    background = root / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "passed": True,
+                "ifos": subset,
+                "split_strategy": "hash_threshold_v1",
+                "splits": {"test": {"windows": 0}},
+                "source_batch_report_sha256s": [file_sha256(batch)],
+                "manifest_path": str(background_manifest),
+                "manifest_sha256": file_sha256(background_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = root / "bank.npz"
+    np.savez_compressed(
+        artifact,
+        noise=np.ones((2, 16), dtype=np.float32),
+        ifos=np.asarray(subset),
+    )
+    bank_manifest = root / "bank.jsonl"
+    bank_manifest.write_text(
+        json.dumps(
+            {
+                "window_id": f"stream-{pair_id}",
+                "pair_id": pair_id,
+                "split": "val",
+                "gps_block": f"gps:{gps}:256",
+                "gps_start": float(gps),
+                "gps_end": float(gps + 4),
+                "duration": 4.0,
+                "ifos": subset,
+                "observing_run": "O3b",
+                "source_files": {
+                    ifo: {"path": f"/cache/{ifo}-{gps}.hdf5", "sha256": "old"}
+                    for ifo in subset
+                },
+                "background_bank": {
+                    "path": str(artifact),
+                    "sha256": file_sha256(artifact),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bank = root / "bank-report.json"
+    bank.write_text(
+        json.dumps(
+            {
+                "status": "verified_numeric_background_bank",
+                "selected_split": "val",
+                "selected_windows": 1,
+                "unique_gps_blocks": 1,
+                "background_manifest_sha256": file_sha256(background_manifest),
+                "manifest_path": str(bank_manifest),
+                "manifest_sha256": file_sha256(bank_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    eviction = root / "eviction.json"
+    eviction.write_text(
+        json.dumps(
+            {
+                "status": "verified_background_source_eviction",
+                "recoverable": True,
+                "background_bank_report_sha256": file_sha256(bank),
+                "background_bank_manifest_sha256": file_sha256(bank_manifest),
+                "removed_files": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt = root / "receipt.json"
+    result = seal_streamed_detector_validation_shard(
+        parent,
+        shard,
+        batch,
+        background,
+        bank,
+        eviction,
+        receipt,
+    )
+    assert result["test_rows_read"] == 0
+    return receipt
+
+
+def test_streamed_detector_validation_shards_fill_only_missing_groups(
+    tmp_path: Path,
+) -> None:
+    subsets = [
+        ["H1", "L1"],
+        ["H1", "V1"],
+        ["L1", "V1"],
+        ["H1", "L1", "V1"],
+    ]
+    source_manifest, audit = _write_inputs(tmp_path, subsets)
+    base_root = tmp_path / "base"
+    base = export_network_numeric_validation_background(
+        source_manifest,
+        audit,
+        base_root,
+        minimum_per_detector_subset=2,
+    )
+    h1v1 = _write_streamed_shard(tmp_path, ["H1", "V1"], 2000)
+    l1v1 = _write_streamed_shard(tmp_path, ["L1", "V1"], 3000)
+
+    merged = merge_streamed_detector_validation_backgrounds(
+        base["manifest_path"],
+        base_root / "detector_validation_background_report.json",
+        [h1v1, l1v1],
+        tmp_path / "merged",
+        minimum_per_detector_subset=2,
+    )
+
+    assert merged["passed"] is False
+    assert merged["detector_subset_counts"] == {
+        "H1+L1": 1,
+        "H1+V1": 2,
+        "L1+V1": 2,
+        "H1+L1+V1": 1,
+    }
+    assert merged["detector_subset_deficits"] == {
+        "H1+L1": 1,
+        "H1+V1": 0,
+        "L1+V1": 0,
+        "H1+L1+V1": 1,
+    }
+    assert merged["candidate_scores_inspected"] is False
+    assert merged["test_rows_read"] == 0
+    with pytest.raises(RuntimeError, match="below floors"):
+        merge_streamed_detector_validation_backgrounds(
+            base["manifest_path"],
+            base_root / "detector_validation_background_report.json",
+            [h1v1, l1v1],
+            tmp_path / "merged-required",
+            minimum_per_detector_subset=2,
+            require_ready=True,
+        )
+
+
+def test_streamed_detector_validation_merge_rejects_repeated_receipt(
+    tmp_path: Path,
+) -> None:
+    subsets = [
+        ["H1", "L1"],
+        ["H1", "V1"],
+        ["L1", "V1"],
+        ["H1", "L1", "V1"],
+    ]
+    source_manifest, audit = _write_inputs(tmp_path, subsets)
+    base_root = tmp_path / "base"
+    base = export_network_numeric_validation_background(
+        source_manifest,
+        audit,
+        base_root,
+        minimum_per_detector_subset=1,
+    )
+    receipt = _write_streamed_shard(tmp_path, ["H1", "V1"], 2000)
+
+    with pytest.raises(ValueError, match="repeats a shard receipt"):
+        merge_streamed_detector_validation_backgrounds(
+            base["manifest_path"],
+            base_root / "detector_validation_background_report.json",
+            [receipt, receipt],
+            tmp_path / "repeated",
+            minimum_per_detector_subset=1,
+        )

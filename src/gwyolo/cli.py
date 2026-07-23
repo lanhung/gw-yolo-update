@@ -952,6 +952,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed", type=int, default=20260723
     )
     detector_validation_acquisition.add_argument("--output", required=True)
+    detector_validation_shard = subparsers.add_parser(
+        "detector-validation-shard-seal"
+    )
+    detector_validation_shard.add_argument("--parent-plan", required=True)
+    detector_validation_shard.add_argument("--shard-plan", required=True)
+    detector_validation_shard.add_argument("--batch-report", required=True)
+    detector_validation_shard.add_argument("--background-report", required=True)
+    detector_validation_shard.add_argument(
+        "--background-bank-report", required=True
+    )
+    detector_validation_shard.add_argument("--eviction-report", required=True)
+    detector_validation_shard.add_argument("--output", required=True)
+    detector_validation_merge = subparsers.add_parser(
+        "detector-validation-background-merge"
+    )
+    detector_validation_merge.add_argument("--base-manifest", required=True)
+    detector_validation_merge.add_argument("--base-report", required=True)
+    detector_validation_merge.add_argument(
+        "--shard-receipt", action="append", required=True
+    )
+    detector_validation_merge.add_argument("--output-dir", required=True)
+    detector_validation_merge.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_merge.add_argument(
+        "--minimum-per-detector-subset", type=int, default=25
+    )
+    detector_validation_merge.add_argument("--require-ready", action="store_true")
 
     gravityspy_network_resplit = subparsers.add_parser(
         "gravityspy-network-corpus-resplit"
@@ -3558,6 +3586,43 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_pairs,
                 args.seed,
                 args.exclude_plan,
+            )
+        )
+    elif args.command == "detector-validation-shard-seal":
+        from .detector_validation_data import (
+            seal_streamed_detector_validation_shard,
+        )
+
+        _print(
+            seal_streamed_detector_validation_shard(
+                args.parent_plan,
+                args.shard_plan,
+                args.batch_report,
+                args.background_report,
+                args.background_bank_report,
+                args.eviction_report,
+                args.output,
+            )
+        )
+    elif args.command == "detector-validation-background-merge":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            merge_streamed_detector_validation_backgrounds,
+        )
+
+        _print(
+            merge_streamed_detector_validation_backgrounds(
+                args.base_manifest,
+                args.base_report,
+                args.shard_receipt,
+                args.output_dir,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.minimum_per_detector_subset,
+                args.require_ready,
             )
         )
     elif args.command == "gravityspy-network-corpus-resplit":

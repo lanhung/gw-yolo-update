@@ -599,3 +599,397 @@ def freeze_source_disjoint_detector_acquisition_plan(
         return prior
     atomic_write_json(target, result)
     return result
+
+
+def seal_streamed_detector_validation_shard(
+    parent_plan_path: str | Path,
+    shard_plan_path: str | Path,
+    batch_report_path: str | Path,
+    background_report_path: str | Path,
+    background_bank_report_path: str | Path,
+    eviction_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Seal one score-blind, hash-thresholded validation acquisition shard."""
+
+    parent_path = Path(parent_plan_path).resolve()
+    shard_path = Path(shard_plan_path).resolve()
+    batch_path = Path(batch_report_path).resolve()
+    background_path = Path(background_report_path).resolve()
+    bank_path = Path(background_bank_report_path).resolve()
+    eviction_path = Path(eviction_report_path).resolve()
+    target = Path(output_path).resolve()
+    parent = _read_json(parent_path)
+    shard = _read_json(shard_path)
+    batch = _read_json(batch_path)
+    background = _read_json(background_path)
+    bank = _read_json(bank_path)
+    eviction = _read_json(eviction_path)
+    bank_manifest = Path(str(bank.get("manifest_path", ""))).resolve()
+    background_manifest = Path(
+        str(background.get("manifest_path", ""))
+    ).resolve()
+    detectors = tuple(str(value) for value in parent.get("detectors", []))
+    if (
+        parent.get("status") != "development_acquisition_plan"
+        or parent.get("selection_rule")
+        != "source_file_and_gps_disjoint_stratified_v1"
+        or parent.get("locked_evaluation_data") is not False
+        or parent.get("candidate_scores_inspected") is not False
+        or parent.get("test_data_opened") is not False
+        or len(detectors) != 2
+        or str(parent.get("run", "")).lower().startswith("o4b")
+    ):
+        raise ValueError("Detector-validation parent plan is not score-blind development data")
+    if (
+        shard.get("status") != "development_acquisition_plan"
+        or shard.get("locked_evaluation_data") is not False
+        or shard.get("parent_plan_sha256") != file_sha256(parent_path)
+        or tuple(str(value) for value in shard.get("detectors", [])) != detectors
+        or int(shard.get("selected_pairs", 0)) < 1
+    ):
+        raise ValueError("Detector-validation shard plan breaks its parent identity")
+    if (
+        batch.get("status") != "verified_development_strain_batch"
+        or batch.get("passed") is not True
+        or batch.get("plan_sha256") != file_sha256(shard_path)
+        or int(batch.get("selected_pairs", -1))
+        != int(shard["selected_pairs"])
+        or int(batch.get("verified_files", -1))
+        != int(shard["selected_pairs"]) * len(detectors)
+    ):
+        raise ValueError("Detector-validation batch download is incomplete")
+    if (
+        background.get("status")
+        != "verified_multi_segment_development_background"
+        or background.get("passed") is not True
+        or tuple(str(value) for value in background.get("ifos", []))
+        != tuple(sorted(detectors))
+        or background.get("split_strategy") != "hash_threshold_v1"
+        or int(background.get("splits", {}).get("test", {}).get("windows", -1))
+        != 0
+        or background.get("source_batch_report_sha256s")
+        != [file_sha256(batch_path)]
+        or not background_manifest.is_file()
+        or background.get("manifest_sha256")
+        != file_sha256(background_manifest)
+    ):
+        raise ValueError("Detector-validation background planning is not stable and test-free")
+    if (
+        bank.get("status") != "verified_numeric_background_bank"
+        or bank.get("selected_split") != "val"
+        or int(bank.get("selected_windows", 0)) < 1
+        or int(bank.get("unique_gps_blocks", -1))
+        != int(bank.get("selected_windows", -2))
+        or bank.get("background_manifest_sha256")
+        != background["manifest_sha256"]
+        or bank.get("manifest_sha256") != file_sha256(bank_manifest)
+    ):
+        raise ValueError("Detector-validation numeric bank is incomplete or not one row per block")
+    if (
+        eviction.get("status") != "verified_background_source_eviction"
+        or eviction.get("recoverable") is not True
+        or eviction.get("background_bank_report_sha256")
+        != file_sha256(bank_path)
+        or eviction.get("background_bank_manifest_sha256")
+        != bank["manifest_sha256"]
+        or int(eviction.get("removed_files", -1))
+        != int(batch["verified_files"])
+    ):
+        raise ValueError("Detector-validation source eviction failed replay")
+
+    rows = [
+        json.loads(line)
+        for line in bank_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    blocks = [str(row.get("gps_block", "")) for row in rows]
+    pair_ids = {str(row.get("pair_id", "")) for row in rows}
+    expected_pair_ids = {str(row["pair_id"]) for row in shard["pairs"]}
+    bank_hashes: dict[str, str] = {}
+    for row in rows:
+        artifact = Path(str(row.get("background_bank", {}).get("path", "")))
+        expected = str(row.get("background_bank", {}).get("sha256", ""))
+        actual = bank_hashes.setdefault(str(artifact.resolve()), file_sha256(artifact))
+        if (
+            row.get("split") != "val"
+            or tuple(str(value) for value in row.get("ifos", []))
+            != tuple(sorted(detectors))
+            or actual != expected
+        ):
+            raise ValueError("Detector-validation numeric bank row failed replay")
+    if (
+        not rows
+        or any(not value for value in blocks)
+        or len(blocks) != len(set(blocks))
+        or not pair_ids
+        or not pair_ids <= expected_pair_ids
+    ):
+        raise ValueError("Detector-validation shard repeats blocks or has foreign pairs")
+
+    result = {
+        "status": "verified_streamed_detector_validation_shard",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "test_strain_rows_read": 0,
+        "detector_subset": "+".join(sorted(detectors)),
+        "observing_run": str(parent["run"]),
+        "selected_pairs": int(shard["selected_pairs"]),
+        "validation_windows": len(rows),
+        "unique_validation_gps_blocks": len(set(blocks)),
+        "parent_plan": {
+            "path": str(parent_path),
+            "sha256": file_sha256(parent_path),
+        },
+        "shard_plan": {
+            "path": str(shard_path),
+            "sha256": file_sha256(shard_path),
+        },
+        "batch_report": {
+            "path": str(batch_path),
+            "sha256": file_sha256(batch_path),
+        },
+        "background_report": {
+            "path": str(background_path),
+            "sha256": file_sha256(background_path),
+        },
+        "background_bank_report": {
+            "path": str(bank_path),
+            "sha256": file_sha256(bank_path),
+        },
+        "source_eviction_report": {
+            "path": str(eviction_path),
+            "sha256": file_sha256(eviction_path),
+        },
+        "background_bank_manifest": {
+            "path": str(bank_manifest),
+            "sha256": file_sha256(bank_manifest),
+        },
+        "background_bank_artifacts_hash": canonical_hash(
+            dict(sorted(bank_hashes.items())), 64
+        ),
+        **execution_provenance(),
+    }
+    if target.is_file():
+        prior = _read_json(target)
+        identity_fields = (
+            "parent_plan",
+            "shard_plan",
+            "batch_report",
+            "background_report",
+            "background_bank_report",
+            "source_eviction_report",
+            "background_bank_manifest",
+            "background_bank_artifacts_hash",
+        )
+        if any(prior.get(field) != result.get(field) for field in identity_fields):
+            raise ValueError("Existing detector-validation shard receipt changed")
+        return prior
+    atomic_write_json(target, result)
+    return result
+
+
+def merge_streamed_detector_validation_backgrounds(
+    base_manifest_path: str | Path,
+    base_report_path: str | Path,
+    shard_receipt_paths: Iterable[str | Path],
+    output_dir: str | Path,
+    required_detector_subsets: Iterable[str] = DEFAULT_DETECTOR_SUBSETS,
+    minimum_per_detector_subset: int = 25,
+    require_ready: bool = False,
+) -> dict[str, Any]:
+    """Merge frozen numeric validation backgrounds without reopening source HDF."""
+
+    base_manifest = Path(base_manifest_path).resolve()
+    base_report_file = Path(base_report_path).resolve()
+    base_report = _read_json(base_report_file)
+    receipt_paths = [Path(path).resolve() for path in shard_receipt_paths]
+    required = tuple(str(value) for value in required_detector_subsets)
+    if (
+        base_report.get("status")
+        != "exported_source_safe_detector_validation_background_bank"
+        or base_report.get("manifest_sha256") != file_sha256(base_manifest)
+        or base_report.get("candidate_scores_inspected") is not False
+        or int(base_report.get("test_rows_read", -1)) != 0
+        or not receipt_paths
+        or minimum_per_detector_subset < 1
+        or not required
+        or len(required) != len(set(required))
+    ):
+        raise ValueError("Detector-validation merge inputs or policy are invalid")
+    rows = [
+        json.loads(line)
+        for line in base_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not rows:
+        raise ValueError("Base detector-validation manifest is empty")
+    sources = [
+        {
+            "kind": "source_safe_network_validation_bank",
+            "path": str(base_manifest),
+            "sha256": file_sha256(base_manifest),
+            "report_path": str(base_report_file),
+            "report_sha256": file_sha256(base_report_file),
+            "rows": len(rows),
+        }
+    ]
+    receipt_records = []
+    seen_receipts: set[str] = set()
+    for receipt_path in receipt_paths:
+        receipt_hash = file_sha256(receipt_path)
+        if receipt_hash in seen_receipts:
+            raise ValueError("Detector-validation merge repeats a shard receipt")
+        seen_receipts.add(receipt_hash)
+        receipt = _read_json(receipt_path)
+        if (
+            receipt.get("status")
+            != "verified_streamed_detector_validation_shard"
+            or receipt.get("passed") is not True
+            or receipt.get("candidate_scores_inspected") is not False
+            or int(receipt.get("test_rows_read", -1)) != 0
+            or int(receipt.get("test_strain_rows_read", -1)) != 0
+            or receipt.get("detector_subset") not in required
+        ):
+            raise ValueError("Detector-validation shard receipt is not publication-safe")
+        manifest_record = receipt.get("background_bank_manifest", {})
+        shard_manifest = Path(str(manifest_record.get("path", ""))).resolve()
+        if manifest_record.get("sha256") != file_sha256(shard_manifest):
+            raise ValueError("Detector-validation shard manifest changed after sealing")
+        shard_rows = [
+            json.loads(line)
+            for line in shard_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if len(shard_rows) != int(receipt["validation_windows"]):
+            raise ValueError("Detector-validation shard receipt row count changed")
+        subset = str(receipt["detector_subset"])
+        for row in shard_rows:
+            artifact = Path(str(row.get("background_bank", {}).get("path", "")))
+            if (
+                row.get("split") != "val"
+                or "+".join(str(value) for value in row.get("ifos", [])) != subset
+                or file_sha256(artifact)
+                != str(row.get("background_bank", {}).get("sha256", ""))
+            ):
+                raise ValueError("Detector-validation shard artifact failed merge replay")
+            rows.append(
+                {
+                    **row,
+                    "detector_subset": subset,
+                    "aligned_network_context": True,
+                    "candidate_scores_inspected": False,
+                    "physical_signal_present": False,
+                    "physical_signal_projection_required": True,
+                    "source_kind": "streamed_source_disjoint_gwosc_background",
+                }
+            )
+        receipt_records.append(
+            {
+                "path": str(receipt_path),
+                "sha256": receipt_hash,
+                "detector_subset": subset,
+                "rows": len(shard_rows),
+            }
+        )
+
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    gps_blocks = [str(row.get("gps_block", "")) for row in rows]
+    if (
+        any(not value for value in window_ids + gps_blocks)
+        or len(window_ids) != len(set(window_ids))
+        or len(gps_blocks) != len(set(gps_blocks))
+    ):
+        raise ValueError("Merged detector-validation backgrounds repeat physical groups")
+    rows.sort(
+        key=lambda row: (
+            str(row["detector_subset"]),
+            float(row["gps_start"]),
+            str(row["window_id"]),
+        )
+    )
+    counts = Counter(str(row["detector_subset"]) for row in rows)
+    observed = {subset: int(counts.get(subset, 0)) for subset in required}
+    deficits = {
+        subset: max(0, minimum_per_detector_subset - count)
+        for subset, count in observed.items()
+    }
+    ready = all(value == 0 for value in deficits.values())
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "background_windows.jsonl"
+    report_path = output / "detector_validation_background_report.json"
+    run_identity = {
+        "base_manifest_sha256": file_sha256(base_manifest),
+        "base_report_sha256": file_sha256(base_report_file),
+        "shard_receipt_sha256s": [file_sha256(path) for path in receipt_paths],
+        "required_detector_subsets": list(required),
+        "minimum_per_detector_subset": minimum_per_detector_subset,
+        "merge_policy": "unique_gps_block_source_disjoint_stream_v1",
+    }
+    if report_path.is_file():
+        prior = _read_json(report_path)
+        if prior.get("run_identity") != run_identity:
+            raise ValueError("Existing merged detector-validation bank has another identity")
+        if prior.get("manifest_sha256") != file_sha256(manifest):
+            raise ValueError("Existing merged detector-validation manifest changed")
+        if require_ready and prior.get("passed") is not True:
+            raise RuntimeError(
+                "Merged detector-validation background remains below floors: "
+                f"{prior.get('detector_subset_deficits', {})}"
+            )
+        return prior
+    atomic_write_text(
+        manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    live_seconds = _union_duration(
+        (float(row["gps_start"]), float(row["gps_end"])) for row in rows
+    )
+    result = {
+        "status": "exported_source_safe_detector_validation_background_bank",
+        "passed": ready,
+        "publication_calibration_eligible": ready,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "candidate_scores_inspected": False,
+        "physical_signal_present": False,
+        "physical_signal_projection_required": True,
+        "source_rows": len(rows),
+        "selected_rows": len(rows),
+        "selection": "unique_gps_block_source_disjoint_stream_v1",
+        "unique_network_gps_blocks": len(gps_blocks),
+        "detector_subset_counts": observed,
+        "detector_subset_deficits": deficits,
+        "minimum_per_detector_subset": minimum_per_detector_subset,
+        "required_detector_subsets": list(required),
+        "sources": sources,
+        "streamed_shard_receipts": receipt_records,
+        "splits": {
+            "val": {
+                "windows": len(rows),
+                "unique_gps_blocks": len(gps_blocks),
+                "live_time_seconds": live_seconds,
+                "live_time_years": live_seconds / SECONDS_PER_YEAR,
+            },
+            "test": {
+                "windows": 0,
+                "unique_gps_blocks": 0,
+                "live_time_seconds": 0.0,
+                "live_time_years": 0.0,
+            },
+        },
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        "run_identity": run_identity,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
+    if require_ready and not ready:
+        raise RuntimeError(
+            f"Merged detector-validation background remains below floors: {deficits}"
+        )
+    return result
