@@ -29,6 +29,8 @@ def test_family_capacity_successor_preserves_scientific_boundaries() -> None:
     assert "run_network_ood_validation.sh" in source
     assert "run_physical_overlap_data_scaling.sh" in source
     assert "run_physical_overlap_scaling_hard_endpoint.sh" in source
+    assert 'FIXED_EPOCH_CONFIG="$fixed_epoch_config"' in source
+    assert 'FIXED_UPDATE_CONFIG="$fixed_update_config"' in source
     assert 'if [[ "$five_seed_passed" == True ]]' in source
     assert "not_authorized_by_five_seed_gate" in source
     assert "test_rows_read" in source

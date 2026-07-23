@@ -54,6 +54,8 @@ fi
 cd "$TASK_CODE_DIR"
 export PYTHONPATH=src
 export GWYOLO_CODE_COMMIT
+fixed_epoch_config=${FIXED_EPOCH_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_scale_fixed_epochs.yaml}
+fixed_update_config=${FIXED_UPDATE_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_scale_fixed_updates.yaml}
 
 if ! resolved=$(
   "$TASK_PYTHON" - \
@@ -181,6 +183,8 @@ if [[ "$five_seed_passed" == True ]]; then
       CLEAN_VALIDATION_MANIFEST="$CLEAN_VALIDATION_MANIFEST" \
       PRETRAINED_CHECKPOINT="$PRETRAINED_CHECKPOINT" \
       CLEAN_VALIDATION_FEATURE_CACHE_DIR="${CLEAN_VALIDATION_FEATURE_CACHE_DIR:-}" \
+      FIXED_EPOCH_CONFIG="$fixed_epoch_config" \
+      FIXED_UPDATE_CONFIG="$fixed_update_config" \
       OUTPUT_ROOT="$SCALING_OUTPUT_ROOT" \
       OVERLAP_SCALES="${OVERLAP_SCALES:-250 500 1000}" \
       OVERLAP_SCALE_SEEDS="${OVERLAP_SCALE_SEEDS:-20260728 20260729 20260730 20260731 20260732}" \
@@ -225,6 +229,8 @@ PY
         SCALING_OUTPUT_ROOT="$SCALING_OUTPUT_ROOT" \
         OVERLAP_VALIDATION_MANIFEST="$overlap_validation" \
         GRAVITYSPY_CORPUS_AUDIT="$selected_audit" \
+        FIXED_EPOCH_CONFIG="$fixed_epoch_config" \
+        FIXED_UPDATE_CONFIG="$fixed_update_config" \
         OUTPUT_ROOT="$HARD_ENDPOINT_OUTPUT_ROOT" \
         NEXT_PHYSICAL_SCALE="$next_scale" \
         bash scripts/run_physical_overlap_scaling_hard_endpoint.sh
