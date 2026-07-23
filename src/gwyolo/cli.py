@@ -1729,6 +1729,36 @@ def build_parser() -> argparse.ArgumentParser:
     locked_stream_audit.add_argument("--access-log", required=True)
     locked_stream_audit.add_argument("--receipt-manifest", required=True)
     locked_stream_audit.add_argument("--output", required=True)
+    locked_stream_audit.add_argument("--code-commit", required=True)
+
+    locked_stream_download = subparsers.add_parser(
+        "locked-o4b-streaming-shard-download"
+    )
+    locked_stream_download.add_argument("--execution-plan", required=True)
+    locked_stream_download.add_argument("--access-log", required=True)
+    locked_stream_download.add_argument("--shard-index", type=int, required=True)
+    locked_stream_download.add_argument("--code-commit", required=True)
+    locked_stream_download.add_argument("--download-workers", type=int, default=4)
+    locked_stream_download.add_argument(
+        "--chunk-samples", type=int, default=1_048_576
+    )
+
+    locked_stream_shard_finalize = subparsers.add_parser(
+        "locked-o4b-streaming-shard-finalize"
+    )
+    locked_stream_shard_finalize.add_argument("--execution-plan", required=True)
+    locked_stream_shard_finalize.add_argument("--access-log", required=True)
+    locked_stream_shard_finalize.add_argument(
+        "--shard-index", type=int, required=True
+    )
+    locked_stream_shard_finalize.add_argument("--code-commit", required=True)
+
+    locked_stream_receipt_merge = subparsers.add_parser(
+        "locked-o4b-streaming-receipts-merge"
+    )
+    locked_stream_receipt_merge.add_argument("--execution-plan", required=True)
+    locked_stream_receipt_merge.add_argument("--access-log", required=True)
+    locked_stream_receipt_merge.add_argument("--code-commit", required=True)
 
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
@@ -4203,6 +4233,41 @@ def main(argv: list[str] | None = None) -> int:
                 args.access_log,
                 args.receipt_manifest,
                 args.output,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-download":
+        from .evaluation_lock import download_locked_o4b_streaming_shard_sources
+
+        _print(
+            download_locked_o4b_streaming_shard_sources(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+                args.download_workers,
+                args.chunk_samples,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-finalize":
+        from .evaluation_lock import finalize_locked_o4b_streaming_shard
+
+        _print(
+            finalize_locked_o4b_streaming_shard(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-receipts-merge":
+        from .evaluation_lock import merge_locked_o4b_streaming_shard_receipts
+
+        _print(
+            merge_locked_o4b_streaming_shard_receipts(
+                args.execution_plan,
+                args.access_log,
+                args.code_commit,
             )
         )
     elif args.command == "locked-evaluation-suite-finalize":

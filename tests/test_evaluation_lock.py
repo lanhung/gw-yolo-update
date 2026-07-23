@@ -7,15 +7,18 @@ import pytest
 
 from gwyolo.evaluation_lock import (
     audit_locked_o4b_streaming_completion,
+    download_locked_o4b_streaming_shard_sources,
+    finalize_locked_o4b_streaming_shard,
     freeze_evaluation_corpus,
     freeze_locked_o4b_streaming_execution_plan,
     freeze_locked_evaluation_suite_plan,
     finalize_locked_evaluation_suite_receipt,
+    merge_locked_o4b_streaming_shard_receipts,
     open_evaluation_corpus_once,
     validate_locked_evaluation_suite_access,
     validate_locked_evaluation_suite_input,
 )
-from gwyolo.io import canonical_hash, file_sha256
+from gwyolo.io import file_sha256
 
 
 def _write(path, rows):
@@ -518,6 +521,7 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
 
 def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     tmp_path,
+    monkeypatch,
 ) -> None:
     evidence = tmp_path / "validation_evidence.json"
     config = tmp_path / "suite.yaml"
@@ -630,6 +634,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         report_path,
         "abc123",
         blocks_per_shard=1,
+        minimum_free_kb=1024 * 1024,
     )
     replay = freeze_locked_o4b_streaming_execution_plan(
         suite_plan,
@@ -643,6 +648,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         report_path,
         "abc123",
         blocks_per_shard=1,
+        minimum_free_kb=1024 * 1024,
     )
 
     assert replay == result
@@ -654,6 +660,10 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     assert rows[0]["injection_ids"] == ["injection-0"]
     assert len(rows[0]["source_files"]) == 2
     assert rows[1]["gps_blocks"] == ["O4b:1400004096:4096"]
+    with pytest.raises(FileNotFoundError, match="plan/access"):
+        download_locked_o4b_streaming_shard_sources(
+            report_path, access, 0, "abc123"
+        )
     access.write_text(
         json.dumps(
             {
@@ -671,80 +681,112 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         ),
         encoding="utf-8",
     )
+
+    def fake_download(_url, destination, workers):
+        assert workers == 2
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"locked-source")
+        return {
+            "path": str(destination),
+            "bytes": destination.stat().st_size,
+            "sha256": file_sha256(destination),
+            "downloaded": True,
+        }
+
+    monkeypatch.setattr("gwyolo.gwosc.download_resumable", fake_download)
+    monkeypatch.setattr("gwyolo.gwosc._api_json", lambda _url: {})
+    monkeypatch.setattr(
+        "gwyolo.gwosc.verify_hdf5_against_detail",
+        lambda _path, _detail, _chunks: {"passed": True},
+    )
+    with pytest.raises(ValueError, match="access/plan binding"):
+        download_locked_o4b_streaming_shard_sources(
+            report_path,
+            access,
+            0,
+            "wrong-commit",
+            download_workers=2,
+        )
+    source_result = download_locked_o4b_streaming_shard_sources(
+        report_path,
+        access,
+        0,
+        "abc123",
+        download_workers=2,
+    )
+    assert source_result["passed"] is True
+    assert source_result["verified_files"] == 2
+    assert (
+        download_locked_o4b_streaming_shard_sources(
+            report_path,
+            access,
+            0,
+            "abc123",
+            download_workers=2,
+        )
+        == source_result
+    )
+    active_lease = suite_root / "execution" / ".active-shard.lock"
+    active_lease.write_text("active", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="already active"):
+        download_locked_o4b_streaming_shard_sources(
+            report_path,
+            access,
+            1,
+            "abc123",
+            download_workers=2,
+        )
+    active_lease.unlink()
     receipts = []
     for shard in rows:
+        if not Path(shard["source_download_report_path"]).exists():
+            download_locked_o4b_streaming_shard_sources(
+                report_path,
+                access,
+                shard["shard_index"],
+                "abc123",
+                download_workers=2,
+            )
         work_dir = Path(shard["work_dir"])
-        work_dir.mkdir(parents=True)
-        artifacts = {}
+        work_dir.mkdir(parents=True, exist_ok=True)
         for label in (
             "raw_candidate_rows",
             "mask_candidate_rows",
             "ood_score_rows",
         ):
-            artifact = work_dir / f"{label}.jsonl"
+            artifact = Path(shard["artifact_paths"][label])
             artifact.write_text("", encoding="utf-8")
-            artifacts[label] = {
-                "path": str(artifact.resolve()),
-                "sha256": file_sha256(artifact),
-                "rows": 0,
-            }
         receipts.append(
-            {
-                "status": "completed_locked_o4b_stream_shard",
-                "passed": True,
-                **{
-                    key: shard[key]
-                    for key in (
-                        "shard_index",
-                        "row_start",
-                        "row_stop_exclusive",
-                        "availability_ids",
-                        "injection_ids",
-                        "waveform_ids",
-                        "gps_blocks",
-                    )
-                },
-                "test_rows_processed": (
-                    shard["row_stop_exclusive"] - shard["row_start"]
-                ),
-                "result_dependent_stopping_used": False,
-                "post_access_dq_replacement_used": False,
-                "negative_and_null_results_retained": True,
-                "streaming_plan_sha256": file_sha256(report_path),
-                "access_log_sha256": file_sha256(access),
-                "artifacts": artifacts,
-                "source_eviction": {
-                    "status": "verified_locked_source_eviction",
-                    "passed": True,
-                    "source_files_removed": len(shard["source_files"]),
-                    "source_files_retained": 0,
-                    "source_files_sha256": canonical_hash(
-                        shard["source_files"], length=64
-                    ),
-                },
-            }
+            finalize_locked_o4b_streaming_shard(
+                report_path,
+                access,
+                shard["shard_index"],
+                "abc123",
+            )
         )
-    receipt_manifest = tmp_path / "streaming-receipts.jsonl"
-    _write(receipt_manifest, receipts)
+        if shard["shard_index"] == 0:
+            with pytest.raises(FileNotFoundError, match="receipt is absent"):
+                merge_locked_o4b_streaming_shard_receipts(
+                    report_path, access, "abc123"
+                )
+    merged = merge_locked_o4b_streaming_shard_receipts(
+        report_path, access, "abc123"
+    )
+    assert merged["completed_shards"] == 2
+    receipt_manifest = Path(result["receipt_manifest_path"])
     completion = audit_locked_o4b_streaming_completion(
         report_path,
         access,
         receipt_manifest,
-        tmp_path / "streaming-completion.json",
+        result["completion_audit_path"],
+        "abc123",
     )
     assert completion["passed"] is True
     assert completion["completed_shards"] == 2
     assert completion["unique_injections"] == 2
     assert len(completion["artifact_inventory"]["raw_candidate_rows"]) == 2
 
-    _write(receipt_manifest, receipts[:-1])
-    with pytest.raises(ValueError, match="cover every frozen shard"):
-        audit_locked_o4b_streaming_completion(
-            report_path,
-            access,
-            receipt_manifest,
-            tmp_path / "incomplete-streaming-completion.json",
-        )
     with pytest.raises(ValueError, match="unopened execution boundary"):
         freeze_locked_o4b_streaming_execution_plan(
             suite_plan,

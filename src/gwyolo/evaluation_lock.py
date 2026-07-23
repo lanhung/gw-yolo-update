@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -252,6 +253,26 @@ def freeze_locked_o4b_streaming_execution_plan(
                 "waveform_ids": [str(value[0]["waveform_id"]) for value in batch],
                 "gps_blocks": [str(value[0]["gps_block"]) for value in batch],
                 "source_files": sources,
+                "source_cache_dir": str(work / f"shard-{shard_index:05d}" / "sources"),
+                "source_download_report_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_source_download_report.json"
+                ),
+                "source_eviction_report_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_source_eviction_report.json"
+                ),
+                "artifact_paths": {
+                    label: str(
+                        work / f"shard-{shard_index:05d}" / f"{label}.jsonl"
+                    )
+                    for label in sorted(_LOCKED_STREAM_SHARD_ARTIFACT_KEYS)
+                },
+                "receipt_path": str(
+                    work / f"shard-{shard_index:05d}" / "shard_receipt.json"
+                ),
                 "post_access_dq_replacement_allowed": False,
                 "result_dependent_stopping_allowed": False,
                 "source_eviction_required_after_verified_reduction": True,
@@ -316,6 +337,11 @@ def freeze_locked_o4b_streaming_execution_plan(
         "source_eviction_required_after_verified_reduction": True,
         "shard_manifest_path": str(shard_manifest),
         "shard_manifest_sha256": file_sha256(shard_manifest),
+        "receipt_manifest_path": str(work / "streaming-shard-receipts.jsonl"),
+        "receipt_merge_report_path": str(
+            work / "streaming-shard-receipt-merge-report.json"
+        ),
+        "completion_audit_path": str(work / "streaming-completion-audit.json"),
         "code_commit": code_commit,
         **execution_provenance(),
     }
@@ -329,11 +355,575 @@ def freeze_locked_o4b_streaming_execution_plan(
     return report
 
 
+def download_locked_o4b_streaming_shard_sources(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    shard_index: int,
+    code_commit: str,
+    download_workers: int = 4,
+    chunk_samples: int = 1_048_576,
+) -> dict[str, Any]:
+    """Download one predeclared O4b shard only after irreversible suite access.
+
+    Generic development downloaders continue to reject O4b. This gate derives
+    every URL and output path from the pre-access streaming plan, permits only
+    one active shard, enforces the frozen storage floor, and verifies each HDF5
+    source against its GWOSC metadata before publishing the shard report.
+    """
+
+    if (
+        shard_index < 0
+        or download_workers < 1
+        or chunk_samples < 1
+        or not code_commit.strip()
+    ):
+        raise ValueError("locked shard download settings are invalid")
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    if not plan_file.is_file() or not access_file.is_file():
+        raise FileNotFoundError("locked shard plan/access input is absent")
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or plan.get("maximum_concurrent_shards") != 1
+        or plan.get("result_dependent_stopping_allowed") is not False
+        or plan.get("post_access_dq_replacement_allowed") is not False
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("evaluation_opened") is not True
+        or access.get("corpus_label") != plan.get("corpus_label")
+        or access.get("code_commit") != plan.get("code_commit")
+        or plan.get("code_commit") != code_commit
+        or Path(str(plan.get("access_log_path", ""))).resolve() != access_file
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+    ):
+        raise ValueError("locked shard download access/plan binding failed replay")
+    shards = _load_jsonl(shard_manifest)
+    if shard_index >= len(shards) or len(shards) != int(plan.get("shards", -1)):
+        raise ValueError("locked shard index is outside the frozen schedule")
+    shard = shards[shard_index]
+    if int(shard.get("shard_index", -1)) != shard_index:
+        raise ValueError("locked shard manifest order changed after freezing")
+
+    work_dir = Path(str(shard.get("work_dir", ""))).resolve()
+    work_root = Path(str(plan.get("freeze_identity", {}).get("work_root", ""))).resolve()
+    source_dir = Path(str(shard.get("source_cache_dir", ""))).resolve()
+    report_path = Path(str(shard.get("source_download_report_path", ""))).resolve()
+    if (
+        work_root not in work_dir.parents
+        or work_dir not in source_dir.parents
+        or work_dir not in report_path.parents
+        or work_dir.name != f"shard-{shard_index:05d}"
+    ):
+        raise ValueError("locked shard paths are not children of the frozen work root")
+    identity = {
+        "execution_plan_path": str(plan_file),
+        "execution_plan_sha256": file_sha256(plan_file),
+        "access_log_path": str(access_file),
+        "access_log_sha256": file_sha256(access_file),
+        "shard_manifest_sha256": file_sha256(shard_manifest),
+        "shard_index": shard_index,
+        "source_files_sha256": canonical_hash(shard["source_files"], length=64),
+        "download_workers": download_workers,
+        "chunk_samples": chunk_samples,
+        "code_commit": plan["code_commit"],
+    }
+    if report_path.is_file():
+        completed = json.loads(report_path.read_text(encoding="utf-8"))
+        completed_files = completed.get("files")
+        if (
+            completed.get("status") != "verified_locked_o4b_shard_sources"
+            or completed.get("passed") is not True
+            or completed.get("run_identity") != identity
+            or not isinstance(completed_files, list)
+            or len(completed_files) != len(shard["source_files"])
+            or completed.get("verified_files") != len(shard["source_files"])
+            or any(
+                row.get("source_index") != source_index
+                or row.get("availability_id") != source["availability_id"]
+                or row.get("detector") != source["ifo"]
+                or row.get("gps_start") != source["gps_start"]
+                or row.get("duration") != source["duration"]
+                or row.get("hdf5_url") != source["hdf5_url"]
+                or row.get("detail_url") != source["detail_url"]
+                or Path(str(row.get("path", ""))).resolve()
+                != (
+                    source_dir / f"source-{source_index:03d}-{source['ifo']}.hdf5"
+                ).resolve()
+                or not Path(str(row.get("path", ""))).is_file()
+                or row.get("sha256") != file_sha256(row["path"])
+                or row.get("verification", {}).get("passed") is not True
+                for source_index, (source, row) in enumerate(
+                    zip(shard["source_files"], completed_files)
+                )
+            )
+        ):
+            raise ValueError("existing locked shard source report failed replay")
+        return completed
+    if report_path.exists():
+        raise FileExistsError("partial locked shard source report exists")
+
+    minimum_free_bytes = int(plan["minimum_free_kb"]) * 1024
+    work_root.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(work_root).free < minimum_free_bytes:
+        raise RuntimeError("locked shard download storage guard is not satisfied")
+    lease_path = work_root / ".active-shard.lock"
+    try:
+        descriptor = os.open(lease_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as error:
+        raise RuntimeError("another locked O4b shard is already active") from error
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "shard_index": shard_index,
+                    "execution_plan_sha256": identity["execution_plan_sha256"],
+                    "access_log_sha256": identity["access_log_sha256"],
+                    "pid": os.getpid(),
+                },
+                handle,
+                sort_keys=True,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        from .gwosc import _api_json, download_resumable, verify_hdf5_against_detail
+
+        source_dir.mkdir(parents=True, exist_ok=True)
+        files = []
+        for source_index, source in enumerate(shard["source_files"]):
+            if shutil.disk_usage(work_root).free < minimum_free_bytes:
+                raise RuntimeError(
+                    "locked shard download storage guard failed during execution"
+                )
+            detector = str(source["ifo"])
+            destination = source_dir / f"source-{source_index:03d}-{detector}.hdf5"
+            download = download_resumable(
+                str(source["hdf5_url"]),
+                destination,
+                workers=download_workers,
+            )
+            verification = verify_hdf5_against_detail(
+                download["path"],
+                _api_json(str(source["detail_url"])),
+                chunk_samples,
+            )
+            if verification.get("passed") is not True:
+                raise RuntimeError(
+                    f"locked O4b source verification failed: {shard_index}/{source_index}"
+                )
+            files.append(
+                {
+                    "source_index": source_index,
+                    "availability_id": source["availability_id"],
+                    "detector": detector,
+                    "gps_start": source["gps_start"],
+                    "duration": source["duration"],
+                    "hdf5_url": source["hdf5_url"],
+                    "detail_url": source["detail_url"],
+                    "path": str(destination),
+                    "sha256": download["sha256"],
+                    "bytes": download["bytes"],
+                    "downloaded": download["downloaded"],
+                    "verification": verification,
+                }
+            )
+        result = {
+            "status": "verified_locked_o4b_shard_sources",
+            "passed": True,
+            "scientific_claim_allowed": False,
+            "candidate_scores_inspected": False,
+            "test_rows_processed": 0,
+            "shard_index": shard_index,
+            "availability_ids": shard["availability_ids"],
+            "injection_ids": shard["injection_ids"],
+            "gps_blocks": shard["gps_blocks"],
+            "files": files,
+            "verified_files": len(files),
+            "run_identity": identity,
+            "code_commit": plan["code_commit"],
+            **execution_provenance(),
+        }
+        result["runtime_provenance"] = {
+            "runtime_code_commit": result.pop("code_commit"),
+            "exact_command": result.pop("exact_command"),
+            "environment": result.pop("environment"),
+        }
+        result["code_commit"] = plan["code_commit"]
+        atomic_write_json(report_path, result)
+        return result
+    finally:
+        try:
+            lease_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def finalize_locked_o4b_streaming_shard(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    shard_index: int,
+    code_commit: str,
+) -> dict[str, Any]:
+    """Hash reduced shard products, evict verified strain, and seal its receipt."""
+
+    if shard_index < 0 or not code_commit.strip():
+        raise ValueError("locked shard index must be non-negative")
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("evaluation_opened") is not True
+        or access.get("code_commit") != plan.get("code_commit")
+        or plan.get("code_commit") != code_commit
+        or Path(str(plan.get("access_log_path", ""))).resolve() != access_file
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+    ):
+        raise ValueError("locked shard finalization access/plan binding failed replay")
+    shards = _load_jsonl(shard_manifest)
+    if shard_index >= len(shards):
+        raise ValueError("locked shard index is outside the frozen schedule")
+    shard = shards[shard_index]
+    if int(shard.get("shard_index", -1)) != shard_index:
+        raise ValueError("locked shard order changed after freezing")
+    work_dir = Path(str(shard["work_dir"])).resolve()
+    source_dir = Path(str(shard["source_cache_dir"])).resolve()
+    source_report_path = Path(str(shard["source_download_report_path"])).resolve()
+    eviction_path = Path(str(shard["source_eviction_report_path"])).resolve()
+    receipt_path = Path(str(shard["receipt_path"])).resolve()
+    if any(
+        work_dir not in path.parents
+        for path in (source_dir, source_report_path, eviction_path, receipt_path)
+    ):
+        raise ValueError("locked shard finalization paths escaped the frozen work dir")
+    if not source_report_path.is_file():
+        raise FileNotFoundError("locked shard source download report is absent")
+
+    expected_artifacts = shard.get("artifact_paths")
+    if (
+        not isinstance(expected_artifacts, dict)
+        or set(expected_artifacts) != _LOCKED_STREAM_SHARD_ARTIFACT_KEYS
+    ):
+        raise ValueError("locked shard artifact paths were not frozen")
+    artifact_entries = {}
+    for label in sorted(_LOCKED_STREAM_SHARD_ARTIFACT_KEYS):
+        path = Path(str(expected_artifacts[label])).resolve()
+        if work_dir not in path.parents or not path.is_file():
+            raise FileNotFoundError(f"locked shard artifact is absent: {label}")
+        rows = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"locked shard artifact has invalid JSON: {label}/{line_number}"
+                    ) from error
+                if (
+                    not isinstance(row, dict)
+                    or row.get("shard_index") != shard_index
+                    or (
+                        row.get("injection_id") is not None
+                        and str(row["injection_id"]) not in shard["injection_ids"]
+                    )
+                    or (
+                        row.get("availability_id") is not None
+                        and str(row["availability_id"]) not in shard["availability_ids"]
+                    )
+                ):
+                    raise ValueError(
+                        f"locked shard artifact row failed identity replay: "
+                        f"{label}/{line_number}"
+                    )
+                rows.append(row)
+        artifact_entries[label] = {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "rows": len(rows),
+        }
+
+    source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
+    source_files = source_report.get("files")
+    if (
+        source_report.get("status") != "verified_locked_o4b_shard_sources"
+        or source_report.get("passed") is not True
+        or source_report.get("shard_index") != shard_index
+        or source_report.get("run_identity", {}).get("execution_plan_sha256")
+        != file_sha256(plan_file)
+        or source_report.get("run_identity", {}).get("access_log_sha256")
+        != file_sha256(access_file)
+        or not isinstance(source_files, list)
+        or len(source_files) != len(shard["source_files"])
+    ):
+        raise ValueError("locked shard source report failed finalization replay")
+    targets = []
+    for source_index, (source, observed) in enumerate(
+        zip(shard["source_files"], source_files)
+    ):
+        path = Path(str(observed.get("path", ""))).resolve()
+        if (
+            observed.get("source_index") != source_index
+            or observed.get("availability_id") != source["availability_id"]
+            or observed.get("detector") != source["ifo"]
+            or source_dir not in path.parents
+            or not str(observed.get("sha256", ""))
+            or isinstance(observed.get("bytes"), bool)
+            or not isinstance(observed.get("bytes"), int)
+            or observed["bytes"] < 0
+            or observed.get("verification", {}).get("passed") is not True
+        ):
+            raise ValueError("locked shard source inventory failed finalization replay")
+        targets.append(
+            {
+                "path": str(path),
+                "sha256": observed["sha256"],
+                "bytes": observed["bytes"],
+            }
+        )
+
+    intent_path = eviction_path.with_suffix(eviction_path.suffix + ".intent.json")
+    eviction_identity = {
+        "execution_plan_sha256": file_sha256(plan_file),
+        "access_log_sha256": file_sha256(access_file),
+        "shard_index": shard_index,
+        "source_download_report_sha256": file_sha256(source_report_path),
+        "source_files_sha256": canonical_hash(shard["source_files"], length=64),
+        "artifacts": artifact_entries,
+        "targets": targets,
+    }
+    if eviction_path.is_file():
+        eviction = json.loads(eviction_path.read_text(encoding="utf-8"))
+        if (
+            eviction.get("status") != "verified_locked_source_eviction"
+            or eviction.get("passed") is not True
+            or eviction.get("eviction_identity") != eviction_identity
+            or eviction.get("source_files_removed") != len(targets)
+            or eviction.get("source_files_retained") != 0
+            or any(Path(row["path"]).exists() for row in targets)
+        ):
+            raise ValueError("existing locked shard source eviction failed replay")
+    else:
+        if intent_path.is_file():
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            if (
+                intent.get("status") != "validated_locked_source_eviction_intent"
+                or intent.get("eviction_identity") != eviction_identity
+            ):
+                raise ValueError("locked shard source eviction intent changed")
+        else:
+            for row in targets:
+                path = Path(row["path"])
+                if not path.is_file() or file_sha256(path) != row["sha256"]:
+                    raise ValueError("locked shard source hash changed before eviction")
+            atomic_write_json(
+                intent_path,
+                {
+                    "status": "validated_locked_source_eviction_intent",
+                    "eviction_identity": eviction_identity,
+                },
+            )
+        for row in targets:
+            path = Path(row["path"])
+            if path.exists():
+                if not path.is_file() or file_sha256(path) != row["sha256"]:
+                    raise ValueError("locked shard source hash changed during eviction")
+                path.unlink()
+        eviction = {
+            "status": "verified_locked_source_eviction",
+            "passed": True,
+            "recoverable": True,
+            "recovery": (
+                "re-run locked-o4b-streaming-shard-download using the same "
+                "hash-bound execution plan and access log"
+            ),
+            "eviction_identity": eviction_identity,
+            "source_files_removed": len(targets),
+            "source_bytes_removed": sum(row["bytes"] for row in targets),
+            "source_files_retained": 0,
+            "source_files_sha256": canonical_hash(shard["source_files"], length=64),
+            "intent_path": str(intent_path),
+            "intent_sha256": file_sha256(intent_path),
+            "code_commit": plan["code_commit"],
+            **execution_provenance(),
+        }
+        eviction["runtime_provenance"] = {
+            "runtime_code_commit": eviction.pop("code_commit"),
+            "exact_command": eviction.pop("exact_command"),
+            "environment": eviction.pop("environment"),
+        }
+        eviction["code_commit"] = plan["code_commit"]
+        atomic_write_json(eviction_path, eviction)
+
+    receipt = {
+        "status": "completed_locked_o4b_stream_shard",
+        "passed": True,
+        **{
+            key: shard[key]
+            for key in (
+                "shard_index",
+                "row_start",
+                "row_stop_exclusive",
+                "availability_ids",
+                "injection_ids",
+                "waveform_ids",
+                "gps_blocks",
+            )
+        },
+        "test_rows_processed": int(shard["row_stop_exclusive"])
+        - int(shard["row_start"]),
+        "result_dependent_stopping_used": False,
+        "post_access_dq_replacement_used": False,
+        "negative_and_null_results_retained": True,
+        "streaming_plan_sha256": file_sha256(plan_file),
+        "access_log_sha256": file_sha256(access_file),
+        "artifacts": artifact_entries,
+        "source_download_report": {
+            "path": str(source_report_path),
+            "sha256": file_sha256(source_report_path),
+        },
+        "source_eviction": {
+            "status": eviction["status"],
+            "passed": eviction["passed"],
+            "path": str(eviction_path),
+            "sha256": file_sha256(eviction_path),
+            "source_files_removed": eviction["source_files_removed"],
+            "source_files_retained": eviction["source_files_retained"],
+            "source_files_sha256": eviction["source_files_sha256"],
+        },
+        "code_commit": plan["code_commit"],
+        **execution_provenance(),
+    }
+    receipt["runtime_provenance"] = {
+        "runtime_code_commit": receipt.pop("code_commit"),
+        "exact_command": receipt.pop("exact_command"),
+        "environment": receipt.pop("environment"),
+    }
+    receipt["code_commit"] = plan["code_commit"]
+    if receipt_path.is_file():
+        completed = json.loads(receipt_path.read_text(encoding="utf-8"))
+        comparable = dict(completed)
+        comparable.pop("runtime_provenance", None)
+        expected = dict(receipt)
+        expected.pop("runtime_provenance", None)
+        if comparable != expected:
+            raise ValueError("existing locked shard receipt changed")
+        return completed
+    atomic_write_json(receipt_path, receipt)
+    return receipt
+
+
+def merge_locked_o4b_streaming_shard_receipts(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    code_commit: str,
+) -> dict[str, Any]:
+    """Merge every predeclared shard receipt in frozen order without selection."""
+
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    receipt_manifest = Path(str(plan.get("receipt_manifest_path", ""))).resolve()
+    merge_report = Path(str(plan.get("receipt_merge_report_path", ""))).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("code_commit") != plan.get("code_commit")
+        or plan.get("code_commit") != code_commit
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+    ):
+        raise ValueError("locked shard receipt merge access/plan binding failed replay")
+    shards = _load_jsonl(shard_manifest)
+    receipts = []
+    for expected_index, shard in enumerate(shards):
+        receipt_path = Path(str(shard.get("receipt_path", ""))).resolve()
+        if not receipt_path.is_file():
+            raise FileNotFoundError(
+                f"locked shard receipt is absent: {expected_index}"
+            )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (
+            int(shard.get("shard_index", -1)) != expected_index
+            or receipt.get("status") != "completed_locked_o4b_stream_shard"
+            or receipt.get("passed") is not True
+            or receipt.get("shard_index") != expected_index
+            or receipt.get("streaming_plan_sha256") != file_sha256(plan_file)
+            or receipt.get("access_log_sha256") != file_sha256(access_file)
+        ):
+            raise ValueError(f"locked shard receipt failed merge replay: {expected_index}")
+        receipts.append(receipt)
+    payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in receipts)
+    if receipt_manifest.is_file():
+        if receipt_manifest.read_text(encoding="utf-8") != payload:
+            raise ValueError("existing locked shard receipt manifest changed")
+    else:
+        atomic_write_text(receipt_manifest, payload)
+    result = {
+        "status": "merged_locked_o4b_streaming_shard_receipts",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "all_predeclared_shards_present": True,
+        "negative_and_null_results_retained": True,
+        "execution_plan_sha256": file_sha256(plan_file),
+        "access_log_sha256": file_sha256(access_file),
+        "receipt_manifest_path": str(receipt_manifest),
+        "receipt_manifest_sha256": file_sha256(receipt_manifest),
+        "completed_shards": len(receipts),
+        "rows": sum(int(row["test_rows_processed"]) for row in receipts),
+        "code_commit": plan["code_commit"],
+        **execution_provenance(),
+    }
+    result["runtime_provenance"] = {
+        "runtime_code_commit": result.pop("code_commit"),
+        "exact_command": result.pop("exact_command"),
+        "environment": result.pop("environment"),
+    }
+    result["code_commit"] = plan["code_commit"]
+    if merge_report.is_file():
+        completed = json.loads(merge_report.read_text(encoding="utf-8"))
+        if (
+            completed.get("execution_plan_sha256")
+            != result["execution_plan_sha256"]
+            or completed.get("access_log_sha256") != result["access_log_sha256"]
+            or completed.get("receipt_manifest_sha256")
+            != result["receipt_manifest_sha256"]
+        ):
+            raise ValueError("existing locked shard receipt merge report changed")
+        return completed
+    atomic_write_json(merge_report, result)
+    return result
+
+
 def audit_locked_o4b_streaming_completion(
     execution_plan_path: str | Path,
     access_log_path: str | Path,
     receipt_manifest_path: str | Path,
     output_path: str | Path,
+    code_commit: str,
 ) -> dict[str, Any]:
     """Fail closed unless every frozen O4b shard was processed and retained.
 
@@ -358,6 +948,9 @@ def audit_locked_o4b_streaming_completion(
     access = json.loads(access_file.read_text(encoding="utf-8"))
     frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
     shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    receipt_merge_report = Path(
+        str(plan.get("receipt_merge_report_path", ""))
+    ).resolve()
     if (
         plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
         or plan.get("passed") is not True
@@ -370,13 +963,29 @@ def audit_locked_o4b_streaming_completion(
         or access.get("evaluation_opened") is not True
         or access.get("corpus_label") != plan.get("corpus_label")
         or access.get("code_commit") != plan.get("code_commit")
+        or plan.get("code_commit") != code_commit
         or Path(str(plan.get("access_log_path", ""))).resolve() != access_file
         or frozen_plan.get("path") != str(plan_file)
         or frozen_plan.get("sha256") != file_sha256(plan_file)
         or not shard_manifest.is_file()
         or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+        or receipts_file
+        != Path(str(plan.get("receipt_manifest_path", ""))).resolve()
+        or target != Path(str(plan.get("completion_audit_path", ""))).resolve()
+        or not receipt_merge_report.is_file()
     ):
         raise ValueError("locked streaming access/plan binding failed replay")
+    merged = json.loads(receipt_merge_report.read_text(encoding="utf-8"))
+    if (
+        merged.get("status") != "merged_locked_o4b_streaming_shard_receipts"
+        or merged.get("passed") is not True
+        or merged.get("execution_plan_sha256") != file_sha256(plan_file)
+        or merged.get("access_log_sha256") != file_sha256(access_file)
+        or merged.get("receipt_manifest_path") != str(receipts_file)
+        or merged.get("receipt_manifest_sha256") != file_sha256(receipts_file)
+        or merged.get("completed_shards") != plan.get("shards")
+    ):
+        raise ValueError("locked streaming receipt merge failed replay")
 
     shards = _load_jsonl(shard_manifest)
     receipts = _load_jsonl(receipts_file)
@@ -423,7 +1032,13 @@ def audit_locked_o4b_streaming_completion(
             )
 
         artifacts = receipt.get("artifacts")
-        if not isinstance(artifacts, dict) or set(artifacts) != _LOCKED_STREAM_SHARD_ARTIFACT_KEYS:
+        expected_artifacts = shard.get("artifact_paths")
+        if (
+            not isinstance(artifacts, dict)
+            or set(artifacts) != _LOCKED_STREAM_SHARD_ARTIFACT_KEYS
+            or not isinstance(expected_artifacts, dict)
+            or set(expected_artifacts) != _LOCKED_STREAM_SHARD_ARTIFACT_KEYS
+        ):
             raise ValueError(
                 f"locked streaming shard artifact inventory is incomplete: {expected_index}"
             )
@@ -435,6 +1050,7 @@ def audit_locked_o4b_streaming_completion(
             rows = entry.get("rows")
             if (
                 not artifact_path.is_file()
+                or artifact_path != Path(str(expected_artifacts[label])).resolve()
                 or work_dir not in artifact_path.parents
                 or entry.get("sha256") != file_sha256(artifact_path)
                 or isinstance(rows, bool)
@@ -454,6 +1070,19 @@ def audit_locked_o4b_streaming_completion(
                 }
             )
 
+        source_report_path = Path(
+            str(shard.get("source_download_report_path", ""))
+        ).resolve()
+        source_report = receipt.get("source_download_report")
+        if (
+            not isinstance(source_report, dict)
+            or source_report_path != Path(str(source_report.get("path", ""))).resolve()
+            or not source_report_path.is_file()
+            or source_report.get("sha256") != file_sha256(source_report_path)
+        ):
+            raise ValueError(
+                f"locked streaming shard source report failed replay: {expected_index}"
+            )
         eviction = receipt.get("source_eviction")
         expected_sources = len(shard.get("source_files", []))
         if (

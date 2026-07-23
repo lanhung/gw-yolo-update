@@ -104,7 +104,8 @@ if [[ ! -s "$STREAMING_COMPLETION_AUDIT_OUTPUT" ]]; then
       --execution-plan "$LOCKED_EXECUTION_PLAN" \
       --access-log "$LOCKED_ACCESS_LOG" \
       --receipt-manifest "$LOCKED_SHARD_RECEIPT_MANIFEST" \
-      --output "$STREAMING_COMPLETION_AUDIT_OUTPUT"
+      --output "$STREAMING_COMPLETION_AUDIT_OUTPUT" \
+      --code-commit "$GWYOLO_CODE_COMMIT"
   )
 fi
 
