@@ -1016,8 +1016,9 @@ def test_detector_set_block_permutations_replay_all_hlv_subsets(
     candidates = []
     delays = {"H1": 0.001, "L1": 0.006, "V1": 0.021}
     for block_index in range(5):
-        start = 1000.0 + block_index * 100.0
-        block = f"O3b:{int(start)}:8"
+        block_start = 1000.0 + block_index * 100.0
+        start = block_start + 0.25 + block_index * 0.01
+        block = f"O3b:{int(block_start)}:64"
         window_id = f"w{block_index}"
         windows.append(
             {
@@ -1080,6 +1081,10 @@ def test_detector_set_block_permutations_replay_all_hlv_subsets(
         "V1": -1,
     }
     assert schedule["required_detector_subsets_covered"] is True
+    assert (
+        schedule["relative_window_slot_policy"]
+        == "within_block_gps_order_v1"
+    )
     assert len(rows) == 5
     assert {row["detector_subset"] for row in rows} == {"H1+L1+V1"}
     assert all(

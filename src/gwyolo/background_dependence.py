@@ -7,7 +7,11 @@ from typing import Any
 
 import numpy as np
 
-from .background import SECONDS_PER_YEAR, parse_gps_block_identity
+from .background import (
+    SECONDS_PER_YEAR,
+    assign_relative_gps_block_slots,
+    parse_gps_block_identity,
+)
 from .candidates import _available_ifos
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
@@ -551,6 +555,13 @@ def audit_detector_set_candidate_background_dependence(
     ]
     detectors = [str(value) for value in schedule["detectors"]]
     duration = float(schedule["window_duration_seconds"])
+    if (
+        schedule.get("relative_window_slot_policy")
+        != "within_block_gps_order_v1"
+    ):
+        raise ValueError(
+            "detector-set dependence requires a relative-slot policy"
+        )
     slots: dict[str, dict[str, set[int]]] = {
         block: {} for block in ordered
     }
@@ -558,22 +569,23 @@ def audit_detector_set_candidate_background_dependence(
         background_rows = [
             json.loads(line) for line in handle if line.strip()
         ]
+    split_rows = [
+        row
+        for row in background_rows
+        if str(row.get("split")) == split
+    ]
+    relative_slots, _ = assign_relative_gps_block_slots(
+        split_rows,
+        duration,
+    )
     all_slots: set[int] = set()
-    for row in background_rows:
-        if str(row.get("split")) != split:
-            continue
+    for row in split_rows:
         block = str(row.get("gps_block"))
         if block not in slots:
             raise ValueError(
                 "background manifest contains an unscheduled GPS block"
             )
-        _, block_start, _ = parse_gps_block_identity(block)
-        offset = (float(row["gps_start"]) - block_start) / duration
-        slot = int(round(offset))
-        if not np.isclose(offset, slot, rtol=0.0, atol=1e-6):
-            raise ValueError(
-                "detector-set background window is not block aligned"
-            )
+        slot = relative_slots[str(row["window_id"])]
         for ifo in _available_ifos(row):
             if slot in slots[block].setdefault(ifo, set()):
                 raise ValueError(

@@ -38,6 +38,67 @@ def parse_gps_block_identity(value: str) -> tuple[str, float, float]:
     return parts[0], start, duration
 
 
+def assign_relative_gps_block_slots(
+    rows: Iterable[dict[str, Any]],
+    expected_window_duration: float,
+) -> tuple[dict[str, int], dict[str, dict[str, float]]]:
+    """Assign score-blind within-block window ordinals.
+
+    Detector-validation windows may be centered on arbitrary physical times
+    inside an observing-run GPS block. Their stable within-block ordering,
+    rather than an artificial integer grid, defines the permutation slot.
+    """
+
+    if (
+        not math.isfinite(expected_window_duration)
+        or expected_window_duration <= 0
+    ):
+        raise ValueError("relative GPS-block slot duration is invalid")
+    grouped: dict[str, list[tuple[float, float, str]]] = {}
+    metadata: dict[str, dict[str, float]] = {}
+    seen_windows: set[str] = set()
+    for row in rows:
+        block = str(row.get("gps_block", ""))
+        _, block_start, block_duration = parse_gps_block_identity(block)
+        window_id = str(row.get("window_id", ""))
+        start = float(row["gps_start"])
+        end = float(row["gps_end"])
+        if (
+            not window_id
+            or window_id in seen_windows
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or not math.isclose(
+                end - start,
+                expected_window_duration,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise ValueError("relative GPS-block window inventory is invalid")
+        seen_windows.add(window_id)
+        grouped.setdefault(block, []).append((start, end, window_id))
+        prior = metadata.setdefault(
+            block,
+            {"gps_start": block_start, "duration": block_duration},
+        )
+        if (
+            prior["gps_start"] != block_start
+            or prior["duration"] != block_duration
+        ):
+            raise ValueError("GPS block metadata is inconsistent")
+    slots: dict[str, int] = {}
+    for block, windows in grouped.items():
+        ordered = sorted(windows)
+        if len({(start, end) for start, end, _ in ordered}) != len(ordered):
+            raise ValueError(
+                f"GPS block {block} repeats a physical window interval"
+            )
+        for slot, (_, _, window_id) in enumerate(ordered):
+            slots[window_id] = slot
+    return slots, metadata
+
+
 def validate_source_verification(
     files: dict[str, str | Path], verification_report: str | Path
 ) -> dict[str, Any]:

@@ -8,7 +8,12 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .background import SECONDS_PER_YEAR, _union_duration, parse_gps_block_identity
+from .background import (
+    SECONDS_PER_YEAR,
+    _union_duration,
+    assign_relative_gps_block_slots,
+    parse_gps_block_identity,
+)
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
     CANDIDATE_BLOCK_SELECTION_DATA,
@@ -2337,6 +2342,8 @@ def build_detector_set_candidate_block_permutations(
         != "frozen_detector_set_block_permutation_schedule"
         or schedule.get("method") != DETECTOR_SET_BLOCK_PERMUTATION_METHOD
         or schedule.get("selection_data") != DETECTOR_SET_BLOCK_SELECTION_DATA
+        or schedule.get("relative_window_slot_policy")
+        != "within_block_gps_order_v1"
         or schedule.get("candidate_scores_inspected") is not False
         or canonical_hash(
             detector_set_block_schedule_identity(schedule),
@@ -2387,7 +2394,10 @@ def build_detector_set_candidate_block_permutations(
     }
     if len(block_positions) != len(ordered_blocks) or len(ordered_blocks) < 3:
         raise ValueError("detector-set block inventory is invalid")
-    block_metadata: dict[str, dict[str, Any]] = {}
+    relative_slots, block_metadata = assign_relative_gps_block_slots(
+        windows,
+        duration,
+    )
     windows_by_block_slot: dict[
         tuple[str, int],
         dict[str, Any],
@@ -2398,20 +2408,9 @@ def build_detector_set_candidate_block_permutations(
         block = str(row["gps_block"])
         if block not in block_positions:
             raise ValueError("background window uses an unscheduled GPS block")
-        _, block_start, block_duration = parse_gps_block_identity(block)
-        slot_value = (float(row["gps_start"]) - block_start) / duration
-        slot = int(round(slot_value))
-        if (
-            not np.isclose(slot_value, slot, rtol=0.0, atol=1e-6)
-            or slot < 0
-            or (slot + 1) * duration > block_duration + 1e-9
-            or (block, slot) in windows_by_block_slot
-        ):
+        slot = relative_slots[str(row["window_id"])]
+        if (block, slot) in windows_by_block_slot:
             raise ValueError("detector-set background block/slot is invalid")
-        block_metadata.setdefault(
-            block,
-            {"gps_start": block_start, "duration": block_duration},
-        )
         windows_by_block_slot[(block, slot)] = row
         availability[str(row["window_id"])] = _available_ifos(row)
         all_slots.add(slot)

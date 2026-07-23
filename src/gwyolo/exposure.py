@@ -5,7 +5,12 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
-from .background import SECONDS_PER_YEAR, _union_duration, parse_gps_block_identity
+from .background import (
+    SECONDS_PER_YEAR,
+    _union_duration,
+    assign_relative_gps_block_slots,
+    parse_gps_block_identity,
+)
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
@@ -118,6 +123,7 @@ def detector_set_block_schedule_identity(
             "detector_subsets",
             "pairwise_light_travel_time_seconds",
             "window_duration_seconds",
+            "relative_window_slot_policy",
             "ordered_gps_blocks",
             "permutations",
             "target_far_per_year",
@@ -717,18 +723,16 @@ def freeze_detector_set_block_permutation_schedule(
     window_duration = next(iter(durations))
     if not math.isfinite(window_duration) or window_duration <= 0:
         raise ValueError("detector-set block window duration is invalid")
+    relative_slots, block_metadata = assign_relative_gps_block_slots(
+        rows,
+        window_duration,
+    )
     blocks: dict[str, dict[str, Any]] = {}
     for row in rows:
         block_id = str(row["gps_block"])
-        _, block_start, block_duration = parse_gps_block_identity(block_id)
-        offset = (float(row["gps_start"]) - block_start) / window_duration
-        slot = int(round(offset))
-        if (
-            not math.isclose(offset, slot, rel_tol=0.0, abs_tol=1e-6)
-            or slot < 0
-            or (slot + 1) * window_duration > block_duration + 1e-9
-        ):
-            raise ValueError("background window is not aligned within its GPS block")
+        block_start = block_metadata[block_id]["gps_start"]
+        block_duration = block_metadata[block_id]["duration"]
+        slot = relative_slots[str(row["window_id"])]
         record = blocks.setdefault(
             block_id,
             {
@@ -854,6 +858,7 @@ def freeze_detector_set_block_permutation_schedule(
             sorted(pairwise_limits.items())
         ),
         "window_duration_seconds": window_duration,
+        "relative_window_slot_policy": "within_block_gps_order_v1",
         "ordered_gps_blocks": ordered,
         "permutations": selected,
         "target_far_per_year": target_far_per_year,

@@ -10,6 +10,7 @@ import pytest
 
 from gwyolo.background import (
     _assign_blocks_hash_threshold,
+    assign_relative_gps_block_slots,
     parse_gps_block_identity,
     plan_background_windows,
     run_background_purpose_partition,
@@ -41,6 +42,28 @@ def test_gps_block_identity_preserves_observing_run_qualification() -> None:
     assert parse_gps_block_identity("O3b:1000:64") == ("O3b", 1000.0, 64.0)
     with pytest.raises(ValueError, match="unsupported GPS block"):
         parse_gps_block_identity("development:1000:64")
+
+
+def test_relative_gps_block_slots_use_physical_order_not_integer_grid() -> None:
+    rows = [
+        {
+            "window_id": "later",
+            "gps_block": "O3b:1000:64",
+            "gps_start": 1033.75,
+            "gps_end": 1037.75,
+        },
+        {
+            "window_id": "earlier",
+            "gps_block": "O3b:1000:64",
+            "gps_start": 1007.125,
+            "gps_end": 1011.125,
+        },
+    ]
+    slots, metadata = assign_relative_gps_block_slots(rows, 4.0)
+    assert slots == {"earlier": 0, "later": 1}
+    assert metadata == {
+        "O3b:1000:64": {"gps_start": 1000.0, "duration": 64.0}
+    }
 
 
 def test_background_windows_use_common_dq_and_disjoint_blocks(tmp_path) -> None:
