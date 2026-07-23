@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
@@ -32,6 +33,21 @@ OVERLAP_LEAKAGE_FIELDS = (
     "gps_block",
     "network_gps_block",
 )
+
+
+def array_sha256(array: np.ndarray) -> str:
+    """Hash an array's exact dtype, shape, and contiguous stored bytes."""
+
+    contiguous = np.ascontiguousarray(array)
+    digest = hashlib.sha256()
+    digest.update(contiguous.dtype.str.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(
+        ",".join(str(value) for value in contiguous.shape).encode("ascii")
+    )
+    digest.update(b"\0")
+    digest.update(contiguous.tobytes(order="C"))
+    return digest.hexdigest()
 
 
 def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -396,9 +412,10 @@ def materialize_physical_overlaps(
         # audit can reproduce the pseudo-mask bit-for-bit from the NPZ alone.
         stored_glitch_strain = raw_glitch.astype(np.float32)
         glitch_strain = stored_glitch_strain.astype(np.float64)
-        signal_strain = signal_active
-        target_signal_strain = target_signal_active
-        mixture_strain = glitch_strain + signal_strain
+        signal_strain = signal_active.astype(np.float64)
+        target_signal_strain = target_signal_active.astype(np.float64)
+        stored_mixture_strain = (glitch_strain + signal_strain).astype(np.float32)
+        mixture_strain = stored_mixture_strain.astype(np.float64)
         whitened = np.zeros_like(mixture_strain)
         for detector_index in np.flatnonzero(availability):
             whitened[detector_index] = _whiten(mixture_strain[detector_index])
@@ -463,9 +480,9 @@ def materialize_physical_overlaps(
             glitch_mask=automatic_glitch_mask.astype(np.uint8),
             legacy_metadata_glitch_mask=gravity["glitch_mask"].astype(np.uint8),
             raw_glitch_strain=stored_glitch_strain,
-            signal_strain=signal_strain.astype(np.float64),
-            target_signal_strain=target_signal_strain.astype(np.float64),
-            mixture_strain=mixture_strain.astype(np.float32),
+            signal_strain=signal_strain,
+            target_signal_strain=target_signal_strain,
+            mixture_strain=stored_mixture_strain,
             detector_availability=availability,
             ifos=np.asarray(model_ifos),
             q_values=np.asarray(q_values, dtype=np.float32),
@@ -496,8 +513,16 @@ def materialize_physical_overlaps(
             "automatic_pseudo_mask": True,
             "human_pixel_mask": False,
             "legacy_metadata_mask_provenance": glitch.get("mask_provenance"),
+            "glitch_artifact_path": str(Path(glitch["path"]).resolve()),
             "glitch_artifact_sha256": str(glitch["sha256"]),
+            "injection_materialized_path": str(
+                Path(injection["materialized_path"]).resolve()
+            ),
             "injection_materialized_sha256": str(injection["materialized_sha256"]),
+            "raw_glitch_component_sha256": array_sha256(stored_glitch_strain),
+            "signal_component_sha256": array_sha256(signal_strain),
+            "target_signal_component_sha256": array_sha256(target_signal_strain),
+            "mixture_component_sha256": array_sha256(stored_mixture_strain),
             "training_signal_scale": float(injection.get("training_signal_scale", 1.0)),
             "optimal_snr_by_ifo": injection.get("optimal_snr_by_ifo"),
             "artifact_version": OVERLAP_ARTIFACT_VERSION,

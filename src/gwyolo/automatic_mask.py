@@ -10,6 +10,11 @@ import numpy as np
 from .factory import multiresolution_power
 from .gwosc import _whiten
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .overlaps import (
+    _active_injection_signals,
+    _load_gravityspy_sample,
+    array_sha256,
+)
 from .physical_training import relative_component_mask, scale_component_for_transform
 from .runtime import execution_provenance
 
@@ -91,9 +96,18 @@ def audit_automatic_mask_policy(
                 )
             values.add(value)
         artifact = Path(str(row.get("path", ""))).resolve()
+        glitch_source = Path(str(row.get("glitch_artifact_path", ""))).resolve()
+        injection_source = Path(
+            str(row.get("injection_materialized_path", ""))
+        ).resolve()
         if (
             not artifact.is_file()
             or row.get("sha256") != file_sha256(artifact)
+            or not glitch_source.is_file()
+            or row.get("glitch_artifact_sha256") != file_sha256(glitch_source)
+            or not injection_source.is_file()
+            or row.get("injection_materialized_sha256")
+            != file_sha256(injection_source)
             or row.get("mask_provenance") != AUTOMATIC_MASK_SOURCE
             or row.get("automatic_pseudo_mask") is not True
             or row.get("human_pixel_mask") is not False
@@ -112,7 +126,9 @@ def audit_automatic_mask_policy(
                 "chirp_mask",
                 "glitch_mask",
                 "raw_glitch_strain",
+                "signal_strain",
                 "target_signal_strain",
+                "mixture_strain",
                 "detector_availability",
                 "ifos",
                 "q_values",
@@ -132,7 +148,13 @@ def audit_automatic_mask_policy(
                 arrays["raw_glitch_strain"], dtype=np.float64
             )
             signal_strain = np.asarray(
+                arrays["signal_strain"], dtype=np.float64
+            )
+            target_signal_strain = np.asarray(
                 arrays["target_signal_strain"], dtype=np.float64
+            )
+            mixture_strain = np.asarray(
+                arrays["mixture_strain"], dtype=np.float32
             )
             observed_chirp = np.asarray(arrays["chirp_mask"], dtype=np.uint8)
             observed_glitch = np.asarray(arrays["glitch_mask"], dtype=np.uint8)
@@ -148,15 +170,83 @@ def audit_automatic_mask_policy(
             or stored_rate != sample_rate
             or availability.shape != (len(model_ifos),)
             or glitch_strain.shape != signal_strain.shape
+            or glitch_strain.shape != target_signal_strain.shape
+            or glitch_strain.shape != mixture_strain.shape
             or glitch_strain.ndim != 2
             or glitch_strain.shape[0] != len(model_ifos)
             or observed_chirp.shape != expected_shape
             or observed_glitch.shape != expected_shape
             or not np.isfinite(glitch_strain).all()
             or not np.isfinite(signal_strain).all()
+            or not np.isfinite(target_signal_strain).all()
+            or not np.isfinite(mixture_strain).all()
+            or np.any((availability != 0) & (availability != 1))
         ):
             raise ValueError(
                 f"automatic mask tensor contract failed at row {index}"
+            )
+        expected_availability = np.asarray(
+            [int(ifo in row.get("available_ifos", [])) for ifo in model_ifos],
+            dtype=np.uint8,
+        )
+        unavailable = availability == 0
+        expected_mixture = (glitch_strain + signal_strain).astype(np.float32)
+        source_glitch = _load_gravityspy_sample(
+            {
+                "path": str(glitch_source),
+                "sha256": row["glitch_artifact_sha256"],
+                "glitch_id": row["glitch_id"],
+                "ifo": row["glitch_ifo"],
+                "available_ifos": row["available_ifos"],
+            },
+            tuple(model_ifos),
+            q_values,
+            sample_rate,
+            frequency_bins,
+            time_bins,
+        )
+        source_signal, source_target_signal = _active_injection_signals(
+            {
+                "materialized_path": str(injection_source),
+                "materialized_sha256": row["injection_materialized_sha256"],
+                "injection_id": row["injection_id"],
+                "training_signal_scale": row.get("training_signal_scale", 1.0),
+                "optimal_snr_by_ifo": row.get("optimal_snr_by_ifo"),
+            },
+            tuple(str(value) for value in row["available_ifos"]),
+            tuple(model_ifos),
+            sample_rate,
+            glitch_strain.shape[1],
+            (
+                None
+                if tensor.get("minimum_ifo_mask_snr") is None
+                else float(tensor["minimum_ifo_mask_snr"])
+            ),
+        )
+        if (
+            not np.array_equal(availability, expected_availability)
+            or not np.array_equal(
+                glitch_strain.astype(np.float32),
+                source_glitch["raw"].astype(np.float32),
+            )
+            or not np.array_equal(signal_strain, source_signal)
+            or not np.array_equal(target_signal_strain, source_target_signal)
+            or np.any(glitch_strain[unavailable] != 0)
+            or np.any(signal_strain[unavailable] != 0)
+            or np.any(target_signal_strain[unavailable] != 0)
+            or np.any(mixture_strain[unavailable] != 0)
+            or not np.array_equal(mixture_strain, expected_mixture)
+            or row.get("raw_glitch_component_sha256")
+            != array_sha256(glitch_strain.astype(np.float32))
+            or row.get("signal_component_sha256")
+            != array_sha256(signal_strain)
+            or row.get("target_signal_component_sha256")
+            != array_sha256(target_signal_strain)
+            or row.get("mixture_component_sha256")
+            != array_sha256(mixture_strain)
+        ):
+            raise ValueError(
+                f"automatic mask physical component identity failed at row {index}"
             )
         whitened_glitch = np.zeros_like(glitch_strain)
         for detector_index in np.flatnonzero(availability):
@@ -173,7 +263,7 @@ def audit_automatic_mask_policy(
             fmax,
         )
         chirp_power = multiresolution_power(
-            scale_component_for_transform(signal_strain),
+            scale_component_for_transform(target_signal_strain),
             sample_rate,
             q_values,
             frequency_bins,
@@ -215,6 +305,10 @@ def audit_automatic_mask_policy(
         "human_ground_truth_claimed": False,
         "pixel_accuracy_claim_allowed": False,
         "automatic_glitch_masks_are_pseudo_labels": True,
+        "source_artifacts_verified": True,
+        "source_components_replayed": True,
+        "component_hashes_verified": True,
+        "mixture_identity_verified": True,
         "soft_model_probabilities_required_downstream": True,
         "unknown_glitch_abstention_required": True,
         "rows": len(rows),
@@ -309,6 +403,10 @@ def bind_raw_mask_automatic_publication_evidence(
         or audit.get("human_annotation_used") is not False
         or audit.get("human_ground_truth_claimed") is not False
         or audit.get("automatic_glitch_masks_are_pseudo_labels") is not True
+        or audit.get("source_artifacts_verified") is not True
+        or audit.get("source_components_replayed") is not True
+        or audit.get("component_hashes_verified") is not True
+        or audit.get("mixture_identity_verified") is not True
         or audit.get("soft_model_probabilities_required_downstream") is not True
         or audit.get("unknown_glitch_abstention_required") is not True
         or int(audit.get("test_rows_read", -1)) != 0
