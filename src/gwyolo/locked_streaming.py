@@ -7,7 +7,12 @@ from typing import Any
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, file_sha256
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+)
 from .runtime import execution_provenance
 
 
@@ -788,6 +793,21 @@ def merge_locked_o4b_streaming_suite_input_sources(
         _write_immutable_jsonl(output_paths[label], rows)
 
     endpoints = suite["endpoints"]
+    required_detector_subsets = [
+        str(value) for value in endpoints["required_detector_subsets"]
+    ]
+    observed_detector_subsets = {
+        subset
+        for subset in required_detector_subsets
+        if any(
+            set(subset.split("+"))
+            <= {str(value) for value in row["valid_ifos"]}
+            for row in trigger_rows
+        )
+    }
+    observed_source_families = {
+        str(row["source_family"]) for row in trigger_rows
+    }
     result = {
         "status": "merged_locked_o4b_streaming_suite_input_sources",
         "passed": True,
@@ -826,6 +846,10 @@ def merge_locked_o4b_streaming_suite_input_sources(
                 sum(row.get("eligible") is True for row in weight_rows)
                 >= int(endpoints["minimum_test_injections"])
             ),
+            "minimum_injection_gps_blocks": (
+                len({str(row["gps_block"]) for row in trigger_rows})
+                >= int(endpoints["minimum_injection_gps_blocks"])
+            ),
             "minimum_locked_ood_rows": (
                 len(ood_rows) >= int(endpoints["minimum_locked_ood_rows"])
             ),
@@ -833,7 +857,19 @@ def merge_locked_o4b_streaming_suite_input_sources(
                 len(retained_pe_ids)
                 >= int(endpoints["minimum_paired_pe_injections"])
             ),
+            "required_detector_subsets": (
+                set(required_detector_subsets) <= observed_detector_subsets
+            ),
+            "required_source_families": (
+                {
+                    str(value)
+                    for value in endpoints["required_source_families"]
+                }
+                <= observed_source_families
+            ),
         },
+        "observed_detector_subsets": sorted(observed_detector_subsets),
+        "observed_source_families": sorted(observed_source_families),
         "artifacts": {
             label: {
                 "path": str(output_paths[label]),
@@ -872,5 +908,398 @@ def merge_locked_o4b_streaming_suite_input_sources(
         ):
             raise ValueError("existing locked suite source merge changed")
         return completed
+    atomic_write_json(report_path, result)
+    return result
+
+
+def reduce_locked_o4b_search_inputs(
+    suite_plan_path: str | Path,
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    suite_input_merge_report_path: str | Path,
+    code_commit: str,
+) -> dict[str, Any]:
+    """Create the four predeclared locked search inputs without test tuning."""
+
+    suite_file = Path(suite_plan_path).resolve()
+    execution_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    merge_file = Path(suite_input_merge_report_path).resolve()
+    for path in (suite_file, execution_file, access_file, merge_file):
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"locked search input reduction source is absent: {path}"
+            )
+    suite = json.loads(suite_file.read_text(encoding="utf-8"))
+    execution = json.loads(execution_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    merged = json.loads(merge_file.read_text(encoding="utf-8"))
+    frozen = access.get("frozen_artifacts", {})
+    report_path = Path(
+        str(execution.get("search_input_reduction_report_path", ""))
+    ).resolve()
+    schedule_path = Path(
+        str(execution.get("network_time_slide_schedule_path", ""))
+    ).resolve()
+    schedule = execution.get("network_time_slide_schedule")
+    if (
+        suite.get("status") != "frozen_locked_evaluation_suite_plan"
+        or suite.get("passed") is not True
+        or suite.get("code_commit") != code_commit
+        or execution.get("status")
+        != "frozen_locked_o4b_streaming_execution_plan"
+        or execution.get("passed") is not True
+        or execution.get("code_commit") != code_commit
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("code_commit") != code_commit
+        or frozen.get("locked_suite_plan", {}).get("path") != str(suite_file)
+        or frozen.get("locked_suite_plan", {}).get("sha256")
+        != file_sha256(suite_file)
+        or frozen.get("locked_execution_plan", {}).get("path")
+        != str(execution_file)
+        or frozen.get("locked_execution_plan", {}).get("sha256")
+        != file_sha256(execution_file)
+        or merged.get("status")
+        != "merged_locked_o4b_streaming_suite_input_sources"
+        or merged.get("passed") is not True
+        or merged.get("code_commit") != code_commit
+        or not isinstance(schedule, dict)
+        or schedule.get("status")
+        != "frozen_score_blind_network_time_slide_schedule"
+        or schedule.get("passed") is not True
+        or schedule.get("candidate_scores_inspected") is not False
+        or not schedule_path.is_file()
+        or execution.get("network_time_slide_schedule_sha256")
+        != file_sha256(schedule_path)
+        or json.loads(schedule_path.read_text(encoding="utf-8")) != schedule
+        or canonical_hash(schedule.get("slides", []), 64)
+        != schedule.get("schedule_sha256")
+        or report_path.parent
+        != Path(str(execution["freeze_identity"]["work_root"])).resolve()
+    ):
+        raise ValueError("locked search input reduction binding failed replay")
+    readiness = merged.get("endpoint_source_readiness")
+    if not isinstance(readiness, dict) or not readiness or not all(
+        value is True for value in readiness.values()
+    ):
+        raise ValueError(
+            "locked suite endpoint source readiness failed closed: "
+            f"{readiness}"
+        )
+
+    def bound_artifact(label: str) -> Path:
+        identity = merged.get("artifacts", {}).get(label, {})
+        path = Path(str(identity.get("path", ""))).resolve()
+        if (
+            not path.is_file()
+            or identity.get("sha256") != file_sha256(path)
+        ):
+            raise ValueError(f"locked merged search source changed: {label}")
+        return path
+
+    sources = {
+        label: bound_artifact(label)
+        for label in (
+            "raw_background_candidates",
+            "raw_injection_candidates",
+            "mask_background_candidates",
+            "mask_injection_candidates",
+            "injection_trigger_manifest",
+            "raw_background_manifest",
+            "mask_background_manifest",
+        )
+    }
+    if (
+        file_sha256(sources["raw_background_manifest"])
+        != file_sha256(sources["mask_background_manifest"])
+    ):
+        raise ValueError("locked raw/mask background denominators differ")
+
+    input_identity = {
+        "suite_plan_sha256": file_sha256(suite_file),
+        "execution_plan_sha256": file_sha256(execution_file),
+        "access_log_sha256": file_sha256(access_file),
+        "suite_input_merge_report_sha256": file_sha256(merge_file),
+        "network_time_slide_schedule_sha256": file_sha256(schedule_path),
+        "source_artifacts": {
+            label: {
+                "path": str(path),
+                "sha256": file_sha256(path),
+            }
+            for label, path in sorted(sources.items())
+        },
+        "code_commit": code_commit,
+    }
+    if report_path.is_file():
+        completed = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            completed.get("status")
+            != "reduced_locked_o4b_variable_detector_search_inputs"
+            or completed.get("passed") is not True
+            or completed.get("input_identity") != input_identity
+        ):
+            raise ValueError("existing locked search input reduction changed")
+        for identity in completed.get("artifacts", {}).values():
+            path = Path(str(identity.get("path", ""))).resolve()
+            if (
+                not path.is_file()
+                or identity.get("sha256") != file_sha256(path)
+            ):
+                raise ValueError(
+                    "existing locked search input artifact changed"
+                )
+        return completed
+
+    from .candidates import (
+        build_detector_set_candidate_time_slides,
+        build_detector_set_injection_candidate_rankings,
+    )
+
+    background_rows = _load_jsonl(sources["raw_background_manifest"])
+    injection_rows = _load_jsonl(sources["injection_trigger_manifest"])
+    subsets = schedule["detector_subsets"]
+    physical_limits = schedule["pairwise_light_travel_time_seconds"]
+    slide_schedule = schedule["slides"]
+    cluster_window = float(schedule["cluster_window_seconds"])
+    maximum_uncertainty = float(
+        schedule["maximum_empirical_timing_uncertainty_seconds"]
+    )
+    output_payloads: dict[str, str] = {}
+    output_reports: dict[str, dict[str, Any]] = {}
+
+    for arm in ("raw", "mask"):
+        background_candidates = _load_jsonl(
+            sources[f"{arm}_background_candidates"],
+            allow_empty=True,
+        )
+        injection_candidates = _load_jsonl(
+            sources[f"{arm}_injection_candidates"],
+            allow_empty=True,
+        )
+        all_candidates = background_candidates + injection_candidates
+        uncertainty_values = {
+            float(row["empirical_timing_uncertainty_seconds"])
+            for row in all_candidates
+            if row.get("timing_empirically_calibrated") is True
+            and row.get("empirical_timing_uncertainty_seconds") is not None
+        }
+        if (
+            not all_candidates
+            or len(uncertainty_values) != 1
+            or any(
+                row.get("timing_empirically_calibrated") is not True
+                or row.get("empirical_timing_uncertainty_seconds") is None
+                for row in all_candidates
+            )
+        ):
+            raise ValueError(
+                f"locked {arm} candidates lack one calibrated timing policy"
+            )
+        empirical_uncertainty = next(iter(uncertainty_values))
+        if (
+            not math.isfinite(empirical_uncertainty)
+            or empirical_uncertainty < 0
+            or empirical_uncertainty > maximum_uncertainty
+        ):
+            raise ValueError(
+                f"locked {arm} candidate timing exceeds the frozen policy"
+            )
+        slide_rows, slide_report = (
+            build_detector_set_candidate_time_slides(
+                background_candidates,
+                background_rows,
+                "test",
+                subsets,
+                physical_limits,
+                empirical_uncertainty,
+                slide_schedule,
+                cluster_window,
+            )
+        )
+        ranking_rows, ranking_report = (
+            build_detector_set_injection_candidate_rankings(
+                injection_rows,
+                injection_candidates,
+                "test",
+                subsets,
+                physical_limits,
+                empirical_uncertainty,
+                0.25,
+            )
+        )
+        slide_report_path = Path(
+            str(suite["inputs"][f"{arm}_test_time_slide_report"])
+        ).resolve()
+        ranking_report_path = Path(
+            str(suite["inputs"][f"{arm}_test_injection_ranking_report"])
+        ).resolve()
+        slide_manifest_path = slide_report_path.with_name(
+            f"{slide_report_path.stem}_background.jsonl"
+        )
+        ranking_manifest_path = ranking_report_path.with_name(
+            f"{ranking_report_path.stem}_manifest.jsonl"
+        )
+        output_payloads[f"{arm}_time_slide_background"] = "".join(
+            json.dumps(row, sort_keys=True) + "\n" for row in slide_rows
+        )
+        output_payloads[f"{arm}_injection_rankings"] = "".join(
+            json.dumps(row, sort_keys=True) + "\n" for row in ranking_rows
+        )
+        output_reports[f"{arm}_time_slide"] = {
+            **slide_report,
+            "manifest_path": str(slide_manifest_path),
+            "background_manifest_path": str(
+                sources[f"{arm}_background_manifest"]
+            ),
+            "background_manifest_sha256": file_sha256(
+                sources[f"{arm}_background_manifest"]
+            ),
+            "candidate_manifest_path": str(
+                sources[f"{arm}_background_candidates"]
+            ),
+            "candidate_manifest_sha256": file_sha256(
+                sources[f"{arm}_background_candidates"]
+            ),
+            "slide_schedule_path": str(schedule_path),
+            "slide_schedule_sha256": file_sha256(schedule_path),
+            "slide_schedule_id": schedule["schedule_id"],
+            "slide_schedule_count": schedule["slide_count"],
+            "execution_schedule_complete": True,
+            "target_far_per_year": float(schedule["target_far_per_year"]),
+            "code_commit": code_commit,
+        }
+        output_reports[f"{arm}_injection_ranking"] = {
+            **ranking_report,
+            "manifest_path": str(ranking_manifest_path),
+            "injection_trigger_manifest_path": str(
+                sources["injection_trigger_manifest"]
+            ),
+            "injection_trigger_manifest_sha256": file_sha256(
+                sources["injection_trigger_manifest"]
+            ),
+            "candidate_manifest_path": str(
+                sources[f"{arm}_injection_candidates"]
+            ),
+            "candidate_manifest_sha256": file_sha256(
+                sources[f"{arm}_injection_candidates"]
+            ),
+            "code_commit": code_commit,
+        }
+        output_reports[f"{arm}_time_slide"]["_paths"] = {
+            "report": slide_report_path,
+            "manifest": slide_manifest_path,
+        }
+        output_reports[f"{arm}_injection_ranking"]["_paths"] = {
+            "report": ranking_report_path,
+            "manifest": ranking_manifest_path,
+        }
+
+    raw_slide = output_reports["raw_time_slide"]
+    mask_slide = output_reports["mask_time_slide"]
+    if (
+        raw_slide["slide_schedule_sha256"]
+        != mask_slide["slide_schedule_sha256"]
+        or raw_slide["equivalent_live_time_seconds"]
+        != mask_slide["equivalent_live_time_seconds"]
+        or raw_slide["eligible_windows_by_detector_subset"]
+        != mask_slide["eligible_windows_by_detector_subset"]
+        or float(raw_slide["equivalent_live_time_years"])
+        < float(suite["endpoints"]["minimum_test_live_time_years"])
+        or int(raw_slide["slide_count"])
+        < int(suite["endpoints"]["minimum_background_shifts"])
+        or not set(suite["endpoints"]["required_detector_subsets"])
+        <= set(raw_slide["eligible_windows_by_detector_subset"])
+    ):
+        raise ValueError(
+            "locked raw/mask network background exposure failed its frozen minima"
+        )
+    for arm in ("raw", "mask"):
+        ranking = output_reports[f"{arm}_injection_ranking"]
+        if (
+            int(ranking["ranked_injections"])
+            < int(suite["endpoints"]["minimum_test_injections"])
+            or ranking["timing_calibration_consistent"] is not True
+            or ranking["candidate_scoring_provenance_consistent"] is not True
+            or output_reports[f"{arm}_time_slide"][
+                "publication_timing_gate_passed"
+            ]
+            is not True
+        ):
+            raise ValueError(
+                f"locked {arm} variable-detector search inputs failed provenance"
+            )
+
+    artifacts: dict[str, dict[str, Any]] = {}
+    for label, report in output_reports.items():
+        paths = report.pop("_paths")
+        manifest_label = (
+            f"{label}_background"
+            if label.endswith("time_slide")
+            else f"{label}s"
+        )
+        payload = output_payloads[
+            f"{label}_background"
+            if label.endswith("time_slide")
+            else f"{label}s"
+        ]
+        manifest_path = paths["manifest"]
+        if manifest_path.is_file():
+            if manifest_path.read_text(encoding="utf-8") != payload:
+                raise ValueError(
+                    f"partial locked search manifest changed: {manifest_path}"
+                )
+        elif manifest_path.exists():
+            raise FileExistsError(
+                f"locked search manifest path is not a file: {manifest_path}"
+            )
+        else:
+            atomic_write_text(manifest_path, payload)
+        report["manifest_sha256"] = file_sha256(manifest_path)
+        if paths["report"].is_file():
+            completed_report = json.loads(
+                paths["report"].read_text(encoding="utf-8")
+            )
+            if completed_report != report:
+                raise ValueError(
+                    f"partial locked search report changed: {paths['report']}"
+                )
+        elif paths["report"].exists():
+            raise FileExistsError(
+                f"locked search report path is not a file: {paths['report']}"
+            )
+        else:
+            atomic_write_json(paths["report"], report)
+        artifacts[manifest_label] = {
+            "path": str(manifest_path),
+            "sha256": file_sha256(manifest_path),
+            "rows": len(payload.splitlines()),
+        }
+        artifacts[label] = {
+            "path": str(paths["report"]),
+            "sha256": file_sha256(paths["report"]),
+        }
+
+    result = {
+        "status": "reduced_locked_o4b_variable_detector_search_inputs",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "test_threshold_tuned": False,
+        "raw_mask_shared_schedule": True,
+        "raw_mask_shared_physical_denominator": True,
+        "detector_duty_cycle_accounted": True,
+        "detector_subset_channels_clustered_jointly": True,
+        "all_injection_null_outcomes_retained": True,
+        "input_identity": input_identity,
+        "endpoint_source_readiness": readiness,
+        "artifacts": artifacts,
+        "code_commit": code_commit,
+        **execution_provenance(),
+    }
+    result["runtime_provenance"] = {
+        "runtime_code_commit": result.pop("code_commit"),
+        "exact_command": result.pop("exact_command"),
+        "environment": result.pop("environment"),
+    }
+    result["code_commit"] = code_commit
     atomic_write_json(report_path, result)
     return result

@@ -68,6 +68,28 @@ locked_evaluation_suite:
     background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1
     minimum_background_gps_blocks: 25
     minimum_background_shifts: 25
+    network_time_slides:
+      schema: independent_symmetric_detector_offsets_v1
+      detectors: [H1, L1, V1]
+      detector_subsets:
+        - [H1, L1]
+        - [H1, V1]
+        - [L1, V1]
+        - [H1, L1, V1]
+      pairwise_light_travel_time_seconds:
+        H1+L1: 0.010012846152267725
+        H1+V1: 0.027287979933397113
+        L1+V1: 0.02644834101635671
+      reference_ifo: H1
+      positive_shift_ifo: L1
+      negative_shift_ifo: V1
+      window_duration_seconds: 4096
+      maximum_slide_index: 512
+      predicted_live_time_safety_factor: 1.5
+      cluster_window_seconds: 0.1
+      maximum_empirical_timing_uncertainty_seconds: 0.01
+      selection_data: background_gps_and_detector_availability_only
+      candidate_scores_inspected: false
     catalog_role: descriptive_secondary_endpoint_only
     catalog_search_arm: mask_candidate_search
     required_detector_subsets: [H1+L1, H1+V1, L1+V1, H1+L1+V1]

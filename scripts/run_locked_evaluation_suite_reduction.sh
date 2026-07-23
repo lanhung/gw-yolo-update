@@ -90,15 +90,17 @@ if (
 print(suite["outputs"]["suite_receipt"])
 print(execution["post_dq_weight_report_path"])
 print(execution["suite_input_merge_report_path"])
+print(execution["search_input_reduction_report_path"])
 PY
 )
-if (( ${#suite_identity[@]} != 3 )); then
+if (( ${#suite_identity[@]} != 4 )); then
   echo "locked reduction did not resolve its suite/weight outputs" >&2
   exit 3
 fi
 suite_receipt=${suite_identity[0]}
 post_dq_weight_report=${suite_identity[1]}
 suite_input_merge_report=${suite_identity[2]}
+search_input_reduction_report=${suite_identity[3]}
 
 if [[ ! -s "$STREAMING_COMPLETION_AUDIT_OUTPUT" ]]; then
   (
@@ -120,6 +122,7 @@ import pathlib
 import sys
 
 report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+readiness = report.get("endpoint_source_readiness")
 if (
     report.get("status") != "completed_locked_o4b_streaming_execution_audit"
     or report.get("passed") is not True
@@ -189,8 +192,46 @@ if (
     or report.get("negative_and_null_results_retained") is not True
     or report.get("raw_mask_shared_physical_denominator") is not True
     or report.get("code_commit") != sys.argv[2]
+    or not isinstance(readiness, dict)
+    or not readiness
+    or not all(value is True for value in readiness.values())
 ):
     raise SystemExit("locked suite input source merge did not pass")
+PY
+
+if [[ ! -s "$search_input_reduction_report" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT
+    "$TASK_PYTHON" -m gwyolo.cli locked-o4b-search-inputs-reduce \
+      --suite-plan "$LOCKED_SUITE_PLAN" \
+      --execution-plan "$LOCKED_EXECUTION_PLAN" \
+      --access-log "$LOCKED_ACCESS_LOG" \
+      --suite-input-merge-report "$suite_input_merge_report" \
+      --code-commit "$GWYOLO_CODE_COMMIT"
+  )
+fi
+
+"$TASK_PYTHON" - "$search_input_reduction_report" \
+  "$GWYOLO_CODE_COMMIT" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (
+    report.get("status")
+    != "reduced_locked_o4b_variable_detector_search_inputs"
+    or report.get("passed") is not True
+    or report.get("test_threshold_tuned") is not False
+    or report.get("raw_mask_shared_schedule") is not True
+    or report.get("raw_mask_shared_physical_denominator") is not True
+    or report.get("detector_duty_cycle_accounted") is not True
+    or report.get("detector_subset_channels_clustered_jointly") is not True
+    or report.get("all_injection_null_outcomes_retained") is not True
+    or report.get("code_commit") != sys.argv[2]
+):
+    raise SystemExit("locked variable-detector search input reduction did not pass")
 PY
 
 env \

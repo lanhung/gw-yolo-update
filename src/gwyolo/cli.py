@@ -1862,6 +1862,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     locked_stream_suite_merge.add_argument("--code-commit", required=True)
 
+    locked_search_inputs = subparsers.add_parser(
+        "locked-o4b-search-inputs-reduce"
+    )
+    locked_search_inputs.add_argument("--suite-plan", required=True)
+    locked_search_inputs.add_argument("--execution-plan", required=True)
+    locked_search_inputs.add_argument("--access-log", required=True)
+    locked_search_inputs.add_argument(
+        "--suite-input-merge-report", required=True
+    )
+    locked_search_inputs.add_argument("--code-commit", required=True)
+
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
     evaluation_open.add_argument("--code-commit", required=True)
@@ -4468,6 +4479,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.access_log,
                 args.streaming_completion_audit,
                 args.post_dq_weight_report,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-search-inputs-reduce":
+        from .locked_streaming import reduce_locked_o4b_search_inputs
+
+        _print(
+            reduce_locked_o4b_search_inputs(
+                args.suite_plan,
+                args.execution_plan,
+                args.access_log,
+                args.suite_input_merge_report,
                 args.code_commit,
             )
         )

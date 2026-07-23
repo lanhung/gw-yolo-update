@@ -9,6 +9,7 @@ import pytest
 from gwyolo.candidates import (
     _local_envelope_timing_refinement,
     build_candidate_time_slides,
+    build_detector_set_candidate_time_slides,
     build_detector_set_injection_candidate_rankings,
     build_injection_candidate_rankings,
     calibrate_candidate_timing_rows,
@@ -900,6 +901,105 @@ def test_detector_set_injection_ranking_supports_hlv_and_missing_ifos() -> None:
             {"H1+L1": limits["H1+L1"]},
             0.001,
             0.02,
+        )
+
+
+def test_detector_set_time_slides_use_independent_offsets_and_union_exposure() -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "test",
+            "gps_start": index * 10.0,
+            "gps_end": (index + 1) * 10.0,
+            "gps_block": f"g{index}",
+            "ifos": ifos,
+        }
+        for index, ifos in enumerate(
+            (
+                ["V1"],
+                ["H1"],
+                ["L1"],
+                ["H1", "L1", "V1"],
+            )
+        )
+    ]
+    candidates = []
+    for window_id, ifo, peak, score in (
+        ("w1", "H1", 10.001, 0.8),
+        ("w2", "L1", 20.006, 0.7),
+        ("w0", "V1", 0.021, 0.9),
+    ):
+        candidates.append(
+            {
+                "candidate_id": f"{window_id}-{ifo}",
+                "window_id": window_id,
+                "split": "test",
+                "ifo": ifo,
+                "gps_peak": peak,
+                "chirp_score": score,
+                "glitch_score_at_peak": 0.1,
+                "bin_width_seconds": 0.005,
+                "timing_resolution_seconds": 0.005,
+                "timing_empirically_calibrated": True,
+                "empirical_timing_uncertainty_seconds": 0.001,
+                "timing_calibration_report_sha256": "a" * 64,
+                "candidate_checkpoint_sha256": "b" * 64,
+                "candidate_config_sha256": "c" * 64,
+                "candidate_code_commit": "deadbee",
+            }
+        )
+    subsets = (
+        ("H1", "L1"),
+        ("H1", "V1"),
+        ("L1", "V1"),
+        ("H1", "L1", "V1"),
+    )
+    limits = {
+        "H1+L1": 0.010012846152267725,
+        "H1+V1": 0.027287979933397113,
+        "L1+V1": 0.02644834101635671,
+    }
+    rows, report = build_detector_set_candidate_time_slides(
+        candidates,
+        windows,
+        "test",
+        subsets,
+        limits,
+        0.001,
+        [{"H1": 0.0, "L1": 10.0, "V1": -10.0}],
+        0.1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["detector_subset"] == "H1+L1+V1"
+    assert rows[0]["source_window_ids"] == {
+        "H1": "w1",
+        "L1": "w2",
+        "V1": "w0",
+    }
+    assert rows[0]["ranking_score"] == pytest.approx(0.8)
+    assert report["eligible_windows_by_detector_subset"] == {
+        "H1+L1": 1,
+        "H1+L1+V1": 1,
+        "H1+V1": 1,
+        "L1+V1": 1,
+    }
+    assert report["slide_exposure"][0]["raw_coincidences"] == 4
+    assert report["slide_exposure"][0]["clustered_candidates"] == 1
+    assert report["equivalent_live_time_seconds"] == 10.0
+    assert report["live_time_counted_once_per_slide"] is True
+    assert report["publication_timing_gate_passed"] is True
+
+    with pytest.raises(ValueError, match="independently offset"):
+        build_detector_set_candidate_time_slides(
+            candidates,
+            windows,
+            "test",
+            subsets,
+            limits,
+            0.001,
+            [{"H1": 0.0, "L1": 10.0, "V1": 10.0}],
+            0.1,
         )
 
 

@@ -349,11 +349,16 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _verified_candidate_search_artifact(
-    report_path: str | Path, expected_status: str, split: str
+    report_path: str | Path,
+    expected_status: str | tuple[str, ...],
+    split: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with Path(report_path).open("r", encoding="utf-8") as handle:
         report = json.load(handle)
-    if report.get("status") != expected_status or str(report.get("split")) != split:
+    expected = (
+        (expected_status,) if isinstance(expected_status, str) else expected_status
+    )
+    if report.get("status") not in expected or str(report.get("split")) != split:
         raise ValueError(f"candidate search report is not the expected {split} artifact")
     manifest = report.get("manifest_path")
     expected_sha = report.get("manifest_sha256")
@@ -414,6 +419,15 @@ def _audit_candidate_slide_schedule(
             None,
             "absolute_gps_time_slide_v1",
         )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split")) == str(slide_report.get("split"))
+            and str(schedule.get("reference_ifo"))
+            == str(slide_report.get("reference_ifo"))
+            and str(schedule.get("shifted_ifo"))
+            == str(slide_report.get("shifted_ifo"))
+        )
     elif schedule_status == "frozen_candidate_block_permutation_schedule":
         schedule_kind = "gps_block_permutation"
         indices = [int(value) for value in schedule.get("shift_indices", [])]
@@ -437,6 +451,99 @@ def _audit_candidate_slide_schedule(
             and slide_report.get("input_gps_blocks")
             == schedule.get("ordered_gps_blocks")
         )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split")) == str(slide_report.get("split"))
+            and str(schedule.get("reference_ifo"))
+            == str(slide_report.get("reference_ifo"))
+            and str(schedule.get("shifted_ifo"))
+            == str(slide_report.get("shifted_ifo"))
+        )
+    elif (
+        schedule_status
+        == "frozen_score_blind_network_time_slide_schedule"
+    ):
+        schedule_kind = "variable_detector_set_time_slide"
+        slides = schedule.get("slides", [])
+        indices = [int(row["slide_index"]) for row in slides]
+        count_matches = int(schedule.get("slide_count", -1)) == len(indices)
+        indices_hash_matches = (
+            canonical_hash(slides, 64) == schedule.get("schedule_sha256")
+        )
+        derived_fields = {
+            "status",
+            "passed",
+            "slide_count",
+            "equivalent_live_time_seconds_predicted",
+            "equivalent_live_time_years_predicted",
+            "eligible_windows_by_detector_subset",
+            "schedule_id",
+            "schedule_sha256",
+        }
+        schedule_identity = {
+            key: value
+            for key, value in schedule.items()
+            if key not in derived_fields
+        }
+        identity_hash_matches = (
+            canonical_hash(schedule_identity, 32)
+            == schedule.get("schedule_id")
+        )
+        selection_matches = (
+            schedule.get("selection_data")
+            == "background_gps_and_detector_availability_only"
+        )
+        schedule_years = float(
+            schedule.get("equivalent_live_time_years_predicted", -1)
+        )
+        target_reached = bool(
+            schedule_years
+            >= float(schedule.get("minimum_test_live_time_years", float("inf")))
+        )
+        frozen_projection = [
+            {
+                "slide_index": int(row["slide_index"]),
+                "slide_id": str(row["slide_id"]),
+                "offset_seconds": {
+                    str(key): float(value)
+                    for key, value in row["offset_seconds"].items()
+                },
+            }
+            for row in slides
+        ]
+        executed_projection = [
+            {
+                "slide_index": int(row["slide_index"]),
+                "slide_id": str(row["slide_id"]),
+                "offset_seconds": {
+                    str(key): float(value)
+                    for key, value in row["offset_seconds"].items()
+                },
+            }
+            for row in slide_report.get("slide_schedule", [])
+        ]
+        pairing_contract_matches = bool(
+            slide_report.get("detector_duty_cycle_accounted") is True
+            and slide_report.get("detector_subset_channels_clustered_jointly")
+            is True
+            and slide_report.get("live_time_counted_once_per_slide") is True
+            and slide_report.get("independent_pairwise_offsets") is True
+            and frozen_projection == executed_projection
+        )
+        schedule_contract_matches = bool(
+            str(schedule.get("split")) == str(slide_report.get("split"))
+            and schedule.get("detector_subsets")
+            == [
+                value.split("+")
+                for value in slide_report.get(
+                    "required_detector_subsets",
+                    [],
+                )
+            ]
+            and schedule.get("pairwise_light_travel_time_seconds")
+            == slide_report.get("pairwise_light_travel_time_seconds")
+        )
     else:
         raise ValueError("candidate background schedule has an unsupported status")
     identity_verified = bool(
@@ -447,11 +554,7 @@ def _audit_candidate_slide_schedule(
         and int(slide_report.get("slide_schedule_count", -1)) == len(indices)
         and indices_hash_matches
         and identity_hash_matches
-        and schedule.get("background_manifest_sha256")
-        == slide_report.get("background_manifest_sha256")
-        and str(schedule.get("split")) == str(slide_report.get("split"))
-        and str(schedule.get("reference_ifo")) == str(slide_report.get("reference_ifo"))
-        and str(schedule.get("shifted_ifo")) == str(slide_report.get("shifted_ifo"))
+        and schedule_contract_matches
         and pairing_contract_matches
         and indices == sorted(set(indices))
         and all(value > 0 for value in indices)
@@ -480,9 +583,21 @@ def _audit_candidate_slide_schedule(
         )
     )
     report_years = float(slide_report.get("equivalent_live_time_years", -2))
-    exposure_matches = bool(
-        schedule_years >= 0
-        and np.isclose(schedule_years, report_years, rtol=0.0, atol=1e-12)
+    exposure_matches = (
+        bool(
+            report_years
+            >= float(schedule.get("minimum_test_live_time_years", float("inf")))
+        )
+        if schedule_kind == "variable_detector_set_time_slide"
+        else bool(
+            schedule_years >= 0
+            and np.isclose(
+                schedule_years,
+                report_years,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        )
     )
     gates = {
         "frozen_schedule_present": True,
@@ -507,13 +622,23 @@ def _audit_candidate_slide_schedule(
 def _candidate_search_identity(
     slide_report: dict[str, Any], injection_report: dict[str, Any]
 ) -> dict[str, Any]:
-    fields = (
+    common_fields = (
         "candidate_checkpoint_sha256",
         "candidate_config_sha256",
         "candidate_code_commit",
         "timing_calibration_report_sha256",
-        "physical_delay_limit_seconds",
         "empirical_timing_uncertainty_seconds",
+    )
+    variable_detector_set = (
+        slide_report.get("status")
+        == "variable_detector_set_time_slide_background"
+        and injection_report.get("status")
+        == "physical_variable_detector_set_injection_candidate_rankings"
+    )
+    fields = (
+        common_fields
+        if variable_detector_set
+        else (*common_fields, "physical_delay_limit_seconds")
     )
     mismatches = [
         field
@@ -524,7 +649,23 @@ def _candidate_search_identity(
     ]
     if mismatches:
         raise ValueError(f"background/injection candidate provenance differs: {mismatches}")
-    if (
+    if variable_detector_set:
+        network_fields = (
+            "required_detector_subsets",
+            "pairwise_light_travel_time_seconds",
+            "pairwise_allowed_peak_separation_seconds",
+        )
+        network_mismatches = [
+            field
+            for field in network_fields
+            if slide_report.get(field) != injection_report.get(field)
+        ]
+        if network_mismatches:
+            raise ValueError(
+                "background/injection network policy differs: "
+                f"{network_mismatches}"
+            )
+    elif (
         str(slide_report.get("reference_ifo"))
         != str(injection_report.get("reference_ifo"))
         or str(slide_report.get("shifted_ifo"))
@@ -537,13 +678,31 @@ def _candidate_search_identity(
         "candidate_scoring_provenance_consistent"
     ):
         raise ValueError("injection candidate timing/scoring provenance is inconsistent")
-    return {
-        field: slide_report[field]
-        for field in fields
-    } | {
-        "reference_ifo": slide_report["reference_ifo"],
-        "second_ifo": slide_report["shifted_ifo"],
-    }
+    identity = {field: slide_report[field] for field in fields}
+    if variable_detector_set:
+        identity.update(
+            {
+                "network_coherence_policy": {
+                    field: slide_report[field]
+                    for field in (
+                        "required_detector_subsets",
+                        "pairwise_light_travel_time_seconds",
+                        "pairwise_allowed_peak_separation_seconds",
+                    )
+                },
+                "detector_set_policy": (
+                    "single_model_explicit_missing_ifo_validity_v1"
+                ),
+            }
+        )
+    else:
+        identity.update(
+            {
+                "reference_ifo": slide_report["reference_ifo"],
+                "second_ifo": slide_report["shifted_ifo"],
+            }
+        )
+    return identity
 
 
 def run_candidate_search_calibration(
@@ -559,12 +718,18 @@ def run_candidate_search_calibration(
 
     slide, background = _verified_candidate_search_artifact(
         validation_time_slide_report,
-        "subwindow_clustered_time_slide_integration_only",
+        (
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_time_slide_background",
+        ),
         "val",
     )
     injections, injection_rows = _verified_candidate_search_artifact(
         validation_injection_ranking_report,
-        "physical_network_injection_candidate_rankings",
+        (
+            "physical_network_injection_candidate_rankings",
+            "physical_variable_detector_set_injection_candidate_rankings",
+        ),
         "val",
     )
     identity = _candidate_search_identity(slide, injections)
@@ -1514,12 +1679,18 @@ def run_frozen_candidate_search_evaluation(
         raise ValueError("frozen calibration target FAR differs from the locked suite plan")
     slide, background = _verified_candidate_search_artifact(
         test_time_slide_report,
-        "subwindow_clustered_time_slide_integration_only",
+        (
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_time_slide_background",
+        ),
         "test",
     )
     injections, injection_rows = _verified_candidate_search_artifact(
         test_injection_ranking_report,
-        "physical_network_injection_candidate_rankings",
+        (
+            "physical_network_injection_candidate_rankings",
+            "physical_variable_detector_set_injection_candidate_rankings",
+        ),
         "test",
     )
     identity = _candidate_search_identity(slide, injections)

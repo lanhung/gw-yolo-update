@@ -7,11 +7,13 @@ import os
 import shutil
 import tempfile
 from collections import Counter
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from .background import SECONDS_PER_YEAR, _union_duration
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
@@ -71,6 +73,271 @@ _LOCKED_STREAM_SHARD_ARTIFACT_KEYS = {
     "pe_input_rows",
     "raw_candidate_rows",
 }
+
+
+def _network_time_slide_settings(
+    endpoints: dict[str, Any],
+) -> dict[str, Any]:
+    settings = endpoints.get("network_time_slides")
+    if not isinstance(settings, dict):
+        raise ValueError("locked suite lacks its network time-slide policy")
+    detectors = [str(value) for value in settings.get("detectors", [])]
+    subsets = [
+        [str(value) for value in subset]
+        for subset in settings.get("detector_subsets", [])
+        if isinstance(subset, list)
+    ]
+    subset_names = ["+".join(subset) for subset in subsets]
+    required_subsets = [
+        str(value) for value in endpoints.get("required_detector_subsets", [])
+    ]
+    pair_keys = {
+        "+".join(sorted(pair))
+        for subset in subsets
+        for pair in combinations(subset, 2)
+    }
+    limits = settings.get("pairwise_light_travel_time_seconds")
+    if (
+        settings.get("schema") != "independent_symmetric_detector_offsets_v1"
+        or detectors != ["H1", "L1", "V1"]
+        or len(subsets) != len(settings.get("detector_subsets", []))
+        or len({frozenset(subset) for subset in subsets}) != len(subsets)
+        or set(subset_names) != set(required_subsets)
+        or any(
+            len(subset) < 2
+            or len(subset) != len(set(subset))
+            or not set(subset) <= set(detectors)
+            for subset in subsets
+        )
+        or not isinstance(limits, dict)
+        or set(map(str, limits)) != pair_keys
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+            for value in (limits or {}).values()
+        )
+        or settings.get("reference_ifo") != "H1"
+        or settings.get("positive_shift_ifo") != "L1"
+        or settings.get("negative_shift_ifo") != "V1"
+        or settings.get("selection_data")
+        != "background_gps_and_detector_availability_only"
+        or settings.get("candidate_scores_inspected") is not False
+    ):
+        raise ValueError("locked network time-slide detector policy is invalid")
+    numeric_positive = (
+        "window_duration_seconds",
+        "maximum_slide_index",
+        "predicted_live_time_safety_factor",
+        "cluster_window_seconds",
+        "maximum_empirical_timing_uncertainty_seconds",
+    )
+    for field in numeric_positive:
+        value = settings.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+        ):
+            raise ValueError(f"locked network time-slide value is invalid: {field}")
+    if int(settings["maximum_slide_index"]) < int(
+        endpoints["minimum_background_shifts"]
+    ):
+        raise ValueError("locked network time-slide range cannot meet shift minimum")
+    if float(settings["predicted_live_time_safety_factor"]) < 1.0:
+        raise ValueError(
+            "locked network time-slide safety factor must be at least one"
+        )
+    return settings
+
+
+def _freeze_network_time_slide_schedule(
+    availability_rows: list[dict[str, Any]],
+    endpoints: dict[str, Any],
+    availability_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Choose sufficient score-blind independent offsets before O4b access."""
+
+    settings = _network_time_slide_settings(endpoints)
+    duration = float(settings["window_duration_seconds"])
+    starts: dict[int, dict[str, Any]] = {}
+    intervals = []
+    for index, row in enumerate(availability_rows):
+        start = float(row.get("gps_start", float("nan")))
+        stop = float(row.get("gps_end", float("nan")))
+        ifos = [str(value) for value in row.get("available_ifos", [])]
+        key = int(round(start * 1e9))
+        if (
+            row.get("split") != "test"
+            or not math.isfinite(start)
+            or not math.isfinite(stop)
+            or not np.isclose(stop - start, duration, rtol=0.0, atol=1e-9)
+            or key in starts
+            or not ifos
+            or len(ifos) != len(set(ifos))
+            or not set(ifos) <= {"H1", "L1", "V1"}
+        ):
+            raise ValueError(
+                f"locked availability cannot freeze time slides at row {index}"
+            )
+        starts[key] = row
+        intervals.append((start, stop))
+    ordered_intervals = sorted(intervals)
+    if any(
+        next_start < stop
+        for (_, stop), (next_start, _) in zip(
+            ordered_intervals,
+            ordered_intervals[1:],
+        )
+    ):
+        raise ValueError("locked availability windows overlap")
+
+    subsets = [
+        tuple(str(value) for value in subset)
+        for subset in settings["detector_subsets"]
+    ]
+    reference_ifo = str(settings["reference_ifo"])
+    positive_ifo = str(settings["positive_shift_ifo"])
+    negative_ifo = str(settings["negative_shift_ifo"])
+    minimum_shifts = int(endpoints["minimum_background_shifts"])
+    minimum_live_seconds = (
+        float(endpoints["minimum_test_live_time_years"]) * SECONDS_PER_YEAR
+    )
+    predicted_live_time_safety_factor = float(
+        settings["predicted_live_time_safety_factor"]
+    )
+    predicted_live_time_target_seconds = (
+        minimum_live_seconds * predicted_live_time_safety_factor
+    )
+    schedule = []
+    cumulative_live_seconds = 0.0
+    total_subset_windows: Counter[str] = Counter()
+    for slide_index in range(1, int(settings["maximum_slide_index"]) + 1):
+        offsets = {
+            reference_ifo: 0.0,
+            positive_ifo: slide_index * duration,
+            negative_ifo: -slide_index * duration,
+        }
+        offset_keys = {
+            ifo: int(round(offset * 1e9)) for ifo, offset in offsets.items()
+        }
+        eligible_intervals = []
+        subset_counts: Counter[str] = Counter()
+        for base_key, base in starts.items():
+            sources = {
+                ifo: starts.get(base_key + offset_keys[ifo])
+                for ifo in offsets
+            }
+            eligible = False
+            for subset in subsets:
+                if all(
+                    sources[ifo] is not None
+                    and ifo
+                    in {
+                        str(value)
+                        for value in sources[ifo].get("available_ifos", [])
+                    }
+                    for ifo in subset
+                ):
+                    subset_counts["+".join(subset)] += 1
+                    eligible = True
+            if eligible:
+                eligible_intervals.append(
+                    (float(base["gps_start"]), float(base["gps_end"]))
+                )
+        live_seconds = _union_duration(eligible_intervals)
+        if live_seconds <= 0:
+            continue
+        item = {
+            "slide_index": slide_index,
+            "slide_id": (
+                "locked-network-slide-"
+                + canonical_hash(
+                    {
+                        "availability_manifest_sha256": (
+                            availability_manifest_sha256
+                        ),
+                        "offset_seconds": offsets,
+                    },
+                    24,
+                )
+            ),
+            "offset_seconds": offsets,
+            "eligible_windows_by_detector_subset": dict(
+                sorted(subset_counts.items())
+            ),
+            "predicted_live_time_seconds": live_seconds,
+        }
+        schedule.append(item)
+        cumulative_live_seconds += live_seconds
+        total_subset_windows.update(subset_counts)
+        if (
+            len(schedule) >= minimum_shifts
+            and cumulative_live_seconds
+            >= predicted_live_time_target_seconds
+        ):
+            break
+    required_subsets = {
+        str(value) for value in endpoints["required_detector_subsets"]
+    }
+    if (
+        len(schedule) < minimum_shifts
+        or cumulative_live_seconds < predicted_live_time_target_seconds
+        or not required_subsets <= set(total_subset_windows)
+    ):
+        raise ValueError(
+            "score-blind O4b availability cannot support the frozen network "
+            "time-slide live-time and detector-subset minima"
+        )
+    identity = {
+        "schema": settings["schema"],
+        "split": "test",
+        "availability_manifest_sha256": availability_manifest_sha256,
+        "selection_data": settings["selection_data"],
+        "candidate_scores_inspected": False,
+        "detectors": list(settings["detectors"]),
+        "detector_subsets": [list(subset) for subset in subsets],
+        "pairwise_light_travel_time_seconds": {
+            str(key): float(value)
+            for key, value in sorted(
+                settings["pairwise_light_travel_time_seconds"].items()
+            )
+        },
+        "cluster_window_seconds": float(settings["cluster_window_seconds"]),
+        "maximum_empirical_timing_uncertainty_seconds": float(
+            settings["maximum_empirical_timing_uncertainty_seconds"]
+        ),
+        "window_duration_seconds": duration,
+        "minimum_background_shifts": minimum_shifts,
+        "minimum_test_live_time_years": float(
+            endpoints["minimum_test_live_time_years"]
+        ),
+        "predicted_live_time_safety_factor": (
+            predicted_live_time_safety_factor
+        ),
+        "predicted_live_time_target_years": (
+            predicted_live_time_target_seconds / SECONDS_PER_YEAR
+        ),
+        "target_far_per_year": float(endpoints["target_far_per_year"]),
+        "slides": schedule,
+    }
+    return {
+        "status": "frozen_score_blind_network_time_slide_schedule",
+        "passed": True,
+        **identity,
+        "slide_count": len(schedule),
+        "equivalent_live_time_seconds_predicted": cumulative_live_seconds,
+        "equivalent_live_time_years_predicted": (
+            cumulative_live_seconds / SECONDS_PER_YEAR
+        ),
+        "eligible_windows_by_detector_subset": dict(
+            sorted(total_subset_windows.items())
+        ),
+        "schedule_id": canonical_hash(identity, 32),
+        "schedule_sha256": canonical_hash(schedule, 64),
+    }
 
 
 def freeze_locked_o4b_streaming_execution_plan(
@@ -234,6 +501,11 @@ def freeze_locked_o4b_streaming_execution_plan(
         ordered_rows.append((injection, availability))
     if len(ordered_rows) != len(by_availability):
         raise ValueError("locked streaming requires one injection per availability block")
+    network_time_slide_schedule = _freeze_network_time_slide_schedule(
+        availability_rows,
+        suite["endpoints"],
+        file_sha256(availability_manifest),
+    )
 
     pe_retention_config = load_yaml(pe_retention_config_file).get(
         "locked_pe_retention"
@@ -438,6 +710,9 @@ def freeze_locked_o4b_streaming_execution_plan(
             }
         )
 
+    network_schedule_path = target.with_name(
+        f"{target.stem}-network-time-slides.json"
+    )
     identity = {
         "suite_plan_path": str(suite_file),
         "suite_plan_sha256": file_sha256(suite_file),
@@ -461,6 +736,10 @@ def freeze_locked_o4b_streaming_execution_plan(
         "shard_manifest_path": str(shard_manifest),
         "blocks_per_shard": blocks_per_shard,
         "minimum_free_kb": minimum_free_kb,
+        "network_time_slide_schedule_id": network_time_slide_schedule[
+            "schedule_id"
+        ],
+        "network_time_slide_schedule_path": str(network_schedule_path),
         "code_commit": code_commit,
     }
     if target.is_file():
@@ -470,11 +749,15 @@ def freeze_locked_o4b_streaming_execution_plan(
         if (
             not shard_manifest.is_file()
             or completed.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+            or not network_schedule_path.is_file()
+            or completed.get("network_time_slide_schedule_sha256")
+            != file_sha256(network_schedule_path)
         ):
-            raise ValueError("locked streaming shard manifest changed after freezing")
+            raise ValueError("locked streaming pre-access artifacts changed after freezing")
         return completed
-    if target.exists() or shard_manifest.exists():
+    if target.exists() or shard_manifest.exists() or network_schedule_path.exists():
         raise FileExistsError("partial locked streaming execution plan exists")
+    atomic_write_json(network_schedule_path, network_time_slide_schedule)
     atomic_write_text(
         shard_manifest,
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in shard_rows),
@@ -497,6 +780,11 @@ def freeze_locked_o4b_streaming_execution_plan(
         "blocks_per_shard": blocks_per_shard,
         "maximum_concurrent_shards": 1,
         "minimum_free_kb": minimum_free_kb,
+        "network_time_slide_schedule": network_time_slide_schedule,
+        "network_time_slide_schedule_path": str(network_schedule_path),
+        "network_time_slide_schedule_sha256": file_sha256(
+            network_schedule_path
+        ),
         "pe_retention": {
             "population": "BBH",
             "required_ifos": required_pe_ifos,
@@ -560,6 +848,9 @@ def freeze_locked_o4b_streaming_execution_plan(
         ),
         "suite_input_merge_report_path": str(
             work / "locked-suite-input-merge-report.json"
+        ),
+        "search_input_reduction_report_path": str(
+            work / "locked-search-input-reduction-report.json"
         ),
         "code_commit": code_commit,
         **execution_provenance(),
@@ -2190,6 +2481,7 @@ def freeze_locked_evaluation_suite_plan(
         != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
     ):
         raise ValueError("Locked suite must predeclare physical injection uncertainty")
+    _network_time_slide_settings(endpoints)
     if endpoints.get("catalog_search_arm") not in {
         "raw_candidate_search",
         "mask_candidate_search",

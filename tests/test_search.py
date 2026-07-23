@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from gwyolo.search import (
+    _audit_candidate_slide_schedule,
+    _candidate_search_identity,
     bind_raw_mask_background_to_authorized_validation_endpoint,
     calibrate_validation_count,
     aggregate_physical_endpoint_records,
@@ -37,6 +39,125 @@ from gwyolo.exposure import (
 
 def test_zero_count_far_limit_is_poisson_2p3_over_time():
     assert math.isclose(far_upper_limit_zero_count(10.0), 0.2302585093, rel_tol=1e-9)
+
+
+def test_variable_detector_schedule_and_candidate_identity_replay(
+    tmp_path: Path,
+) -> None:
+    subsets = [["H1", "L1"], ["H1", "V1"], ["L1", "V1"], ["H1", "L1", "V1"]]
+    subset_names = ["+".join(value) for value in subsets]
+    limits = {
+        "H1+L1": 0.010012846152267725,
+        "H1+V1": 0.027287979933397113,
+        "L1+V1": 0.02644834101635671,
+    }
+    slides = [
+        {
+            "slide_index": 1,
+            "slide_id": "network-slide-1",
+            "offset_seconds": {"H1": 0.0, "L1": 10.0, "V1": -10.0},
+            "eligible_windows_by_detector_subset": {
+                name: 1 for name in subset_names
+            },
+            "predicted_live_time_seconds": 30.0,
+        }
+    ]
+    identity = {
+        "schema": "independent_symmetric_detector_offsets_v1",
+        "split": "test",
+        "availability_manifest_sha256": "a" * 64,
+        "selection_data": "background_gps_and_detector_availability_only",
+        "candidate_scores_inspected": False,
+        "detectors": ["H1", "L1", "V1"],
+        "detector_subsets": subsets,
+        "pairwise_light_travel_time_seconds": limits,
+        "cluster_window_seconds": 0.1,
+        "maximum_empirical_timing_uncertainty_seconds": 0.01,
+        "window_duration_seconds": 10.0,
+        "minimum_background_shifts": 1,
+        "minimum_test_live_time_years": 20.0 / 31_557_600.0,
+        "target_far_per_year": 0.1,
+        "slides": slides,
+    }
+    schedule = {
+        "status": "frozen_score_blind_network_time_slide_schedule",
+        "passed": True,
+        **identity,
+        "slide_count": 1,
+        "equivalent_live_time_seconds_predicted": 30.0,
+        "equivalent_live_time_years_predicted": 30.0 / 31_557_600.0,
+        "eligible_windows_by_detector_subset": {
+            name: 1 for name in subset_names
+        },
+        "schedule_id": canonical_hash(identity, 32),
+        "schedule_sha256": canonical_hash(slides, 64),
+    }
+    schedule_path = tmp_path / "schedule.json"
+    schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+    report = {
+        "status": "variable_detector_set_time_slide_background",
+        "split": "test",
+        "slide_schedule_path": str(schedule_path),
+        "slide_schedule_sha256": file_sha256(schedule_path),
+        "slide_schedule_id": schedule["schedule_id"],
+        "slide_schedule_count": 1,
+        "slide_schedule": [
+            {
+                "slide_number": 1,
+                "slide_index": 1,
+                "slide_id": "network-slide-1",
+                "offset_seconds": {
+                    "H1": 0.0,
+                    "L1": 10.0,
+                    "V1": -10.0,
+                },
+            }
+        ],
+        "slide_count": 1,
+        "slide_exposure": [{"slide_index": 1, "live_time_seconds": 25.0}],
+        "execution_schedule_complete": True,
+        "equivalent_live_time_years": 25.0 / 31_557_600.0,
+        "required_detector_subsets": subset_names,
+        "pairwise_light_travel_time_seconds": limits,
+        "detector_duty_cycle_accounted": True,
+        "detector_subset_channels_clustered_jointly": True,
+        "live_time_counted_once_per_slide": True,
+        "independent_pairwise_offsets": True,
+    }
+    audit = _audit_candidate_slide_schedule(report, 0.1)
+    assert audit["passed"] is True
+    assert audit["schedule_kind"] == "variable_detector_set_time_slide"
+
+    common = {
+        "candidate_checkpoint_sha256": "b" * 64,
+        "candidate_config_sha256": "c" * 64,
+        "candidate_code_commit": "abc123",
+        "timing_calibration_report_sha256": "d" * 64,
+        "empirical_timing_uncertainty_seconds": 0.001,
+        "required_detector_subsets": subset_names,
+        "pairwise_light_travel_time_seconds": limits,
+        "pairwise_allowed_peak_separation_seconds": {
+            key: value + 0.002 for key, value in limits.items()
+        },
+    }
+    candidate_identity = _candidate_search_identity(
+        {
+            **common,
+            "status": "variable_detector_set_time_slide_background",
+            "publication_timing_gate_passed": True,
+        },
+        {
+            **common,
+            "status": (
+                "physical_variable_detector_set_injection_candidate_rankings"
+            ),
+            "timing_calibration_consistent": True,
+            "candidate_scoring_provenance_consistent": True,
+        },
+    )
+    assert candidate_identity["detector_set_policy"] == (
+        "single_model_explicit_missing_ifo_validity_v1"
+    )
 
 
 def test_threshold_is_calibrated_only_from_background():

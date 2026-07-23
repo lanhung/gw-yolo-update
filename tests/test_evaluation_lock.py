@@ -139,7 +139,13 @@ def _pe_retention_inputs(tmp_path: Path) -> tuple[Path, Path]:
     return retention, promotion
 
 
-def _locked_suite_config(path) -> None:
+def _locked_suite_config(
+    path,
+    *,
+    minimum_live_time_years: float = 23.02585093,
+    minimum_background_shifts: int = 25,
+    maximum_slide_index: int = 512,
+) -> None:
     outputs = {
         "raw_candidate_search": "search/raw.json",
         "mask_candidate_search": "search/mask.json",
@@ -196,18 +202,42 @@ def _locked_suite_config(path) -> None:
         "    primary_search_metric: paired_delta_recovered_vt_at_common_far\n"
         "    threshold_policy: validation_frozen_no_test_retuning\n"
         "    target_far_per_year: 0.1\n"
-        "    minimum_test_live_time_years: 23.02585093\n"
+        f"    minimum_test_live_time_years: {minimum_live_time_years}\n"
         "    minimum_test_injections: 3000\n"
         "    minimum_injection_gps_blocks: 25\n"
         "    minimum_paired_pe_injections: 1\n"
         "    minimum_locked_ood_rows: 500\n"
         "    minimum_background_gps_blocks: 25\n"
-        "    minimum_background_shifts: 25\n"
+        f"    minimum_background_shifts: {minimum_background_shifts}\n"
         "    bootstrap_replicates: 10000\n"
         "    bootstrap_seed: 20260722\n"
         "    pe_credible_level: 0.9\n"
         "    uncertainty: gps_block_then_paired_injection_hierarchical_bootstrap_v1\n"
         "    background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1\n"
+        "    required_detector_subsets: [H1+L1, H1+V1, L1+V1, H1+L1+V1]\n"
+        "    required_source_families: [BBH]\n"
+        "    network_time_slides:\n"
+        "      schema: independent_symmetric_detector_offsets_v1\n"
+        "      detectors: [H1, L1, V1]\n"
+        "      detector_subsets:\n"
+        "        - [H1, L1]\n"
+        "        - [H1, V1]\n"
+        "        - [L1, V1]\n"
+        "        - [H1, L1, V1]\n"
+        "      pairwise_light_travel_time_seconds:\n"
+        "        H1+L1: 0.010012846152267725\n"
+        "        H1+V1: 0.027287979933397113\n"
+        "        L1+V1: 0.02644834101635671\n"
+        "      reference_ifo: H1\n"
+        "      positive_shift_ifo: L1\n"
+        "      negative_shift_ifo: V1\n"
+        "      window_duration_seconds: 4096\n"
+        f"      maximum_slide_index: {maximum_slide_index}\n"
+        "      predicted_live_time_safety_factor: 1.0\n"
+        "      cluster_window_seconds: 0.1\n"
+        "      maximum_empirical_timing_uncertainty_seconds: 0.01\n"
+        "      selection_data: background_gps_and_detector_availability_only\n"
+        "      candidate_scores_inspected: false\n"
         "    catalog_search_arm: mask_candidate_search\n",
         encoding="utf-8",
     )
@@ -379,7 +409,12 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
     output_root = tmp_path / "locked-results"
     plan_path = tmp_path / "locked-suite-plan.json"
     _complete_validation_evidence(evidence)
-    _locked_suite_config(config)
+    _locked_suite_config(
+        config,
+        minimum_live_time_years=0.0001,
+        minimum_background_shifts=1,
+        maximum_slide_index=1,
+    )
 
     plan = freeze_locked_evaluation_suite_plan(
         evidence, config, output_root, "abc123", plan_path
@@ -659,7 +694,12 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     suite_root = tmp_path / "locked-results"
     suite_plan = tmp_path / "locked-suite-plan.json"
     _complete_validation_evidence(evidence)
-    _locked_suite_config(config)
+    _locked_suite_config(
+        config,
+        minimum_live_time_years=0.0001,
+        minimum_background_shifts=1,
+        maximum_slide_index=1,
+    )
     freeze_locked_evaluation_suite_plan(
         evidence, config, suite_root, "abc123", suite_plan
     )
@@ -668,7 +708,9 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     availability_manifest = tmp_path / "availability.jsonl"
     availability_rows = []
     injection_rows = []
-    for index, gps_start in enumerate((1400000000, 1400004096)):
+    for index, gps_start in enumerate(
+        (1399995904, 1400000000, 1400004096)
+    ):
         availability_id = f"availability-{index}"
         gps_block = f"O4b:{gps_start}:4096"
         sources = {
@@ -679,13 +721,16 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "hdf5_url": f"https://gwosc.org/archive/{ifo}-{gps_start}-4096.hdf5",
                 "detail_url": f"https://gwosc.org/archive/{ifo}-{gps_start}-4096.json",
             }
-            for ifo in ("H1", "L1")
+            for ifo in ("H1", "L1", "V1")
         }
         availability_rows.append(
             {
                 "availability_id": availability_id,
+                "split": "test",
                 "gps_block": gps_block,
-                "available_ifos": ["H1", "L1"],
+                "gps_start": gps_start,
+                "gps_end": gps_start + 4096,
+                "available_ifos": ["H1", "L1", "V1"],
                 "sources": sources,
             }
         )
@@ -697,7 +742,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "gps_block": gps_block,
                 "split": "test",
                 "observing_run": "O4b",
-                "ifos": ["H1", "L1"],
+                "ifos": ["H1", "L1", "V1"],
                 "gps_time": gps_start + 2048.0,
                 "required_context_duration_seconds": 256.0,
                 "source_family": "BBH",
@@ -801,14 +846,26 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     )
 
     assert replay == result
-    assert result["rows"] == 2
-    assert result["shards"] == 2
+    assert result["rows"] == 3
+    assert result["shards"] == 3
     assert result["maximum_concurrent_shards"] == 1
     assert result["post_access_dq_replacement_allowed"] is False
     rows = [json.loads(line) for line in shard_manifest.read_text().splitlines()]
     assert rows[0]["injection_ids"] == ["injection-0"]
-    assert len(rows[0]["source_files"]) == 2
-    assert rows[1]["gps_blocks"] == ["O4b:1400004096:4096"]
+    assert len(rows[0]["source_files"]) == 3
+    assert rows[2]["gps_blocks"] == ["O4b:1400004096:4096"]
+    assert result["network_time_slide_schedule"]["slide_count"] == 1
+    assert (
+        result["network_time_slide_schedule"][
+            "eligible_windows_by_detector_subset"
+        ]
+        == {
+            "H1+L1": 2,
+            "H1+L1+V1": 1,
+            "H1+V1": 2,
+            "L1+V1": 1,
+        }
+    )
     with pytest.raises(FileNotFoundError, match="plan/access"):
         download_locked_o4b_streaming_shard_sources(
             report_path, access, 0, "abc123"
@@ -869,7 +926,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         download_workers=2,
     )
     assert source_result["passed"] is True
-    assert source_result["verified_files"] == 2
+    assert source_result["verified_files"] == 3
     assert (
         download_locked_o4b_streaming_shard_sources(
             report_path,
@@ -883,8 +940,9 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
 
     def fake_quality(path):
         path = Path(path)
-        second = "shard-00001" in path.parts
-        gps_start = 1400004096 if second else 1400000000
+        shard_name = next(part for part in path.parts if part.startswith("shard-"))
+        shard_index = int(shard_name.split("-")[1])
+        gps_start = (1399995904, 1400000000, 1400004096)[shard_index]
         return {
             "gps_start": gps_start,
             "gps_end": gps_start + 4096,
@@ -892,7 +950,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
             "dqmask": np.ones(4096, dtype=np.int64),
             "injmask": np.full(
                 4096,
-                0 if second else 31,
+                31 if shard_index == 0 else 0,
                 dtype=np.int64,
             ),
         }
@@ -971,7 +1029,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "gps_block": shard["gps_blocks"][0],
                 "ifo": "H1",
                 "split": "test",
-                "gps_peak": 1400002048.0,
+                "gps_peak": 1399997952.0,
             }
             candidate_payloads[0] = [
                 {
@@ -1033,14 +1091,15 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                     "injection_id": "injection-0",
                     "waveform_id": "waveform-0",
                     "gps_block": shard["gps_blocks"][0],
-                    "gps_time": 1400002048.0,
+                        "gps_time": 1399997952.0,
                     "split": "test",
                     "source_family": "BBH",
-                    "valid_ifos": ["H1", "L1"],
-                    "detector_arrival_gps": {
-                        "H1": 1400002048.001,
-                        "L1": 1400002047.998,
-                    },
+                        "valid_ifos": ["H1", "L1", "V1"],
+                        "detector_arrival_gps": {
+                            "H1": 1399997952.001,
+                            "L1": 1399997951.998,
+                            "V1": 1399997952.015,
+                        },
                 }
             ]
             candidate_payloads[6] = pe_payload
@@ -1089,7 +1148,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     merged = merge_locked_o4b_streaming_shard_receipts(
         report_path, access, "abc123"
     )
-    assert merged["completed_shards"] == 2
+    assert merged["completed_shards"] == 3
     receipt_manifest = Path(result["receipt_manifest_path"])
     completion = audit_locked_o4b_streaming_completion(
         report_path,
@@ -1099,18 +1158,18 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         "abc123",
     )
     assert completion["passed"] is True
-    assert completion["completed_shards"] == 2
-    assert completion["unique_injections"] == 2
-    assert len(completion["artifact_inventory"]["raw_candidate_rows"]) == 2
+    assert completion["completed_shards"] == 3
+    assert completion["unique_injections"] == 3
+    assert len(completion["artifact_inventory"]["raw_candidate_rows"]) == 3
     weights = reduce_locked_o4b_post_dq_injection_weights(
         report_path,
         access,
         result["completion_audit_path"],
         "abc123",
     )
-    assert weights["planned_injections"] == 2
+    assert weights["planned_injections"] == 3
     assert weights["eligible_injections"] == 1
-    assert weights["unavailable_injections"] == 1
+    assert weights["unavailable_injections"] == 2
     assert weights["raw_mask_shared_physical_denominator"] is True
     weight_rows = [
         json.loads(line)
@@ -1134,7 +1193,7 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     assert suite_inputs["passed"] is True
     assert suite_inputs["background_windows"] == weights["background_windows"]
     assert suite_inputs["eligible_injections"] == 1
-    assert suite_inputs["unavailable_injections"] == 1
+    assert suite_inputs["unavailable_injections"] == 2
     assert suite_inputs["ood_sources"] == 0
     assert suite_inputs["raw_background_candidates"] == 2
     assert suite_inputs["raw_injection_candidates"] == 2

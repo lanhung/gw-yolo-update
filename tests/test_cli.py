@@ -477,3 +477,33 @@ def test_detector_set_injection_ranking_cli_routes_exact_inputs() -> None:
         "test",
         0.002,
     )
+
+
+def test_locked_search_input_reducer_cli_routes_frozen_inputs() -> None:
+    target = "gwyolo.locked_streaming.reduce_locked_o4b_search_inputs"
+    with patch(target, return_value={}) as reduce:
+        assert (
+            main(
+                [
+                    "locked-o4b-search-inputs-reduce",
+                    "--suite-plan",
+                    "suite.json",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--suite-input-merge-report",
+                    "merge.json",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    reduce.assert_called_once_with(
+        "suite.json",
+        "execution.json",
+        "access.json",
+        "merge.json",
+        "abc123",
+    )

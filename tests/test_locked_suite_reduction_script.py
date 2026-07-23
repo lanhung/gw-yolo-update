@@ -18,6 +18,7 @@ def test_locked_suite_reduction_requires_all_shards_before_every_endpoint() -> N
         "locked-o4b-streaming-completion-audit",
         "locked-o4b-post-dq-injection-weights",
         "locked-o4b-streaming-suite-inputs-merge",
+        "locked-o4b-search-inputs-reduce",
         "run_locked_search_endpoints.sh",
         "run_locked_ood_endpoint.sh",
         "run_locked_pe_endpoints.sh",
@@ -33,6 +34,8 @@ def test_locked_suite_reduction_requires_all_shards_before_every_endpoint() -> N
         "expected_shards",
         "negative_and_null_results_retained",
         "raw_mask_shared_physical_denominator",
+        "endpoint_source_readiness",
+        "detector_subset_channels_clustered_jointly",
         "--streaming-completion-audit",
         "GWYOLO_CODE_COMMIT",
     ):

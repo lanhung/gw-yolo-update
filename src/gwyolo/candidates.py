@@ -30,7 +30,10 @@ def _available_ifos(row: dict[str, Any]) -> set[str]:
     side of the coincidence was actually observing.
     """
 
-    values = row.get("valid_ifos", row.get("ifos"))
+    values = row.get(
+        "valid_ifos",
+        row.get("ifos", row.get("available_ifos")),
+    )
     if not isinstance(values, list) or not values:
         raise ValueError(f"Window {row.get('window_id')} lacks an explicit detector set")
     ifos = {str(value) for value in values}
@@ -1422,6 +1425,10 @@ def build_detector_set_injection_candidate_rankings(
     if len(by_id) != len(parents):
         raise ValueError("scored injection rows repeat injection IDs")
     candidate_map: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    calibration_hashes = set()
+    checkpoint_hashes = set()
+    config_hashes = set()
+    code_commits = set()
     for row in candidates:
         if str(row["split"]) != split:
             continue
@@ -1433,14 +1440,20 @@ def build_detector_set_injection_candidate_rankings(
         candidate_map.setdefault(injection_id, {}).setdefault(
             str(row["ifo"]), []
         ).append(row)
+        if row.get("timing_calibration_report_sha256"):
+            calibration_hashes.add(
+                str(row["timing_calibration_report_sha256"])
+            )
+        if row.get("candidate_checkpoint_sha256"):
+            checkpoint_hashes.add(str(row["candidate_checkpoint_sha256"]))
+        if row.get("candidate_config_sha256"):
+            config_hashes.add(str(row["candidate_config_sha256"]))
+        if row.get("candidate_code_commit"):
+            code_commits.add(str(row["candidate_code_commit"]))
 
     outputs = []
     eligibility_counts: Counter[str] = Counter()
     recovery_counts: Counter[str] = Counter()
-    calibration_hashes = set()
-    checkpoint_hashes = set()
-    config_hashes = set()
-    code_commits = set()
     for injection_id, parent in sorted(by_id.items()):
         valid_ifos = {str(value) for value in parent["valid_ifos"]}
         arrivals = {
@@ -1785,6 +1798,526 @@ def _cluster_network_rows(
         else:
             groups.append([row])
     return [max(group, key=lambda row: float(row["ranking_score"])) for group in groups]
+
+
+def _normalize_detector_set_policy(
+    detector_subsets: Iterable[Iterable[str]],
+    pairwise_light_travel_time_seconds: dict[str, float],
+) -> tuple[list[tuple[str, ...]], dict[str, float]]:
+    normalized_subsets: list[tuple[str, ...]] = []
+    seen_subsets: set[frozenset[str]] = set()
+    for raw_subset in detector_subsets:
+        subset = tuple(str(value) for value in raw_subset)
+        identity = frozenset(subset)
+        if (
+            len(subset) < 2
+            or len(subset) != len(identity)
+            or identity in seen_subsets
+        ):
+            raise ValueError("detector subsets must be unique sets of at least two IFOs")
+        seen_subsets.add(identity)
+        normalized_subsets.append(subset)
+    if not normalized_subsets:
+        raise ValueError("at least one detector subset is required")
+
+    def pair_key(first: str, second: str) -> str:
+        return "+".join(sorted((first, second)))
+
+    required_pairs = {
+        pair_key(first, second)
+        for subset in normalized_subsets
+        for first, second in combinations(subset, 2)
+    }
+    limits = {
+        str(key): float(value)
+        for key, value in pairwise_light_travel_time_seconds.items()
+    }
+    if set(limits) != required_pairs or any(
+        not np.isfinite(value) or value <= 0 for value in limits.values()
+    ):
+        raise ValueError(
+            "pairwise light-travel limits must exactly cover the detector subsets"
+        )
+    return normalized_subsets, limits
+
+
+def _cluster_detector_set_network_rows(
+    rows: list[dict[str, Any]], cluster_window_seconds: float
+) -> list[dict[str, Any]]:
+    """Cluster one slide jointly across all detector-subset channels."""
+
+    if not rows:
+        return []
+    ordered = sorted(
+        rows,
+        key=lambda row: (float(row["gps_peak"]), str(row["candidate_id"])),
+    )
+    groups = [[ordered[0]]]
+    for row in ordered[1:]:
+        if (
+            float(row["gps_peak"]) - float(groups[-1][-1]["gps_peak"])
+            <= cluster_window_seconds
+        ):
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    return [
+        max(
+            group,
+            key=lambda row: (
+                float(row["ranking_score"]),
+                len(row["valid_ifos"]),
+                float(row["chirp_glitch_margin"]),
+                str(row["candidate_id"]),
+            ),
+        )
+        for group in groups
+    ]
+
+
+def build_detector_set_candidate_time_slides(
+    candidates: Iterable[dict[str, Any]],
+    background_windows: Iterable[dict[str, Any]],
+    split: str,
+    detector_subsets: Iterable[Iterable[str]],
+    pairwise_light_travel_time_seconds: dict[str, float],
+    empirical_timing_uncertainty_seconds: float,
+    slide_offsets_seconds: Iterable[dict[str, Any]],
+    cluster_window_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build a duty-cycle-aware background over variable detector sets.
+
+    Every slide assigns an independent source-window offset to each detector.
+    Coincidences are formed for all eligible predeclared subsets, checked
+    against every pairwise physical delay plus the frozen timing allowance,
+    and then clustered jointly so one event cannot be counted once per subset.
+    """
+
+    subsets, physical_limits = _normalize_detector_set_policy(
+        detector_subsets,
+        pairwise_light_travel_time_seconds,
+    )
+    detectors = tuple(
+        dict.fromkeys(ifo for subset in subsets for ifo in subset)
+    )
+    if (
+        not np.isfinite(empirical_timing_uncertainty_seconds)
+        or empirical_timing_uncertainty_seconds < 0
+        or not np.isfinite(cluster_window_seconds)
+        or cluster_window_seconds <= 0
+    ):
+        raise ValueError("detector-set time-slide timing settings are invalid")
+    windows = [
+        dict(row) for row in background_windows if str(row["split"]) == split
+    ]
+    if not windows:
+        raise ValueError(f"No background windows for split {split}")
+    durations = {
+        float(row["gps_end"]) - float(row["gps_start"]) for row in windows
+    }
+    if (
+        len(durations) != 1
+        or not np.isfinite(next(iter(durations)))
+        or next(iter(durations)) <= 0
+    ):
+        raise ValueError("Detector-set slides require one positive window duration")
+    duration = next(iter(durations))
+    by_start = {
+        int(round(float(row["gps_start"]) * 1e9)): row for row in windows
+    }
+    if len(by_start) != len(windows):
+        raise ValueError("Background windows have duplicate GPS starts")
+    availability = {
+        str(row["window_id"]): _available_ifos(row) for row in windows
+    }
+
+    schedules: list[dict[str, Any]] = []
+    for ordinal, raw_schedule in enumerate(slide_offsets_seconds, start=1):
+        raw_offsets = raw_schedule.get("offset_seconds", raw_schedule)
+        offsets = {str(key): float(value) for key, value in raw_offsets.items()}
+        if (
+            set(offsets) != set(detectors)
+            or any(not np.isfinite(value) for value in offsets.values())
+            or 0.0 not in offsets.values()
+            or len(set(offsets.values())) != len(offsets)
+            or any(
+                abs(first - second) < duration
+                for first, second in combinations(offsets.values(), 2)
+            )
+        ):
+            raise ValueError(
+                "each slide must independently offset every detector by at least "
+                "one window duration and retain one zero-offset reference"
+            )
+        slide_index = int(raw_schedule.get("slide_index", ordinal))
+        slide_id = str(
+            raw_schedule.get(
+                "slide_id",
+                "network-slide-"
+                + canonical_hash(
+                    {"split": split, "offset_seconds": offsets},
+                    24,
+                ),
+            )
+        )
+        if slide_index < 1 or not slide_id:
+            raise ValueError("detector-set time-slide identity is invalid")
+        schedules.append(
+            {
+                "slide_number": ordinal,
+                "slide_index": slide_index,
+                "slide_id": slide_id,
+                "offset_seconds": offsets,
+            }
+        )
+    if not schedules:
+        raise ValueError("at least one detector-set time slide is required")
+    if (
+        len({row["slide_id"] for row in schedules}) != len(schedules)
+        or len({row["slide_index"] for row in schedules}) != len(schedules)
+    ):
+        raise ValueError("detector-set time-slide offsets repeat")
+
+    candidates_by_window: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    relevant_candidates = []
+    maximum_bin_width = 0.0
+    window_ids = set(availability)
+    for row in candidates:
+        if str(row["split"]) != split:
+            continue
+        window_id = str(row["window_id"])
+        if window_id not in window_ids:
+            raise ValueError(
+                f"Candidate references an unknown {split} window: {window_id}"
+            )
+        ifo = str(row["ifo"])
+        if ifo not in detectors or ifo not in availability[window_id]:
+            raise ValueError(
+                f"Candidate {row.get('candidate_id')} uses unavailable detector {ifo}"
+            )
+        candidates_by_window.setdefault(window_id, {}).setdefault(ifo, []).append(
+            row
+        )
+        relevant_candidates.append(row)
+        maximum_bin_width = max(
+            maximum_bin_width,
+            float(row["bin_width_seconds"]),
+        )
+
+    def pair_key(first: str, second: str) -> str:
+        return "+".join(sorted((first, second)))
+
+    output = []
+    slide_exposure = []
+    eligible_subset_windows_total: Counter[str] = Counter()
+    raw_subset_total: Counter[str] = Counter()
+    selected_subset_total: Counter[str] = Counter()
+    for schedule in schedules:
+        offsets = schedule["offset_seconds"]
+        offset_keys = {
+            ifo: int(round(float(offset) * 1e9))
+            for ifo, offset in offsets.items()
+        }
+        raw_networks = []
+        exposure_intervals = []
+        eligible_counts: Counter[str] = Counter()
+        raw_counts: Counter[str] = Counter()
+        skipped_no_subset = 0
+        for base in sorted(windows, key=lambda row: float(row["gps_start"])):
+            base_key = int(round(float(base["gps_start"]) * 1e9))
+            source_windows = {
+                ifo: by_start.get(base_key + offset_keys[ifo])
+                for ifo in detectors
+            }
+            eligible_subsets = []
+            for subset in subsets:
+                if all(
+                    source_windows[ifo] is not None
+                    and ifo
+                    in availability[str(source_windows[ifo]["window_id"])]
+                    for ifo in subset
+                ):
+                    eligible_subsets.append(subset)
+                    eligible_counts["+".join(subset)] += 1
+            if not eligible_subsets:
+                skipped_no_subset += 1
+                continue
+            exposure_intervals.append(
+                (float(base["gps_start"]), float(base["gps_end"]))
+            )
+            for subset in eligible_subsets:
+                subset_name = "+".join(subset)
+                candidate_lists = [
+                    candidates_by_window.get(
+                        str(source_windows[ifo]["window_id"]),
+                        {},
+                    ).get(ifo, [])
+                    for ifo in subset
+                ]
+                for candidate_tuple in product(*candidate_lists):
+                    shifted_times = {
+                        ifo: float(row["gps_peak"]) - float(offsets[ifo])
+                        for ifo, row in zip(subset, candidate_tuple)
+                    }
+                    separations = {}
+                    coherent = True
+                    for first, second in combinations(subset, 2):
+                        key = pair_key(first, second)
+                        separation = abs(
+                            shifted_times[first] - shifted_times[second]
+                        )
+                        separations[key] = separation
+                        if separation > (
+                            physical_limits[key]
+                            + 2.0 * empirical_timing_uncertainty_seconds
+                        ):
+                            coherent = False
+                            break
+                    if not coherent:
+                        continue
+                    provenance_fields = (
+                        "timing_calibration_report_sha256",
+                        "candidate_checkpoint_sha256",
+                        "candidate_config_sha256",
+                        "candidate_code_commit",
+                    )
+                    provenance = {
+                        field: {str(row.get(field, "")) for row in candidate_tuple}
+                        for field in provenance_fields
+                    }
+                    if (
+                        not all(
+                            bool(row.get("timing_empirically_calibrated"))
+                            and np.isclose(
+                                float(
+                                    row.get(
+                                        "empirical_timing_uncertainty_seconds",
+                                        -1,
+                                    )
+                                ),
+                                empirical_timing_uncertainty_seconds,
+                                rtol=0.0,
+                                atol=1e-12,
+                            )
+                            for row in candidate_tuple
+                        )
+                        or any(
+                            len(values) != 1 or not next(iter(values))
+                            for values in provenance.values()
+                        )
+                    ):
+                        continue
+                    row_by_ifo = {
+                        ifo: row
+                        for ifo, row in zip(
+                            subset,
+                            candidate_tuple,
+                        )
+                    }
+                    chirp_scores = {
+                        ifo: float(row_by_ifo[ifo]["chirp_score"])
+                        for ifo in subset
+                    }
+                    glitch_scores = {
+                        ifo: float(row_by_ifo[ifo]["glitch_score_at_peak"])
+                        for ifo in subset
+                    }
+                    source_ids = {
+                        ifo: row_by_ifo[ifo]["candidate_id"] for ifo in subset
+                    }
+                    identity = {
+                        "slide_id": schedule["slide_id"],
+                        "detector_subset": subset_name,
+                        "source_candidate_ids": source_ids,
+                    }
+                    raw_networks.append(
+                        {
+                            "candidate_id": (
+                                "network-slide-candidate-"
+                                + canonical_hash(identity, 24)
+                            ),
+                            "slide_id": schedule["slide_id"],
+                            "slide_number": schedule["slide_number"],
+                            "slide_index": schedule["slide_index"],
+                            "split": split,
+                            "detector_subset": subset_name,
+                            "gps_peak": float(np.mean(list(shifted_times.values()))),
+                            "pairwise_peak_separation_seconds": separations,
+                            "offset_seconds": dict(offsets),
+                            "source_candidate_ids": source_ids,
+                            "source_window_ids": {
+                                ifo: source_windows[ifo]["window_id"]
+                                for ifo in subset
+                            },
+                            "source_gps_blocks": {
+                                ifo: source_windows[ifo]["gps_block"]
+                                for ifo in subset
+                            },
+                            "chirp_scores": chirp_scores,
+                            "glitch_scores": glitch_scores,
+                            **network_ranking(
+                                chirp_scores,
+                                glitch_scores,
+                                list(subset),
+                            ),
+                        }
+                    )
+                    raw_counts[subset_name] += 1
+        clustered = _cluster_detector_set_network_rows(
+            raw_networks,
+            cluster_window_seconds,
+        )
+        selected_counts = Counter(
+            str(row["detector_subset"]) for row in clustered
+        )
+        output.extend(clustered)
+        eligible_subset_windows_total.update(eligible_counts)
+        raw_subset_total.update(raw_counts)
+        selected_subset_total.update(selected_counts)
+        slide_exposure.append(
+            {
+                **schedule,
+                "eligible_windows_by_detector_subset": dict(
+                    sorted(eligible_counts.items())
+                ),
+                "skipped_windows_without_eligible_subset": skipped_no_subset,
+                "raw_coincidences": len(raw_networks),
+                "raw_coincidences_by_detector_subset": dict(
+                    sorted(raw_counts.items())
+                ),
+                "clustered_candidates": len(clustered),
+                "clustered_candidates_by_detector_subset": dict(
+                    sorted(selected_counts.items())
+                ),
+                "live_time_seconds": _union_duration(exposure_intervals),
+            }
+        )
+
+    timing_resolutions = [
+        float(row.get("timing_resolution_seconds", row["bin_width_seconds"]))
+        for row in relevant_candidates
+    ]
+    calibrated = bool(relevant_candidates) and all(
+        bool(row.get("timing_empirically_calibrated"))
+        and np.isclose(
+            float(row.get("empirical_timing_uncertainty_seconds", -1)),
+            empirical_timing_uncertainty_seconds,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        for row in relevant_candidates
+    )
+    provenance_values = {
+        field: sorted(
+            {
+                str(row[field])
+                for row in relevant_candidates
+                if row.get(field)
+            }
+        )
+        for field in (
+            "timing_calibration_report_sha256",
+            "candidate_checkpoint_sha256",
+            "candidate_config_sha256",
+            "candidate_code_commit",
+        )
+    }
+    equivalent_live_time_seconds = sum(
+        float(row["live_time_seconds"]) for row in slide_exposure
+    )
+    publication_timing_gate = (
+        calibrated
+        and bool(timing_resolutions)
+        and max(timing_resolutions) <= 0.01
+        and all(len(values) == 1 for values in provenance_values.values())
+    )
+    report = {
+        "status": "variable_detector_set_time_slide_background",
+        "scientific_claim_allowed": False,
+        "split": split,
+        "required_detector_subsets": [
+            "+".join(subset) for subset in subsets
+        ],
+        "detectors": list(detectors),
+        "slide_count": len(schedules),
+        "slide_schedule": schedules,
+        "slide_schedule_sha256": canonical_hash(schedules, 64),
+        "window_duration_seconds": duration,
+        "cluster_window_seconds": cluster_window_seconds,
+        "pairwise_light_travel_time_seconds": dict(
+            sorted(physical_limits.items())
+        ),
+        "empirical_timing_uncertainty_seconds": (
+            empirical_timing_uncertainty_seconds
+        ),
+        "pairwise_allowed_peak_separation_seconds": {
+            key: value + 2.0 * empirical_timing_uncertainty_seconds
+            for key, value in sorted(physical_limits.items())
+        },
+        "input_windows": len(windows),
+        "input_gps_blocks": sorted(
+            {str(row["gps_block"]) for row in windows}
+        ),
+        "input_zero_lag_live_time_seconds": _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"]))
+            for row in windows
+        ),
+        "input_candidates": len(relevant_candidates),
+        "background_rows": len(output),
+        "eligible_windows_by_detector_subset": dict(
+            sorted(eligible_subset_windows_total.items())
+        ),
+        "raw_coincidences_by_detector_subset": dict(
+            sorted(raw_subset_total.items())
+        ),
+        "clustered_candidates_by_detector_subset": dict(
+            sorted(selected_subset_total.items())
+        ),
+        "slide_exposure": slide_exposure,
+        "equivalent_live_time_seconds": equivalent_live_time_seconds,
+        "equivalent_live_time_years": (
+            equivalent_live_time_seconds / SECONDS_PER_YEAR
+        ),
+        "maximum_bin_width_seconds": maximum_bin_width or None,
+        "maximum_timing_resolution_seconds": (
+            max(timing_resolutions) if timing_resolutions else None
+        ),
+        "candidate_timing_empirically_calibrated": calibrated,
+        "timing_calibration_report_sha256": (
+            provenance_values["timing_calibration_report_sha256"][0]
+            if len(provenance_values["timing_calibration_report_sha256"]) == 1
+            else None
+        ),
+        "candidate_checkpoint_sha256": (
+            provenance_values["candidate_checkpoint_sha256"][0]
+            if len(provenance_values["candidate_checkpoint_sha256"]) == 1
+            else None
+        ),
+        "candidate_config_sha256": (
+            provenance_values["candidate_config_sha256"][0]
+            if len(provenance_values["candidate_config_sha256"]) == 1
+            else None
+        ),
+        "candidate_code_commit": (
+            provenance_values["candidate_code_commit"][0]
+            if len(provenance_values["candidate_code_commit"]) == 1
+            else None
+        ),
+        "publication_timing_gate_passed": publication_timing_gate,
+        "detector_duty_cycle_accounted": True,
+        "detector_subset_channels_clustered_jointly": True,
+        "live_time_counted_once_per_slide": True,
+        "independent_pairwise_offsets": True,
+        "scientific_blocker": (
+            "timing gate passed, but publication use still requires a score-blind "
+            "frozen schedule, adequate locked live time, and a validation-frozen "
+            "threshold"
+            if publication_timing_gate and equivalent_live_time_seconds > 0
+            else "requires empirically calibrated <=10 ms candidates with common "
+            "provenance and nonzero detector-duty-cycle-correct exposure"
+        ),
+    }
+    return output, report
 
 
 def build_candidate_time_slides(
