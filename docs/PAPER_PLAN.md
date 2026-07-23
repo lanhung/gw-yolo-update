@@ -104,8 +104,11 @@ This is the most realistic first target if the team releases a high-quality benc
 8. Before/after deglitch Q-maps and matched-filter recovery.
 9. Known versus held-out/O4 glitch OOD and abstention results.
 10. Posterior coverage/PP plots before and after mask cleaning, alongside AMPLFI/DINGO-compatible results.
-11. Latency and compute table.
-12. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
+11. Automatic-mask reproducibility and annotator-disagreement boundary: deterministic component
+    pseudo-labels are evaluated through functional search/PE outcomes, not presented as human
+    pixel ground truth.
+12. Latency and compute table.
+13. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
 
 ## 5. Required baselines
 

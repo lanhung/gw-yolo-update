@@ -333,8 +333,13 @@ if (
     or int(report.get("aligned_network_rows", -1))
     + int(report.get("single_ifo_rows", -1))
     != int(pairable)
-    or int(report.get("weak_masks", -1)) + int(report.get("human_pixel_masks", -1))
+    or int(report.get("automatic_pseudo_masks", -1))
+    + int(report.get("human_pixel_masks", -1))
     != int(pairable)
+    or int(report.get("weak_masks", -1)) != 0
+    or report.get("manual_annotation_required") is not False
+    or report.get("automatic_mask_policy", {}).get("human_ground_truth_claimed")
+    is not False
     or report.get("code_commit") != code_commit
 ):
     raise SystemExit("materialized independent PE overlap report failed its identity gate")

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# LEGACY OPTIONAL DIAGNOSTIC ONLY. This script is no longer part of the
+# publication validation ledger or the O4b/GWTC-5 unlock path.
+
 required=(
   TASK_PYTHON
   TASK_CODE_DIR

@@ -131,13 +131,18 @@ publication_evidence:
 
     - id: paired_raw_mask_vt
       group: search
-      description: Fixed-FAR paired raw/mask validation gain with clean non-inferiority, timing and blinded human-consensus mask quality.
+      description: Fixed-FAR paired raw/mask validation gain with clean non-inferiority, timing and deterministic automatic-mask replay.
       checks:
-        - {field: status, op: equals, value: bound_validation_raw_mask_human_consensus_evidence}
+        - {field: status, op: equals, value: bound_validation_raw_mask_automatic_evidence}
         - {field: passed, op: equals, value: true}
         - {field: mask_locked_test_arm_eligible, op: equals, value: true}
         - {field: functional_raw_mask_endpoint_passed, op: equals, value: true}
-        - {field: human_consensus_segmentation_passed, op: equals, value: true}
+        - {field: automatic_mask_policy_passed, op: equals, value: true}
+        - {field: human_annotation_required, op: equals, value: false}
+        - {field: human_annotation_used, op: equals, value: false}
+        - {field: human_ground_truth_claimed, op: equals, value: false}
+        - {field: pixel_accuracy_claim_allowed, op: equals, value: false}
+        - {field: automatic_glitch_masks_are_pseudo_labels, op: equals, value: true}
         - {field: background_dependence_audits.raw.status, op: equals, value: candidate_background_dependence_audit_v1}
         - {field: background_dependence_audits.raw.passed, op: equals, value: true}
         - {field: background_dependence_audits.mask.status, op: equals, value: candidate_background_dependence_audit_v1}
@@ -147,26 +152,23 @@ publication_evidence:
         - {field: injection_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
         - {field: injection_bootstrap_independence.physical_groups, op: at_least, value: 25}
         - {field: validation_only, op: equals, value: true}
-        - {field: checks.minimum_tasks, op: equals, value: true}
+        - {field: checks.minimum_rows, op: equals, value: true}
         - {field: checks.minimum_unique_glitches, op: equals, value: true}
+        - {field: checks.minimum_gps_blocks, op: equals, value: true}
         - {field: checks.minimum_labels, op: equals, value: true}
-        - {field: checks.minimum_well_supported_labels, op: equals, value: true}
-        - {field: checks.minimum_bootstrap_replicates, op: equals, value: true}
-        - {field: checks.minimum_macro_iou_lower_95, op: equals, value: true}
-        - {field: checks.minimum_iou_ge_0_5_wilson_lower_95, op: equals, value: true}
+        - {field: checks.chirp_masks_replayed, op: equals, value: true}
+        - {field: checks.nonempty_glitch_masks, op: equals, value: true}
+        - {field: checks.automatic_replay, op: equals, value: true}
+        - {field: negative_and_null_masks_retained, op: equals, value: true}
         - {field: locked_test_prerequisites_satisfied, op: equals, value: false}
         - {field: test_rows_read, op: equals, value: 0}
         - {field: scientific_claim_allowed, op: equals, value: false}
         - {field: code_commit, op: nonempty}
       replay_artifacts:
         - {path_field: raw_mask_endpoint.path, sha256_field: raw_mask_endpoint.sha256}
-        - {path_field: human_mask_segmentation.path, sha256_field: human_mask_segmentation.sha256}
-        - {path_field: human_consensus_gold_report.path, sha256_field: human_consensus_gold_report.sha256}
-        - {path_field: human_consensus_gold_manifest.path, sha256_field: human_consensus_gold_manifest.sha256}
-        - {path_field: prediction_manifest.path, sha256_field: prediction_manifest.sha256}
-        - {path_field: blinded_human_audit.path, sha256_field: blinded_human_audit.sha256}
-        - {path_field: annotation_manifest.path, sha256_field: annotation_manifest.sha256}
-        - {path_field: task_manifest.path, sha256_field: task_manifest.sha256}
+        - {path_field: automatic_mask_audit.path, sha256_field: automatic_mask_audit.sha256}
+        - {path_field: automatic_mask_manifest.path, sha256_field: automatic_mask_manifest.sha256}
+        - {path_field: overlap_config.path, sha256_field: overlap_config.sha256}
         - {path_field: gate_config.path, sha256_field: gate_config.sha256}
 
     - id: calibration_perturbation_robustness

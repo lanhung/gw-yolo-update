@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# LEGACY OPTIONAL DIAGNOSTIC ONLY. Human consensus is not a publication gate.
+
 required=(
   TASK_PYTHON
   TASK_CODE_DIR

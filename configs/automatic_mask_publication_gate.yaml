@@ -1,0 +1,12 @@
+automatic_mask_publication_gate:
+  schema: automatic_mask_publication_gate_v1
+  protocol: frozen_deterministic_component_masks_before_locked_test
+  minimum_rows: 100
+  minimum_unique_glitches: 100
+  minimum_gps_blocks: 25
+  minimum_labels: 10
+  manual_annotation_required: false
+  human_ground_truth_claimed: false
+  require_soft_model_probabilities: true
+  require_unknown_glitch_abstention: true
+  pixel_accuracy_claim_allowed: false

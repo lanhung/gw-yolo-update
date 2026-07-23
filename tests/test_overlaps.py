@@ -217,10 +217,16 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
         assert arrays["detector_availability"].tolist() == [0, 1, 0]
         assert np.count_nonzero(arrays["features"][[0, 2]]) == 0
         assert np.count_nonzero(arrays["chirp_mask"][1]) > 0
-        assert np.array_equal(arrays["glitch_mask"], weak_mask)
+        assert np.count_nonzero(arrays["glitch_mask"][1]) > 0
+        assert np.array_equal(arrays["legacy_metadata_glitch_mask"], weak_mask)
         assert arrays["mixture_strain"][1] == pytest.approx(
             arrays["raw_glitch_strain"][1] + arrays["signal_strain"][1]
         )
+    assert row["mask_provenance"] == "isolated_real_glitch_component_power_v1"
+    assert row["automatic_pseudo_mask"] is True
+    assert row["human_pixel_mask"] is False
+    assert report["manual_annotation_required"] is False
+    assert report["automatic_pseudo_masks"] == 1
 
 
 def test_network_overlap_adds_coherent_signal_to_every_available_ifo(tmp_path) -> None:

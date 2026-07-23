@@ -191,6 +191,18 @@ def build_parser() -> argparse.ArgumentParser:
     raw_mask_human_endpoint_bind.add_argument("--gate-config", required=True)
     raw_mask_human_endpoint_bind.add_argument("--output", required=True)
 
+    raw_mask_automatic_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-automatic-endpoint-bind"
+    )
+    raw_mask_automatic_endpoint_bind.add_argument(
+        "--raw-mask-endpoint", required=True
+    )
+    raw_mask_automatic_endpoint_bind.add_argument(
+        "--automatic-mask-audit", required=True
+    )
+    raw_mask_automatic_endpoint_bind.add_argument("--gate-config", required=True)
+    raw_mask_automatic_endpoint_bind.add_argument("--output", required=True)
+
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
     candidate_search_frozen.add_argument("--test-time-slide-report", required=True)
@@ -1033,6 +1045,13 @@ def build_parser() -> argparse.ArgumentParser:
     mask_segmentation.add_argument("--output", required=True)
     mask_segmentation.add_argument("--bootstrap-replicates", type=int, default=10000)
     mask_segmentation.add_argument("--bootstrap-seed", type=int, default=20260720)
+
+    automatic_mask_audit = subparsers.add_parser(
+        "automatic-mask-policy-audit"
+    )
+    automatic_mask_audit.add_argument("--overlap-manifest", required=True)
+    automatic_mask_audit.add_argument("--overlap-config", required=True)
+    automatic_mask_audit.add_argument("--output", required=True)
 
     mask_annotation_serve = subparsers.add_parser(
         "gravityspy-mask-annotation-serve"
@@ -2418,6 +2437,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
             )
         )
+    elif args.command == "candidate-search-raw-mask-automatic-endpoint-bind":
+        from .automatic_mask import (
+            bind_raw_mask_automatic_publication_evidence,
+        )
+
+        _print(
+            bind_raw_mask_automatic_publication_evidence(
+                args.raw_mask_endpoint,
+                args.automatic_mask_audit,
+                args.gate_config,
+                args.output,
+            )
+        )
     elif args.command == "candidate-search-evaluate-frozen":
         _print(
             run_frozen_candidate_search_evaluation(
@@ -3475,6 +3507,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
+            )
+        )
+    elif args.command == "automatic-mask-policy-audit":
+        from .automatic_mask import audit_automatic_mask_policy
+
+        _print(
+            audit_automatic_mask_policy(
+                args.overlap_manifest,
+                args.overlap_config,
+                args.output,
             )
         )
     elif args.command == "gravityspy-mask-annotation-serve":

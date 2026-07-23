@@ -20,7 +20,9 @@ from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
 
 
-OVERLAP_ARTIFACT_VERSION = "gravityspy-physical-overlap-v2-network-aware"
+OVERLAP_ARTIFACT_VERSION = (
+    "gravityspy-physical-overlap-v3-automatic-component-masks"
+)
 OVERLAP_LEAKAGE_FIELDS = (
     "mixture_id",
     "injection_id",
@@ -336,6 +338,21 @@ def materialize_physical_overlaps(
         raise ValueError("Real-glitch overlap v1 supports self whitening only")
     if str(tensor.get("target_whitening", "morphology")) != "morphology":
         raise ValueError("Real-glitch overlap v1 supports morphology targets only")
+    glitch_mask_source = str(
+        tensor.get(
+            "glitch_mask_source",
+            "isolated_real_glitch_component_power_v1",
+        )
+    )
+    glitch_mask_fraction = float(
+        tensor.get("glitch_mask_fraction", tensor.get("mask_fraction", 0.08))
+    )
+    if (
+        glitch_mask_source != "isolated_real_glitch_component_power_v1"
+        or not 0 < glitch_mask_fraction < 1
+        or tensor.get("manual_annotation_required", False) is not False
+    ):
+        raise ValueError("automatic real-glitch mask policy is invalid")
 
     corpus_audit_sha256 = None
     if gravityspy_corpus_audit is not None:
@@ -375,7 +392,10 @@ def materialize_physical_overlaps(
             minimum_snr,
         )
         availability = gravity["availability"]
-        glitch_strain = raw_glitch
+        # Persist and transform the same quantized component so an independent
+        # audit can reproduce the pseudo-mask bit-for-bit from the NPZ alone.
+        stored_glitch_strain = raw_glitch.astype(np.float32)
+        glitch_strain = stored_glitch_strain.astype(np.float64)
         signal_strain = signal_active
         target_signal_strain = target_signal_active
         mixture_strain = glitch_strain + signal_strain
@@ -404,6 +424,23 @@ def materialize_physical_overlaps(
         chirp_mask = relative_component_mask(
             signal_power, float(tensor.get("mask_fraction", 0.08))
         )
+        whitened_glitch = np.zeros_like(glitch_strain)
+        for detector_index in np.flatnonzero(availability):
+            whitened_glitch[detector_index] = _whiten(
+                glitch_strain[detector_index]
+            )
+        glitch_power = multiresolution_power(
+            whitened_glitch,
+            target_rate,
+            q_values,
+            frequency_bins,
+            time_bins,
+            float(tensor["fmin"]),
+            float(tensor["fmax"]),
+        )
+        automatic_glitch_mask = relative_component_mask(
+            glitch_power, glitch_mask_fraction
+        )
         if np.any(features[availability == 0] != 0):
             raise RuntimeError("Unavailable detector planes must remain exactly zero")
         identity = {
@@ -423,8 +460,9 @@ def materialize_physical_overlaps(
             sample_path,
             features=features.astype(np.float16),
             chirp_mask=chirp_mask.astype(np.uint8),
-            glitch_mask=gravity["glitch_mask"].astype(np.uint8),
-            raw_glitch_strain=glitch_strain.astype(np.float32),
+            glitch_mask=automatic_glitch_mask.astype(np.uint8),
+            legacy_metadata_glitch_mask=gravity["glitch_mask"].astype(np.uint8),
+            raw_glitch_strain=stored_glitch_strain,
             signal_strain=signal_strain.astype(np.float64),
             target_signal_strain=target_signal_strain.astype(np.float64),
             mixture_strain=mixture_strain.astype(np.float32),
@@ -453,8 +491,11 @@ def materialize_physical_overlaps(
             "ml_label": glitch.get("ml_label"),
             "detector_availability": availability.tolist(),
             "available_ifos": list(gravity["available_ifos"]),
-            "mask_provenance": glitch.get("mask_provenance"),
-            "human_pixel_mask": bool(glitch.get("human_pixel_mask", False)),
+            "mask_provenance": glitch_mask_source,
+            "mask_fraction": glitch_mask_fraction,
+            "automatic_pseudo_mask": True,
+            "human_pixel_mask": False,
+            "legacy_metadata_mask_provenance": glitch.get("mask_provenance"),
             "glitch_artifact_sha256": str(glitch["sha256"]),
             "injection_materialized_sha256": str(injection["materialized_sha256"]),
             "training_signal_scale": float(injection.get("training_signal_scale", 1.0)),
@@ -481,8 +522,9 @@ def materialize_physical_overlaps(
         "search_claim_allowed": False,
         "network_coherence_claim_allowed": False,
         "reason": (
-            "Detector availability is preserved per source artifact; weak-mask audit, frozen "
-            "continuous-background evaluation and physical-lag coherence gates remain required"
+            "Detector availability is preserved per source artifact; deterministic automatic "
+            "mask replay, frozen continuous-background evaluation and physical-lag coherence "
+            "gates remain required"
         ),
         "artifact_version": OVERLAP_ARTIFACT_VERSION,
         "split": split,
@@ -517,8 +559,20 @@ def materialize_physical_overlaps(
         "detector_subset_counts": dict(
             Counter("".join(row["available_ifos"]) for row in records)
         ),
-        "weak_masks": sum(not row["human_pixel_mask"] for row in records),
+        "weak_masks": 0,
+        "automatic_pseudo_masks": sum(
+            bool(row["automatic_pseudo_mask"]) for row in records
+        ),
         "human_pixel_masks": sum(row["human_pixel_mask"] for row in records),
+        "manual_annotation_required": False,
+        "automatic_mask_policy": {
+            "source": glitch_mask_source,
+            "fraction": glitch_mask_fraction,
+            "whitening": "per_available_ifo_self_whitening",
+            "transform": "fresh_multi_q_numeric_power",
+            "threshold_selection": "frozen_fraction_of_per_plane_peak",
+            "human_ground_truth_claimed": False,
+        },
         "manifest_path": str(manifest),
         "manifest_sha256": file_sha256(manifest),
         "gravityspy_manifest_sha256": file_sha256(gravityspy_manifest),
@@ -531,7 +585,7 @@ def materialize_physical_overlaps(
         "seed": seed,
         "required_next_gates": [
             "joint_cross_split_overlap_audit",
-            "human_weak_mask_audit",
+            "automatic_mask_policy_replay",
             "continuous_background_far_ifar_vt",
         ]
         + (["aligned_companion_ifo_materialization"] if single_ifo_rows else [])

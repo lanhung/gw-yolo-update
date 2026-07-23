@@ -1,5 +1,10 @@
 # Blinded human mask annotation protocol
 
+> **Superseded for primary experiments (2026-07-23).** This protocol is retained only for
+> historical reproduction and optional disagreement analysis. Human masks are no longer training
+> targets, publication gates or O4b/GWTC-5 unlock prerequisites. See
+> `docs/AUTOMATIC_MASK_POLICY.md`.
+
 ## Purpose and boundary
 
 This protocol measures whether the validation-selected GW-YOLO glitch masks agree with independent

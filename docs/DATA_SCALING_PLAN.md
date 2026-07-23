@@ -623,65 +623,32 @@ known-event, context and category exclusions, leaving margin for the pre-registe
 target. Plan SHA256 is `d9043337438db689b581bade1922c1191ed52fde94ce056d460c4c9e74316d04`.
 It is a development acquisition plan, not measured live time or a search result. O4b remains locked.
 
-The weak-mask gate is executable rather than rhetorical. `gravityspy-mask-audit-plan` samples only
-the frozen numeric validation split, deterministically stratified by morphology. Each task requires
-an odd panel of at least three independent annotators blinded to the metadata-derived mask, so
-pixelwise majority consensus has no ties. `gravityspy-mask-audit-evaluate`
-hash-verifies NPZ masks and reports inter-annotator IoU, weak-versus-consensus IoU, per-label
-agreement and Wilson intervals. Only that narrow weak-mask agreement claim is enabled by a completed
-audit; segmentation, deglitch and search claims remain separate locked evaluations.
+The primary mask gate is deterministic and non-human. For each physical overlap, chirp support is
+recomputed from the isolated injected waveform component. Real-glitch support is a pseudo-mask
+recomputed from the isolated `raw_glitch_strain` using per-available-IFO whitening, a fresh numeric
+multi-Q transform and a frozen fraction of each plane's peak power. The original Gravity Spy
+duration/frequency/Q rectangle is retained only as a legacy diagnostic and is never used as human
+truth.
 
-`gravityspy-mask-consensus-materialize` converts the completed blinded audit into a hash-bound,
-validation-only gold mask bank. It recomputes every consensus from the original independent
-annotations, re-hashes the numeric sample and human masks, and refuses metric drift from the audit
-report. The resulting rows set `human_pixel_mask=true` but `training_allowed=false`: they may measure
-segmentation against human consensus, never leak validation annotations into weak-mask training.
-The plan now emits a separate annotator-facing manifest and per-task NPZ containing only numeric
-features plus non-target detector/Q metadata. The internal manifest retains weak-mask provenance for
-later scoring, but it is not an annotation input. Evaluation re-hashes the blinded files and rejects
-`mask`, `chirp_mask` or `glitch_mask` keys, making blinding an enforced data property rather than an
-instruction to the annotator.
+`automatic-mask-policy-audit` re-hashes every validation overlap and exactly recomputes both masks
+from the isolated numeric components and frozen overlap configuration. It rejects duplicate
+waveforms, injections, glitches or mixture IDs, non-finite arrays, missing detector-availability
+masks, changed hashes, empty component masks and any row claiming a human pixel target. The report
+explicitly sets `automatic_glitch_masks_are_pseudo_labels=true`,
+`human_ground_truth_claimed=false` and `pixel_accuracy_claim_allowed=false`.
 
-`gravityspy-mask-segmentation-predict` resolves either a one-seed validation-selected checkpoint or
-the exact champion named by the completed five-seed summary. For five seeds it follows the selected
-seed back to the byte-verified finetune report so the glitch threshold and checkpoint cannot come
-from different runs. It re-hashes the config/checkpoint, verifies detector/Q/shape/availability
-metadata in every original numeric sample, and exports one immutable probability tensor per audit
-task. No weak or human mask is passed through the model.
+The publication ledger requires
+`candidate-search-raw-mask-automatic-endpoint-bind`. The binder replays the deterministic mask
+audit and the complete validation-only raw/mask continuous-background endpoint. Consequently the
+paper claim is functional: fixed-FAR sensitivity, clean-signal non-inferiority, timing and paired PE
+robustness. It is not a claim that an inherently ambiguous real-glitch boundary has a unique pixel
+ground truth.
 
-`gravityspy-mask-segmentation-evaluate` is the only metric consumer of that gold bank. It
-requires exact one-to-one audit/glitch coverage, validation-only rows, immutable model/config/
-checkpoint/threshold-selection hashes and one common frozen threshold. It rejects test-selected
-checkpoints both from row metadata and from populated test fields in either selection report. Per-task pixel counts
-produce macro and pooled precision, recall, IoU and Dice; paired task bootstrap intervals and an
-IoU>=0.5 Wilson interval are reported overall and by glitch family. These remain validation promotion
-evidence only. Search, deglitch and locked-test claims require their separate predeclared endpoints.
-
-The publication ledger additionally requires
-`candidate-search-raw-mask-human-endpoint-bind`. The frozen
-`configs/human_mask_publication_gate.yaml` was committed before human-consensus segmentation
-results exist. It requires at least 90 unique validation glitches, at least 15 represented labels,
-at least 15 labels with three or more audited examples, 10,000 task bootstraps, macro-IoU lower 95%
-bound at least 0.35 and an IoU>=0.5 Wilson lower bound at least 0.40. Under-supported rare labels are
-retained and reported but cannot support a family-specific claim. The binder independently replays
-the complete raw/mask endpoint, blinded tasks and annotations, recomputes the human consensus,
-rehashes every gold and prediction mask and binds the frozen gate config. A continuous-background
-gain without this human-consensus endpoint is diagnostic only and cannot satisfy the paper ledger.
-
-`freeze_human_mask_publication_audit.sh` produces the annotator-facing blinded package, while
-`run_human_mask_publication_evidence.sh` automates audit evaluation, consensus materialization,
-model prediction, 10,000-bootstrap segmentation evaluation and final endpoint binding after three
-independent human annotations per task are available. Human annotations are intentionally not
-fabricated or replaced by model pseudo-labels. `run_human_mask_publication_queue.sh` waits without
-GPU use for the completed annotation manifest, promoted model and functional raw/mask endpoint,
-then waits for GPU idle and resumes the complete immutable evidence chain.
-
-`gravityspy-mask-annotation-serve` supplies the missing practical annotation surface. It binds to
-localhost only, renders one target-free numeric tensor at a time across all IFO/Q planes and writes
-atomic per-reviewer binary masks without exposing glitch labels, GPS/source identities, weak masks
-or model predictions. `gravityspy-mask-annotation-merge` accepts only three distinct, complete
-93-task manifests using the same protocol and hash-verifies all 279 masks. The operating and
-independence rules are frozen in `docs/HUMAN_MASK_ANNOTATION_PROTOCOL.md`.
+`run_automatic_mask_publication_evidence.sh` performs the audit and binding without waiting for
+people or using a GPU. Human annotation commands remain available solely to reproduce the earlier
+diagnostic experiment; they are no longer part of model training, publication readiness or the
+O4b/GWTC-5 unlock path. Disagreeing historical annotations remain separate and are never merged
+into primary labels.
 
 ## Group-safe chirp+glitch overlap scaling curve
 

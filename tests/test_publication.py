@@ -407,7 +407,7 @@ def test_official_validation_protocol_rejects_undersized_independent_endpoint(
     assert len(gate["artifact_replay"]) == 8
 
 
-def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
+def test_official_validation_protocol_requires_automatic_bound_raw_mask_receipt(
     tmp_path: Path,
 ) -> None:
     protocol = (
@@ -445,13 +445,9 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
     artifacts = {}
     for label in (
         "raw_mask_endpoint",
-        "human_mask_segmentation",
-        "human_consensus_gold_report",
-        "human_consensus_gold_manifest",
-        "prediction_manifest",
-        "blinded_human_audit",
-        "annotation_manifest",
-        "task_manifest",
+        "automatic_mask_audit",
+        "automatic_mask_manifest",
+        "overlap_config",
         "gate_config",
     ):
         path = tmp_path / f"{label}.json"
@@ -460,11 +456,17 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
     evidence.write_text(
         json.dumps(
             {
-                "status": "bound_validation_raw_mask_human_consensus_evidence",
+                "status": "bound_validation_raw_mask_automatic_evidence",
                 "passed": True,
                 "mask_locked_test_arm_eligible": True,
                 "functional_raw_mask_endpoint_passed": True,
-                    "human_consensus_segmentation_passed": True,
+                "automatic_mask_policy_passed": True,
+                "human_annotation_required": False,
+                "human_annotation_used": False,
+                "human_ground_truth_claimed": False,
+                "pixel_accuracy_claim_allowed": False,
+                "automatic_glitch_masks_are_pseudo_labels": True,
+                "negative_and_null_masks_retained": True,
                     "background_dependence_audits": {
                         arm: {
                             "status": "candidate_background_dependence_audit_v1",
@@ -480,13 +482,13 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
                     },
                     "validation_only": True,
                 "checks": {
-                    "minimum_tasks": True,
+                    "minimum_rows": True,
                     "minimum_unique_glitches": True,
+                    "minimum_gps_blocks": True,
                     "minimum_labels": True,
-                    "minimum_well_supported_labels": True,
-                    "minimum_bootstrap_replicates": True,
-                    "minimum_macro_iou_lower_95": True,
-                    "minimum_iou_ge_0_5_wilson_lower_95": True,
+                    "chirp_masks_replayed": True,
+                    "nonempty_glitch_masks": True,
+                    "automatic_replay": True,
                 },
                 "locked_test_prerequisites_satisfied": False,
                 "test_rows_read": 0,
@@ -506,7 +508,7 @@ def test_official_validation_protocol_requires_human_bound_raw_mask_receipt(
         row for row in passed["requirements"] if row["id"] == "paired_raw_mask_vt"
     )
     assert gate["state"] == "passed"
-    assert len(gate["artifact_replay"]) == 9
+    assert len(gate["artifact_replay"]) == 5
 
 
 def test_official_validation_protocol_requires_hard_endpoint_scaling_binding(

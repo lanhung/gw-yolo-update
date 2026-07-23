@@ -52,16 +52,16 @@ GPS-block overlap between threshold background and injection validation, exactly
 0.1/year FAR target and at least 10,000 bootstrap replicates.
 
 The paired raw/mask entry must be the output of
-`candidate-search-raw-mask-human-endpoint-bind`, not the standalone comparison JSON, unbound runner
+`candidate-search-raw-mask-automatic-endpoint-bind`, not the standalone comparison JSON, unbound runner
 receipt or functional-only raw/mask endpoint. The functional binder first replays the source
 receipt, purpose-disjoint background authorization, parent plan, both arm merges, both
 calibrations, mask validation/timing receipts and paired comparison. The publication binder then
-replays that complete endpoint together with a validation-only, three-annotator blinded
-human-consensus mask bank, its exact model predictions and the pre-result frozen mask-quality gate.
+replays that complete endpoint together with a validation-only deterministic component-mask audit
+and the pre-result frozen automatic-mask policy.
 This prevents a valid-looking comparison made on a pre-partition or capacity-insufficient plan
-from entering the ledger and prevents a functional fixed-FAR gain from being presented as an
-explicit mask-quality claim when predicted masks do not agree sufficiently with independent human
-segmentations.
+from entering the ledger. Automatic real-glitch masks remain pseudo-labels, so the ledger forbids a
+human-ground-truth or pixel-accuracy claim and evaluates scientific value through fixed-FAR search
+and paired downstream robustness.
 
 The detector-set OOD entry must be the output of
 `detector-set-ood-validation-bind`, not the inner embedding report or the runner receipt alone.

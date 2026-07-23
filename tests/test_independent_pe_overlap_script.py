@@ -220,8 +220,13 @@ def test_independent_pe_overlap_preflight_excludes_missing_detector_sets(
                 },
                 "aligned_network_rows": 1,
                 "single_ifo_rows": 0,
-                "weak_masks": 1,
+                "weak_masks": 0,
+                "automatic_pseudo_masks": 1,
                 "human_pixel_masks": 0,
+                "manual_annotation_required": False,
+                "automatic_mask_policy": {
+                    "human_ground_truth_claimed": False,
+                },
                 "code_commit": "test-commit",
             }
         ),

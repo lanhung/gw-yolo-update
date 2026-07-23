@@ -2082,7 +2082,7 @@ def run_physical_overlap_finetune(
         "scientific_claim_allowed": False,
         "search_claim_allowed": False,
         "scientific_blockers": [
-            "weak_glitch_mask_human_audit",
+            "automatic_mask_policy_replay",
             "aligned_multi_ifo_glitch_contexts",
             "continuous_background_far_ifar_vt",
             "five_seed_locked_evaluation",

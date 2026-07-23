@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# LEGACY OPTIONAL DIAGNOSTIC ONLY. Do not place this queue on the publication
+# critical path; use run_automatic_mask_publication_evidence.sh.
+
 required=(
   TASK_PYTHON
   TASK_CODE_DIR

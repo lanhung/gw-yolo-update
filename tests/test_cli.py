@@ -221,6 +221,52 @@ def test_locked_streaming_publication_and_merge_cli_route_exact_inputs() -> None
     )
 
 
+def test_automatic_mask_cli_routes_exact_inputs() -> None:
+    audit_target = "gwyolo.automatic_mask.audit_automatic_mask_policy"
+    with patch(audit_target, return_value={}) as audit:
+        assert (
+            main(
+                [
+                    "automatic-mask-policy-audit",
+                    "--overlap-manifest",
+                    "validation.jsonl",
+                    "--overlap-config",
+                    "overlap.yaml",
+                    "--output",
+                    "audit.json",
+                ]
+            )
+            == 0
+        )
+    audit.assert_called_once_with(
+        "validation.jsonl", "overlap.yaml", "audit.json"
+    )
+
+    bind_target = (
+        "gwyolo.automatic_mask.bind_raw_mask_automatic_publication_evidence"
+    )
+    with patch(bind_target, return_value={}) as bind:
+        assert (
+            main(
+                [
+                    "candidate-search-raw-mask-automatic-endpoint-bind",
+                    "--raw-mask-endpoint",
+                    "raw-mask.json",
+                    "--automatic-mask-audit",
+                    "audit.json",
+                    "--gate-config",
+                    "gate.yaml",
+                    "--output",
+                    "endpoint.json",
+                ]
+            )
+            == 0
+        )
+    bind.assert_called_once_with(
+        "raw-mask.json", "audit.json", "gate.yaml", "endpoint.json"
+    )
+
+
 def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
     target = "gwyolo.arrival_timing.run_detector_arrival_timing_validation_stratification"
     with patch(target, return_value={}) as stratify:

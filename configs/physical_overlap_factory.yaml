@@ -6,6 +6,9 @@ overlap_factory:
     whitening: self
     target_whitening: morphology
     mask_fraction: 0.08
+    glitch_mask_source: isolated_real_glitch_component_power_v1
+    glitch_mask_fraction: 0.08
+    manual_annotation_required: false
     minimum_ifo_mask_snr: 2.0
     frequency_bins: 96
     time_bins: 96
