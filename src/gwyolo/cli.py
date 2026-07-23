@@ -177,6 +177,9 @@ def build_parser() -> argparse.ArgumentParser:
     raw_mask_calibration.add_argument(
         "--minimum-injection-gps-blocks", type=int, default=25
     )
+    raw_mask_calibration.add_argument(
+        "--detector-set-ranking-successor"
+    )
 
     raw_mask_endpoint_bind = subparsers.add_parser(
         "candidate-search-raw-mask-endpoint-bind"
@@ -1608,6 +1611,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--background-plan-authorization"
     )
 
+    raw_mask_detector_ranking = subparsers.add_parser(
+        "raw-mask-detector-set-ranking-successor-freeze"
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--mask-timing-receipt", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--raw-variable-ranking-report", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--mask-variable-ranking-report", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--network-config", required=True
+    )
+    raw_mask_detector_ranking.add_argument("--output", required=True)
+
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
     exposure_plan.add_argument("--output", required=True)
@@ -2541,6 +2561,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.seed,
                 args.minimum_injection_gps_blocks,
+                args.detector_set_ranking_successor,
             )
         )
     elif args.command == "candidate-search-raw-mask-endpoint-bind":
@@ -4209,6 +4230,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.zero_count_confidence,
                 args.maximum_shifts,
                 args.exposure_safety_factor,
+            )
+        )
+    elif (
+        args.command
+        == "raw-mask-detector-set-ranking-successor-freeze"
+    ):
+        from .candidate_pipeline import (
+            freeze_raw_mask_detector_set_ranking_successor,
+        )
+
+        _print(
+            freeze_raw_mask_detector_set_ranking_successor(
+                args.mask_timing_receipt,
+                args.raw_variable_ranking_report,
+                args.mask_variable_ranking_report,
+                args.network_config,
+                args.output,
             )
         )
     elif args.command == "candidate-time-slide-merge":

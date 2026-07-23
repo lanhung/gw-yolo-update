@@ -7,6 +7,7 @@ import pytest
 
 from gwyolo.candidate_pipeline import (
     compare_candidate_validation_pipelines,
+    freeze_raw_mask_detector_set_ranking_successor,
     recalibrate_candidate_validation_pipeline_with_block_permutations,
     recalibrate_candidate_validation_pipeline_with_detector_sets,
     select_candidate_timing_method,
@@ -32,6 +33,160 @@ def test_candidate_pipeline_selects_only_calibrated_local_cluster_method() -> No
     method, uncertainty = select_candidate_timing_method(calibration)
     assert method == "local_whitened_strain_envelope_per_mask_cluster_v1"
     assert uncertainty == 0.004
+
+
+def test_raw_mask_detector_set_ranking_successor_replays_sources(
+    tmp_path: Path,
+) -> None:
+    timing_root = tmp_path / "timing"
+    timing_root.mkdir()
+    timing_reports = {}
+    ranking_reports = {}
+    score_reports = {}
+    variable_reports = {}
+    for arm in ("raw", "mask"):
+        timing_report = timing_root / f"{arm}-timing.json"
+        timing_report.write_text(json.dumps({"arm": arm}))
+        timing_reports[arm] = {
+            "path": str(timing_report.resolve()),
+            "sha256": file_sha256(timing_report),
+        }
+        trigger = timing_root / f"{arm}-triggers.jsonl"
+        trigger.write_text('{"injection_id":"i"}\n')
+        score = timing_root / f"{arm}-score.json"
+        score.write_text(
+            json.dumps({"triggers_path": str(trigger.resolve())})
+        )
+        score_reports[f"{arm}_score_report"] = {
+            "path": str(score.resolve()),
+            "sha256": file_sha256(score),
+        }
+        candidate_dir = timing_root / f"{arm}_injection_candidates"
+        candidate_dir.mkdir()
+        candidate_report = (
+            candidate_dir / "injection_candidate_extraction_report.json"
+        )
+        candidate_report.write_text(json.dumps({"arm": arm}))
+        calibrated = (
+            timing_root / f"{arm}_injection_candidates_calibrated.jsonl"
+        )
+        calibrated.write_text('{"candidate_id":"c"}\n')
+        source_ranking = timing_root / f"{arm}-source-ranking.json"
+        source_ranking.write_text(
+            json.dumps(
+                {
+                    "status": (
+                        "physical_network_injection_candidate_rankings"
+                    ),
+                    "split": "val",
+                    "injection_trigger_manifest_sha256": file_sha256(
+                        trigger
+                    ),
+                    "candidate_manifest_sha256": file_sha256(calibrated),
+                    "candidate_checkpoint_sha256": "a" * 64,
+                    "candidate_config_sha256": "b" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+        )
+        ranking_reports[arm] = {
+            "path": str(source_ranking.resolve()),
+            "sha256": file_sha256(source_ranking),
+            "candidate_extraction_report_path": str(
+                candidate_report.resolve()
+            ),
+            "candidate_extraction_report_sha256": file_sha256(
+                candidate_report
+            ),
+        }
+        variable_manifest = timing_root / f"{arm}-variable.jsonl"
+        variable_manifest.write_text(
+            '{"split":"val","injection_id":"i"}\n'
+        )
+        variable_report = timing_root / f"{arm}-variable-report.json"
+        variable_reports[arm] = variable_report
+        variable_report.write_text(
+            json.dumps(
+                {
+                    "status": (
+                        "physical_variable_detector_set_injection_candidate_rankings"
+                    ),
+                    "split": "val",
+                    "config_sha256": file_sha256(
+                        Path(__file__).parents[1]
+                        / "configs"
+                        / "network_coherence_h1_l1_v1.yaml"
+                    ),
+                    "injection_trigger_manifest_sha256": file_sha256(
+                        trigger
+                    ),
+                    "candidate_manifest_sha256": file_sha256(calibrated),
+                    "timing_calibration_report_sha256": file_sha256(
+                        timing_report
+                    ),
+                    "candidate_checkpoint_sha256": "a" * 64,
+                    "candidate_config_sha256": "b" * 64,
+                    "candidate_code_commit": "deadbee",
+                    "timing_calibration_consistent": True,
+                    "candidate_scoring_provenance_consistent": True,
+                    "required_detector_subsets": [
+                        "H1+L1",
+                        "H1+V1",
+                        "L1+V1",
+                        "H1+L1+V1",
+                    ],
+                    "manifest_path": str(variable_manifest.resolve()),
+                    "manifest_sha256": file_sha256(variable_manifest),
+                }
+            )
+        )
+    timing_receipt = tmp_path / "mask-timing.json"
+    timing_receipt.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_mask_timing_gate",
+                "coherent_background_scale_allowed": True,
+                "raw_timing_gate_passed": True,
+                "mask_timing_gate_passed": True,
+                "test_rows_read": 0,
+                "locked_test_allowed": False,
+                "timing_reports": timing_reports,
+                "injection_ranking_reports": ranking_reports,
+                **score_reports,
+            }
+        )
+    )
+    network_config = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "network_coherence_h1_l1_v1.yaml"
+    )
+    result = freeze_raw_mask_detector_set_ranking_successor(
+        timing_receipt,
+        variable_reports["raw"],
+        variable_reports["mask"],
+        network_config,
+        tmp_path / "successor.json",
+    )
+    assert set(result["arms"]) == {"raw", "mask"}
+    assert result["arms"]["mask"]["timing_report"]["sha256"] == (
+        timing_reports["mask"]["sha256"]
+    )
+
+    tampered = json.loads(
+        variable_reports["mask"].read_text(encoding="utf-8")
+    )
+    tampered["candidate_manifest_sha256"] = "f" * 64
+    bad_mask = tmp_path / "bad-mask-variable-report.json"
+    bad_mask.write_text(json.dumps(tampered))
+    with pytest.raises(ValueError, match="lineage replay"):
+        freeze_raw_mask_detector_set_ranking_successor(
+            timing_receipt,
+            variable_reports["raw"],
+            bad_mask,
+            network_config,
+            tmp_path / "bad-successor.json",
+        )
 
 
 def test_candidate_pipeline_refuses_resolution_only_timing() -> None:

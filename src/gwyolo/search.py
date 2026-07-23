@@ -1376,6 +1376,7 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     bootstrap_replicates: int = 10000,
     seed: int = 20260720,
     minimum_injection_gps_blocks: int = 25,
+    detector_set_ranking_successor: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compare raw/mask validation rankings at independently frozen common-FAR thresholds."""
 
@@ -1433,6 +1434,31 @@ def run_paired_raw_mask_candidate_calibration_comparison(
     ):
         raise ValueError("paired raw/mask comparison requires a passing timing receipt")
 
+    ranking_successor = None
+    if detector_set_ranking_successor is not None:
+        successor_path = Path(detector_set_ranking_successor).resolve()
+        ranking_successor = json.loads(
+            successor_path.read_text(encoding="utf-8")
+        )
+        source_timing = ranking_successor.get(
+            "source_mask_timing_receipt",
+            {},
+        )
+        if (
+            ranking_successor.get("status")
+            != "variable_detector_set_raw_mask_ranking_successor_v1"
+            or ranking_successor.get("scientific_claim_allowed") is not False
+            or int(ranking_successor.get("test_rows_read", -1)) != 0
+            or ranking_successor.get("test_evaluation") is not None
+            or Path(str(source_timing.get("path", ""))).resolve()
+            != timing_path
+            or source_timing.get("sha256") != file_sha256(timing_path)
+            or set(ranking_successor.get("arms", {})) != {"raw", "mask"}
+        ):
+            raise ValueError(
+                "variable-detector raw/mask ranking successor is invalid"
+            )
+
     def load_arm(
         arm: str, calibration_value: str | Path
     ) -> tuple[Path, dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -1468,19 +1494,86 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             != file_sha256(slide_path)
         ):
             raise ValueError(f"{arm} candidate calibration failed replay")
-        timing_ranking = timing.get("injection_ranking_reports", {}).get(arm, {})
-        if (
-            Path(str(timing_ranking.get("path", ""))).resolve() != ranking_path
-            or timing_ranking.get("sha256") != file_sha256(ranking_path)
-        ):
-            raise ValueError(f"{arm} calibration differs from the timing-gate rankings")
+        timing_ranking = timing.get(
+            "injection_ranking_reports",
+            {},
+        ).get(arm, {})
+        if ranking_successor is None:
+            if (
+                Path(str(timing_ranking.get("path", ""))).resolve()
+                != ranking_path
+                or timing_ranking.get("sha256")
+                != file_sha256(ranking_path)
+            ):
+                raise ValueError(
+                    f"{arm} calibration differs from the timing-gate rankings"
+                )
+            expected_status: str | tuple[str, ...] = (
+                "physical_network_injection_candidate_rankings"
+            )
+        else:
+            successor_arm = ranking_successor["arms"][arm]
+            source_identity = successor_arm.get(
+                "source_ranking_report",
+                {},
+            )
+            variable_identity = successor_arm.get(
+                "variable_ranking_report",
+                {},
+            )
+            variable_report = json.loads(
+                ranking_path.read_text(encoding="utf-8")
+            )
+            candidate_identity = successor_arm.get(
+                "calibrated_candidate_manifest",
+                {},
+            )
+            trigger_identity = successor_arm.get(
+                "injection_trigger_manifest",
+                {},
+            )
+            timing_identity = timing.get("timing_reports", {}).get(
+                arm,
+                {},
+            )
+            timing_report_path = Path(
+                str(timing_identity.get("path", ""))
+            ).resolve()
+            if (
+                Path(str(source_identity.get("path", ""))).resolve()
+                != Path(str(timing_ranking.get("path", ""))).resolve()
+                or source_identity.get("sha256")
+                != timing_ranking.get("sha256")
+                or Path(str(variable_identity.get("path", ""))).resolve()
+                != ranking_path
+                or variable_identity.get("sha256")
+                != file_sha256(ranking_path)
+                or variable_report.get("injection_trigger_manifest_sha256")
+                != trigger_identity.get("sha256")
+                or variable_report.get("candidate_manifest_sha256")
+                != candidate_identity.get("sha256")
+                or not timing_report_path.is_file()
+                or timing_identity.get("sha256")
+                != file_sha256(timing_report_path)
+                or variable_report.get("timing_calibration_report_sha256")
+                != timing_identity.get("sha256")
+            ):
+                raise ValueError(
+                    f"{arm} variable-detector ranking lineage differs"
+                )
+            expected_status = (
+                "physical_variable_detector_set_injection_candidate_rankings"
+            )
         ranking, rows = _verified_candidate_search_artifact(
             ranking_path,
-            "physical_network_injection_candidate_rankings",
+            expected_status,
             "val",
         )
         slide = json.loads(slide_path.read_text(encoding="utf-8"))
-        if slide.get("status") != "subwindow_clustered_time_slide_integration_only":
+        if slide.get("status") not in {
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_block_permutation_background",
+        }:
             raise ValueError(f"{arm} calibration uses an invalid block-background report")
         return calibration_path, calibration, ranking, rows, slide
 
@@ -1504,12 +1597,28 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         "physical_delay_limit_seconds",
         "reference_ifo",
         "second_ifo",
+        "detector_set_policy",
     )
     if any(
         raw.get("identity", {}).get(field) != mask.get("identity", {}).get(field)
         for field in common_identity_fields
     ):
         raise ValueError("raw/mask candidate calibrations differ in their model/physics identity")
+    for field in (
+        "required_detector_subsets",
+        "pairwise_light_travel_time_seconds",
+    ):
+        if (
+            raw.get("identity", {})
+            .get("network_coherence_policy", {})
+            .get(field)
+            != mask.get("identity", {})
+            .get("network_coherence_policy", {})
+            .get(field)
+        ):
+            raise ValueError(
+                "raw/mask candidate calibrations differ in network physics"
+            )
     common_background_fields = (
         "background_manifest_sha256",
         "background_pairing_method",
@@ -1520,6 +1629,9 @@ def run_paired_raw_mask_candidate_calibration_comparison(
         "slide_schedule_sha256",
         "slide_schedule_id",
         "slide_count",
+        "required_detector_subsets",
+        "pairwise_light_travel_time_seconds",
+        "network_config_sha256",
     )
     if any(raw_slide.get(field) != mask_slide.get(field) for field in common_background_fields):
         raise ValueError("raw/mask calibrations do not use identical physical background exposure")
@@ -1635,6 +1747,18 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             "path": str(timing_path),
             "sha256": file_sha256(timing_path),
         },
+        "detector_set_ranking_successor": (
+            {
+                "path": str(
+                    Path(detector_set_ranking_successor).resolve()
+                ),
+                "sha256": file_sha256(
+                    detector_set_ranking_successor
+                ),
+            }
+            if detector_set_ranking_successor is not None
+            else None
+        ),
         "raw_timing_calibration_report_sha256": raw_ranking[
             "timing_calibration_report_sha256"
         ],

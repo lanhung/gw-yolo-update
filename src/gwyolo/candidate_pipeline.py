@@ -53,6 +53,179 @@ def select_candidate_timing_method(calibration: dict[str, Any]) -> tuple[str, fl
     return name, uncertainty
 
 
+def freeze_raw_mask_detector_set_ranking_successor(
+    mask_timing_receipt: str | Path,
+    raw_variable_ranking_report: str | Path,
+    mask_variable_ranking_report: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind raw/mask H1/L1/V1 rankings to their frozen timing artifacts."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "raw/mask detector-set ranking successors are immutable"
+        )
+    timing_path = Path(mask_timing_receipt).resolve()
+    timing = json.loads(timing_path.read_text(encoding="utf-8"))
+    config_path = Path(network_config).resolve()
+    config = load_yaml(config_path)
+    policy = config.get("network_coherence", {})
+    if (
+        timing.get("status")
+        != "completed_validation_only_mask_timing_gate"
+        or timing.get("coherent_background_scale_allowed") is not True
+        or timing.get("raw_timing_gate_passed") is not True
+        or timing.get("mask_timing_gate_passed") is not True
+        or int(timing.get("test_rows_read", -1)) != 0
+        or timing.get("locked_test_allowed") is not False
+        or policy.get("schema")
+        != "h1_l1_v1_pairwise_light_travel_v1"
+    ):
+        raise ValueError(
+            "raw/mask detector-set successor requires frozen timing/network gates"
+        )
+    variable_paths = {
+        "raw": Path(raw_variable_ranking_report).resolve(),
+        "mask": Path(mask_variable_ranking_report).resolve(),
+    }
+    arms = {}
+    for arm, variable_path in variable_paths.items():
+        timing_identity = timing.get("timing_reports", {}).get(arm, {})
+        timing_report_path = Path(
+            str(timing_identity.get("path", ""))
+        ).resolve()
+        source_identity = timing.get(
+            "injection_ranking_reports",
+            {},
+        ).get(arm, {})
+        source_path = Path(
+            str(source_identity.get("path", ""))
+        ).resolve()
+        candidate_report_path = Path(
+            str(
+                source_identity.get(
+                    "candidate_extraction_report_path",
+                    "",
+                )
+            )
+        ).resolve()
+        score_identity = timing.get(f"{arm}_score_report", {})
+        score_path = Path(str(score_identity.get("path", ""))).resolve()
+        if (
+            not timing_report_path.is_file()
+            or timing_identity.get("sha256")
+            != file_sha256(timing_report_path)
+            or not source_path.is_file()
+            or source_identity.get("sha256") != file_sha256(source_path)
+            or not candidate_report_path.is_file()
+            or source_identity.get("candidate_extraction_report_sha256")
+            != file_sha256(candidate_report_path)
+            or not score_path.is_file()
+            or score_identity.get("sha256") != file_sha256(score_path)
+            or not variable_path.is_file()
+        ):
+            raise ValueError(
+                f"{arm} raw/mask detector-set source replay failed"
+            )
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        score = json.loads(score_path.read_text(encoding="utf-8"))
+        variable = json.loads(variable_path.read_text(encoding="utf-8"))
+        trigger_path = Path(
+            str(score.get("triggers_path", ""))
+        ).resolve()
+        calibrated_path = (
+            candidate_report_path.parent.parent
+            / f"{arm}_injection_candidates_calibrated.jsonl"
+        ).resolve()
+        manifest_path = Path(
+            str(variable.get("manifest_path", ""))
+        ).resolve()
+        if (
+            source.get("status")
+            != "physical_network_injection_candidate_rankings"
+            or source.get("split") != "val"
+            or not trigger_path.is_file()
+            or source.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or not calibrated_path.is_file()
+            or source.get("candidate_manifest_sha256")
+            != file_sha256(calibrated_path)
+            or variable.get("status")
+            != "physical_variable_detector_set_injection_candidate_rankings"
+            or variable.get("split") != "val"
+            or variable.get("config_sha256") != file_sha256(config_path)
+            or variable.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or variable.get("candidate_manifest_sha256")
+            != file_sha256(calibrated_path)
+            or variable.get("timing_calibration_report_sha256")
+            != file_sha256(timing_report_path)
+            or variable.get("candidate_checkpoint_sha256")
+            != source.get("candidate_checkpoint_sha256")
+            or variable.get("candidate_config_sha256")
+            != source.get("candidate_config_sha256")
+            or variable.get("candidate_code_commit")
+            != source.get("candidate_code_commit")
+            or variable.get("timing_calibration_consistent") is not True
+            or variable.get("candidate_scoring_provenance_consistent")
+            is not True
+            or variable.get("required_detector_subsets")
+            != [
+                "+".join(str(value) for value in subset)
+                for subset in policy["detector_subsets"]
+            ]
+            or not manifest_path.is_file()
+            or variable.get("manifest_sha256")
+            != file_sha256(manifest_path)
+        ):
+            raise ValueError(
+                f"{arm} variable-detector ranking failed lineage replay"
+            )
+        arms[arm] = {
+            "source_ranking_report": {
+                "path": str(source_path),
+                "sha256": file_sha256(source_path),
+            },
+            "variable_ranking_report": {
+                "path": str(variable_path),
+                "sha256": file_sha256(variable_path),
+            },
+            "injection_trigger_manifest": {
+                "path": str(trigger_path),
+                "sha256": file_sha256(trigger_path),
+            },
+            "calibrated_candidate_manifest": {
+                "path": str(calibrated_path),
+                "sha256": file_sha256(calibrated_path),
+            },
+            "timing_report": {
+                "path": str(timing_report_path),
+                "sha256": file_sha256(timing_report_path),
+            },
+        }
+    result = {
+        "status": "variable_detector_set_raw_mask_ranking_successor_v1",
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_mask_timing_receipt": {
+            "path": str(timing_path),
+            "sha256": file_sha256(timing_path),
+        },
+        "network_config": {
+            "path": str(config_path),
+            "sha256": file_sha256(config_path),
+            "config_hash": canonical_hash(config, 64),
+        },
+        "arms": arms,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def validate_candidate_model_selection(
     selection_report_path: str | Path,
     checkpoint: str | Path,
