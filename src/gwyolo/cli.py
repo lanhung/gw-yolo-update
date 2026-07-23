@@ -1741,6 +1741,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     raw_mask_detector_ranking.add_argument("--output", required=True)
 
+    numeric_raw_mask_detector_ranking = subparsers.add_parser(
+        "numeric-raw-mask-detector-set-ranking-successor-freeze"
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-validation-receipt", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-timing-receipt", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--raw-variable-ranking-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-variable-ranking-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--raw-timing-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-timing-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--background-deglitch-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--injection-deglitch-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--network-config", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--output", required=True
+    )
+
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
     exposure_plan.add_argument("--output", required=True)
@@ -4486,6 +4520,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.mask_timing_receipt,
                 args.raw_variable_ranking_report,
                 args.mask_variable_ranking_report,
+                args.network_config,
+                args.output,
+            )
+        )
+    elif (
+        args.command
+        == "numeric-raw-mask-detector-set-ranking-successor-freeze"
+    ):
+        from .candidate_pipeline import (
+            freeze_numeric_raw_mask_detector_set_ranking_successor,
+        )
+
+        _print(
+            freeze_numeric_raw_mask_detector_set_ranking_successor(
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.raw_variable_ranking_report,
+                args.mask_variable_ranking_report,
+                args.raw_timing_report,
+                args.mask_timing_report,
+                args.background_deglitch_report,
+                args.injection_deglitch_report,
                 args.network_config,
                 args.output,
             )

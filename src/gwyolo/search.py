@@ -1444,9 +1444,16 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             "source_mask_timing_receipt",
             {},
         )
+        successor_status = ranking_successor.get("status")
         if (
-            ranking_successor.get("status")
-            != "variable_detector_set_raw_mask_ranking_successor_v1"
+            successor_status
+            not in {
+                "variable_detector_set_raw_mask_ranking_successor_v1",
+                (
+                    "numeric_variable_detector_set_raw_mask_"
+                    "ranking_successor_v1"
+                ),
+            }
             or ranking_successor.get("scientific_claim_allowed") is not False
             or int(ranking_successor.get("test_rows_read", -1)) != 0
             or ranking_successor.get("test_evaluation") is not None
@@ -1513,10 +1520,6 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             )
         else:
             successor_arm = ranking_successor["arms"][arm]
-            source_identity = successor_arm.get(
-                "source_ranking_report",
-                {},
-            )
             variable_identity = successor_arm.get(
                 "variable_ranking_report",
                 {},
@@ -1532,18 +1535,39 @@ def run_paired_raw_mask_candidate_calibration_comparison(
                 "injection_trigger_manifest",
                 {},
             )
-            timing_identity = timing.get("timing_reports", {}).get(
-                arm,
+            numeric_successor = (
+                ranking_successor.get("status")
+                == (
+                    "numeric_variable_detector_set_raw_mask_"
+                    "ranking_successor_v1"
+                )
+            )
+            source_identity = successor_arm.get(
+                "source_ranking_report",
                 {},
+            )
+            timing_identity = (
+                successor_arm.get("timing_report", {})
+                if numeric_successor
+                else timing.get("timing_reports", {}).get(arm, {})
             )
             timing_report_path = Path(
                 str(timing_identity.get("path", ""))
             ).resolve()
             if (
-                Path(str(source_identity.get("path", ""))).resolve()
-                != Path(str(timing_ranking.get("path", ""))).resolve()
-                or source_identity.get("sha256")
-                != timing_ranking.get("sha256")
+                (
+                    not numeric_successor
+                    and (
+                        Path(
+                            str(source_identity.get("path", ""))
+                        ).resolve()
+                        != Path(
+                            str(timing_ranking.get("path", ""))
+                        ).resolve()
+                        or source_identity.get("sha256")
+                        != timing_ranking.get("sha256")
+                    )
+                )
                 or Path(str(variable_identity.get("path", ""))).resolve()
                 != ranking_path
                 or variable_identity.get("sha256")

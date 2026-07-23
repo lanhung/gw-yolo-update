@@ -226,6 +226,276 @@ def freeze_raw_mask_detector_set_ranking_successor(
     return result
 
 
+def freeze_numeric_raw_mask_detector_set_ranking_successor(
+    mask_validation_receipt: str | Path,
+    mask_timing_receipt: str | Path,
+    raw_variable_ranking_report: str | Path,
+    mask_variable_ranking_report: str | Path,
+    raw_timing_report: str | Path,
+    mask_timing_report: str | Path,
+    background_deglitch_report: str | Path,
+    injection_deglitch_report: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind a paired numeric-bank raw/mask variable-detector successor.
+
+    The independent six-arm and H1/L1 timing gates remain prerequisites, but
+    the four-subset injection rankings use their own paired numeric corpus and
+    independently calibrated raw/mask timing reports.
+    """
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "numeric raw/mask detector-set ranking successors are immutable"
+        )
+    validation_path = Path(mask_validation_receipt).resolve()
+    timing_gate_path = Path(mask_timing_receipt).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    timing_gate = json.loads(timing_gate_path.read_text(encoding="utf-8"))
+    pipeline_path = Path(
+        str(
+            validation.get("artifacts", {})
+            .get("pipeline_report", {})
+            .get("path", "")
+        )
+    ).resolve()
+    if (
+        validation.get("status")
+        != "completed_validation_only_mask_deglitch_gate"
+        or validation.get("execution_passed") is not True
+        or validation.get("development_gates_passed") is not True
+        or validation.get("scientific_claim_allowed") is not False
+        or validation.get("locked_test_allowed") is not False
+        or int(validation.get("test_rows_read", -1)) != 0
+        or not pipeline_path.is_file()
+        or validation.get("artifacts", {})
+        .get("pipeline_report", {})
+        .get("sha256")
+        != file_sha256(pipeline_path)
+        or timing_gate.get("status")
+        != "completed_validation_only_mask_timing_gate"
+        or timing_gate.get("coherent_background_scale_allowed") is not True
+        or timing_gate.get("raw_timing_gate_passed") is not True
+        or timing_gate.get("mask_timing_gate_passed") is not True
+        or int(timing_gate.get("test_rows_read", -1)) != 0
+        or Path(
+            str(timing_gate.get("mask_validation_receipt_path", ""))
+        ).resolve()
+        != validation_path
+        or timing_gate.get("mask_validation_receipt_sha256")
+        != file_sha256(validation_path)
+    ):
+        raise ValueError(
+            "numeric detector-set successor requires passing six-arm/timing gates"
+        )
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    strength = float(pipeline["strength"])
+    config_path = Path(network_config).resolve()
+    config = load_yaml(config_path)
+    policy = config.get("network_coherence", {})
+    if (
+        pipeline.get("status")
+        != "validation_only_end_to_end_mask_search_pipeline"
+        or pipeline.get("development_gates_passed") is not True
+        or pipeline.get("test_evaluation") is not None
+        or policy.get("schema")
+        != "h1_l1_v1_pairwise_light_travel_v1"
+    ):
+        raise ValueError(
+            "numeric detector-set successor lacks a valid mask/network policy"
+        )
+
+    cleaning_paths = {
+        "background": Path(background_deglitch_report).resolve(),
+        "injection": Path(injection_deglitch_report).resolve(),
+    }
+    cleaning = {
+        name: json.loads(path.read_text(encoding="utf-8"))
+        for name, path in cleaning_paths.items()
+    }
+    if (
+        cleaning["background"].get("status")
+        != "learned_mask_background_analysis_overrides"
+        or cleaning["background"].get("scientific_claim_allowed") is not False
+        or cleaning["background"].get("required_split") != "val"
+        or int(
+            cleaning["background"].get(
+                "numeric_background_primary_windows", 0
+            )
+        )
+        != int(cleaning["background"].get("windows", -1))
+        or int(cleaning["background"].get("windows", 0)) <= 0
+        or not cleaning["background"].get(
+            "numeric_background_bank_identity_hash"
+        )
+        or cleaning["injection"].get("status")
+        != "learned_mask_signal_retention_diagnostic"
+        or cleaning["injection"].get("scientific_claim_allowed") is not False
+        or int(cleaning["injection"].get("injections", 0)) <= 0
+        or not np.isclose(
+            float(cleaning["background"].get("strength", -1)),
+            strength,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(cleaning["injection"].get("strength", -1)),
+            strength,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    ):
+        raise ValueError(
+            "numeric detector-set successor cleaning lineage failed replay"
+        )
+
+    required_subsets = [
+        "+".join(str(value) for value in subset)
+        for subset in policy["detector_subsets"]
+    ]
+    ranking_paths = {
+        "raw": Path(raw_variable_ranking_report).resolve(),
+        "mask": Path(mask_variable_ranking_report).resolve(),
+    }
+    timing_paths = {
+        "raw": Path(raw_timing_report).resolve(),
+        "mask": Path(mask_timing_report).resolve(),
+    }
+    arms: dict[str, Any] = {}
+    common_identity: dict[str, Any] | None = None
+    injection_ids: dict[str, set[str]] = {}
+    for arm in ("raw", "mask"):
+        ranking_path = ranking_paths[arm]
+        arm_timing_path = timing_paths[arm]
+        ranking = json.loads(ranking_path.read_text(encoding="utf-8"))
+        arm_timing = json.loads(arm_timing_path.read_text(encoding="utf-8"))
+        method, uncertainty = select_candidate_timing_method(arm_timing)
+        manifest_path = Path(str(ranking.get("manifest_path", ""))).resolve()
+        trigger_path = Path(
+            str(ranking.get("injection_trigger_manifest_path", ""))
+        ).resolve()
+        candidate_path = Path(
+            str(ranking.get("candidate_manifest_path", ""))
+        ).resolve()
+        if (
+            ranking.get("status")
+            != "physical_variable_detector_set_injection_candidate_rankings"
+            or ranking.get("split") != "val"
+            or ranking.get("config_sha256") != file_sha256(config_path)
+            or ranking.get("required_detector_subsets") != required_subsets
+            or ranking.get("timing_calibration_report_sha256")
+            != file_sha256(arm_timing_path)
+            or ranking.get("timing_calibration_consistent") is not True
+            or ranking.get("candidate_scoring_provenance_consistent")
+            is not True
+            or method != timing_gate.get("required_method")
+            or uncertainty
+            > float(
+                policy["maximum_empirical_timing_uncertainty_seconds"]
+            )
+            or not manifest_path.is_file()
+            or ranking.get("manifest_sha256") != file_sha256(manifest_path)
+            or not trigger_path.is_file()
+            or ranking.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or not candidate_path.is_file()
+            or ranking.get("candidate_manifest_sha256")
+            != file_sha256(candidate_path)
+        ):
+            raise ValueError(
+                f"{arm} numeric variable-detector ranking failed lineage replay"
+            )
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        ids = {str(row["injection_id"]) for row in rows}
+        if not rows or len(ids) != len(rows):
+            raise ValueError(
+                f"{arm} numeric variable-detector rankings repeat injections"
+            )
+        injection_ids[arm] = ids
+        identity = {
+            key: ranking.get(key)
+            for key in (
+                "candidate_checkpoint_sha256",
+                "candidate_config_sha256",
+                "candidate_code_commit",
+                "required_detector_subsets",
+                "pairwise_light_travel_time_seconds",
+            )
+        }
+        if common_identity is None:
+            common_identity = identity
+        elif identity != common_identity:
+            raise ValueError(
+                "numeric raw/mask detector-set rankings differ in model/physics"
+            )
+        arms[arm] = {
+            "variable_ranking_report": {
+                "path": str(ranking_path),
+                "sha256": file_sha256(ranking_path),
+            },
+            "injection_trigger_manifest": {
+                "path": str(trigger_path),
+                "sha256": file_sha256(trigger_path),
+            },
+            "calibrated_candidate_manifest": {
+                "path": str(candidate_path),
+                "sha256": file_sha256(candidate_path),
+            },
+            "timing_report": {
+                "path": str(arm_timing_path),
+                "sha256": file_sha256(arm_timing_path),
+                "method": method,
+                "empirical_timing_uncertainty_seconds": uncertainty,
+            },
+        }
+    if injection_ids["raw"] != injection_ids["mask"]:
+        raise ValueError(
+            "numeric raw/mask detector-set rankings use different injections"
+        )
+    result = {
+        "status": (
+            "numeric_variable_detector_set_raw_mask_ranking_successor_v1"
+        ),
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_mask_validation_receipt": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "source_mask_timing_receipt": {
+            "path": str(timing_gate_path),
+            "sha256": file_sha256(timing_gate_path),
+        },
+        "network_config": {
+            "path": str(config_path),
+            "sha256": file_sha256(config_path),
+            "config_hash": canonical_hash(config, 64),
+        },
+        "cleaning": {
+            name: {
+                "path": str(path),
+                "sha256": file_sha256(path),
+            }
+            for name, path in cleaning_paths.items()
+        },
+        "numeric_background_bank_identity_hash": cleaning[
+            "background"
+        ]["numeric_background_bank_identity_hash"],
+        "deglitch_strength": strength,
+        "paired_injection_ids_hash": canonical_hash(
+            sorted(injection_ids["raw"]), 64
+        ),
+        "arms": arms,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def validate_candidate_model_selection(
     selection_report_path: str | Path,
     checkpoint: str | Path,

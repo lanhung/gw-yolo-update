@@ -7,6 +7,7 @@ import pytest
 
 from gwyolo.candidate_pipeline import (
     compare_candidate_validation_pipelines,
+    freeze_numeric_raw_mask_detector_set_ranking_successor,
     freeze_raw_mask_detector_set_ranking_successor,
     recalibrate_candidate_validation_pipeline_with_block_permutations,
     recalibrate_candidate_validation_pipeline_with_detector_sets,
@@ -187,6 +188,178 @@ def test_raw_mask_detector_set_ranking_successor_replays_sources(
             network_config,
             tmp_path / "bad-successor.json",
         )
+
+
+def test_numeric_raw_mask_detector_set_successor_binds_four_subset_lineage(
+    tmp_path: Path,
+) -> None:
+    network_config = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "network_coherence_h1_l1_v1.yaml"
+    )
+    pipeline = tmp_path / "mask-pipeline.json"
+    pipeline.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_end_to_end_mask_search_pipeline",
+                "development_gates_passed": True,
+                "test_evaluation": None,
+                "strength": 0.9,
+            }
+        )
+    )
+    validation = tmp_path / "mask-validation.json"
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_mask_deglitch_gate",
+                "execution_passed": True,
+                "development_gates_passed": True,
+                "scientific_claim_allowed": False,
+                "locked_test_allowed": False,
+                "test_rows_read": 0,
+                "artifacts": {
+                    "pipeline_report": {
+                        "path": str(pipeline.resolve()),
+                        "sha256": file_sha256(pipeline),
+                    }
+                },
+            }
+        )
+    )
+    method = "local_whitened_strain_envelope_per_mask_cluster_v1"
+    timing_gate = tmp_path / "mask-timing-gate.json"
+    timing_gate.write_text(
+        json.dumps(
+            {
+                "status": "completed_validation_only_mask_timing_gate",
+                "coherent_background_scale_allowed": True,
+                "raw_timing_gate_passed": True,
+                "mask_timing_gate_passed": True,
+                "test_rows_read": 0,
+                "required_method": method,
+                "mask_validation_receipt_path": str(validation.resolve()),
+                "mask_validation_receipt_sha256": file_sha256(validation),
+            }
+        )
+    )
+    background_cleaning = tmp_path / "background-cleaning.json"
+    background_cleaning.write_text(
+        json.dumps(
+            {
+                "status": "learned_mask_background_analysis_overrides",
+                "scientific_claim_allowed": False,
+                "required_split": "val",
+                "strength": 0.9,
+                "windows": 4,
+                "numeric_background_primary_windows": 4,
+                "numeric_background_bank_identity_hash": "a" * 64,
+            }
+        )
+    )
+    injection_cleaning = tmp_path / "injection-cleaning.json"
+    injection_cleaning.write_text(
+        json.dumps(
+            {
+                "status": "learned_mask_signal_retention_diagnostic",
+                "scientific_claim_allowed": False,
+                "strength": 0.9,
+                "injections": 4,
+            }
+        )
+    )
+    ranking_paths = {}
+    timing_paths = {}
+    for arm in ("raw", "mask"):
+        arm_timing = tmp_path / f"{arm}-timing.json"
+        arm_timing.write_text(
+            json.dumps(
+                {
+                    "methods": {
+                        method: {
+                            "calibration_gate_passed": True,
+                            "empirical_timing_uncertainty_seconds": 0.004,
+                        }
+                    }
+                }
+            )
+        )
+        timing_paths[arm] = arm_timing
+        triggers = tmp_path / f"{arm}-triggers.jsonl"
+        triggers.write_text('{"injection_id":"i"}\n')
+        candidates = tmp_path / f"{arm}-candidates.jsonl"
+        candidates.write_text('{"candidate_id":"c"}\n')
+        manifest = tmp_path / f"{arm}-rankings.jsonl"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "injection_id": "i",
+                    "waveform_id": "w",
+                    "split": "val",
+                }
+            )
+            + "\n"
+        )
+        ranking = tmp_path / f"{arm}-ranking-report.json"
+        ranking.write_text(
+            json.dumps(
+                {
+                    "status": (
+                        "physical_variable_detector_set_injection_candidate_rankings"
+                    ),
+                    "split": "val",
+                    "config_sha256": file_sha256(network_config),
+                    "required_detector_subsets": [
+                        "H1+L1",
+                        "H1+V1",
+                        "L1+V1",
+                        "H1+L1+V1",
+                    ],
+                    "pairwise_light_travel_time_seconds": {
+                        "H1+L1": 0.010012846152267725,
+                        "H1+V1": 0.027287979933397113,
+                        "L1+V1": 0.02644834101635671,
+                    },
+                    "timing_calibration_report_sha256": file_sha256(
+                        arm_timing
+                    ),
+                    "timing_calibration_consistent": True,
+                    "candidate_scoring_provenance_consistent": True,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                    "injection_trigger_manifest_path": str(
+                        triggers.resolve()
+                    ),
+                    "injection_trigger_manifest_sha256": file_sha256(
+                        triggers
+                    ),
+                    "candidate_manifest_path": str(candidates.resolve()),
+                    "candidate_manifest_sha256": file_sha256(candidates),
+                    "manifest_path": str(manifest.resolve()),
+                    "manifest_sha256": file_sha256(manifest),
+                }
+            )
+        )
+        ranking_paths[arm] = ranking
+    result = freeze_numeric_raw_mask_detector_set_ranking_successor(
+        validation,
+        timing_gate,
+        ranking_paths["raw"],
+        ranking_paths["mask"],
+        timing_paths["raw"],
+        timing_paths["mask"],
+        background_cleaning,
+        injection_cleaning,
+        network_config,
+        tmp_path / "numeric-successor.json",
+    )
+    assert result["status"] == (
+        "numeric_variable_detector_set_raw_mask_ranking_successor_v1"
+    )
+    assert set(result["arms"]) == {"raw", "mask"}
+    assert result["numeric_background_bank_identity_hash"] == "a" * 64
 
 
 def test_candidate_pipeline_refuses_resolution_only_timing() -> None:
