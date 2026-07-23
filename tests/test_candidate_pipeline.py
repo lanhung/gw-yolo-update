@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from gwyolo.candidate_pipeline import (
     compare_candidate_validation_pipelines,
     recalibrate_candidate_validation_pipeline_with_block_permutations,
+    recalibrate_candidate_validation_pipeline_with_detector_sets,
     select_candidate_timing_method,
     validate_candidate_model_selection,
 )
@@ -491,3 +493,186 @@ def test_candidate_pipeline_block_recalibration_closes_frozen_schedule(tmp_path)
             tmp_path / "recalibrated",
             zero_count_confidence=0.8,
         )
+
+
+def test_candidate_pipeline_detector_set_recalibration_matches_locked_policy(
+    tmp_path: Path,
+) -> None:
+    background_rows = []
+    background_candidates = []
+    provenance = {
+        "timing_empirically_calibrated": True,
+        "empirical_timing_uncertainty_seconds": 0.001,
+        "timing_calibration_report_sha256": "a" * 64,
+        "candidate_checkpoint_sha256": "b" * 64,
+        "candidate_config_sha256": "c" * 64,
+        "candidate_code_commit": "deadbee",
+    }
+    delays = {"H1": 0.001, "L1": 0.006, "V1": 0.021}
+    for block_index in range(5):
+        start = 1000.0 + block_index * 100.0
+        window_id = f"w{block_index}"
+        background_rows.append(
+            {
+                "window_id": window_id,
+                "split": "val",
+                "gps_start": start,
+                "gps_end": start + 8.0,
+                "gps_block": f"gps:{int(start)}:8",
+                "ifos": ["H1", "L1", "V1"],
+            }
+        )
+        for ifo, delay in delays.items():
+            background_candidates.append(
+                {
+                    "candidate_id": f"b{block_index}-{ifo}",
+                    "window_id": window_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": start + delay,
+                    "chirp_score": 0.8,
+                    "glitch_score_at_peak": 0.1,
+                    "bin_width_seconds": 0.005,
+                    "timing_resolution_seconds": 0.005,
+                    **provenance,
+                }
+            )
+    background = tmp_path / "background.jsonl"
+    background.write_text(
+        "".join(json.dumps(row) + "\n" for row in background_rows),
+        encoding="utf-8",
+    )
+    background_candidate_path = tmp_path / "background-candidates.jsonl"
+    background_candidate_path.write_text(
+        "".join(
+            json.dumps(row) + "\n" for row in background_candidates
+        ),
+        encoding="utf-8",
+    )
+
+    injection_rows = []
+    injection_candidates = []
+    for index in range(25):
+        gps = 5000.0 + index * 256.0
+        injection_id = f"i{index}"
+        injection_rows.append(
+            {
+                "injection_id": injection_id,
+                "waveform_id": f"wave{index}",
+                "split": "val",
+                "source_family": "BBH",
+                "stratum": "BBH",
+                "gps_block": f"gps:{int(gps)}:256",
+                "gps_time": gps,
+                "vt_weight": 1.0,
+                "vt_weight_unit": "relative",
+                "valid_ifos": ["H1", "L1", "V1"],
+                "detector_arrival_gps": {
+                    ifo: gps + delay for ifo, delay in delays.items()
+                },
+            }
+        )
+        for ifo, delay in delays.items():
+            injection_candidates.append(
+                {
+                    "candidate_id": f"{injection_id}-{ifo}",
+                    "injection_id": injection_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": gps + delay,
+                    "chirp_score": 0.9,
+                    "glitch_score_at_peak": 0.1,
+                    **provenance,
+                }
+            )
+    injection_triggers = tmp_path / "injection-triggers.jsonl"
+    injection_triggers.write_text(
+        "".join(json.dumps(row) + "\n" for row in injection_rows),
+        encoding="utf-8",
+    )
+    injection_candidate_path = tmp_path / "injection-candidates.jsonl"
+    injection_candidate_path.write_text(
+        "".join(
+            json.dumps(row) + "\n" for row in injection_candidates
+        ),
+        encoding="utf-8",
+    )
+
+    source = tmp_path / "source-pipeline.json"
+    source.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_clustered_candidate_search_pipeline",
+                "scientific_claim_allowed": False,
+                "test_evaluation": None,
+                "run_identity": {
+                    "background_manifest_sha256": file_sha256(background),
+                    "injection_manifest_sha256": "d" * 64,
+                    "cluster_window_seconds": 0.1,
+                    "target_far_per_year": 10_000_000.0,
+                    "bootstrap_replicates": 20,
+                    "seed": 1,
+                },
+                "time_slides": {
+                    "candidate_manifest_sha256": file_sha256(
+                        background_candidate_path
+                    )
+                },
+                "injection_rankings": {
+                    "injection_trigger_manifest_sha256": file_sha256(
+                        injection_triggers
+                    ),
+                    "candidate_manifest_sha256": file_sha256(
+                        injection_candidate_path
+                    ),
+                },
+                "empirical_timing_uncertainty_seconds": 0.001,
+            }
+        ),
+        encoding="utf-8",
+    )
+    network_config = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "network_coherence_h1_l1_v1.yaml"
+    )
+    result = recalibrate_candidate_validation_pipeline_with_detector_sets(
+        source,
+        background,
+        background_candidate_path,
+        injection_triggers,
+        injection_candidate_path,
+        network_config,
+        tmp_path / "detector-set",
+        maximum_shifts=1,
+    )
+    assert result["time_slides"]["required_detector_subsets"] == [
+        "H1+L1",
+        "H1+V1",
+        "L1+V1",
+        "H1+L1+V1",
+    ]
+    assert result["injection_rankings"]["ranked_injections"] == 25
+    assert result["frozen_search"]["selection_data"] == (
+        "validation_variable_detector_set_block_permutations_only"
+    )
+    assert result["frozen_search"]["slide_schedule_audit"][
+        "schedule_kind"
+    ] == "variable_detector_set_block_permutation"
+    assert result["frozen_search"]["background_dependence_audit"][
+        "status"
+    ] == "detector_set_candidate_background_dependence_audit_v1"
+    assert result["frozen_search"]["identity"]["detector_set_policy"] == (
+        "single_model_explicit_missing_ifo_validity_v1"
+    )
+    resumed = recalibrate_candidate_validation_pipeline_with_detector_sets(
+        source,
+        background,
+        background_candidate_path,
+        injection_triggers,
+        injection_candidate_path,
+        network_config,
+        tmp_path / "detector-set",
+        maximum_shifts=1,
+    )
+    assert resumed == result

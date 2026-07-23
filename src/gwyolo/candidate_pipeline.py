@@ -9,6 +9,8 @@ import numpy as np
 from .candidates import (
     run_apply_candidate_timing_calibration,
     run_candidate_block_permutations,
+    run_detector_set_candidate_block_permutations,
+    run_detector_set_injection_candidate_rankings,
     run_candidate_extraction,
     run_candidate_time_slides,
     run_candidate_timing_calibration,
@@ -18,7 +20,9 @@ from .candidates import (
 from .coherence import _pair_limit
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
+    DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
     freeze_candidate_block_permutation_schedule,
+    freeze_detector_set_block_permutation_schedule,
 )
 from .injection_score import score_materialized_injections
 from .injection_bootstrap import hierarchical_injection_bootstrap
@@ -110,6 +114,11 @@ def compare_candidate_validation_pipelines(
         "background_manifest_sha256",
         "injection_manifest_sha256",
         "coherence_config_sha256",
+        "network_config_sha256",
+        "detector_set_policy",
+        "detectors",
+        "detector_subsets",
+        "pairwise_light_travel_time_seconds",
         "reference_ifo",
         "second_ifo",
         "model_ifos",
@@ -151,6 +160,8 @@ def compare_candidate_validation_pipelines(
     }
     if resampling_methods != {None} and resampling_methods != {
         CANDIDATE_BLOCK_PERMUTATION_METHOD
+    } and resampling_methods != {
+        DETECTOR_SET_BLOCK_PERMUTATION_METHOD
     }:
         raise ValueError("Candidate pipelines use different background resampling methods")
 
@@ -485,6 +496,254 @@ def recalibrate_candidate_validation_pipeline_with_block_permutations(
             "calibration_path": str(calibration_path),
             "calibration_sha256": file_sha256(calibration_path),
             "zero_count_confidence": zero_count_confidence,
+            **execution_provenance(),
+        },
+    }
+    atomic_write_json(result_path, result)
+    return result
+
+
+def recalibrate_candidate_validation_pipeline_with_detector_sets(
+    pipeline_report_path: str | Path,
+    background_manifest: str | Path,
+    calibrated_background_candidate_manifest: str | Path,
+    injection_trigger_manifest: str | Path,
+    calibrated_injection_candidate_manifest: str | Path,
+    network_config: str | Path,
+    output_dir: str | Path,
+    zero_count_confidence: float = 0.90,
+    maximum_shifts: int | None = None,
+    exposure_safety_factor: float = 1.0,
+) -> dict[str, Any]:
+    """Promote a validation pipeline to the frozen H1/L1/V1 candidate policy."""
+
+    source_path = Path(pipeline_report_path).resolve()
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    if (
+        source.get("status")
+        != "validation_only_clustered_candidate_search_pipeline"
+        or source.get("scientific_claim_allowed") is not False
+        or source.get("test_evaluation") is not None
+    ):
+        raise ValueError(
+            "detector-set recalibration requires a validation-only pipeline"
+        )
+    identity = source.get("run_identity", {})
+    source_slides = source.get("time_slides", {})
+    source_rankings = source.get("injection_rankings", {})
+    inputs = {
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "background_candidate_manifest_sha256": file_sha256(
+            calibrated_background_candidate_manifest
+        ),
+        "injection_trigger_manifest_sha256": file_sha256(
+            injection_trigger_manifest
+        ),
+        "injection_candidate_manifest_sha256": file_sha256(
+            calibrated_injection_candidate_manifest
+        ),
+        "network_config_sha256": file_sha256(network_config),
+    }
+    if (
+        inputs["background_manifest_sha256"]
+        != identity.get("background_manifest_sha256")
+        or inputs["background_candidate_manifest_sha256"]
+        != source_slides.get("candidate_manifest_sha256")
+        or inputs["injection_trigger_manifest_sha256"]
+        != source_rankings.get("injection_trigger_manifest_sha256")
+        or inputs["injection_candidate_manifest_sha256"]
+        != source_rankings.get("candidate_manifest_sha256")
+    ):
+        raise ValueError(
+            "detector-set recalibration inputs differ from the source pipeline"
+        )
+    timing_uncertainty = float(
+        source["empirical_timing_uncertainty_seconds"]
+    )
+    cluster_window = float(identity["cluster_window_seconds"])
+    target_far = float(identity["target_far_per_year"])
+    bootstrap_replicates = int(identity["bootstrap_replicates"])
+    seed = int(identity["seed"])
+    if (
+        not 0 < zero_count_confidence < 1
+        or not np.isfinite(exposure_safety_factor)
+        or exposure_safety_factor < 1
+    ):
+        raise ValueError("detector-set recalibration settings are invalid")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    result_path = (
+        output
+        / "candidate_validation_detector_set_block_pipeline_report.json"
+    )
+    successor_identity = {
+        "source_pipeline_report_sha256": file_sha256(source_path),
+        **inputs,
+        "zero_count_confidence": zero_count_confidence,
+        "maximum_shifts": maximum_shifts,
+        "exposure_safety_factor": exposure_safety_factor,
+    }
+    if result_path.is_file():
+        prior = json.loads(result_path.read_text(encoding="utf-8"))
+        if (
+            prior.get("detector_set_block_recalibration", {}).get(
+                "successor_identity"
+            )
+            != successor_identity
+        ):
+            raise ValueError(
+                "completed detector-set pipeline has another identity"
+            )
+        return prior
+
+    schedule_path = (
+        output / "detector_set_block_permutation_schedule.json"
+    )
+    if not schedule_path.is_file():
+        freeze_detector_set_block_permutation_schedule(
+            background_manifest,
+            network_config,
+            schedule_path,
+            "val",
+            target_far,
+            zero_count_confidence,
+            maximum_shifts,
+            exposure_safety_factor,
+        )
+    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    if (
+        schedule.get("background_manifest_sha256")
+        != inputs["background_manifest_sha256"]
+        or schedule.get("network_config_sha256")
+        != inputs["network_config_sha256"]
+        or not np.isclose(
+            float(schedule.get("target_far_per_year", -1)),
+            target_far,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(schedule.get("zero_count_confidence", -1)),
+            zero_count_confidence,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(schedule.get("exposure_safety_factor", -1)),
+            exposure_safety_factor,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or schedule.get("required_detector_subsets_covered") is not True
+    ):
+        raise ValueError(
+            "detector-set block schedule identity or subset coverage differs"
+        )
+
+    background_dir = output / "detector_set_block_background"
+    background = run_detector_set_candidate_block_permutations(
+        calibrated_background_candidate_manifest,
+        background_manifest,
+        schedule_path,
+        background_dir,
+        timing_uncertainty,
+        cluster_window,
+    )
+    background_report_path = (
+        background_dir
+        / "val_detector_set_block_permutation_report.json"
+    )
+    ranking_dir = output / "detector_set_injection_rankings"
+    rankings = run_detector_set_injection_candidate_rankings(
+        injection_trigger_manifest,
+        calibrated_injection_candidate_manifest,
+        network_config,
+        ranking_dir,
+        "val",
+        timing_uncertainty,
+    )
+    ranking_report_path = (
+        ranking_dir
+        / "val_variable_detector_set_injection_candidate_ranking_report.json"
+    )
+    calibration_path = output / "frozen_candidate_search_calibration.json"
+    if calibration_path.is_file():
+        frozen = json.loads(calibration_path.read_text(encoding="utf-8"))
+        if (
+            frozen.get("validation_time_slide_report_sha256")
+            != file_sha256(background_report_path)
+            or frozen.get("validation_injection_ranking_report_sha256")
+            != file_sha256(ranking_report_path)
+        ):
+            raise ValueError(
+                "existing detector-set calibration has another identity"
+            )
+    else:
+        frozen = run_candidate_search_calibration(
+            background_report_path,
+            ranking_report_path,
+            target_far,
+            calibration_path,
+            bootstrap_replicates,
+            seed,
+            background_manifest,
+        )
+
+    policy = load_yaml(network_config)["network_coherence"]
+    run_identity = {
+        **identity,
+        "network_config_sha256": inputs["network_config_sha256"],
+        "detector_set_policy": policy["schema"],
+        "detectors": list(policy["detectors"]),
+        "detector_subsets": [
+            list(value) for value in policy["detector_subsets"]
+        ],
+        "pairwise_light_travel_time_seconds": dict(
+            policy["pairwise_light_travel_time_seconds"]
+        ),
+    }
+    result = {
+        **source,
+        "scientific_blocker": (
+            "variable-detector validation calibration is frozen; paired "
+            "five-seed promotion and one-time locked O4b evaluation remain"
+        ),
+        "run_identity": run_identity,
+        "time_slides": background,
+        "injection_rankings": rankings,
+        "frozen_search": frozen,
+        "time_slide_report_sha256": file_sha256(
+            background_report_path
+        ),
+        "injection_ranking_report_sha256": file_sha256(
+            ranking_report_path
+        ),
+        "frozen_calibration_report_sha256": file_sha256(
+            calibration_path
+        ),
+        "background_resampling_method": background[
+            "background_pairing_method"
+        ],
+        "detector_set_block_recalibration": {
+            "successor_identity": successor_identity,
+            "source_pipeline_report_path": str(source_path),
+            "schedule_path": str(schedule_path.resolve()),
+            "schedule_sha256": file_sha256(schedule_path),
+            "background_report_path": str(
+                background_report_path.resolve()
+            ),
+            "background_report_sha256": file_sha256(
+                background_report_path
+            ),
+            "injection_ranking_report_path": str(
+                ranking_report_path.resolve()
+            ),
+            "injection_ranking_report_sha256": file_sha256(
+                ranking_report_path
+            ),
+            "calibration_path": str(calibration_path.resolve()),
+            "calibration_sha256": file_sha256(calibration_path),
             **execution_provenance(),
         },
     }

@@ -1342,6 +1342,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--empirical-timing-uncertainty-seconds", type=float, required=True
     )
 
+    detector_set_block_permutations = subparsers.add_parser(
+        "detector-set-block-permutations"
+    )
+    detector_set_block_permutations.add_argument(
+        "--candidates", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--schedule", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--output-dir", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--empirical-timing-uncertainty-seconds",
+        type=float,
+        required=True,
+    )
+    detector_set_block_permutations.add_argument(
+        "--cluster-window-seconds", type=float, default=0.1
+    )
+
     candidate_slide_merge = subparsers.add_parser("candidate-time-slide-merge")
     candidate_slide_merge.add_argument("--report", action="append", required=True)
     candidate_slide_merge.add_argument("--output-dir", required=True)
@@ -1409,6 +1433,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--zero-count-confidence", type=float, default=0.90
     )
     candidate_block_schedule.add_argument("--maximum-shifts", type=int)
+
+    detector_set_block_schedule = subparsers.add_parser(
+        "detector-set-block-permutation-schedule-freeze"
+    )
+    detector_set_block_schedule.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--network-config", required=True
+    )
+    detector_set_block_schedule.add_argument("--output", required=True)
+    detector_set_block_schedule.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--target-far-per-year", type=float, required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+    detector_set_block_schedule.add_argument(
+        "--maximum-shifts", type=int
+    )
+    detector_set_block_schedule.add_argument(
+        "--exposure-safety-factor", type=float, default=1.0
+    )
 
     candidate_block_capacity = subparsers.add_parser(
         "candidate-block-permutation-capacity-forecast"
@@ -1510,6 +1560,40 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline_block.add_argument("--output-dir", required=True)
     candidate_pipeline_block.add_argument(
         "--zero-count-confidence", type=float, default=0.90
+    )
+
+    candidate_pipeline_detector_set = subparsers.add_parser(
+        "candidate-search-validation-detector-set-recalibrate"
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--pipeline-report", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--background-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--calibrated-background-candidate-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--injection-trigger-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--calibrated-injection-candidate-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--network-config", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--output-dir", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--maximum-shifts", type=int
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--exposure-safety-factor", type=float, default=1.0
     )
 
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
@@ -3922,6 +4006,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.empirical_timing_uncertainty_seconds,
             )
         )
+    elif args.command == "detector-set-block-permutations":
+        from .candidates import (
+            run_detector_set_candidate_block_permutations,
+        )
+
+        _print(
+            run_detector_set_candidate_block_permutations(
+                args.candidates,
+                args.background_manifest,
+                args.schedule,
+                args.output_dir,
+                args.empirical_timing_uncertainty_seconds,
+                args.cluster_window_seconds,
+            )
+        )
     elif args.command == "candidate-time-slide-range-schedule-freeze":
         from .exposure import freeze_candidate_time_slide_range_schedule
 
@@ -3952,6 +4051,26 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.zero_count_confidence,
                 args.maximum_shifts,
+            )
+        )
+    elif (
+        args.command
+        == "detector-set-block-permutation-schedule-freeze"
+    ):
+        from .exposure import (
+            freeze_detector_set_block_permutation_schedule,
+        )
+
+        _print(
+            freeze_detector_set_block_permutation_schedule(
+                args.background_manifest,
+                args.network_config,
+                args.output,
+                args.split,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+                args.maximum_shifts,
+                args.exposure_safety_factor,
             )
         )
     elif args.command == "candidate-block-permutation-capacity-forecast":
@@ -4052,6 +4171,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.injection_ranking_report,
                 args.output_dir,
                 args.zero_count_confidence,
+            )
+        )
+    elif (
+        args.command
+        == "candidate-search-validation-detector-set-recalibrate"
+    ):
+        from .candidate_pipeline import (
+            recalibrate_candidate_validation_pipeline_with_detector_sets,
+        )
+
+        _print(
+            recalibrate_candidate_validation_pipeline_with_detector_sets(
+                args.pipeline_report,
+                args.background_manifest,
+                args.calibrated_background_candidate_manifest,
+                args.injection_trigger_manifest,
+                args.calibrated_injection_candidate_manifest,
+                args.network_config,
+                args.output_dir,
+                args.zero_count_confidence,
+                args.maximum_shifts,
+                args.exposure_safety_factor,
             )
         )
     elif args.command == "candidate-time-slide-merge":
