@@ -6,9 +6,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from gwyolo.background_dependence import (
+    audit_detector_set_candidate_background_dependence,
+)
 from gwyolo.candidates import (
     _local_envelope_timing_refinement,
     build_candidate_time_slides,
+    build_detector_set_candidate_block_permutations,
     build_detector_set_candidate_time_slides,
     build_detector_set_injection_candidate_rankings,
     build_injection_candidate_rankings,
@@ -24,7 +28,9 @@ from gwyolo.candidates import (
 from gwyolo.exposure import (
     freeze_candidate_block_permutation_schedule,
     freeze_candidate_time_slide_schedule,
+    freeze_detector_set_block_permutation_schedule,
 )
+from gwyolo.io import file_sha256
 
 
 def test_temporal_clusters_preserve_multiple_candidates_and_refine_peak() -> None:
@@ -1001,6 +1007,129 @@ def test_detector_set_time_slides_use_independent_offsets_and_union_exposure() -
             [{"H1": 0.0, "L1": 10.0, "V1": 10.0}],
             0.1,
         )
+
+
+def test_detector_set_block_permutations_replay_all_hlv_subsets(
+    tmp_path: Path,
+) -> None:
+    windows = []
+    candidates = []
+    delays = {"H1": 0.001, "L1": 0.006, "V1": 0.021}
+    for block_index in range(5):
+        start = 1000.0 + block_index * 100.0
+        block = f"gps:{int(start)}:8"
+        window_id = f"w{block_index}"
+        windows.append(
+            {
+                "window_id": window_id,
+                "split": "val",
+                "gps_start": start,
+                "gps_end": start + 8.0,
+                "gps_block": block,
+                "ifos": ["H1", "L1", "V1"],
+            }
+        )
+        for ifo, delay in delays.items():
+            candidates.append(
+                {
+                    "candidate_id": f"c{block_index}-{ifo}",
+                    "window_id": window_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": start + delay,
+                    "chirp_score": 0.8,
+                    "glitch_score_at_peak": 0.1,
+                    "bin_width_seconds": 0.005,
+                    "timing_resolution_seconds": 0.005,
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": 0.001,
+                    "timing_calibration_report_sha256": "a" * 64,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+    background = tmp_path / "background.jsonl"
+    background.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows),
+        encoding="utf-8",
+    )
+    schedule_path = tmp_path / "schedule.json"
+    schedule = freeze_detector_set_block_permutation_schedule(
+        background,
+        Path(__file__).parents[1]
+        / "configs"
+        / "network_coherence_h1_l1_v1.yaml",
+        schedule_path,
+        "val",
+        target_far_per_year=10_000_000.0,
+        maximum_shifts=1,
+    )
+    rows, report = build_detector_set_candidate_block_permutations(
+        candidates,
+        windows,
+        schedule,
+        0.001,
+        0.1,
+    )
+
+    assert schedule["selected_shift_count"] == 1
+    assert schedule["permutations"][0]["shift_by_ifo"] == {
+        "H1": 0,
+        "L1": 1,
+        "V1": -1,
+    }
+    assert schedule["required_detector_subsets_covered"] is True
+    assert len(rows) == 5
+    assert {row["detector_subset"] for row in rows} == {"H1+L1+V1"}
+    assert all(
+        len(set(row["source_gps_blocks"].values())) == 3
+        for row in rows
+    )
+    assert report["equivalent_live_time_seconds"] == 40.0
+    assert report["slide_exposure"][0]["raw_coincidences"] == 20
+    assert report["slide_exposure"][0]["clustered_candidates"] == 5
+    assert report["publication_timing_gate_passed"] is True
+
+    candidate_path = tmp_path / "block-candidates.jsonl"
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    report.update(
+        {
+            "manifest_path": str(candidate_path.resolve()),
+            "manifest_sha256": file_sha256(candidate_path),
+            "background_manifest_sha256": file_sha256(background),
+            "slide_schedule_path": str(schedule_path.resolve()),
+            "slide_schedule_sha256": file_sha256(schedule_path),
+            "slide_schedule_id": schedule["schedule_id"],
+            "slide_schedule_count": schedule["selected_shift_count"],
+        }
+    )
+    report_path = tmp_path / "block-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    audit = audit_detector_set_candidate_background_dependence(
+        report_path,
+        background,
+        threshold=0.75,
+        bootstrap_replicates=100,
+        seed=7,
+        minimum_gps_blocks=3,
+        minimum_shifts=1,
+        minimum_effective_gps_blocks=1,
+        minimum_effective_shifts=1,
+        maximum_exposure_fraction_per_gps_block=1,
+        maximum_exposure_fraction_per_shift=1,
+    )
+    assert audit["passed"] is True
+    assert audit["live_time_seconds"] == 40.0
+    assert audit["false_alarms"] == 5
+    assert np.isclose(audit["far_per_year"], 5 * 31_557_600 / 40)
+    assert audit["multiway_cluster_bootstrap"]["replicates"] == 100
+    assert audit["multiway_cluster_bootstrap"][
+        "maximum_source_blocks_per_cell"
+    ] == 3
 
 
 def test_calibration_stress_can_reuse_frozen_timing_only_with_narrow_audit(

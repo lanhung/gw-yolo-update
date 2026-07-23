@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .background import SECONDS_PER_YEAR, _union_duration
-from .io import atomic_write_json, canonical_hash, file_sha256
+from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
@@ -15,6 +15,12 @@ CANDIDATE_BLOCK_PERMUTATION_METHOD = (
 )
 CANDIDATE_BLOCK_SELECTION_DATA = (
     "background_gps_blocks_and_detector_availability_only"
+)
+DETECTOR_SET_BLOCK_PERMUTATION_METHOD = (
+    "independent_circular_gps_block_detector_set_permutation_v1"
+)
+DETECTOR_SET_BLOCK_SELECTION_DATA = (
+    "background_gps_blocks_detector_availability_and_network_policy_only"
 )
 
 
@@ -91,6 +97,32 @@ def candidate_block_schedule_identity(schedule: dict[str, Any]) -> dict[str, Any
             "shift_indices",
             "target_far_per_year",
             "zero_count_confidence",
+        )
+    }
+
+
+def detector_set_block_schedule_identity(
+    schedule: dict[str, Any],
+) -> dict[str, Any]:
+    """Return immutable fields covered by a variable-detector schedule ID."""
+
+    return {
+        field: schedule.get(field)
+        for field in (
+            "schema_version",
+            "method",
+            "background_manifest_sha256",
+            "network_config_sha256",
+            "split",
+            "detectors",
+            "detector_subsets",
+            "pairwise_light_travel_time_seconds",
+            "window_duration_seconds",
+            "ordered_gps_blocks",
+            "permutations",
+            "target_far_per_year",
+            "zero_count_confidence",
+            "exposure_safety_factor",
         )
     }
 
@@ -596,6 +628,292 @@ def freeze_candidate_block_permutation_schedule(
             "validation-only schedule; execution and a separate locked test remain required"
             if reached
             else "available GPS-block permutations do not reach the frozen FAR exposure target"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def freeze_detector_set_block_permutation_schedule(
+    background_manifest: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+    split: str,
+    target_far_per_year: float,
+    zero_count_confidence: float = 0.90,
+    maximum_shifts: int | None = None,
+    exposure_safety_factor: float = 1.0,
+) -> dict[str, Any]:
+    """Freeze independent circular H1/L1/V1 block permutations score-blindly."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "detector-set block-permutation schedules are immutable"
+        )
+    if (
+        target_far_per_year <= 0
+        or not 0 < zero_count_confidence < 1
+        or not math.isfinite(exposure_safety_factor)
+        or exposure_safety_factor < 1
+    ):
+        raise ValueError("detector-set block-permutation settings are invalid")
+    config = load_yaml(network_config)
+    policy = config.get("network_coherence")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema") != "h1_l1_v1_pairwise_light_travel_v1"
+        or policy.get("detectors") != ["H1", "L1", "V1"]
+    ):
+        raise ValueError("detector-set block schedule requires the H1/L1/V1 policy")
+    detectors = [str(value) for value in policy["detectors"]]
+    subsets = [
+        [str(value) for value in subset]
+        for subset in policy.get("detector_subsets", [])
+    ]
+    if (
+        not subsets
+        or len({frozenset(subset) for subset in subsets}) != len(subsets)
+        or any(
+            len(subset) < 2
+            or len(subset) != len(set(subset))
+            or not set(subset) <= set(detectors)
+            for subset in subsets
+        )
+    ):
+        raise ValueError("detector-set block schedule subsets are invalid")
+    pairwise_limits = {
+        str(key): float(value)
+        for key, value in policy.get(
+            "pairwise_light_travel_time_seconds",
+            {},
+        ).items()
+    }
+    required_pairs = {
+        "+".join(sorted((first, second)))
+        for subset in subsets
+        for first_index, first in enumerate(subset)
+        for second in subset[first_index + 1 :]
+    }
+    if set(pairwise_limits) != required_pairs or any(
+        not math.isfinite(value) or value <= 0
+        for value in pairwise_limits.values()
+    ):
+        raise ValueError("detector-set block schedule pair limits are incomplete")
+
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [
+            json.loads(line)
+            for line in handle
+            if line.strip()
+        ]
+    rows = [row for row in rows if str(row.get("split")) == split]
+    if not rows:
+        raise ValueError(f"no background windows for split {split}")
+    durations = {
+        float(row["gps_end"]) - float(row["gps_start"]) for row in rows
+    }
+    if len(durations) != 1:
+        raise ValueError(
+            "detector-set block permutation requires one window duration"
+        )
+    window_duration = next(iter(durations))
+    if not math.isfinite(window_duration) or window_duration <= 0:
+        raise ValueError("detector-set block window duration is invalid")
+    blocks: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        block_id = str(row["gps_block"])
+        parts = block_id.split(":")
+        if len(parts) != 3 or parts[0] != "gps":
+            raise ValueError(f"unsupported GPS block identity: {block_id}")
+        block_start = float(parts[1])
+        block_duration = float(parts[2])
+        offset = (float(row["gps_start"]) - block_start) / window_duration
+        slot = int(round(offset))
+        if (
+            not math.isclose(offset, slot, rel_tol=0.0, abs_tol=1e-6)
+            or slot < 0
+            or (slot + 1) * window_duration > block_duration + 1e-9
+        ):
+            raise ValueError("background window is not aligned within its GPS block")
+        record = blocks.setdefault(
+            block_id,
+            {
+                "gps_start": block_start,
+                "duration": block_duration,
+                "slots_by_ifo": {},
+            },
+        )
+        if (
+            record["gps_start"] != block_start
+            or record["duration"] != block_duration
+        ):
+            raise ValueError("GPS block metadata is inconsistent")
+        for ifo in _ifos(row):
+            if ifo not in detectors:
+                raise ValueError("background window uses an undeclared detector")
+            slots = record["slots_by_ifo"].setdefault(ifo, set())
+            if slot in slots:
+                raise ValueError(
+                    f"GPS block {block_id} repeats detector slot {ifo}:{slot}"
+                )
+            slots.add(slot)
+    ordered = sorted(
+        blocks,
+        key=lambda value: (blocks[value]["gps_start"], value),
+    )
+    block_count = len(ordered)
+    if block_count < 3:
+        raise ValueError(
+            "independent H1/L1/V1 permutations require at least three GPS blocks"
+        )
+    nondegenerate_shifts = [
+        shift
+        for shift in range(1, block_count)
+        if len({0, shift % block_count, (-shift) % block_count}) == 3
+    ]
+    if maximum_shifts is None:
+        maximum_shifts = len(nondegenerate_shifts)
+    if maximum_shifts < 1 or maximum_shifts > len(nondegenerate_shifts):
+        raise ValueError(
+            "maximum detector-set shifts exceeds the independent circular range"
+        )
+    required_seconds = (
+        -math.log(1.0 - zero_count_confidence)
+        / target_far_per_year
+        * SECONDS_PER_YEAR
+    )
+    safety_required_seconds = required_seconds * exposure_safety_factor
+    selected = []
+    total_seconds = 0.0
+    total_subset_windows: dict[str, int] = {
+        "+".join(subset): 0 for subset in subsets
+    }
+    for shift in nondegenerate_shifts[:maximum_shifts]:
+        shift_by_ifo = {"H1": 0, "L1": shift, "V1": -shift}
+        subset_windows = {"+".join(subset): 0 for subset in subsets}
+        eligible_windows = 0
+        eligible_blocks = 0
+        for base_index in range(block_count):
+            eligible_slots: set[int] = set()
+            for subset in subsets:
+                source_slot_sets = [
+                    blocks[
+                        ordered[
+                            (base_index + shift_by_ifo[ifo]) % block_count
+                        ]
+                    ]["slots_by_ifo"].get(ifo, set())
+                    for ifo in subset
+                ]
+                common = (
+                    set.intersection(*source_slot_sets)
+                    if source_slot_sets
+                    else set()
+                )
+                subset_windows["+".join(subset)] += len(common)
+                eligible_slots.update(common)
+            if eligible_slots:
+                eligible_blocks += 1
+                eligible_windows += len(eligible_slots)
+        live_seconds = eligible_windows * window_duration
+        if live_seconds <= 0:
+            continue
+        permutation = {
+            "permutation_index": shift,
+            "permutation_id": (
+                "network-block-permutation-"
+                + canonical_hash(
+                    {
+                        "background_manifest_sha256": file_sha256(
+                            background_manifest
+                        ),
+                        "shift_by_ifo": shift_by_ifo,
+                    },
+                    24,
+                )
+            ),
+            "shift_by_ifo": shift_by_ifo,
+            "eligible_blocks": eligible_blocks,
+            "eligible_windows": eligible_windows,
+            "eligible_windows_by_detector_subset": subset_windows,
+            "live_time_seconds": live_seconds,
+        }
+        selected.append(permutation)
+        total_seconds += live_seconds
+        for name, count in subset_windows.items():
+            total_subset_windows[name] += count
+        if total_seconds >= safety_required_seconds:
+            break
+    required_subset_names = {"+".join(subset) for subset in subsets}
+    reached = total_seconds >= safety_required_seconds
+    coverage = required_subset_names <= {
+        name for name, count in total_subset_windows.items() if count > 0
+    }
+    schedule_fields = {
+        "schema_version": 1,
+        "method": DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "network_config_sha256": file_sha256(network_config),
+        "split": split,
+        "detectors": detectors,
+        "detector_subsets": subsets,
+        "pairwise_light_travel_time_seconds": dict(
+            sorted(pairwise_limits.items())
+        ),
+        "window_duration_seconds": window_duration,
+        "ordered_gps_blocks": ordered,
+        "permutations": selected,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+        "exposure_safety_factor": exposure_safety_factor,
+    }
+    result = {
+        **schedule_fields,
+        "status": "frozen_detector_set_block_permutation_schedule",
+        "scientific_claim_allowed": False,
+        "selection_data": DETECTOR_SET_BLOCK_SELECTION_DATA,
+        "candidate_scores_inspected": False,
+        "schedule_id": canonical_hash(
+            detector_set_block_schedule_identity(schedule_fields),
+            32,
+        ),
+        "gps_blocks": block_count,
+        "available_independent_circular_shifts": len(
+            nondegenerate_shifts
+        ),
+        "maximum_shifts_scanned": maximum_shifts,
+        "selected_shift_count": len(selected),
+        "permutation_indices": [
+            row["permutation_index"] for row in selected
+        ],
+        "permutations_sha256": canonical_hash(selected, 64),
+        "selected_equivalent_live_time_seconds": total_seconds,
+        "selected_equivalent_live_time_years": (
+            total_seconds / SECONDS_PER_YEAR
+        ),
+        "required_equivalent_live_time_seconds": required_seconds,
+        "required_equivalent_live_time_years": (
+            required_seconds / SECONDS_PER_YEAR
+        ),
+        "safety_required_equivalent_live_time_seconds": (
+            safety_required_seconds
+        ),
+        "safety_required_equivalent_live_time_years": (
+            safety_required_seconds / SECONDS_PER_YEAR
+        ),
+        "eligible_windows_by_detector_subset": total_subset_windows,
+        "required_detector_subsets_covered": coverage,
+        "schedule_exposure_target_reached": reached,
+        "far_resolution_one_count_per_year": (
+            SECONDS_PER_YEAR / total_seconds if total_seconds > 0 else None
+        ),
+        "scientific_blocker": (
+            "validation-only schedule; execution, dependence audit and a "
+            "separate locked test remain required"
+            if reached and coverage
+            else "available independent block permutations do not reach the "
+            "frozen exposure or detector-subset target"
         ),
         **execution_provenance(),
     }

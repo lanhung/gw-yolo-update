@@ -13,8 +13,11 @@ from .background import SECONDS_PER_YEAR, _union_duration
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
     CANDIDATE_BLOCK_SELECTION_DATA,
+    DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
+    DETECTOR_SET_BLOCK_SELECTION_DATA,
     candidate_block_schedule_identity,
     candidate_slide_schedule_identity,
+    detector_set_block_schedule_identity,
 )
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .injection_bootstrap import hierarchical_injection_bootstrap
@@ -544,6 +547,90 @@ def _audit_candidate_slide_schedule(
             and schedule.get("pairwise_light_travel_time_seconds")
             == slide_report.get("pairwise_light_travel_time_seconds")
         )
+    elif (
+        schedule_status
+        == "frozen_detector_set_block_permutation_schedule"
+    ):
+        schedule_kind = "variable_detector_set_block_permutation"
+        permutations = schedule.get("permutations", [])
+        indices = [
+            int(row["permutation_index"]) for row in permutations
+        ]
+        count_matches = (
+            int(schedule.get("selected_shift_count", -1))
+            == len(indices)
+        )
+        indices_hash_matches = (
+            canonical_hash(permutations, 64)
+            == schedule.get("permutations_sha256")
+            and slide_report.get("slide_indices_sha256")
+            == canonical_hash(indices, 64)
+        )
+        identity_hash_matches = (
+            canonical_hash(
+                detector_set_block_schedule_identity(schedule),
+                32,
+            )
+            == schedule.get("schedule_id")
+        )
+        selection_matches = (
+            schedule.get("selection_data")
+            == DETECTOR_SET_BLOCK_SELECTION_DATA
+        )
+        schedule_years = float(
+            schedule.get(
+                "selected_equivalent_live_time_years",
+                -1,
+            )
+        )
+        target_reached = (
+            schedule.get("schedule_exposure_target_reached") is True
+            and schedule.get("required_detector_subsets_covered") is True
+        )
+        pairing_contract_matches = bool(
+            schedule.get("method")
+            == DETECTOR_SET_BLOCK_PERMUTATION_METHOD
+            and slide_report.get("background_pairing_method")
+            == schedule.get("method")
+            and slide_report.get("input_gps_blocks")
+            == schedule.get("ordered_gps_blocks")
+            and slide_report.get("detector_duty_cycle_accounted")
+            is True
+            and slide_report.get(
+                "detector_subset_channels_clustered_jointly"
+            )
+            is True
+            and slide_report.get(
+                "live_time_counted_once_per_permutation"
+            )
+            is True
+            and slide_report.get(
+                "independent_pairwise_block_shifts"
+            )
+            is True
+        )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split"))
+            == str(slide_report.get("split"))
+            and schedule.get("network_config_sha256")
+            == slide_report.get("network_config_sha256")
+            and schedule.get("detector_subsets")
+            == [
+                value.split("+")
+                for value in slide_report.get(
+                    "required_detector_subsets",
+                    [],
+                )
+            ]
+            and schedule.get(
+                "pairwise_light_travel_time_seconds"
+            )
+            == slide_report.get(
+                "pairwise_light_travel_time_seconds"
+            )
+        )
     else:
         raise ValueError("candidate background schedule has an unsupported status")
     identity_verified = bool(
@@ -631,7 +718,10 @@ def _candidate_search_identity(
     )
     variable_detector_set = (
         slide_report.get("status")
-        == "variable_detector_set_time_slide_background"
+        in {
+            "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
+        }
         and injection_report.get("status")
         == "physical_variable_detector_set_injection_candidate_rankings"
     )
@@ -705,6 +795,60 @@ def _candidate_search_identity(
     return identity
 
 
+_PHYSICAL_BLOCK_SCHEDULE_KINDS = {
+    "gps_block_permutation",
+    "variable_detector_set_block_permutation",
+}
+
+
+def _audit_physical_candidate_background(
+    schedule_kind: str,
+    time_slide_report: str | Path,
+    background_manifest: str | Path,
+    threshold: float,
+    bootstrap_replicates: int,
+    seed: int,
+) -> dict[str, Any]:
+    if schedule_kind == "gps_block_permutation":
+        from .background_dependence import audit_candidate_background_dependence
+
+        return audit_candidate_background_dependence(
+            time_slide_report,
+            background_manifest,
+            threshold,
+            bootstrap_replicates,
+            seed,
+        )
+    if schedule_kind == "variable_detector_set_block_permutation":
+        from .background_dependence import (
+            audit_detector_set_candidate_background_dependence,
+        )
+
+        return audit_detector_set_candidate_background_dependence(
+            time_slide_report,
+            background_manifest,
+            threshold,
+            bootstrap_replicates,
+            seed,
+        )
+    raise ValueError("candidate background is not a physical block permutation")
+
+
+def _dependence_bootstrap_replicates(
+    dependence: dict[str, Any],
+) -> int:
+    if dependence.get("status") == "candidate_background_dependence_audit_v1":
+        key = "three_way_cluster_bootstrap"
+    elif (
+        dependence.get("status")
+        == "detector_set_candidate_background_dependence_audit_v1"
+    ):
+        key = "multiway_cluster_bootstrap"
+    else:
+        return -1
+    return int(dependence.get(key, {}).get("replicates", -1))
+
+
 def run_candidate_search_calibration(
     validation_time_slide_report: str | Path,
     validation_injection_ranking_report: str | Path,
@@ -721,6 +865,7 @@ def run_candidate_search_calibration(
         (
             "subwindow_clustered_time_slide_integration_only",
             "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
         ),
         "val",
     )
@@ -743,14 +888,14 @@ def run_candidate_search_calibration(
         target_far_per_year,
     )
     dependence_audit = None
-    if schedule_audit.get("schedule_kind") == "gps_block_permutation":
+    schedule_kind = str(schedule_audit.get("schedule_kind"))
+    if schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS:
         if validation_background_manifest is None:
             raise ValueError(
                 "block-permutation calibration requires its physical background manifest"
             )
-        from .background_dependence import audit_candidate_background_dependence
-
-        dependence_audit = audit_candidate_background_dependence(
+        dependence_audit = _audit_physical_candidate_background(
+            schedule_kind,
             validation_time_slide_report,
             validation_background_manifest,
             float(calibration["threshold"]),
@@ -769,8 +914,10 @@ def run_candidate_search_calibration(
         "status": "frozen_validation_candidate_search_calibration",
         "scientific_claim_allowed": False,
         "selection_data": (
-            "validation_candidate_block_permutations_only"
-            if schedule_audit.get("schedule_kind") == "gps_block_permutation"
+            "validation_variable_detector_set_block_permutations_only"
+            if schedule_kind == "variable_detector_set_block_permutation"
+            else "validation_candidate_block_permutations_only"
+            if schedule_kind == "gps_block_permutation"
             else "validation_candidate_time_slides_only"
         ),
         "test_evaluation": None,
@@ -787,7 +934,7 @@ def run_candidate_search_calibration(
             and dependence_audit["passed"]
             and validation_efficiency["bootstrap_independence"]["passed"]
         )
-        if schedule_audit.get("schedule_kind") == "gps_block_permutation"
+        if schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS
         else bool(schedule_audit["passed"]),
         "background_dependence_audit": dependence_audit,
         "validation_injection_diagnostic": validation_efficiency,
@@ -948,12 +1095,23 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         if isinstance(dependence, dict)
         else None
     )
+    schedule_kind = calibration.get("slide_schedule_audit", {}).get(
+        "schedule_kind"
+    )
+    valid_selection_data = {
+        "gps_block_permutation": (
+            "validation_candidate_block_permutations_only"
+        ),
+        "variable_detector_set_block_permutation": (
+            "validation_variable_detector_set_block_permutations_only"
+        ),
+    }
     if (
         calibration.get("status") != "frozen_validation_candidate_search_calibration"
         or calibration.get("scientific_claim_allowed") is not False
         or calibration.get("test_evaluation") is not None
         or calibration.get("selection_data")
-        != "validation_candidate_block_permutations_only"
+        != valid_selection_data.get(schedule_kind)
         or calibration.get("publication_calibration_eligible") is not True
         or calibration.get("target_far_has_at_least_one_expected_background_count")
         is not True
@@ -966,15 +1124,16 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         or int(calibration.get("bootstrap_replicates", -1))
         < minimum_bootstrap_replicates
         or calibration.get("slide_schedule_audit", {}).get("passed") is not True
-        or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
-        != "gps_block_permutation"
+        or schedule_kind not in _PHYSICAL_BLOCK_SCHEDULE_KINDS
         or not isinstance(dependence, dict)
-        or dependence.get("status") != "candidate_background_dependence_audit_v1"
+        or dependence.get("status")
+        not in {
+            "candidate_background_dependence_audit_v1",
+            "detector_set_candidate_background_dependence_audit_v1",
+        }
         or dependence.get("passed") is not True
         or dependence.get("split") != "val"
-        or int(
-            dependence.get("three_way_cluster_bootstrap", {}).get("replicates", -1)
-        )
+        or _dependence_bootstrap_replicates(dependence)
         < minimum_bootstrap_replicates
         or dependence_background != endpoint_background
         or dependence.get("background_manifest", {}).get("sha256")
@@ -1151,14 +1310,12 @@ def run_paired_raw_mask_candidate_calibration_comparison(
             or calibration.get("publication_calibration_eligible") is not True
             or calibration.get("slide_schedule_audit", {}).get("passed") is not True
             or dependence.get("status")
-            != "candidate_background_dependence_audit_v1"
+            not in {
+                "candidate_background_dependence_audit_v1",
+                "detector_set_candidate_background_dependence_audit_v1",
+            }
             or dependence.get("passed") is not True
-            or int(
-                dependence.get("three_way_cluster_bootstrap", {}).get(
-                    "replicates", -1
-                )
-            )
-            < 10_000
+            or _dependence_bootstrap_replicates(dependence) < 10_000
             or not str(calibration.get("selection_data", "")).startswith("validation_")
             or not ranking_path.is_file()
             or calibration.get("validation_injection_ranking_report_sha256")
@@ -1472,17 +1629,15 @@ def bind_raw_mask_background_to_authorized_validation_endpoint(
             or calibration.get("test_evaluation") is not None
             or calibration.get("slide_schedule_audit", {}).get("passed") is not True
             or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
-            != "gps_block_permutation"
+            not in _PHYSICAL_BLOCK_SCHEDULE_KINDS
             or int(calibration.get("bootstrap_replicates", -1)) < 10_000
             or dependence.get("status")
-            != "candidate_background_dependence_audit_v1"
+            not in {
+                "candidate_background_dependence_audit_v1",
+                "detector_set_candidate_background_dependence_audit_v1",
+            }
             or dependence.get("passed") is not True
-            or int(
-                dependence.get("three_way_cluster_bootstrap", {}).get(
-                    "replicates", -1
-                )
-            )
-            < 10_000
+            or _dependence_bootstrap_replicates(dependence) < 10_000
             or dependence.get("background_manifest", {}).get("sha256")
             != arm_merge.get("background_manifest_sha256")
             or not np.isclose(
@@ -1682,6 +1837,7 @@ def run_frozen_candidate_search_evaluation(
         (
             "subwindow_clustered_time_slide_integration_only",
             "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
         ),
         "test",
     )
@@ -1725,17 +1881,17 @@ def run_frozen_candidate_search_evaluation(
             "locked candidate test overlaps validation physical groups: "
             f"background={background_overlap[:5]}, injection_blocks={injection_overlap[:5]}, "
             f"injection_ids={injection_id_overlap[:5]}, waveform_ids={waveform_id_overlap[:5]}"
-        )
+    )
     live_time_years = float(slide["equivalent_live_time_years"])
     dependence_audit = None
-    if test_schedule_audit.get("schedule_kind") == "gps_block_permutation":
+    test_schedule_kind = str(test_schedule_audit.get("schedule_kind"))
+    if test_schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS:
         if test_background_manifest is None:
             raise ValueError(
                 "locked block-permutation evaluation requires its background manifest"
             )
-        from .background_dependence import audit_candidate_background_dependence
-
-        dependence_audit = audit_candidate_background_dependence(
+        dependence_audit = _audit_physical_candidate_background(
+            test_schedule_kind,
             test_time_slide_report,
             test_background_manifest,
             float(frozen["calibration"]["threshold"]),
@@ -1769,7 +1925,7 @@ def run_frozen_candidate_search_evaluation(
         "background_cluster_dependence_audit": bool(
             dependence_audit is not None and dependence_audit["passed"]
         )
-        if test_schedule_audit.get("schedule_kind") == "gps_block_permutation"
+        if test_schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS
         else True,
         "injection_bootstrap_independence": bool(
             evaluation["injections"]["bootstrap_independence"]["passed"]
