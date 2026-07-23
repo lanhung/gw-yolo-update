@@ -62,6 +62,25 @@ fi
 mkdir -p "$CACHE_ROOT" "$OUTPUT_ROOT"
 cd "$TASK_CODE_DIR"
 export PYTHONPATH=src GWYOLO_CODE_COMMIT
+if [[ -s "$OUTPUT_ROOT/detector_validation_streaming_receipt.json" ]]; then
+  "$TASK_PYTHON" - "$OUTPUT_ROOT/detector_validation_streaming_receipt.json" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (
+    receipt.get("status")
+    != "verified_detector_stratified_validation_data_chain"
+    or receipt.get("passed") is not True
+    or receipt.get("candidate_scores_inspected") is not False
+    or int(receipt.get("test_rows_read", -1)) != 0
+):
+    raise SystemExit("existing detector-validation chain receipt failed replay")
+print(json.dumps(receipt, indent=2, sort_keys=True))
+PY
+  exit 0
+fi
 
 base_count() {
   local subset=$1
@@ -220,7 +239,9 @@ PY
         --maximum-windows-per-gps-block 1
     fi
     if [[ ! -s "$eviction_report" ]]; then
-      "$TASK_PYTHON" -m gwyolo.cli background-bank-evict-sources \
+      "$TASK_PYTHON" -m gwyolo.cli detector-validation-source-evict \
+        --batch-report "$batch_report" \
+        --background-report "$background_report" \
         --background-bank-report "$bank_report" \
         --cache-root "$CACHE_ROOT" \
         --output "$eviction_report"

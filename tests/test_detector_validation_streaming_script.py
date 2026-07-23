@@ -18,7 +18,7 @@ def test_detector_validation_stream_is_hash_stable_test_free_and_evicts() -> Non
         "gwosc-batch-download",
         "background-batch-plan",
         "background-bank-materialize",
-        "background-bank-evict-sources",
+        "detector-validation-source-evict",
         "detector-validation-shard-seal",
     )
     positions = [source.index(token) for token in ordered]

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gwyolo.detector_validation_data import (
+    evict_streamed_detector_validation_sources,
     export_network_numeric_validation_background,
     freeze_source_disjoint_detector_acquisition_plan,
     merge_streamed_detector_validation_backgrounds,
@@ -528,3 +529,116 @@ def test_streamed_detector_validation_merge_rejects_repeated_receipt(
             tmp_path / "repeated",
             minimum_per_detector_subset=1,
         )
+
+
+def test_detector_validation_eviction_removes_unused_dq_pair_sources(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache" / "O3b"
+    cache.mkdir(parents=True)
+    source_records = []
+    for pair in ("selected-pair", "dq-rejected-pair"):
+        for ifo in ("H1", "V1"):
+            path = cache / f"{pair}-{ifo}.hdf5"
+            path.write_bytes(f"{pair}:{ifo}".encode())
+            source_records.append(
+                {
+                    "pair_id": pair,
+                    "detector": ifo,
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "bytes": path.stat().st_size,
+                    "verification": {"passed": True},
+                }
+            )
+    batch = tmp_path / "batch.json"
+    batch.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "selected_pairs": 2,
+                "verified_files": 4,
+                "files": source_records,
+            }
+        ),
+        encoding="utf-8",
+    )
+    background_manifest = tmp_path / "background.jsonl"
+    source_files = {
+        row["detector"]: {"path": row["path"], "sha256": row["sha256"]}
+        for row in source_records
+        if row["pair_id"] == "selected-pair"
+    }
+    source_row = {
+        "window_id": "selected-window",
+        "pair_id": "selected-pair",
+        "split": "val",
+        "gps_block": "gps:1000:256",
+        "gps_start": 1000,
+        "gps_end": 1004,
+        "ifos": ["H1", "V1"],
+        "source_files": source_files,
+    }
+    background_manifest.write_text(
+        json.dumps(source_row) + "\n", encoding="utf-8"
+    )
+    background = tmp_path / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "passed": True,
+                "ifos": ["H1", "V1"],
+                "split_strategy": "hash_threshold_v1",
+                "splits": {"test": {"windows": 0}},
+                "source_batch_report_sha256s": [file_sha256(batch)],
+                "manifest_path": str(background_manifest),
+                "manifest_sha256": file_sha256(background_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = tmp_path / "bank.npz"
+    np.savez_compressed(artifact, noise=np.ones((2, 16), dtype=np.float32))
+    bank_manifest = tmp_path / "bank.jsonl"
+    bank_manifest.write_text(
+        json.dumps(
+            {
+                **source_row,
+                "background_bank": {
+                    "path": str(artifact),
+                    "sha256": file_sha256(artifact),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bank = tmp_path / "bank-report.json"
+    bank.write_text(
+        json.dumps(
+            {
+                "status": "verified_numeric_background_bank",
+                "selected_split": "val",
+                "background_manifest_sha256": file_sha256(background_manifest),
+                "manifest_path": str(bank_manifest),
+                "manifest_sha256": file_sha256(bank_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "eviction.json"
+
+    result = evict_streamed_detector_validation_sources(
+        batch, background, bank, tmp_path / "cache", output
+    )
+
+    assert result["removed_files"] == 4
+    assert result["verified_bank_artifacts"] == 1
+    assert result["candidate_scores_inspected"] is False
+    assert all(not Path(row["path"]).exists() for row in source_records)
+    replay = evict_streamed_detector_validation_sources(
+        batch, background, bank, tmp_path / "cache", output
+    )
+    assert replay == result

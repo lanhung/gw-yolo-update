@@ -791,6 +791,194 @@ def seal_streamed_detector_validation_shard(
     return result
 
 
+def evict_streamed_detector_validation_sources(
+    batch_report_path: str | Path,
+    background_report_path: str | Path,
+    background_bank_report_path: str | Path,
+    cache_root: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Evict all verified shard HDF files after the selected val bank is sealed."""
+
+    batch_path = Path(batch_report_path).resolve()
+    background_path = Path(background_report_path).resolve()
+    bank_path = Path(background_bank_report_path).resolve()
+    root = Path(cache_root).resolve()
+    target = Path(output_path).resolve()
+    intent_path = target.with_suffix(target.suffix + ".intent.json")
+    batch = _read_json(batch_path)
+    background = _read_json(background_path)
+    bank = _read_json(bank_path)
+    background_manifest = Path(str(background.get("manifest_path", ""))).resolve()
+    bank_manifest = Path(str(bank.get("manifest_path", ""))).resolve()
+    input_identity = {
+        "batch_report_sha256": file_sha256(batch_path),
+        "background_report_sha256": file_sha256(background_path),
+        "background_bank_report_sha256": file_sha256(bank_path),
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "background_bank_manifest_sha256": file_sha256(bank_manifest),
+        "cache_root": str(root),
+    }
+    if (
+        batch.get("status") != "verified_development_strain_batch"
+        or batch.get("passed") is not True
+        or background.get("status")
+        != "verified_multi_segment_development_background"
+        or background.get("passed") is not True
+        or background.get("split_strategy") != "hash_threshold_v1"
+        or int(background.get("splits", {}).get("test", {}).get("windows", -1))
+        != 0
+        or background.get("source_batch_report_sha256s")
+        != [file_sha256(batch_path)]
+        or background.get("manifest_sha256")
+        != input_identity["background_manifest_sha256"]
+        or bank.get("status") != "verified_numeric_background_bank"
+        or bank.get("selected_split") != "val"
+        or bank.get("background_manifest_sha256")
+        != background["manifest_sha256"]
+        or bank.get("manifest_sha256")
+        != input_identity["background_bank_manifest_sha256"]
+        or root in {Path("/").resolve(), Path("/root").resolve()}
+        or len(root.parts) < 3
+    ):
+        raise ValueError("Detector-validation source eviction inputs are invalid")
+
+    source_rows = [
+        json.loads(line)
+        for line in background_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    bank_rows = [
+        json.loads(line)
+        for line in bank_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    expected_by_block = {}
+    for row in source_rows:
+        if row.get("split") == "val":
+            expected_by_block.setdefault(str(row["gps_block"]), row)
+    expected_ids = {
+        str(row["window_id"]) for row in expected_by_block.values()
+    }
+    observed_ids = {str(row.get("window_id", "")) for row in bank_rows}
+    if (
+        not expected_ids
+        or observed_ids != expected_ids
+        or len(bank_rows) != len(expected_ids)
+    ):
+        raise ValueError("Detector-validation bank does not cover one row per val GPS block")
+    verified_bank_artifacts = {}
+    for row in bank_rows:
+        reference = row.get("background_bank", {})
+        artifact = Path(str(reference.get("path", ""))).resolve()
+        expected = str(reference.get("sha256", ""))
+        actual = file_sha256(artifact)
+        if actual != expected:
+            raise ValueError("Detector-validation bank artifact changed before eviction")
+        verified_bank_artifacts[str(artifact)] = actual
+
+    sources = []
+    source_keys = set()
+    for row in batch.get("files", []):
+        key = (str(row.get("pair_id", "")), str(row.get("detector", "")))
+        path = Path(str(row.get("path", ""))).resolve()
+        if (
+            not all(key)
+            or key in source_keys
+            or row.get("verification", {}).get("passed") is not True
+            or (root != path.parent and root not in path.parents)
+        ):
+            raise ValueError("Detector-validation batch source inventory is invalid")
+        source_keys.add(key)
+        sources.append(
+            {
+                "path": str(path),
+                "sha256": str(row["sha256"]),
+                "bytes": int(row["bytes"]),
+                "pair_id": key[0],
+                "detector": key[1],
+            }
+        )
+    if (
+        not sources
+        or len(sources) != int(batch.get("verified_files", -1))
+        or len(sources)
+        != int(batch.get("selected_pairs", -1))
+        * len(background.get("ifos", []))
+    ):
+        raise ValueError("Detector-validation batch source count is incomplete")
+
+    if target.is_file():
+        prior = _read_json(target)
+        if (
+            prior.get("status") != "verified_background_source_eviction"
+            or prior.get("recoverable") is not True
+            or prior.get("input_identity") != input_identity
+            or int(prior.get("removed_files", -1)) != len(sources)
+            or any(Path(row["path"]).exists() for row in sources)
+        ):
+            raise ValueError("Existing detector-validation eviction failed replay")
+        return prior
+
+    intent = {
+        "status": "validated_detector_validation_source_eviction_intent",
+        "input_identity": input_identity,
+        "sources": sources,
+    }
+    if intent_path.is_file():
+        if _read_json(intent_path) != intent:
+            raise ValueError("Detector-validation source eviction intent changed")
+    else:
+        for row in sources:
+            path = Path(row["path"])
+            if (
+                not path.is_file()
+                or path.stat().st_size != row["bytes"]
+                or file_sha256(path) != row["sha256"]
+            ):
+                raise ValueError(
+                    "Detector-validation source changed before eviction intent"
+                )
+        atomic_write_json(intent_path, intent)
+
+    for row in sources:
+        path = Path(row["path"])
+        if path.is_file():
+            if (
+                path.stat().st_size != row["bytes"]
+                or file_sha256(path) != row["sha256"]
+            ):
+                raise ValueError(
+                    "Detector-validation source changed during eviction"
+                )
+            path.unlink()
+    result = {
+        "status": "verified_background_source_eviction",
+        "recoverable": True,
+        "recovery": "re-download exact public GWOSC URLs from the hash-bound shard plan",
+        "input_identity": input_identity,
+        "batch_report_path": str(batch_path),
+        "batch_report_sha256": file_sha256(batch_path),
+        "background_plan_report_path": str(background_path),
+        "background_plan_report_sha256": file_sha256(background_path),
+        "background_bank_report_path": str(bank_path),
+        "background_bank_report_sha256": file_sha256(bank_path),
+        "background_bank_manifest_sha256": file_sha256(bank_manifest),
+        "intent_path": str(intent_path),
+        "intent_sha256": file_sha256(intent_path),
+        "verified_bank_artifacts": len(verified_bank_artifacts),
+        "cache_root": str(root),
+        "removed_files": len(sources),
+        "removed_bytes": sum(row["bytes"] for row in sources),
+        "removed": sources,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def merge_streamed_detector_validation_backgrounds(
     base_manifest_path: str | Path,
     base_report_path: str | Path,

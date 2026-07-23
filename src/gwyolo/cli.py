@@ -964,6 +964,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detector_validation_shard.add_argument("--eviction-report", required=True)
     detector_validation_shard.add_argument("--output", required=True)
+    detector_validation_evict = subparsers.add_parser(
+        "detector-validation-source-evict"
+    )
+    detector_validation_evict.add_argument("--batch-report", required=True)
+    detector_validation_evict.add_argument("--background-report", required=True)
+    detector_validation_evict.add_argument(
+        "--background-bank-report", required=True
+    )
+    detector_validation_evict.add_argument("--cache-root", required=True)
+    detector_validation_evict.add_argument("--output", required=True)
     detector_validation_merge = subparsers.add_parser(
         "detector-validation-background-merge"
     )
@@ -3610,6 +3620,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.background_report,
                 args.background_bank_report,
                 args.eviction_report,
+                args.output,
+            )
+        )
+    elif args.command == "detector-validation-source-evict":
+        from .detector_validation_data import (
+            evict_streamed_detector_validation_sources,
+        )
+
+        _print(
+            evict_streamed_detector_validation_sources(
+                args.batch_report,
+                args.background_report,
+                args.background_bank_report,
+                args.cache_root,
                 args.output,
             )
         )
