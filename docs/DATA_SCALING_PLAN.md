@@ -706,3 +706,35 @@ limited, while clean regression has its own non-inferiority failure. The complet
 embedded in one immutable bundle so negative decisions cannot be dropped from the paper table.
 `scripts/run_physical_overlap_scaling_hard_endpoint.sh` is the fail-closed successor that performs
 the freeze, all cell evaluations and the final binding without opening test data.
+
+## Detector-subset scaling is a separate physical-data axis
+
+Rendered count, waveform count and detector-subset coverage must be reported separately. A model
+configured with H1/L1/V1 channels is not evidence that it learned V1 morphology or missing-detector
+behavior. The 2026-07-23 physical-count audit found:
+
+- the frozen 3,000-injection independent endpoint has 3,000 H1+L1 rows and zero H1+V1, L1+V1 or
+  H1+L1+V1 rows;
+- the source-safe validation glitch corpus has 210 H1+L1, 134 H1+V1, 4 L1+V1 and 219 H1+L1+V1
+  scenes;
+- the source-safe training glitch corpus has only 42 L1+V1 scenes.
+
+The four detector subsets are therefore promoted to an explicit data-scaling axis. Calibration
+robustness requires at least 25 independent physical injections in every exact subset before any
+GPU scoring begins. The 25-row value is an execution floor, not a claim of saturation. The planned
+curve is 25/50/100/200 physical injections per subset, grouped by injection/waveform ID, source GPS
+block and observing run. H1+L1, H1+V1, L1+V1 and H1+L1+V1 must be evaluated separately and as one
+mixture-weighted aggregate.
+
+New validation rows must use source blocks disjoint from training and from candidate-threshold
+background. Training rows may not be reassigned to validation. V1 must contain an antenna-projected
+physical waveform and real numeric strain; a zero-valued V1 plane with a changed validity flag does
+not count. At least 25 GPS blocks are required overall, and no exact detector subset may be carried
+by fewer than 25 independent injection IDs.
+
+The immediate acquisition deficit is at least 21 validation-only L1+V1 contexts, but production
+should target the 100-per-subset point to permit meaningful paired uncertainty and O3/O4 transfer
+strata. Scaling beyond 100 is authorized only if both fixed-epoch and fixed-update controls improve
+the predeclared hard subset, following the same promotion logic as the overlap curve. O4b/GWTC-5
+remains unavailable for this expansion; development data must come from O1--O3/O4a or validated
+simulation with frozen run-specific noise.
