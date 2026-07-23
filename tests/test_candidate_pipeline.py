@@ -230,6 +230,144 @@ def test_continuous_calibration_binds_independent_endpoint_and_model(tmp_path) -
     assert result["target_far_per_year"] == 0.1
     assert result["independent_validation_rows"] == 3000
 
+    expanded_background = tmp_path / "expanded-background.jsonl"
+    expanded_background.write_text(
+        '{"gps_block":"expanded-background"}\n',
+        encoding="utf-8",
+    )
+    expanded_candidates = tmp_path / "expanded-candidates.jsonl"
+    expanded_candidates.write_text(
+        '{"candidate_id":"expanded"}\n',
+        encoding="utf-8",
+    )
+    slides.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "variable_detector_set_block_permutation_background"
+                ),
+                "candidate_manifest_path": str(
+                    expanded_candidates.resolve()
+                ),
+                "candidate_manifest_sha256": file_sha256(
+                    expanded_candidates
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    parent = tmp_path / "expanded-parent.json"
+    parent.write_text(json.dumps({"status": "development_acquisition_plan"}))
+    authorization = tmp_path / "expanded-authorization.json"
+    authorization.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "authorized_validation_candidate_continuous_background_plan"
+                ),
+                "authorization_id": "expanded-auth",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "candidate_scores_inspected": False,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "independent_validation_endpoint": {
+                    "path": str(endpoint.resolve()),
+                    "sha256": file_sha256(endpoint),
+                },
+                "parent_plan": {
+                    "path": str(parent.resolve()),
+                    "sha256": file_sha256(parent),
+                },
+                "authorization_identity": {
+                    "target_far_per_year": 0.1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    merge = tmp_path / "expanded-merge.json"
+    merge.write_text(
+        json.dumps(
+            {
+                "status": "verified_merged_streamed_candidate_background",
+                "scientific_claim_allowed": False,
+                "complete_parent_plan": True,
+                "split_counts": {"test": 0},
+                "common_run_identity": {
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "parent_plan_sha256": file_sha256(parent),
+                },
+                "background_manifest_path": str(
+                    expanded_background.resolve()
+                ),
+                "background_manifest_sha256": file_sha256(
+                    expanded_background
+                ),
+                "candidate_manifests": {
+                    "val": {
+                        "path": str(expanded_candidates.resolve()),
+                        "sha256": file_sha256(expanded_candidates),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    expanded_calibration_value = json.loads(
+        calibration.read_text(encoding="utf-8")
+    )
+    expanded_calibration_value["background_dependence_audit"][
+        "background_manifest"
+    ] = {
+        "path": str(expanded_background.resolve()),
+        "sha256": file_sha256(expanded_background),
+    }
+    expanded_calibration_value["background_dependence_audit"][
+        "time_slide_report"
+    ] = {
+        "path": str(slides.resolve()),
+        "sha256": file_sha256(slides),
+    }
+    expanded_calibration_value[
+        "validation_time_slide_report_sha256"
+    ] = file_sha256(slides)
+    calibration.write_text(
+        json.dumps(expanded_calibration_value),
+        encoding="utf-8",
+    )
+    expanded_result = (
+        bind_candidate_search_calibration_to_independent_endpoint(
+            endpoint,
+            pipeline,
+            calibration,
+            tmp_path / "expanded-binding.json",
+            background_plan_authorization=authorization,
+            expanded_background_merge_report=merge,
+        )
+    )
+    assert expanded_result["passed"] is True
+    assert expanded_result["expanded_background_lineage"][
+        "background_plan_authorization"
+    ]["authorization_id"] == "expanded-auth"
+
+    tampered_merge_value = json.loads(merge.read_text(encoding="utf-8"))
+    tampered_merge_value["common_run_identity"][
+        "checkpoint_sha256"
+    ] = "different"
+    tampered_merge = tmp_path / "expanded-merge-tampered.json"
+    tampered_merge.write_text(json.dumps(tampered_merge_value))
+    with pytest.raises(ValueError, match="lineage failed replay"):
+        bind_candidate_search_calibration_to_independent_endpoint(
+            endpoint,
+            pipeline,
+            calibration,
+            tmp_path / "expanded-binding-tampered.json",
+            background_plan_authorization=authorization,
+            expanded_background_merge_report=tampered_merge,
+        )
+
     write_calibration(["background-block"])
     with pytest.raises(ValueError, match="purpose safe"):
         bind_candidate_search_calibration_to_independent_endpoint(
@@ -608,6 +746,16 @@ def test_candidate_pipeline_detector_set_recalibration_matches_locked_policy(
                 "run_identity": {
                     "background_manifest_sha256": file_sha256(background),
                     "injection_manifest_sha256": "d" * 64,
+                    "checkpoint_sha256": "b" * 64,
+                    "config_sha256": "c" * 64,
+                    "coherence_config_sha256": "e" * 64,
+                    "model_ifos": ["H1", "L1", "V1"],
+                    "q_values": [4, 8, 16],
+                    "target_sample_rate": 1024,
+                    "context_duration": 64.0,
+                    "chirp_threshold": 0.3,
+                    "minimum_bins": 1,
+                    "code_commit": "deadbee",
                     "cluster_window_seconds": 0.1,
                     "target_far_per_year": 10_000_000.0,
                     "bootstrap_replicates": 20,
@@ -627,6 +775,7 @@ def test_candidate_pipeline_detector_set_recalibration_matches_locked_policy(
                     ),
                 },
                 "empirical_timing_uncertainty_seconds": 0.001,
+                "timing_calibration_report_sha256": "a" * 64,
             }
         ),
         encoding="utf-8",
@@ -676,3 +825,155 @@ def test_candidate_pipeline_detector_set_recalibration_matches_locked_policy(
         maximum_shifts=1,
     )
     assert resumed == result
+
+    expanded_source_value = json.loads(source.read_text(encoding="utf-8"))
+    expanded_source_value["run_identity"][
+        "background_manifest_sha256"
+    ] = "0" * 64
+    expanded_source_value["time_slides"][
+        "candidate_manifest_sha256"
+    ] = "1" * 64
+    expanded_source = tmp_path / "expanded-source-pipeline.json"
+    expanded_source.write_text(
+        json.dumps(expanded_source_value),
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent-plan.json"
+    parent.write_text(json.dumps({"status": "development_acquisition_plan"}))
+    endpoint = tmp_path / "endpoint.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "frozen_gps_and_purpose_disjoint_validation_endpoint"
+                ),
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "purpose_gps_block_overlap": 0,
+                "candidate_calibration_background_manifest_path": str(
+                    background.resolve()
+                ),
+                "candidate_calibration_background_manifest_sha256": (
+                    file_sha256(background)
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    authorization = tmp_path / "authorization.json"
+    authorization.write_text(
+        json.dumps(
+            {
+                "status": (
+                    "authorized_validation_candidate_continuous_background_plan"
+                ),
+                "authorization_id": "authorized-expanded",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "candidate_scores_inspected": False,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "parent_plan": {
+                    "path": str(parent.resolve()),
+                    "sha256": file_sha256(parent),
+                },
+                "independent_validation_endpoint": {
+                    "path": str(endpoint.resolve()),
+                    "sha256": file_sha256(endpoint),
+                },
+                "authorization_identity": {
+                    "target_far_per_year": 5_000_000.0,
+                    "zero_count_confidence": 0.9,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    common_identity = {
+        key: expanded_source_value["run_identity"].get(key)
+        for key in (
+            "checkpoint_sha256",
+            "config_sha256",
+            "coherence_config_sha256",
+            "model_ifos",
+            "q_values",
+            "target_sample_rate",
+            "context_duration",
+            "chirp_threshold",
+            "minimum_bins",
+            "code_commit",
+        )
+    }
+    common_identity.update(
+        {
+            "timing_calibration_report_sha256": "a" * 64,
+            "parent_plan_sha256": file_sha256(parent),
+        }
+    )
+    merge = tmp_path / "merge.json"
+    merge.write_text(
+        json.dumps(
+            {
+                "status": "verified_merged_streamed_candidate_background",
+                "scientific_claim_allowed": False,
+                "complete_parent_plan": True,
+                "split_counts": {"test": 0, "val": len(background_rows)},
+                "common_run_identity": common_identity,
+                "background_manifest_path": str(background.resolve()),
+                "background_manifest_sha256": file_sha256(background),
+                "candidate_manifests": {
+                    "val": {
+                        "path": str(background_candidate_path.resolve()),
+                        "sha256": file_sha256(background_candidate_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    expanded = (
+        recalibrate_candidate_validation_pipeline_with_detector_sets(
+            expanded_source,
+            background,
+            background_candidate_path,
+            injection_triggers,
+            injection_candidate_path,
+            network_config,
+            tmp_path / "expanded-detector-set",
+            maximum_shifts=1,
+            expanded_background_merge_report=merge,
+            background_plan_authorization=authorization,
+        )
+    )
+    assert expanded["frozen_search"]["target_far_per_year"] == (
+        5_000_000.0
+    )
+    assert expanded["run_identity"]["background_manifest_sha256"] == (
+        file_sha256(background)
+    )
+    assert expanded["run_identity"]["target_far_per_year"] == 5_000_000.0
+    assert expanded["detector_set_block_recalibration"][
+        "expanded_background_lineage"
+    ]["authorization_id"] == "authorized-expanded"
+
+    tampered_merge_value = json.loads(merge.read_text(encoding="utf-8"))
+    tampered_merge_value["common_run_identity"][
+        "checkpoint_sha256"
+    ] = "f" * 64
+    tampered_merge = tmp_path / "tampered-merge.json"
+    tampered_merge.write_text(json.dumps(tampered_merge_value))
+    with pytest.raises(ValueError, match="lineage differs"):
+        recalibrate_candidate_validation_pipeline_with_detector_sets(
+            expanded_source,
+            background,
+            background_candidate_path,
+            injection_triggers,
+            injection_candidate_path,
+            network_config,
+            tmp_path / "tampered-expanded-detector-set",
+            maximum_shifts=1,
+            expanded_background_merge_report=tampered_merge,
+            background_plan_authorization=authorization,
+        )

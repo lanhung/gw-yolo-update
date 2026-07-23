@@ -154,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_bind.add_argument(
         "--minimum-bootstrap-replicates", type=int, default=10000
     )
+    candidate_search_bind.add_argument(
+        "--background-plan-authorization"
+    )
+    candidate_search_bind.add_argument(
+        "--expanded-background-merge-report"
+    )
 
     raw_mask_calibration = subparsers.add_parser(
         "candidate-search-raw-mask-compare"
@@ -1595,6 +1601,12 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_pipeline_detector_set.add_argument(
         "--exposure-safety-factor", type=float, default=1.0
     )
+    candidate_pipeline_detector_set.add_argument(
+        "--expanded-background-merge-report"
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--background-plan-authorization"
+    )
 
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
@@ -2513,6 +2525,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.expected_target_far_per_year,
                 args.minimum_bootstrap_replicates,
+                args.background_plan_authorization,
+                args.expanded_background_merge_report,
             )
         )
     elif args.command == "candidate-search-raw-mask-compare":
@@ -4071,6 +4085,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.zero_count_confidence,
                 args.maximum_shifts,
                 args.exposure_safety_factor,
+                args.expanded_background_merge_report,
+                args.background_plan_authorization,
             )
         )
     elif args.command == "candidate-block-permutation-capacity-forecast":

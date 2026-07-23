@@ -977,6 +977,8 @@ def bind_candidate_search_calibration_to_independent_endpoint(
     output: str | Path,
     expected_target_far_per_year: float = 0.1,
     minimum_bootstrap_replicates: int = 10_000,
+    background_plan_authorization: str | Path | None = None,
+    expanded_background_merge_report: str | Path | None = None,
 ) -> dict[str, Any]:
     """Bind continuous calibration to the frozen injection endpoint and selected model."""
 
@@ -991,6 +993,17 @@ def bind_candidate_search_calibration_to_independent_endpoint(
     endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
     pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    expanded_mode = (
+        background_plan_authorization is not None
+        or expanded_background_merge_report is not None
+    )
+    if expanded_mode and (
+        background_plan_authorization is None
+        or expanded_background_merge_report is None
+    ):
+        raise ValueError(
+            "expanded endpoint binding requires authorization and merge"
+        )
 
     component_labels = {
         "purpose_partition",
@@ -1073,12 +1086,141 @@ def bind_candidate_search_calibration_to_independent_endpoint(
     ):
         raise ValueError("candidate calibration model selection is invalid")
 
+    calibration_background = endpoint_background
+    expanded_lineage = None
+    expanded_merge = None
+    if expanded_mode:
+        authorization_path = Path(
+            background_plan_authorization
+        ).resolve()
+        merge_path = Path(expanded_background_merge_report).resolve()
+        authorization = json.loads(
+            authorization_path.read_text(encoding="utf-8")
+        )
+        expanded_merge = json.loads(
+            merge_path.read_text(encoding="utf-8")
+        )
+        parent_path = Path(
+            str(authorization.get("parent_plan", {}).get("path", ""))
+        ).resolve()
+        authorized_endpoint = authorization.get(
+            "independent_validation_endpoint",
+            {},
+        )
+        common = expanded_merge.get("common_run_identity", {})
+        expected_common = {
+            "checkpoint_sha256": run_identity.get("checkpoint_sha256"),
+            "config_sha256": run_identity.get("config_sha256"),
+            "coherence_config_sha256": run_identity.get(
+                "coherence_config_sha256"
+            ),
+            "model_ifos": run_identity.get("model_ifos"),
+            "q_values": run_identity.get("q_values"),
+            "target_sample_rate": run_identity.get(
+                "target_sample_rate"
+            ),
+            "context_duration": run_identity.get("context_duration"),
+            "chirp_threshold": run_identity.get("chirp_threshold"),
+            "minimum_bins": run_identity.get("minimum_bins"),
+            "code_commit": run_identity.get("code_commit"),
+        }
+        calibration_background = Path(
+            str(expanded_merge.get("background_manifest_path", ""))
+        ).resolve()
+        if (
+            authorization.get("status")
+            != "authorized_validation_candidate_continuous_background_plan"
+            or authorization.get("passed") is not True
+            or authorization.get("scientific_claim_allowed") is not False
+            or authorization.get("candidate_scores_inspected") is not False
+            or int(authorization.get("test_rows_read", -1)) != 0
+            or authorization.get("test_evaluation") is not None
+            or authorized_endpoint.get("sha256")
+            != file_sha256(endpoint_path)
+            or Path(
+                str(authorized_endpoint.get("path", ""))
+            ).resolve()
+            != endpoint_path
+            or not parent_path.is_file()
+            or authorization.get("parent_plan", {}).get("sha256")
+            != file_sha256(parent_path)
+            or not np.isclose(
+                float(
+                    authorization.get(
+                        "authorization_identity",
+                        {},
+                    ).get("target_far_per_year", -1)
+                ),
+                expected_target_far_per_year,
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or expanded_merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or expanded_merge.get("scientific_claim_allowed") is not False
+            or expanded_merge.get("complete_parent_plan") is not True
+            or int(
+                expanded_merge.get("split_counts", {}).get("test", -1)
+            )
+            != 0
+            or common.get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            or any(
+                common.get(field) != expected
+                for field, expected in expected_common.items()
+            )
+            or common.get("timing_calibration_report_sha256")
+            != pipeline.get("timing_calibration_report_sha256")
+            or not calibration_background.is_file()
+            or expanded_merge.get("background_manifest_sha256")
+            != file_sha256(calibration_background)
+        ):
+            raise ValueError(
+                "expanded candidate background lineage failed replay"
+            )
+        expanded_lineage = {
+            "background_plan_authorization": {
+                "path": str(authorization_path),
+                "sha256": file_sha256(authorization_path),
+                "authorization_id": authorization["authorization_id"],
+            },
+            "expanded_background_merge": {
+                "path": str(merge_path),
+                "sha256": file_sha256(merge_path),
+            },
+            "parent_plan": {
+                "path": str(parent_path),
+                "sha256": file_sha256(parent_path),
+            },
+        }
+
     slide_path = Path(
         str(calibration.get("validation_time_slide_report_path", ""))
     ).resolve()
     ranking_path = Path(
         str(calibration.get("validation_injection_ranking_report_path", ""))
     ).resolve()
+    if expanded_merge is not None:
+        slide_report = json.loads(
+            slide_path.read_text(encoding="utf-8")
+        )
+        expanded_candidate = expanded_merge.get(
+            "candidate_manifests",
+            {},
+        ).get("val", {})
+        if (
+            slide_report.get("candidate_manifest_sha256")
+            != expanded_candidate.get("sha256")
+            or Path(
+                str(expanded_candidate.get("path", ""))
+            ).resolve()
+            != Path(
+                str(slide_report.get("candidate_manifest_path", ""))
+            ).resolve()
+        ):
+            raise ValueError(
+                "expanded threshold candidates differ from the merged bank"
+            )
     background_blocks = {
         str(value) for value in calibration.get("validation_background_gps_blocks", [])
     }
@@ -1135,9 +1277,9 @@ def bind_candidate_search_calibration_to_independent_endpoint(
         or dependence.get("split") != "val"
         or _dependence_bootstrap_replicates(dependence)
         < minimum_bootstrap_replicates
-        or dependence_background != endpoint_background
+        or dependence_background != calibration_background
         or dependence.get("background_manifest", {}).get("sha256")
-        != file_sha256(endpoint_background)
+        != file_sha256(calibration_background)
         or dependence.get("time_slide_report", {}).get("path") != str(slide_path)
         or dependence.get("time_slide_report", {}).get("sha256")
         != file_sha256(slide_path)
@@ -1217,6 +1359,7 @@ def bind_candidate_search_calibration_to_independent_endpoint(
             "path": str(selection_path),
             "sha256": file_sha256(selection_path),
         },
+        "expanded_background_lineage": expanded_lineage,
         **execution_provenance(),
     }
     atomic_write_json(target, result)

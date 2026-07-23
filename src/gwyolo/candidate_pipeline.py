@@ -514,6 +514,8 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
     zero_count_confidence: float = 0.90,
     maximum_shifts: int | None = None,
     exposure_safety_factor: float = 1.0,
+    expanded_background_merge_report: str | Path | None = None,
+    background_plan_authorization: str | Path | None = None,
 ) -> dict[str, Any]:
     """Promote a validation pipeline to the frozen H1/L1/V1 candidate policy."""
 
@@ -531,6 +533,17 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
     identity = source.get("run_identity", {})
     source_slides = source.get("time_slides", {})
     source_rankings = source.get("injection_rankings", {})
+    expanded_mode = (
+        expanded_background_merge_report is not None
+        or background_plan_authorization is not None
+    )
+    if expanded_mode and (
+        expanded_background_merge_report is None
+        or background_plan_authorization is None
+    ):
+        raise ValueError(
+            "expanded detector-set recalibration requires merge and authorization"
+        )
     inputs = {
         "background_manifest_sha256": file_sha256(background_manifest),
         "background_candidate_manifest_sha256": file_sha256(
@@ -545,11 +558,7 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
         "network_config_sha256": file_sha256(network_config),
     }
     if (
-        inputs["background_manifest_sha256"]
-        != identity.get("background_manifest_sha256")
-        or inputs["background_candidate_manifest_sha256"]
-        != source_slides.get("candidate_manifest_sha256")
-        or inputs["injection_trigger_manifest_sha256"]
+        inputs["injection_trigger_manifest_sha256"]
         != source_rankings.get("injection_trigger_manifest_sha256")
         or inputs["injection_candidate_manifest_sha256"]
         != source_rankings.get("candidate_manifest_sha256")
@@ -557,11 +566,141 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
         raise ValueError(
             "detector-set recalibration inputs differ from the source pipeline"
         )
+    expanded_lineage = None
+    if expanded_mode:
+        merge_path = Path(expanded_background_merge_report).resolve()
+        authorization_path = Path(background_plan_authorization).resolve()
+        merge = json.loads(merge_path.read_text(encoding="utf-8"))
+        authorization = json.loads(
+            authorization_path.read_text(encoding="utf-8")
+        )
+        parent_path = Path(
+            str(authorization.get("parent_plan", {}).get("path", ""))
+        ).resolve()
+        endpoint_path = Path(
+            str(
+                authorization.get(
+                    "independent_validation_endpoint",
+                    {},
+                ).get("path", "")
+            )
+        ).resolve()
+        if (
+            authorization.get("status")
+            != "authorized_validation_candidate_continuous_background_plan"
+            or authorization.get("passed") is not True
+            or authorization.get("scientific_claim_allowed") is not False
+            or authorization.get("candidate_scores_inspected") is not False
+            or int(authorization.get("test_rows_read", -1)) != 0
+            or authorization.get("test_evaluation") is not None
+            or not parent_path.is_file()
+            or authorization.get("parent_plan", {}).get("sha256")
+            != file_sha256(parent_path)
+            or not endpoint_path.is_file()
+            or authorization.get(
+                "independent_validation_endpoint",
+                {},
+            ).get("sha256")
+            != file_sha256(endpoint_path)
+        ):
+            raise ValueError(
+                "expanded detector-set background is not authorized"
+            )
+        endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+        candidate_artifact = merge.get("candidate_manifests", {}).get(
+            "val",
+            {},
+        )
+        common = merge.get("common_run_identity", {})
+        expected_common = {
+            "checkpoint_sha256": identity.get("checkpoint_sha256"),
+            "config_sha256": identity.get("config_sha256"),
+            "coherence_config_sha256": identity.get(
+                "coherence_config_sha256"
+            ),
+            "model_ifos": identity.get("model_ifos"),
+            "q_values": identity.get("q_values"),
+            "target_sample_rate": identity.get("target_sample_rate"),
+            "context_duration": identity.get("context_duration"),
+            "chirp_threshold": identity.get("chirp_threshold"),
+            "minimum_bins": identity.get("minimum_bins"),
+            "code_commit": identity.get("code_commit"),
+        }
+        if (
+            merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or merge.get("scientific_claim_allowed") is not False
+            or merge.get("complete_parent_plan") is not True
+            or int(merge.get("split_counts", {}).get("test", -1)) != 0
+            or common.get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            or any(
+                common.get(field) != expected
+                for field, expected in expected_common.items()
+            )
+            or common.get("timing_calibration_report_sha256")
+            != source.get("timing_calibration_report_sha256")
+            or merge.get("background_manifest_sha256")
+            != inputs["background_manifest_sha256"]
+            or Path(
+                str(merge.get("background_manifest_path", ""))
+            ).resolve()
+            != Path(background_manifest).resolve()
+            or candidate_artifact.get("sha256")
+            != inputs["background_candidate_manifest_sha256"]
+            or Path(
+                str(candidate_artifact.get("path", ""))
+            ).resolve()
+            != Path(calibrated_background_candidate_manifest).resolve()
+            or endpoint.get("status")
+            != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+            or endpoint.get("passed") is not True
+            or endpoint.get("scientific_claim_allowed") is not False
+            or int(endpoint.get("test_rows_read", -1)) != 0
+            or endpoint.get("test_evaluation") is not None
+            or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        ):
+            raise ValueError(
+                "expanded detector-set merge/scorer/endpoint lineage differs"
+            )
+        authorization_identity = authorization.get(
+            "authorization_identity",
+            {},
+        )
+        target_far = float(
+            authorization_identity["target_far_per_year"]
+        )
+        zero_count_confidence = float(
+            authorization_identity["zero_count_confidence"]
+        )
+        expanded_lineage = {
+            "merge_report_path": str(merge_path),
+            "merge_report_sha256": file_sha256(merge_path),
+            "authorization_path": str(authorization_path),
+            "authorization_sha256": file_sha256(authorization_path),
+            "authorization_id": authorization["authorization_id"],
+            "parent_plan_path": str(parent_path),
+            "parent_plan_sha256": file_sha256(parent_path),
+            "independent_validation_endpoint_path": str(endpoint_path),
+            "independent_validation_endpoint_sha256": file_sha256(
+                endpoint_path
+            ),
+        }
+    else:
+        if (
+            inputs["background_manifest_sha256"]
+            != identity.get("background_manifest_sha256")
+            or inputs["background_candidate_manifest_sha256"]
+            != source_slides.get("candidate_manifest_sha256")
+        ):
+            raise ValueError(
+                "detector-set background differs from the source pipeline"
+            )
+        target_far = float(identity["target_far_per_year"])
     timing_uncertainty = float(
         source["empirical_timing_uncertainty_seconds"]
     )
     cluster_window = float(identity["cluster_window_seconds"])
-    target_far = float(identity["target_far_per_year"])
     bootstrap_replicates = int(identity["bootstrap_replicates"])
     seed = int(identity["seed"])
     if (
@@ -583,6 +722,7 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
         "zero_count_confidence": zero_count_confidence,
         "maximum_shifts": maximum_shifts,
         "exposure_safety_factor": exposure_safety_factor,
+        "expanded_background_lineage": expanded_lineage,
     }
     if result_path.is_file():
         prior = json.loads(result_path.read_text(encoding="utf-8"))
@@ -693,6 +833,10 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
     policy = load_yaml(network_config)["network_coherence"]
     run_identity = {
         **identity,
+        "background_manifest_sha256": inputs[
+            "background_manifest_sha256"
+        ],
+        "target_far_per_year": target_far,
         "network_config_sha256": inputs["network_config_sha256"],
         "detector_set_policy": policy["schema"],
         "detectors": list(policy["detectors"]),
@@ -727,6 +871,7 @@ def recalibrate_candidate_validation_pipeline_with_detector_sets(
         ],
         "detector_set_block_recalibration": {
             "successor_identity": successor_identity,
+            "expanded_background_lineage": expanded_lineage,
             "source_pipeline_report_path": str(source_path),
             "schedule_path": str(schedule_path.resolve()),
             "schedule_sha256": file_sha256(schedule_path),
