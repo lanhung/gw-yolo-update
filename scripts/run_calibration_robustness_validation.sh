@@ -63,6 +63,7 @@ second_ifo=${SECOND_IFO:-L1}
 cluster_window_seconds=${CLUSTER_WINDOW_SECONDS:-0.1}
 truth_association_window_seconds=${TRUTH_ASSOCIATION_WINDOW_SECONDS:-0.25}
 
+robustness_config="$TASK_CODE_DIR/configs/calibration_perturbation_o4a_validation.yaml"
 detector_set_mode=$("$TASK_PYTHON" - \
   "$TASK_CODE_DIR" "$GWYOLO_CODE_COMMIT" \
   "$REFERENCE_CODE_DIR" "$REFERENCE_CODE_COMMIT" \
@@ -70,6 +71,7 @@ detector_set_mode=$("$TASK_PYTHON" - \
   "$CHECKPOINT" "$MODEL_CONFIG" "$NETWORK_CONFIG" \
   "$TIMING_CALIBRATION_REPORT" \
   "$BLOCK_SCHEDULE" "$BASELINE_CALIBRATION_REPORT" \
+  "$robustness_config" \
   "$PHYSICAL_DELAY_LIMIT_SECONDS" "$EMPIRICAL_TIMING_UNCERTAINTY_SECONDS" \
   "$COINCIDENCE_WINDOW_SECONDS" <<'PY'
 import hashlib
@@ -93,6 +95,7 @@ import sys
     timing_path,
     schedule_path,
     baseline_path,
+    robustness_config_path,
     physical_delay,
     timing_uncertainty,
     coincidence_window,
@@ -108,6 +111,26 @@ plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
 timing = json.loads(pathlib.Path(timing_path).read_text(encoding="utf-8"))
 schedule = json.loads(pathlib.Path(schedule_path).read_text(encoding="utf-8"))
 baseline = json.loads(pathlib.Path(baseline_path).read_text(encoding="utf-8"))
+import yaml
+
+robustness = yaml.safe_load(
+    pathlib.Path(robustness_config_path).read_text(encoding="utf-8")
+)["calibration_robustness"]
+required_subsets = set(robustness.get("required_detector_subsets", []))
+observed_subsets = set()
+with pathlib.Path(injection_path).open("r", encoding="utf-8") as handle:
+    for line in handle:
+        if line.strip():
+            row = json.loads(line)
+            observed_subsets.add(
+                "+".join(row.get("valid_ifos", row.get("ifos", [])))
+            )
+missing_subsets = sorted(required_subsets - observed_subsets)
+if missing_subsets:
+    raise SystemExit(
+        "calibration robustness injection corpus lacks detector strata: "
+        + ", ".join(missing_subsets)
+    )
 identity = baseline.get("identity", {})
 expected_window = float(physical_delay) + 2 * float(timing_uncertainty)
 variable_detector_set = (
@@ -404,7 +427,7 @@ if [[ ! -s "$result" ]]; then
       --plan "$CALIBRATION_PLAN" \
       --baseline-calibration-report "$BASELINE_CALIBRATION_REPORT" \
       "${receipt_args[@]}" \
-      --config "$TASK_CODE_DIR/configs/calibration_perturbation_o4a_validation.yaml" \
+      --config "$robustness_config" \
       --output "$result"
   )
 fi
