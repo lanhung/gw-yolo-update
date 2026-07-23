@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from gwyolo.evaluation_lock import (
@@ -15,6 +16,7 @@ from gwyolo.evaluation_lock import (
     finalize_locked_evaluation_suite_receipt,
     merge_locked_o4b_streaming_shard_receipts,
     open_evaluation_corpus_once,
+    prepare_locked_o4b_streaming_shard_manifests,
     validate_locked_evaluation_suite_access,
     validate_locked_evaluation_suite_input,
 )
@@ -567,6 +569,8 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "split": "test",
                 "observing_run": "O4b",
                 "ifos": ["H1", "L1"],
+                "gps_time": gps_start + 2048.0,
+                "required_context_duration_seconds": 256.0,
             }
         )
     _write(availability_manifest, availability_rows)
@@ -727,6 +731,33 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
         )
         == source_result
     )
+
+    def fake_quality(path):
+        path = Path(path)
+        second = "shard-00001" in path.parts
+        gps_start = 1400004096 if second else 1400000000
+        return {
+            "gps_start": gps_start,
+            "gps_end": gps_start + 4096,
+            "duration": 4096,
+            "dqmask": np.ones(4096, dtype=np.int64),
+            "injmask": np.full(
+                4096,
+                0 if second else 31,
+                dtype=np.int64,
+            ),
+        }
+
+    monkeypatch.setattr("gwyolo.background._read_quality", fake_quality)
+    prepared = prepare_locked_o4b_streaming_shard_manifests(
+        report_path,
+        access,
+        0,
+        "abc123",
+    )
+    assert prepared["background_windows"] > 0
+    assert prepared["eligible_injections"] == 1
+    assert prepared["unavailable_injections"] == 0
     active_lease = suite_root / "execution" / ".active-shard.lock"
     active_lease.write_text("active", encoding="utf-8")
     with pytest.raises(RuntimeError, match="already active"):
@@ -748,6 +779,15 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "abc123",
                 download_workers=2,
             )
+        if not Path(shard["manifest_preparation_report_path"]).exists():
+            shard_prepared = prepare_locked_o4b_streaming_shard_manifests(
+                report_path,
+                access,
+                shard["shard_index"],
+                "abc123",
+            )
+            assert shard_prepared["unavailable_injections"] == 1
+            assert shard_prepared["post_access_dq_replacement_used"] is False
         work_dir = Path(shard["work_dir"])
         work_dir.mkdir(parents=True, exist_ok=True)
         for label in (

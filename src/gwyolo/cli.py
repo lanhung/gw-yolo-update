@@ -1743,6 +1743,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--chunk-samples", type=int, default=1_048_576
     )
 
+    locked_stream_prepare = subparsers.add_parser(
+        "locked-o4b-streaming-shard-prepare"
+    )
+    locked_stream_prepare.add_argument("--execution-plan", required=True)
+    locked_stream_prepare.add_argument("--access-log", required=True)
+    locked_stream_prepare.add_argument("--shard-index", type=int, required=True)
+    locked_stream_prepare.add_argument("--code-commit", required=True)
+    locked_stream_prepare.add_argument(
+        "--background-window-duration", type=int, default=8
+    )
+    locked_stream_prepare.add_argument("--background-stride", type=int, default=8)
+    locked_stream_prepare.add_argument(
+        "--background-block-duration", type=int, default=256
+    )
+    locked_stream_prepare.add_argument(
+        "--background-context-duration", type=int, default=64
+    )
+
     locked_stream_shard_finalize = subparsers.add_parser(
         "locked-o4b-streaming-shard-finalize"
     )
@@ -4258,6 +4276,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.access_log,
                 args.shard_index,
                 args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-prepare":
+        from .evaluation_lock import prepare_locked_o4b_streaming_shard_manifests
+
+        _print(
+            prepare_locked_o4b_streaming_shard_manifests(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+                args.background_window_duration,
+                args.background_stride,
+                args.background_block_duration,
+                args.background_context_duration,
             )
         )
     elif args.command == "locked-o4b-streaming-receipts-merge":

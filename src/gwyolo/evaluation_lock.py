@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
@@ -263,6 +266,31 @@ def freeze_locked_o4b_streaming_execution_plan(
                     work
                     / f"shard-{shard_index:05d}"
                     / "locked_source_eviction_report.json"
+                ),
+                "background_manifest_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_background_windows.jsonl"
+                ),
+                "injection_background_manifest_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_injection_background_windows.jsonl"
+                ),
+                "injection_recipe_manifest_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_injection_recipes.jsonl"
+                ),
+                "availability_outcome_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_availability_outcomes.jsonl"
+                ),
+                "manifest_preparation_report_path": str(
+                    work
+                    / f"shard-{shard_index:05d}"
+                    / "locked_manifest_preparation_report.json"
                 ),
                 "artifact_paths": {
                     label: str(
@@ -566,6 +594,353 @@ def download_locked_o4b_streaming_shard_sources(
             pass
 
 
+def prepare_locked_o4b_streaming_shard_manifests(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    shard_index: int,
+    code_commit: str,
+    background_window_duration: int = 8,
+    background_stride: int = 8,
+    background_block_duration: int = 256,
+    background_context_duration: int = 64,
+) -> dict[str, Any]:
+    """Create score-ready test manifests without replacing unavailable rows."""
+
+    if (
+        shard_index < 0
+        or not code_commit.strip()
+        or min(
+            background_window_duration,
+            background_stride,
+            background_block_duration,
+            background_context_duration,
+        )
+        <= 0
+        or background_window_duration > background_block_duration
+        or background_context_duration < background_window_duration
+    ):
+        raise ValueError("locked shard manifest preparation settings are invalid")
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    inventory_manifest = Path(
+        str(plan.get("freeze_identity", {}).get("inventory_manifest_path", ""))
+    ).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or plan.get("code_commit") != code_commit
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("evaluation_opened") is not True
+        or access.get("code_commit") != code_commit
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+        or not inventory_manifest.is_file()
+        or plan.get("freeze_identity", {}).get("inventory_manifest_sha256")
+        != file_sha256(inventory_manifest)
+    ):
+        raise ValueError("locked shard manifest preparation binding failed replay")
+    shards = _load_jsonl(shard_manifest)
+    if shard_index >= len(shards):
+        raise ValueError("locked shard index is outside the frozen schedule")
+    shard = shards[shard_index]
+    if int(shard.get("shard_index", -1)) != shard_index:
+        raise ValueError("locked shard order changed after freezing")
+
+    work_dir = Path(str(shard["work_dir"])).resolve()
+    source_report_path = Path(str(shard["source_download_report_path"])).resolve()
+    background_path = Path(str(shard["background_manifest_path"])).resolve()
+    injection_background_path = Path(
+        str(shard["injection_background_manifest_path"])
+    ).resolve()
+    recipe_path = Path(str(shard["injection_recipe_manifest_path"])).resolve()
+    outcome_path = Path(str(shard["availability_outcome_path"])).resolve()
+    report_path = Path(str(shard["manifest_preparation_report_path"])).resolve()
+    prepared_paths = (
+        source_report_path,
+        background_path,
+        injection_background_path,
+        recipe_path,
+        outcome_path,
+        report_path,
+    )
+    if any(work_dir not in path.parents for path in prepared_paths):
+        raise ValueError("locked shard preparation paths escaped the frozen work dir")
+    if not source_report_path.is_file():
+        raise FileNotFoundError("locked shard source report is absent")
+    source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
+    if (
+        source_report.get("status") != "verified_locked_o4b_shard_sources"
+        or source_report.get("passed") is not True
+        or source_report.get("shard_index") != shard_index
+        or source_report.get("run_identity", {}).get("execution_plan_sha256")
+        != file_sha256(plan_file)
+        or source_report.get("run_identity", {}).get("access_log_sha256")
+        != file_sha256(access_file)
+    ):
+        raise ValueError("locked shard source report failed preparation replay")
+
+    by_availability: dict[str, dict[str, dict[str, Any]]] = {}
+    for file_row in source_report.get("files", []):
+        availability_id = str(file_row.get("availability_id", ""))
+        ifo = str(file_row.get("detector", ""))
+        path = Path(str(file_row.get("path", ""))).resolve()
+        if (
+            availability_id not in shard["availability_ids"]
+            or ifo not in {"H1", "L1", "V1"}
+            or not path.is_file()
+            or file_row.get("sha256") != file_sha256(path)
+            or file_row.get("verification", {}).get("passed") is not True
+            or ifo in by_availability.setdefault(availability_id, {})
+        ):
+            raise ValueError("locked shard source file failed preparation replay")
+        by_availability[availability_id][ifo] = {
+            "path": str(path),
+            "sha256": file_row["sha256"],
+        }
+    if set(by_availability) != set(shard["availability_ids"]):
+        raise ValueError("locked shard sources omit a frozen availability block")
+
+    all_recipes = _load_jsonl(inventory_manifest)
+    recipe_index = {str(row["injection_id"]): row for row in all_recipes}
+    if len(recipe_index) != len(all_recipes):
+        raise ValueError("locked injection inventory repeats injection IDs")
+    selected_recipes = []
+    for injection_id in shard["injection_ids"]:
+        recipe = recipe_index.get(str(injection_id))
+        if (
+            recipe is None
+            or str(recipe.get("availability_id")) not in shard["availability_ids"]
+            or recipe.get("split") != "test"
+            or recipe.get("observing_run") != "O4b"
+        ):
+            raise ValueError("locked shard recipe join failed preparation replay")
+        selected_recipes.append(recipe)
+
+    from .background import _read_quality, plan_background_windows
+
+    background_rows = []
+    background_rejections: Counter[str] = Counter()
+    quality_by_availability = {}
+    frozen_block_by_availability = dict(
+        zip(shard["availability_ids"], shard["gps_blocks"])
+    )
+    for availability_id in shard["availability_ids"]:
+        files = {
+            ifo: value["path"]
+            for ifo, value in sorted(by_availability[availability_id].items())
+        }
+        quality = {ifo: _read_quality(path) for ifo, path in files.items()}
+        quality_by_availability[availability_id] = quality
+        planned, audit = plan_background_windows(
+            files,
+            window_duration=background_window_duration,
+            stride=background_stride,
+            block_duration=background_block_duration,
+            required_context_duration=background_context_duration,
+            required_dq_bits=1,
+            required_injection_bits=23,
+            excluded_intervals=(),
+            validation_fraction=0.0,
+            test_fraction=0.0,
+            seed=0,
+            split_strategy="hash_threshold_v1",
+        )
+        background_rejections.update(audit.get("rejection_counts", {}))
+        for row in planned:
+            center = float(row["gps_start"]) + float(row["duration"]) / 2.0
+            context_start = int(
+                math.floor(center - background_context_duration / 2.0)
+            )
+            context_stop = int(
+                math.ceil(center + background_context_duration / 2.0)
+            )
+            injection_mask_valid = True
+            for item in quality.values():
+                start = context_start - int(item["gps_start"])
+                stop = context_stop - int(item["gps_start"])
+                values = item["injmask"][start:stop]
+                if (
+                    values.size != context_stop - context_start
+                    or np.any((values & 23) != 23)
+                ):
+                    injection_mask_valid = False
+                    break
+            if not injection_mask_valid:
+                background_rejections[
+                    "required_no_injection_bits_missing_in_context"
+                ] += 1
+                continue
+            row.update(
+                {
+                    "split": "test",
+                    "shard_index": shard_index,
+                    "availability_id": availability_id,
+                    "frozen_availability_gps_block": (
+                        frozen_block_by_availability[availability_id]
+                    ),
+                }
+            )
+            background_rows.append(row)
+
+    injection_background_rows = []
+    eligible_recipes = []
+    outcomes = []
+    for recipe in selected_recipes:
+        availability_id = str(recipe["availability_id"])
+        ifos = [str(value) for value in recipe["ifos"]]
+        quality = quality_by_availability[availability_id]
+        context_duration = float(recipe["required_context_duration_seconds"])
+        center = float(recipe["gps_time"])
+        context_start = int(math.floor(center - context_duration / 2.0))
+        context_stop = int(math.ceil(center + context_duration / 2.0))
+        reasons = []
+        for ifo in ifos:
+            item = quality.get(ifo)
+            if item is None:
+                reasons.append(f"missing_source:{ifo}")
+                continue
+            start = context_start - int(item["gps_start"])
+            stop = context_stop - int(item["gps_start"])
+            dq = item["dqmask"][start:stop]
+            injections = item["injmask"][start:stop]
+            expected = context_stop - context_start
+            if dq.size != expected or injections.size != expected:
+                reasons.append(f"incomplete_context:{ifo}")
+            elif np.any((dq & 1) != 1):
+                reasons.append(f"required_dq_bit_missing:{ifo}")
+            elif np.any((injections & 23) != 23):
+                reasons.append(f"required_no_injection_bits_missing:{ifo}")
+        eligible = not reasons
+        outcome = {
+            "schema": "locked_o4b_availability_outcome_v1",
+            "shard_index": shard_index,
+            "availability_id": availability_id,
+            "injection_id": recipe["injection_id"],
+            "waveform_id": recipe["waveform_id"],
+            "gps_block": recipe["gps_block"],
+            "split": "test",
+            "eligible": eligible,
+            "reasons": reasons,
+            "post_access_dq_replacement_used": False,
+            "result_dependent_stopping_used": False,
+        }
+        outcomes.append(outcome)
+        if not eligible:
+            continue
+        injection_background_rows.append(
+            {
+                "window_id": availability_id,
+                "gps_start": center - background_window_duration / 2.0,
+                "gps_end": center + background_window_duration / 2.0,
+                "duration": background_window_duration,
+                "ifos": ifos,
+                "gps_block": recipe["gps_block"],
+                "split": "test",
+                "shard_index": shard_index,
+                "availability_id": availability_id,
+                "source_files": {
+                    ifo: by_availability[availability_id][ifo] for ifo in ifos
+                },
+            }
+        )
+        eligible_recipes.append(recipe)
+
+    payloads = {
+        background_path: background_rows,
+        injection_background_path: injection_background_rows,
+        recipe_path: eligible_recipes,
+        outcome_path: outcomes,
+    }
+    for path, rows in payloads.items():
+        payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+        if path.is_file():
+            if path.read_text(encoding="utf-8") != payload:
+                raise ValueError("existing locked shard prepared manifest changed")
+        else:
+            atomic_write_text(path, payload)
+    run_identity = {
+        "execution_plan_sha256": file_sha256(plan_file),
+        "access_log_sha256": file_sha256(access_file),
+        "source_download_report_sha256": file_sha256(source_report_path),
+        "shard_index": shard_index,
+        "background_window_duration": background_window_duration,
+        "background_stride": background_stride,
+        "background_block_duration": background_block_duration,
+        "background_context_duration": background_context_duration,
+        "required_dq_bits": 1,
+        "required_no_injection_bits": 23,
+        "code_commit": code_commit,
+    }
+    result = {
+        "status": "prepared_locked_o4b_streaming_shard_manifests",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "shard_index": shard_index,
+        "run_identity": run_identity,
+        "test_rows_read": len(shard["availability_ids"]),
+        "post_access_dq_replacement_used": False,
+        "result_dependent_stopping_used": False,
+        "background_windows": len(background_rows),
+        "background_live_time_seconds": sum(
+            float(row["duration"]) for row in background_rows
+        ),
+        "background_rejections": dict(sorted(background_rejections.items())),
+        "injections": len(selected_recipes),
+        "eligible_injections": len(eligible_recipes),
+        "unavailable_injections": len(selected_recipes) - len(eligible_recipes),
+        "artifacts": {
+            "background_manifest": {
+                "path": str(background_path),
+                "sha256": file_sha256(background_path),
+            },
+            "injection_background_manifest": {
+                "path": str(injection_background_path),
+                "sha256": file_sha256(injection_background_path),
+            },
+            "injection_recipe_manifest": {
+                "path": str(recipe_path),
+                "sha256": file_sha256(recipe_path),
+            },
+            "availability_outcome": {
+                "path": str(outcome_path),
+                "sha256": file_sha256(outcome_path),
+            },
+            "source_download_report": {
+                "path": str(source_report_path),
+                "sha256": file_sha256(source_report_path),
+            },
+        },
+        "code_commit": code_commit,
+        **execution_provenance(),
+    }
+    result["runtime_provenance"] = {
+        "runtime_code_commit": result.pop("code_commit"),
+        "exact_command": result.pop("exact_command"),
+        "environment": result.pop("environment"),
+    }
+    result["code_commit"] = code_commit
+    if report_path.is_file():
+        completed = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            completed.get("status") != result["status"]
+            or completed.get("run_identity") != run_identity
+            or completed.get("artifacts") != result["artifacts"]
+            or completed.get("background_windows") != result["background_windows"]
+            or completed.get("eligible_injections") != result["eligible_injections"]
+        ):
+            raise ValueError("existing locked shard preparation report changed")
+        return completed
+    atomic_write_json(report_path, result)
+    return result
+
+
 def finalize_locked_o4b_streaming_shard(
     execution_plan_path: str | Path,
     access_log_path: str | Path,
@@ -605,15 +980,42 @@ def finalize_locked_o4b_streaming_shard(
     work_dir = Path(str(shard["work_dir"])).resolve()
     source_dir = Path(str(shard["source_cache_dir"])).resolve()
     source_report_path = Path(str(shard["source_download_report_path"])).resolve()
+    preparation_report_path = Path(
+        str(shard["manifest_preparation_report_path"])
+    ).resolve()
     eviction_path = Path(str(shard["source_eviction_report_path"])).resolve()
     receipt_path = Path(str(shard["receipt_path"])).resolve()
     if any(
         work_dir not in path.parents
-        for path in (source_dir, source_report_path, eviction_path, receipt_path)
+        for path in (
+            source_dir,
+            source_report_path,
+            preparation_report_path,
+            eviction_path,
+            receipt_path,
+        )
     ):
         raise ValueError("locked shard finalization paths escaped the frozen work dir")
     if not source_report_path.is_file():
         raise FileNotFoundError("locked shard source download report is absent")
+    if not preparation_report_path.is_file():
+        raise FileNotFoundError("locked shard manifest preparation report is absent")
+    preparation = json.loads(preparation_report_path.read_text(encoding="utf-8"))
+    if (
+        preparation.get("status")
+        != "prepared_locked_o4b_streaming_shard_manifests"
+        or preparation.get("passed") is not True
+        or preparation.get("shard_index") != shard_index
+        or preparation.get("run_identity", {}).get("execution_plan_sha256")
+        != file_sha256(plan_file)
+        or preparation.get("run_identity", {}).get("access_log_sha256")
+        != file_sha256(access_file)
+        or preparation.get("run_identity", {}).get("source_download_report_sha256")
+        != file_sha256(source_report_path)
+        or preparation.get("post_access_dq_replacement_used") is not False
+        or preparation.get("result_dependent_stopping_used") is not False
+    ):
+        raise ValueError("locked shard preparation report failed finalization replay")
 
     expected_artifacts = shard.get("artifact_paths")
     if (
@@ -705,6 +1107,9 @@ def finalize_locked_o4b_streaming_shard(
         "access_log_sha256": file_sha256(access_file),
         "shard_index": shard_index,
         "source_download_report_sha256": file_sha256(source_report_path),
+        "manifest_preparation_report_sha256": file_sha256(
+            preparation_report_path
+        ),
         "source_files_sha256": canonical_hash(shard["source_files"], length=64),
         "artifacts": artifact_entries,
         "targets": targets,
@@ -798,6 +1203,10 @@ def finalize_locked_o4b_streaming_shard(
         "source_download_report": {
             "path": str(source_report_path),
             "sha256": file_sha256(source_report_path),
+        },
+        "manifest_preparation_report": {
+            "path": str(preparation_report_path),
+            "sha256": file_sha256(preparation_report_path),
         },
         "source_eviction": {
             "status": eviction["status"],
@@ -1073,12 +1482,22 @@ def audit_locked_o4b_streaming_completion(
         source_report_path = Path(
             str(shard.get("source_download_report_path", ""))
         ).resolve()
+        preparation_report_path = Path(
+            str(shard.get("manifest_preparation_report_path", ""))
+        ).resolve()
         source_report = receipt.get("source_download_report")
+        preparation_report = receipt.get("manifest_preparation_report")
         if (
             not isinstance(source_report, dict)
             or source_report_path != Path(str(source_report.get("path", ""))).resolve()
             or not source_report_path.is_file()
             or source_report.get("sha256") != file_sha256(source_report_path)
+            or not isinstance(preparation_report, dict)
+            or preparation_report_path
+            != Path(str(preparation_report.get("path", ""))).resolve()
+            or not preparation_report_path.is_file()
+            or preparation_report.get("sha256")
+            != file_sha256(preparation_report_path)
         ):
             raise ValueError(
                 f"locked streaming shard source report failed replay: {expected_index}"
