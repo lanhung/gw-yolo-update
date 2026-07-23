@@ -32,6 +32,9 @@ def test_mask_deglitch_validation_binds_independent_six_arm_protocol() -> None:
     assert '"coherent_background_scale_allowed": False' in source
     assert "frozen_gps_and_purpose_disjoint_validation_endpoint" in source
     assert "verified_independent_validation_pe_overlap" in source
+    assert "MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" in source
+    assert "MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" in source
+    assert "MODEL_SELECTION_OVERLAP_MANIFEST" not in source
     assert 'independent["training_overlap_manifest_path"]' in source
     assert 'audit.get("manifest_sha256_by_split", {}).get("train")' in source
     assert "passed_physical_overlap_group_audit" in source

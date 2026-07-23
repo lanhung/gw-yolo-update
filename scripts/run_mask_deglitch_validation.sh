@@ -12,7 +12,8 @@ required=(
   FIVE_SEED_SUMMARY
   UNIFORM_CONFIG
   FAMILY_BALANCED_CONFIG
-  MODEL_SELECTION_OVERLAP_MANIFEST
+  MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST
+  MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST
   MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST
   INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   INDEPENDENT_PE_OVERLAP_REPORT
@@ -35,7 +36,8 @@ for path in \
   "$FIVE_SEED_SUMMARY" \
   "$UNIFORM_CONFIG" \
   "$FAMILY_BALANCED_CONFIG" \
-  "$MODEL_SELECTION_OVERLAP_MANIFEST" \
+  "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
+  "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
   "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" \
   "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$INDEPENDENT_PE_OVERLAP_REPORT" \
@@ -70,7 +72,8 @@ if ! preflight=$(
     "$FIVE_SEED_SUMMARY" \
     "$UNIFORM_CONFIG" \
     "$FAMILY_BALANCED_CONFIG" \
-    "$MODEL_SELECTION_OVERLAP_MANIFEST" \
+    "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
+    "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
     "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" \
     "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
     "$INDEPENDENT_PE_OVERLAP_REPORT" \
@@ -95,7 +98,8 @@ def digest(path):
     summary_path,
     uniform_config,
     balanced_config,
-    selection_overlap,
+    selection_train_overlap,
+    selection_validation_overlap,
     selection_clean,
     endpoint_path,
     independent_report_path,
@@ -146,7 +150,10 @@ model_report_path, model_report = matches[0]
 expected_model = {
     "checkpoint_sha256": digest(checkpoint),
     "config_file_sha256": digest(model_config),
-    "overlap_validation_manifest_sha256": digest(selection_overlap),
+    "overlap_train_manifest_sha256": digest(selection_train_overlap),
+    "overlap_validation_manifest_sha256": digest(
+        selection_validation_overlap
+    ),
     "clean_validation_manifest_sha256": digest(selection_clean),
 }
 if (
@@ -199,9 +206,9 @@ if (
     or independent.get("overlap_manifest_sha256") != digest(overlap_path)
     or independent.get("joint_overlap_audit_sha256") != digest(audit_path)
     or pathlib.Path(independent["training_overlap_manifest_path"]).resolve()
-    != pathlib.Path(selection_overlap).resolve()
+    != pathlib.Path(selection_train_overlap).resolve()
     or independent.get("training_overlap_manifest_sha256")
-    != digest(selection_overlap)
+    != digest(selection_train_overlap)
     or independent.get("independent_validation_endpoint_report_sha256")
     != digest(endpoint_path)
     or independent.get("injection_arrival_manifest_sha256")
@@ -215,7 +222,7 @@ if (
     or audit.get("passed") is not True
     or audit.get("manifest_sha256_by_split", {}).get("val") != digest(overlap_path)
     or audit.get("manifest_sha256_by_split", {}).get("train")
-    != digest(selection_overlap)
+    != digest(selection_train_overlap)
     or not cross
     or any(values for pair in cross.values() for values in pair.values())
 ):
