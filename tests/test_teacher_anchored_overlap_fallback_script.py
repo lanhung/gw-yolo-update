@@ -24,6 +24,8 @@ def test_teacher_anchor_fallback_requires_a_completed_negative_gate() -> None:
         "physical_overlap_finetune_family_balanced_teacher_anchor.yaml",
         "authorized_validation_only_teacher_anchored_overlap_fallback",
         "clean_chirp_distillation_weight",
+        "physical_overlap_report.json",
+        "ln -s",
         "test_rows_read",
     ):
         assert token in source

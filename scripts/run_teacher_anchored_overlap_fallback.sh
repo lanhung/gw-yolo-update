@@ -176,6 +176,23 @@ os.replace(part, output)
 PY
 fi
 
+chain_root="$OUTPUT_ROOT/chain"
+mkdir -p "$chain_root"
+for split_root in train-overlaps val-overlaps; do
+  source_root="$FAILED_CHAIN_ROOT/$split_root"
+  target_root="$chain_root/$split_root"
+  if [[ ! -s "$source_root/physical_overlap_report.json" ]]; then
+    echo "teacher-anchor fallback cannot replay $split_root" >&2
+    exit 3
+  fi
+  if [[ ! -e "$target_root" ]]; then
+    ln -s "$source_root" "$target_root"
+  elif [[ "$(readlink -f "$target_root")" != "$(readlink -f "$source_root")" ]]; then
+    echo "teacher-anchor fallback overlap replay points elsewhere" >&2
+    exit 3
+  fi
+done
+
 exec env \
   TASK_PYTHON="$TASK_PYTHON" \
   TASK_CODE_DIR="$TASK_CODE_DIR" \
@@ -188,5 +205,5 @@ exec env \
   PRETRAINED_CHECKPOINT="$PRETRAINED_CHECKPOINT" \
   UNIFORM_CONFIG="$uniform_config" \
   FAMILY_BALANCED_CONFIG="$family_config" \
-  OUTPUT_ROOT="$OUTPUT_ROOT/chain" \
+  OUTPUT_ROOT="$chain_root" \
   bash "$TASK_CODE_DIR/scripts/run_source_safe_overlap_publication.sh"
