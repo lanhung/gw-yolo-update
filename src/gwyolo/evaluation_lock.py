@@ -370,6 +370,12 @@ def freeze_locked_o4b_streaming_execution_plan(
             work / "streaming-shard-receipt-merge-report.json"
         ),
         "completion_audit_path": str(work / "streaming-completion-audit.json"),
+        "post_dq_weight_manifest_path": str(
+            work / "locked-post-dq-injection-weights.jsonl"
+        ),
+        "post_dq_weight_report_path": str(
+            work / "locked-post-dq-injection-weight-report.json"
+        ),
         "code_commit": code_commit,
         **execution_provenance(),
     }
@@ -824,6 +830,9 @@ def prepare_locked_o4b_streaming_shard_manifests(
             "injection_id": recipe["injection_id"],
             "waveform_id": recipe["waveform_id"],
             "gps_block": recipe["gps_block"],
+            "source_family": recipe["source_family"],
+            "stress_strata": recipe.get("stress_strata", []),
+            "detector_subset": recipe.get("detector_subset"),
             "split": "test",
             "eligible": eligible,
             "reasons": reasons,
@@ -1566,6 +1575,277 @@ def audit_locked_o4b_streaming_completion(
     return result
 
 
+def reduce_locked_o4b_post_dq_injection_weights(
+    execution_plan_path: str | Path,
+    access_log_path: str | Path,
+    streaming_completion_audit_path: str | Path,
+    code_commit: str,
+) -> dict[str, Any]:
+    """Assign one shared post-DQ ``<VT>`` measure without inspecting scores.
+
+    Locked injection recipes intentionally carry no pre-access weights because
+    the usable background live time and the usable family counts are unknown
+    until the frozen DQ policy has been applied.  This reducer runs only after
+    every predeclared shard is complete.  It uses every eligible recipe, retains
+    every ineligible attempt as an explicit null row, and applies the same
+    family-normalized weights to the raw and mask arms.
+    """
+
+    plan_file = Path(execution_plan_path).resolve()
+    access_file = Path(access_log_path).resolve()
+    completion_file = Path(streaming_completion_audit_path).resolve()
+    if not plan_file.is_file() or not access_file.is_file() or not completion_file.is_file():
+        raise FileNotFoundError("locked post-DQ weight inputs are absent")
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    access = json.loads(access_file.read_text(encoding="utf-8"))
+    completion = json.loads(completion_file.read_text(encoding="utf-8"))
+    frozen_plan = access.get("frozen_artifacts", {}).get("locked_execution_plan", {})
+    shard_manifest = Path(str(plan.get("shard_manifest_path", ""))).resolve()
+    output_manifest = Path(str(plan.get("post_dq_weight_manifest_path", ""))).resolve()
+    output_report = Path(str(plan.get("post_dq_weight_report_path", ""))).resolve()
+    work_root = Path(str(plan.get("freeze_identity", {}).get("work_root", ""))).resolve()
+    if (
+        plan.get("status") != "frozen_locked_o4b_streaming_execution_plan"
+        or plan.get("passed") is not True
+        or plan.get("code_commit") != code_commit
+        or access.get("status") != "locked_evaluation_corpus_opened_once"
+        or access.get("evaluation_opened") is not True
+        or access.get("code_commit") != code_commit
+        or frozen_plan.get("path") != str(plan_file)
+        or frozen_plan.get("sha256") != file_sha256(plan_file)
+        or completion.get("status")
+        != "completed_locked_o4b_streaming_execution_audit"
+        or completion.get("passed") is not True
+        or completion.get("all_predeclared_shards_reduced") is not True
+        or completion.get("completed_shards") != plan.get("shards")
+        or completion.get("execution_plan", {}).get("path") != str(plan_file)
+        or completion.get("execution_plan", {}).get("sha256")
+        != file_sha256(plan_file)
+        or completion.get("access_log", {}).get("path") != str(access_file)
+        or completion.get("access_log", {}).get("sha256") != file_sha256(access_file)
+        or not shard_manifest.is_file()
+        or plan.get("shard_manifest_sha256") != file_sha256(shard_manifest)
+        or output_manifest.parent != work_root
+        or output_report.parent != work_root
+        or output_manifest == output_report
+    ):
+        raise ValueError("locked post-DQ weight binding failed replay")
+
+    shards = _load_jsonl(shard_manifest)
+    planned_ids: list[str] = []
+    outcomes: dict[str, dict[str, Any]] = {}
+    recipes: dict[str, dict[str, Any]] = {}
+    background_windows: dict[tuple[str, float, float], dict[str, Any]] = {}
+    preparation_reports = []
+
+    def load_allow_empty(path: Path) -> list[dict[str, Any]]:
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"locked post-DQ manifest is invalid: {path}")
+        return rows
+
+    for expected_index, shard in enumerate(shards):
+        if int(shard.get("shard_index", -1)) != expected_index:
+            raise ValueError("locked post-DQ shard order changed")
+        planned_ids.extend(map(str, shard["injection_ids"]))
+        report_path = Path(str(shard["manifest_preparation_report_path"])).resolve()
+        if not report_path.is_file():
+            raise FileNotFoundError("locked post-DQ preparation report is absent")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("status")
+            != "prepared_locked_o4b_streaming_shard_manifests"
+            or report.get("passed") is not True
+            or report.get("shard_index") != expected_index
+            or report.get("run_identity", {}).get("execution_plan_sha256")
+            != file_sha256(plan_file)
+            or report.get("run_identity", {}).get("access_log_sha256")
+            != file_sha256(access_file)
+        ):
+            raise ValueError("locked post-DQ preparation report failed replay")
+        preparation_reports.append(
+            {"path": str(report_path), "sha256": file_sha256(report_path)}
+        )
+        artifacts = report.get("artifacts", {})
+        for label in (
+            "background_manifest",
+            "injection_recipe_manifest",
+            "availability_outcome",
+        ):
+            path = Path(str(artifacts.get(label, {}).get("path", ""))).resolve()
+            if (
+                not path.is_file()
+                or artifacts[label].get("sha256") != file_sha256(path)
+                or Path(str(shard[f"{label}_path"])).resolve() != path
+            ):
+                raise ValueError(f"locked post-DQ {label} failed replay")
+        for row in load_allow_empty(Path(artifacts["background_manifest"]["path"])):
+            key = (
+                str(row["gps_block"]),
+                float(row["gps_start"]),
+                float(row["gps_end"]),
+            )
+            if key in background_windows:
+                raise ValueError("locked post-DQ background window is repeated")
+            background_windows[key] = row
+        for row in load_allow_empty(
+            Path(artifacts["injection_recipe_manifest"]["path"])
+        ):
+            injection_id = str(row["injection_id"])
+            if injection_id in recipes:
+                raise ValueError("locked post-DQ eligible injection is repeated")
+            recipes[injection_id] = row
+        for row in load_allow_empty(Path(artifacts["availability_outcome"]["path"])):
+            injection_id = str(row["injection_id"])
+            if injection_id in outcomes:
+                raise ValueError("locked post-DQ availability outcome is repeated")
+            outcomes[injection_id] = row
+
+    if (
+        len(planned_ids) != int(plan["rows"])
+        or len(set(planned_ids)) != len(planned_ids)
+        or set(outcomes) != set(planned_ids)
+        or set(recipes)
+        != {identity for identity, row in outcomes.items() if row.get("eligible") is True}
+    ):
+        raise ValueError("locked post-DQ population omits or repeats frozen attempts")
+    live_time_seconds = sum(
+        float(row["duration"]) for row in background_windows.values()
+    )
+    live_time_years = live_time_seconds / (365.25 * 24.0 * 3600.0)
+    if live_time_seconds <= 0 or not recipes:
+        raise ValueError("locked post-DQ population has no usable exposure or injections")
+
+    eligible_family_counts = Counter(str(row["source_family"]) for row in recipes.values())
+    planned_family_counts = Counter(
+        str(row["source_family"]) for row in outcomes.values()
+    )
+    weighted_rows = []
+    family_weight_sums: Counter[str] = Counter()
+    for injection_id in planned_ids:
+        outcome = outcomes[injection_id]
+        if outcome.get("eligible") is not True:
+            weighted_rows.append(
+                {
+                    **outcome,
+                    "vt_weight": None,
+                    "vt_weight_unit": "Mpc^3 yr",
+                    "vt_measure": "unavailable_post_dq_null",
+                }
+            )
+            continue
+        recipe = recipes[injection_id]
+        family = str(recipe["source_family"])
+        family_count = eligible_family_counts[family]
+        fraction = float(recipe["proposal_family_fraction"])
+        volume = float(recipe["proposal_comoving_volume_mpc3"])
+        time_factor = float(recipe["source_frame_time_factor"])
+        if (
+            family_count <= 0
+            or not 0 < fraction <= 1
+            or volume <= 0
+            or not 0 < time_factor <= 1
+            or not all(
+                math.isclose(
+                    float(value["proposal_family_fraction"]),
+                    fraction,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                and math.isclose(
+                    float(value["proposal_comoving_volume_mpc3"]),
+                    volume,
+                    rel_tol=1e-12,
+                    abs_tol=0.0,
+                )
+                for value in recipes.values()
+                if str(value["source_family"]) == family
+            )
+        ):
+            raise ValueError(f"locked post-DQ proposal measure is invalid: {family}")
+        weight = fraction * volume * live_time_years * time_factor / family_count
+        weighted_rows.append(
+            {
+                "schema": "locked_o4b_post_dq_injection_weight_v1",
+                "shard_index": outcome["shard_index"],
+                "availability_id": outcome["availability_id"],
+                "injection_id": injection_id,
+                "waveform_id": recipe["waveform_id"],
+                "gps_block": recipe["gps_block"],
+                "source_family": family,
+                "split": "test",
+                "eligible": True,
+                "reasons": [],
+                "vt_weight": weight,
+                "vt_weight_unit": "Mpc^3 yr",
+                "vt_measure": "comoving_volume_times_source_frame_time",
+                "background_live_time_years": live_time_years,
+                "eligible_family_count": family_count,
+                "proposal_family_fraction": fraction,
+                "proposal_comoving_volume_mpc3": volume,
+                "source_frame_time_factor": time_factor,
+                "post_access_dq_replacement_used": False,
+                "result_dependent_stopping_used": False,
+            }
+        )
+        family_weight_sums[family] += weight
+
+    payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in weighted_rows)
+    if output_manifest.is_file():
+        if output_manifest.read_text(encoding="utf-8") != payload:
+            raise ValueError("existing locked post-DQ weight manifest changed")
+    else:
+        atomic_write_text(output_manifest, payload)
+    result = {
+        "status": "reduced_locked_o4b_post_dq_injection_weights",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "selection_data": "score_blind_dq_availability_only",
+        "candidate_scores_inspected": False,
+        "post_access_dq_replacement_used": False,
+        "result_dependent_stopping_used": False,
+        "raw_mask_shared_physical_denominator": True,
+        "planned_injections": len(planned_ids),
+        "eligible_injections": len(recipes),
+        "unavailable_injections": len(planned_ids) - len(recipes),
+        "background_windows": len(background_windows),
+        "background_live_time_seconds": live_time_seconds,
+        "background_live_time_years": live_time_years,
+        "eligible_family_counts": dict(sorted(eligible_family_counts.items())),
+        "planned_family_counts": dict(sorted(planned_family_counts.items())),
+        "family_total_vt_weight": dict(sorted(family_weight_sums.items())),
+        "weight_manifest_path": str(output_manifest),
+        "weight_manifest_sha256": file_sha256(output_manifest),
+        "streaming_completion_audit": {
+            "path": str(completion_file),
+            "sha256": file_sha256(completion_file),
+        },
+        "preparation_reports": preparation_reports,
+        "code_commit": code_commit,
+        **execution_provenance(),
+    }
+    result["runtime_provenance"] = {
+        "runtime_code_commit": result.pop("code_commit"),
+        "exact_command": result.pop("exact_command"),
+        "environment": result.pop("environment"),
+    }
+    result["code_commit"] = code_commit
+    if output_report.is_file():
+        completed = json.loads(output_report.read_text(encoding="utf-8"))
+        if (
+            completed.get("status") != result["status"]
+            or completed.get("weight_manifest_sha256")
+            != result["weight_manifest_sha256"]
+            or completed.get("streaming_completion_audit")
+            != result["streaming_completion_audit"]
+        ):
+            raise ValueError("existing locked post-DQ weight report changed")
+        return completed
+    atomic_write_json(output_report, result)
+    return result
+
+
 def freeze_locked_evaluation_suite_plan(
     validation_evidence_report_path: str | Path,
     config_path: str | Path,
@@ -1853,6 +2133,40 @@ def finalize_locked_evaluation_suite_receipt(
         or streaming.get("access_log", {}).get("sha256") != file_sha256(access_file)
     ):
         raise ValueError("locked suite lacks a complete all-shard streaming audit")
+    execution_path = Path(str(frozen_execution.get("path", ""))).resolve()
+    if (
+        not execution_path.is_file()
+        or frozen_execution.get("sha256") != file_sha256(execution_path)
+    ):
+        raise ValueError("locked suite execution plan failed post-DQ replay")
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    post_dq_report_path = Path(
+        str(execution.get("post_dq_weight_report_path", ""))
+    ).resolve()
+    if not post_dq_report_path.is_file():
+        raise FileNotFoundError("locked suite post-DQ injection weight report is absent")
+    post_dq = json.loads(post_dq_report_path.read_text(encoding="utf-8"))
+    post_dq_manifest_path = Path(str(post_dq.get("weight_manifest_path", ""))).resolve()
+    if (
+        post_dq.get("status") != "reduced_locked_o4b_post_dq_injection_weights"
+        or post_dq.get("passed") is not True
+        or post_dq.get("candidate_scores_inspected") is not False
+        or post_dq.get("raw_mask_shared_physical_denominator") is not True
+        or post_dq.get("post_access_dq_replacement_used") is not False
+        or post_dq.get("result_dependent_stopping_used") is not False
+        or post_dq.get("planned_injections") != streaming.get("rows")
+        or post_dq.get("code_commit") != suite_binding["code_commit"]
+        or post_dq.get("streaming_completion_audit", {}).get("path")
+        != str(streaming_file)
+        or post_dq.get("streaming_completion_audit", {}).get("sha256")
+        != file_sha256(streaming_file)
+        or post_dq_manifest_path
+        != Path(str(execution.get("post_dq_weight_manifest_path", ""))).resolve()
+        or not post_dq_manifest_path.is_file()
+        or post_dq.get("weight_manifest_sha256")
+        != file_sha256(post_dq_manifest_path)
+    ):
+        raise ValueError("locked suite post-DQ injection weights failed replay")
     expected_statuses = {
         "raw_candidate_search": "locked_candidate_search_evaluation",
         "mask_candidate_search": "locked_candidate_search_evaluation",
@@ -1956,6 +2270,19 @@ def finalize_locked_evaluation_suite_receipt(
             "sha256": file_sha256(streaming_file),
             "completed_shards": streaming["completed_shards"],
             "rows": streaming["rows"],
+        },
+        "post_dq_injection_weights": {
+            "path": str(post_dq_report_path),
+            "sha256": file_sha256(post_dq_report_path),
+            "manifest_path": str(post_dq_manifest_path),
+            "manifest_sha256": file_sha256(post_dq_manifest_path),
+            "planned_injections": post_dq["planned_injections"],
+            "eligible_injections": post_dq["eligible_injections"],
+            "unavailable_injections": post_dq["unavailable_injections"],
+            "background_live_time_years": post_dq[
+                "background_live_time_years"
+            ],
+            "raw_mask_shared_physical_denominator": True,
         },
         "locked_suite_access": suite_binding,
         "code_commit": suite_binding["code_commit"],

@@ -17,6 +17,7 @@ from gwyolo.evaluation_lock import (
     merge_locked_o4b_streaming_shard_receipts,
     open_evaluation_corpus_once,
     prepare_locked_o4b_streaming_shard_manifests,
+    reduce_locked_o4b_post_dq_injection_weights,
     validate_locked_evaluation_suite_access,
     validate_locked_evaluation_suite_input,
 )
@@ -352,6 +353,8 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
         path.write_text(label, encoding="utf-8")
         artifacts[label] = path
     locked_execution = tmp_path / "locked_execution_plan"
+    post_dq_manifest = tmp_path / "post-dq-weights.jsonl"
+    post_dq_report = tmp_path / "post-dq-weights.json"
     locked_execution.write_text(
         json.dumps(
             {
@@ -367,6 +370,8 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
                     "suite_plan_sha256": file_sha256(plan_path),
                     "corpus_freeze_sha256": file_sha256(freeze_path),
                 },
+                "post_dq_weight_manifest_path": str(post_dq_manifest.resolve()),
+                "post_dq_weight_report_path": str(post_dq_report.resolve()),
             }
         ),
         encoding="utf-8",
@@ -509,6 +514,41 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
     streaming_completion.write_text(
         json.dumps(incomplete_streaming), encoding="utf-8"
     )
+    post_dq_manifest.write_text(
+        json.dumps(
+            {
+                "injection_id": "test-i0",
+                "eligible": True,
+                "vt_weight": 1.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    post_dq_report.write_text(
+        json.dumps(
+            {
+                "status": "reduced_locked_o4b_post_dq_injection_weights",
+                "passed": True,
+                "candidate_scores_inspected": False,
+                "raw_mask_shared_physical_denominator": True,
+                "post_access_dq_replacement_used": False,
+                "result_dependent_stopping_used": False,
+                "planned_injections": 1,
+                "eligible_injections": 1,
+                "unavailable_injections": 0,
+                "background_live_time_years": 1.0,
+                "weight_manifest_path": str(post_dq_manifest.resolve()),
+                "weight_manifest_sha256": file_sha256(post_dq_manifest),
+                "streaming_completion_audit": {
+                    "path": str(streaming_completion.resolve()),
+                    "sha256": file_sha256(streaming_completion),
+                },
+                "code_commit": "abc123",
+            }
+        ),
+        encoding="utf-8",
+    )
     receipt = finalize_locked_evaluation_suite_receipt(
         plan_path,
         access_path,
@@ -519,6 +559,7 @@ def test_freeze_locked_suite_and_validate_one_time_access_binding(tmp_path) -> N
     assert receipt["all_predeclared_outputs_present"] is True
     assert len(receipt["outputs"]) == 8
     assert receipt["streaming_completion_audit"]["completed_shards"] == 1
+    assert receipt["post_dq_injection_weights"]["eligible_injections"] == 1
 
 
 def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
@@ -571,6 +612,10 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
                 "ifos": ["H1", "L1"],
                 "gps_time": gps_start + 2048.0,
                 "required_context_duration_seconds": 256.0,
+                "source_family": "BBH",
+                "proposal_family_fraction": 1.0,
+                "proposal_comoving_volume_mpc3": 100.0,
+                "source_frame_time_factor": 0.5,
             }
         )
     _write(availability_manifest, availability_rows)
@@ -826,6 +871,27 @@ def test_freeze_locked_o4b_streaming_plan_binds_every_source_before_access(
     assert completion["completed_shards"] == 2
     assert completion["unique_injections"] == 2
     assert len(completion["artifact_inventory"]["raw_candidate_rows"]) == 2
+    weights = reduce_locked_o4b_post_dq_injection_weights(
+        report_path,
+        access,
+        result["completion_audit_path"],
+        "abc123",
+    )
+    assert weights["planned_injections"] == 2
+    assert weights["eligible_injections"] == 1
+    assert weights["unavailable_injections"] == 1
+    assert weights["raw_mask_shared_physical_denominator"] is True
+    weight_rows = [
+        json.loads(line)
+        for line in Path(weights["weight_manifest_path"]).read_text().splitlines()
+    ]
+    eligible_weight = next(row for row in weight_rows if row["eligible"])
+    null_weight = next(row for row in weight_rows if not row["eligible"])
+    assert eligible_weight["vt_weight"] == pytest.approx(
+        100.0 * weights["background_live_time_years"] * 0.5
+    )
+    assert null_weight["vt_weight"] is None
+    assert null_weight["vt_measure"] == "unavailable_post_dq_null"
 
     with pytest.raises(ValueError, match="unopened execution boundary"):
         freeze_locked_o4b_streaming_execution_plan(

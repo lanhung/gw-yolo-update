@@ -1778,6 +1778,16 @@ def build_parser() -> argparse.ArgumentParser:
     locked_stream_receipt_merge.add_argument("--access-log", required=True)
     locked_stream_receipt_merge.add_argument("--code-commit", required=True)
 
+    locked_stream_post_dq = subparsers.add_parser(
+        "locked-o4b-post-dq-injection-weights"
+    )
+    locked_stream_post_dq.add_argument("--execution-plan", required=True)
+    locked_stream_post_dq.add_argument("--access-log", required=True)
+    locked_stream_post_dq.add_argument(
+        "--streaming-completion-audit", required=True
+    )
+    locked_stream_post_dq.add_argument("--code-commit", required=True)
+
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
     evaluation_open.add_argument("--code-commit", required=True)
@@ -4300,6 +4310,17 @@ def main(argv: list[str] | None = None) -> int:
             merge_locked_o4b_streaming_shard_receipts(
                 args.execution_plan,
                 args.access_log,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-post-dq-injection-weights":
+        from .evaluation_lock import reduce_locked_o4b_post_dq_injection_weights
+
+        _print(
+            reduce_locked_o4b_post_dq_injection_weights(
+                args.execution_plan,
+                args.access_log,
+                args.streaming_completion_audit,
                 args.code_commit,
             )
         )

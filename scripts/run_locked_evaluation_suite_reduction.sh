@@ -88,13 +88,15 @@ if (
 ):
     raise SystemExit("locked reduction plan/access identity failed replay")
 print(suite["outputs"]["suite_receipt"])
+print(execution["post_dq_weight_report_path"])
 PY
 )
-if (( ${#suite_identity[@]} != 1 )); then
-  echo "locked reduction did not resolve one suite receipt" >&2
+if (( ${#suite_identity[@]} != 2 )); then
+  echo "locked reduction did not resolve its suite/weight outputs" >&2
   exit 3
 fi
 suite_receipt=${suite_identity[0]}
+post_dq_weight_report=${suite_identity[1]}
 
 if [[ ! -s "$STREAMING_COMPLETION_AUDIT_OUTPUT" ]]; then
   (
@@ -125,6 +127,36 @@ if (
     or report.get("code_commit") != sys.argv[2]
 ):
     raise SystemExit("locked all-shard completion audit did not pass")
+PY
+
+if [[ ! -s "$post_dq_weight_report" ]]; then
+  (
+    cd "$TASK_CODE_DIR"
+    export PYTHONPATH=src GWYOLO_CODE_COMMIT
+    "$TASK_PYTHON" -m gwyolo.cli locked-o4b-post-dq-injection-weights \
+      --execution-plan "$LOCKED_EXECUTION_PLAN" \
+      --access-log "$LOCKED_ACCESS_LOG" \
+      --streaming-completion-audit "$STREAMING_COMPLETION_AUDIT_OUTPUT" \
+      --code-commit "$GWYOLO_CODE_COMMIT"
+  )
+fi
+
+"$TASK_PYTHON" - "$post_dq_weight_report" "$GWYOLO_CODE_COMMIT" <<'PY'
+import json
+import pathlib
+import sys
+
+report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (
+    report.get("status") != "reduced_locked_o4b_post_dq_injection_weights"
+    or report.get("passed") is not True
+    or report.get("candidate_scores_inspected") is not False
+    or report.get("raw_mask_shared_physical_denominator") is not True
+    or report.get("post_access_dq_replacement_used") is not False
+    or report.get("result_dependent_stopping_used") is not False
+    or report.get("code_commit") != sys.argv[2]
+):
+    raise SystemExit("locked post-DQ injection weighting did not pass")
 PY
 
 env \
