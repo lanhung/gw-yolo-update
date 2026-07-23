@@ -1254,10 +1254,16 @@ def _download_range(
     stop: int,
     chunk_size: int,
     max_attempts: int = 50,
+    maximum_elapsed_seconds: float = 900.0,
 ) -> None:
+    if max_attempts <= 0 or maximum_elapsed_seconds <= 0:
+        raise ValueError("range download retry and elapsed limits must be positive")
     expected = stop - start + 1
     last_error: BaseException | None = None
+    started = time.monotonic()
     for attempt in range(max_attempts):
+        if time.monotonic() - started >= maximum_elapsed_seconds:
+            break
         present = path.stat().st_size if path.exists() else 0
         if present == expected:
             return
@@ -1276,18 +1282,24 @@ def _download_range(
                     )
                 with path.open("ab") as handle:
                     while True:
+                        if time.monotonic() - started >= maximum_elapsed_seconds:
+                            raise TimeoutError(
+                                "range download exceeded its wall-clock limit"
+                            )
                         chunk = response.read(chunk_size)
                         if not chunk:
                             break
                         handle.write(chunk)
         except (OSError, TimeoutError) as exc:
             last_error = exc
-        if path.stat().st_size == expected:
+        if path.exists() and path.stat().st_size == expected:
             return
         time.sleep(min(0.25 * (attempt + 1), 2.0))
+    present = path.stat().st_size if path.exists() else 0
     raise IOError(
-        f"Incomplete range {start}-{stop} after {max_attempts} attempts: "
-        f"{path.stat().st_size} != {expected}; last_error={last_error}"
+        f"Incomplete range {start}-{stop} after {max_attempts} attempts or "
+        f"{maximum_elapsed_seconds:.1f}s elapsed limit: "
+        f"{present} != {expected}; last_error={last_error}"
     )
 
 

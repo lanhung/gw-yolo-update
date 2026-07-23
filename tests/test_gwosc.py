@@ -16,6 +16,7 @@ import pytest
 from gwyolo.io import file_sha256
 from gwyolo.gwosc import (
     _fft_downsample,
+    _download_range,
     _whiten,
     _whiten_with_reference,
     _remote_size,
@@ -812,3 +813,19 @@ def test_parallel_download_resumes_exact_prefix(tmp_path: Path) -> None:
     assert target.read_bytes() == payload
     assert report["bytes"] == len(payload)
     assert report["downloaded"]
+
+
+def test_range_download_has_a_hard_elapsed_limit(tmp_path: Path) -> None:
+    target = tmp_path / "never-started.part"
+    with patch("gwyolo.gwosc.time.monotonic", side_effect=(0.0, 2.0)):
+        with pytest.raises(IOError, match="elapsed limit"):
+            _download_range(
+                "https://example.invalid/strain.hdf5",
+                target,
+                0,
+                99,
+                16,
+                max_attempts=50,
+                maximum_elapsed_seconds=1.0,
+            )
+    assert not target.exists()
