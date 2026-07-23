@@ -444,3 +444,36 @@ def test_candidate_pair_ranker_cli_routes_grouped_manifests() -> None:
         "output",
         9,
     )
+
+
+def test_detector_set_injection_ranking_cli_routes_exact_inputs() -> None:
+    target = "gwyolo.candidates.run_detector_set_injection_candidate_rankings"
+    with patch(target, return_value={}) as run:
+        assert (
+            main(
+                [
+                    "detector-set-injection-candidate-rank",
+                    "--injection-triggers",
+                    "triggers.jsonl",
+                    "--candidates",
+                    "candidates.jsonl",
+                    "--config",
+                    "network.yaml",
+                    "--output-dir",
+                    "rankings",
+                    "--split",
+                    "test",
+                    "--empirical-timing-uncertainty-seconds",
+                    "0.002",
+                ]
+            )
+            == 0
+        )
+    run.assert_called_once_with(
+        "triggers.jsonl",
+        "candidates.jsonl",
+        "network.yaml",
+        "rankings",
+        "test",
+        0.002,
+    )

@@ -8,8 +8,9 @@ import pytest
 
 from gwyolo.candidates import (
     _local_envelope_timing_refinement,
-    build_injection_candidate_rankings,
     build_candidate_time_slides,
+    build_detector_set_injection_candidate_rankings,
+    build_injection_candidate_rankings,
     calibrate_candidate_timing_rows,
     candidate_proposal_coverage,
     extract_temporal_clusters,
@@ -777,6 +778,129 @@ def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator()
     assert rows[1]["ranking_score"] == 0.0
     assert rows[1]["candidate_pair_found"] is False
     assert report["candidate_pair_found"] == 1
+
+
+def test_detector_set_injection_ranking_supports_hlv_and_missing_ifos() -> None:
+    parents = [
+        {
+            "injection_id": "i0",
+            "waveform_id": "w0",
+            "split": "val",
+            "source_family": "BBH",
+            "gps_block": "g0",
+            "gps_time": 100.0,
+            "vt_weight": 2.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1", "L1", "V1"],
+            "detector_arrival_gps": {
+                "H1": 100.000,
+                "L1": 100.005,
+                "V1": 100.020,
+            },
+        },
+        {
+            "injection_id": "i1",
+            "waveform_id": "w1",
+            "split": "val",
+            "source_family": "NSBH",
+            "gps_block": "g1",
+            "gps_time": 101.0,
+            "vt_weight": 3.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1", "V1"],
+            "detector_arrival_gps": {
+                "H1": 101.000,
+                "V1": 101.020,
+            },
+        },
+        {
+            "injection_id": "i2",
+            "waveform_id": "w2",
+            "split": "val",
+            "source_family": "BNS",
+            "gps_block": "g2",
+            "gps_time": 102.0,
+            "vt_weight": 4.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1"],
+            "detector_arrival_gps": {"H1": 102.000},
+        },
+    ]
+    scores = {
+        "i0": {"H1": 0.8, "L1": 0.7, "V1": 0.9},
+        "i1": {"H1": 0.6, "V1": 0.75},
+    }
+    peaks = {
+        "i0": {"H1": 100.001, "L1": 100.006, "V1": 100.021},
+        "i1": {"H1": 101.001, "V1": 101.021},
+    }
+    candidates = []
+    for injection_id, by_ifo in scores.items():
+        for ifo, chirp_score in by_ifo.items():
+            candidates.append(
+                {
+                    "candidate_id": f"{injection_id}-{ifo}",
+                    "injection_id": injection_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": peaks[injection_id][ifo],
+                    "chirp_score": chirp_score,
+                    "glitch_score_at_peak": 0.1,
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": 0.001,
+                    "timing_calibration_report_sha256": "a" * 64,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+    subsets = (
+        ("H1", "L1"),
+        ("H1", "V1"),
+        ("L1", "V1"),
+        ("H1", "L1", "V1"),
+    )
+    limits = {
+        "H1+L1": 0.010012846152267725,
+        "H1+V1": 0.027287979933397113,
+        "L1+V1": 0.02644834101635671,
+    }
+    rows, report = build_detector_set_injection_candidate_rankings(
+        parents,
+        candidates,
+        "val",
+        subsets,
+        limits,
+        empirical_timing_uncertainty_seconds=0.001,
+        truth_association_window_seconds=0.02,
+    )
+
+    assert [row["injection_id"] for row in rows] == ["i0", "i1"]
+    assert rows[0]["selected_detector_subset"] == "H1+L1+V1"
+    assert rows[0]["ranking_score"] == pytest.approx(0.8)
+    assert rows[1]["selected_detector_subset"] == "H1+V1"
+    assert rows[1]["ranking_score"] == pytest.approx(0.6)
+    assert report["excluded_missing_detector_or_arrival"] == 1
+    assert report["eligible_injections_by_detector_subset"] == {
+        "H1+L1": 1,
+        "H1+L1+V1": 1,
+        "H1+V1": 2,
+        "L1+V1": 1,
+    }
+    assert report["selected_networks_by_detector_subset"] == {
+        "H1+L1+V1": 1,
+        "H1+V1": 1,
+    }
+    with pytest.raises(ValueError, match="exactly cover"):
+        build_detector_set_injection_candidate_rankings(
+            parents,
+            candidates,
+            "val",
+            subsets,
+            {"H1+L1": limits["H1+L1"]},
+            0.001,
+            0.02,
+        )
 
 
 def test_calibration_stress_can_reuse_frozen_timing_only_with_narrow_audit(

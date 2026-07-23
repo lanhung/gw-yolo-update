@@ -1284,6 +1284,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--truth-association-window-seconds", type=float, default=0.25
     )
 
+    detector_set_injection_rank = subparsers.add_parser(
+        "detector-set-injection-candidate-rank"
+    )
+    detector_set_injection_rank.add_argument(
+        "--injection-triggers", required=True
+    )
+    detector_set_injection_rank.add_argument("--candidates", required=True)
+    detector_set_injection_rank.add_argument("--config", required=True)
+    detector_set_injection_rank.add_argument("--output-dir", required=True)
+    detector_set_injection_rank.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    detector_set_injection_rank.add_argument(
+        "--empirical-timing-uncertainty-seconds",
+        type=float,
+        required=True,
+    )
+
     candidate_slides = subparsers.add_parser("candidate-time-slides")
     candidate_slides.add_argument("--candidates", required=True)
     candidate_slides.add_argument("--background-manifest", required=True)
@@ -3820,6 +3838,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.physical_delay_limit_seconds,
                 args.empirical_timing_uncertainty_seconds,
                 args.truth_association_window_seconds,
+            )
+        )
+    elif args.command == "detector-set-injection-candidate-rank":
+        from .candidates import (
+            run_detector_set_injection_candidate_rankings,
+        )
+
+        _print(
+            run_detector_set_injection_candidate_rankings(
+                args.injection_triggers,
+                args.candidates,
+                args.config,
+                args.output_dir,
+                args.split,
+                args.empirical_timing_uncertainty_seconds,
             )
         )
     elif args.command == "candidate-time-slides":

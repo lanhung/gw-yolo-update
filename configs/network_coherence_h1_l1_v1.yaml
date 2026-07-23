@@ -1,0 +1,17 @@
+network_coherence:
+  schema: h1_l1_v1_pairwise_light_travel_v1
+  detectors: [H1, L1, V1]
+  detector_subsets:
+    - [H1, L1]
+    - [H1, V1]
+    - [L1, V1]
+    - [H1, L1, V1]
+  pairwise_light_travel_time_seconds:
+    H1+L1: 0.010012846152267725
+    H1+V1: 0.027287979933397113
+    L1+V1: 0.02644834101635671
+  geometry_source: PyCBC Detector.light_travel_time_to_detector
+  maximum_empirical_timing_uncertainty_seconds: 0.01
+  truth_association_window_seconds: 0.25
+  missing_detector_policy: explicit_valid_ifos_and_subset_conditioning
+  zero_fill_without_validity_mask_allowed: false

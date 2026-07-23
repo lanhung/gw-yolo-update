@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from itertools import combinations, product
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -1359,6 +1360,373 @@ def build_injection_candidate_rankings(
         ),
     }
     return outputs, report
+
+
+def build_detector_set_injection_candidate_rankings(
+    injection_rows: Iterable[dict[str, Any]],
+    candidates: Iterable[dict[str, Any]],
+    split: str,
+    detector_subsets: Iterable[Iterable[str]],
+    pairwise_light_travel_time_seconds: dict[str, float],
+    empirical_timing_uncertainty_seconds: float,
+    truth_association_window_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Reduce candidates over predeclared variable detector sets.
+
+    Each selected network candidate must satisfy every pairwise light-travel
+    limit plus the frozen empirical allowance. Missing detectors remain
+    explicit: an injection is evaluated only over detector subsets contained
+    in its ``valid_ifos`` and arrival-time metadata.
+    """
+
+    normalized_subsets: list[tuple[str, ...]] = []
+    seen_subsets = set()
+    for raw_subset in detector_subsets:
+        subset = tuple(str(value) for value in raw_subset)
+        if (
+            len(subset) < 2
+            or len(subset) != len(set(subset))
+            or subset in seen_subsets
+        ):
+            raise ValueError("detector subsets must be unique sets of at least two IFOs")
+        seen_subsets.add(subset)
+        normalized_subsets.append(subset)
+    if not normalized_subsets:
+        raise ValueError("at least one detector subset is required")
+    if (
+        empirical_timing_uncertainty_seconds < 0
+        or truth_association_window_seconds <= 0
+    ):
+        raise ValueError("detector-set injection timing settings are invalid")
+
+    def pair_key(first: str, second: str) -> str:
+        return "+".join(sorted((first, second)))
+
+    required_pair_keys = {
+        pair_key(first, second)
+        for subset in normalized_subsets
+        for first, second in combinations(subset, 2)
+    }
+    if set(pairwise_light_travel_time_seconds) != required_pair_keys or any(
+        not np.isfinite(float(value)) or float(value) <= 0
+        for value in pairwise_light_travel_time_seconds.values()
+    ):
+        raise ValueError(
+            "pairwise light-travel limits must exactly cover the detector subsets"
+        )
+
+    parents = [row for row in injection_rows if str(row["split"]) == split]
+    if not parents:
+        raise ValueError(f"no scored injections for split {split}")
+    by_id = {str(row["injection_id"]): row for row in parents}
+    if len(by_id) != len(parents):
+        raise ValueError("scored injection rows repeat injection IDs")
+    candidate_map: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in candidates:
+        if str(row["split"]) != split:
+            continue
+        injection_id = str(row["injection_id"])
+        if injection_id not in by_id:
+            raise ValueError(
+                f"candidate references unknown {split} injection {injection_id}"
+            )
+        candidate_map.setdefault(injection_id, {}).setdefault(
+            str(row["ifo"]), []
+        ).append(row)
+
+    outputs = []
+    eligibility_counts: Counter[str] = Counter()
+    recovery_counts: Counter[str] = Counter()
+    calibration_hashes = set()
+    checkpoint_hashes = set()
+    config_hashes = set()
+    code_commits = set()
+    for injection_id, parent in sorted(by_id.items()):
+        valid_ifos = {str(value) for value in parent["valid_ifos"]}
+        arrivals = {
+            str(ifo): float(value)
+            for ifo, value in parent.get("detector_arrival_gps", {}).items()
+        }
+        eligible_subsets = [
+            subset
+            for subset in normalized_subsets
+            if set(subset) <= valid_ifos and set(subset) <= set(arrivals)
+        ]
+        if not eligible_subsets:
+            continue
+        for subset in eligible_subsets:
+            eligibility_counts["+".join(subset)] += 1
+
+        networks = []
+        by_ifo = candidate_map.get(injection_id, {})
+        for subset in eligible_subsets:
+            subset_name = "+".join(subset)
+            for candidate_tuple in product(*(by_ifo.get(ifo, []) for ifo in subset)):
+                if len(candidate_tuple) != len(subset):
+                    continue
+                if not all(
+                    bool(row.get("timing_empirically_calibrated"))
+                    for row in candidate_tuple
+                ):
+                    continue
+                if not all(
+                    np.isclose(
+                        float(
+                            row.get(
+                                "empirical_timing_uncertainty_seconds", -1
+                            )
+                        ),
+                        empirical_timing_uncertainty_seconds,
+                        rtol=0.0,
+                        atol=1e-12,
+                    )
+                    for row in candidate_tuple
+                ):
+                    continue
+                if any(
+                    abs(float(row["gps_peak"]) - arrivals[str(row["ifo"])])
+                    > truth_association_window_seconds
+                    for row in candidate_tuple
+                ):
+                    continue
+                row_by_ifo = {
+                    str(row["ifo"]): row for row in candidate_tuple
+                }
+                pairwise_separations = {}
+                coherent = True
+                for first, second in combinations(subset, 2):
+                    key = pair_key(first, second)
+                    separation = abs(
+                        float(row_by_ifo[first]["gps_peak"])
+                        - float(row_by_ifo[second]["gps_peak"])
+                    )
+                    limit = (
+                        float(pairwise_light_travel_time_seconds[key])
+                        + 2.0 * empirical_timing_uncertainty_seconds
+                    )
+                    pairwise_separations[key] = separation
+                    if separation > limit:
+                        coherent = False
+                        break
+                if not coherent:
+                    continue
+                provenance_fields = (
+                    "timing_calibration_report_sha256",
+                    "candidate_checkpoint_sha256",
+                    "candidate_config_sha256",
+                    "candidate_code_commit",
+                )
+                provenance = {
+                    field: {str(row.get(field, "")) for row in candidate_tuple}
+                    for field in provenance_fields
+                }
+                if any(
+                    len(values) != 1 or not next(iter(values))
+                    for values in provenance.values()
+                ):
+                    continue
+                calibration_hashes.update(
+                    provenance["timing_calibration_report_sha256"]
+                )
+                checkpoint_hashes.update(
+                    provenance["candidate_checkpoint_sha256"]
+                )
+                config_hashes.update(provenance["candidate_config_sha256"])
+                code_commits.update(provenance["candidate_code_commit"])
+                chirp_scores = {
+                    ifo: float(row_by_ifo[ifo]["chirp_score"]) for ifo in subset
+                }
+                glitch_scores = {
+                    ifo: float(row_by_ifo[ifo]["glitch_score_at_peak"])
+                    for ifo in subset
+                }
+                networks.append(
+                    {
+                        "detector_subset": subset_name,
+                        "source_candidate_ids": {
+                            ifo: row_by_ifo[ifo]["candidate_id"] for ifo in subset
+                        },
+                        "pairwise_peak_separation_seconds": pairwise_separations,
+                        "chirp_scores": chirp_scores,
+                        "glitch_scores": glitch_scores,
+                        **network_ranking(
+                            chirp_scores,
+                            glitch_scores,
+                            list(subset),
+                        ),
+                    }
+                )
+        selected = (
+            max(
+                networks,
+                key=lambda row: (
+                    float(row["ranking_score"]),
+                    len(row["valid_ifos"]),
+                    float(row["chirp_glitch_margin"]),
+                ),
+            )
+            if networks
+            else None
+        )
+        if selected is not None:
+            recovery_counts[str(selected["detector_subset"])] += 1
+        outputs.append(
+            {
+                "injection_id": injection_id,
+                "waveform_id": parent["waveform_id"],
+                "split": split,
+                "source_family": parent["source_family"],
+                "stratum": parent.get("stratum", parent["source_family"]),
+                "gps_block": parent["gps_block"],
+                "gps_time": parent["gps_time"],
+                "vt_weight": parent["vt_weight"],
+                "vt_weight_unit": parent["vt_weight_unit"],
+                "eligible_detector_subsets": [
+                    "+".join(subset) for subset in eligible_subsets
+                ],
+                "selected_detector_subset": (
+                    selected["detector_subset"] if selected else None
+                ),
+                "candidate_network_found": selected is not None,
+                "candidate_pair_found": selected is not None,
+                "ranking_score": (
+                    float(selected["ranking_score"]) if selected else 0.0
+                ),
+                "network_candidate": selected,
+            }
+        )
+
+    report = {
+        "status": "physical_variable_detector_set_injection_candidate_rankings",
+        "split": split,
+        "input_injections": len(parents),
+        "eligible_detector_set_injections": len(outputs),
+        "ranked_injections": len(outputs),
+        "candidate_network_found": sum(
+            row["candidate_network_found"] for row in outputs
+        ),
+        "excluded_missing_detector_or_arrival": len(parents) - len(outputs),
+        "required_detector_subsets": [
+            "+".join(subset) for subset in normalized_subsets
+        ],
+        "eligible_injections_by_detector_subset": dict(
+            sorted(eligibility_counts.items())
+        ),
+        "selected_networks_by_detector_subset": dict(
+            sorted(recovery_counts.items())
+        ),
+        "pairwise_light_travel_time_seconds": dict(
+            sorted(
+                (key, float(value))
+                for key, value in pairwise_light_travel_time_seconds.items()
+            )
+        ),
+        "empirical_timing_uncertainty_seconds": (
+            empirical_timing_uncertainty_seconds
+        ),
+        "pairwise_allowed_peak_separation_seconds": {
+            key: float(value) + 2.0 * empirical_timing_uncertainty_seconds
+            for key, value in sorted(pairwise_light_travel_time_seconds.items())
+        },
+        "truth_association_window_seconds": truth_association_window_seconds,
+        "timing_calibration_report_sha256": (
+            next(iter(calibration_hashes)) if len(calibration_hashes) == 1 else None
+        ),
+        "timing_calibration_consistent": len(calibration_hashes) == 1,
+        "candidate_checkpoint_sha256": (
+            next(iter(checkpoint_hashes)) if len(checkpoint_hashes) == 1 else None
+        ),
+        "candidate_config_sha256": (
+            next(iter(config_hashes)) if len(config_hashes) == 1 else None
+        ),
+        "candidate_code_commit": (
+            next(iter(code_commits)) if len(code_commits) == 1 else None
+        ),
+        "candidate_scoring_provenance_consistent": (
+            len(checkpoint_hashes)
+            == len(config_hashes)
+            == len(code_commits)
+            == 1
+        ),
+    }
+    return outputs, report
+
+
+def run_detector_set_injection_candidate_rankings(
+    injection_trigger_manifest: str | Path,
+    candidate_manifest: str | Path,
+    config_path: str | Path,
+    output_dir: str | Path,
+    split: str,
+    empirical_timing_uncertainty_seconds: float,
+) -> dict[str, Any]:
+    """Run the frozen H1/L1/V1 detector-set ranking policy."""
+
+    config = load_yaml(config_path)
+    settings = config.get("network_coherence")
+    if (
+        not isinstance(settings, dict)
+        or settings.get("schema")
+        != "h1_l1_v1_pairwise_light_travel_v1"
+    ):
+        raise ValueError("network-coherence configuration is invalid")
+    maximum_uncertainty = float(
+        settings["maximum_empirical_timing_uncertainty_seconds"]
+    )
+    if (
+        not np.isfinite(empirical_timing_uncertainty_seconds)
+        or empirical_timing_uncertainty_seconds < 0
+        or empirical_timing_uncertainty_seconds > maximum_uncertainty
+    ):
+        raise ValueError(
+            "empirical timing uncertainty exceeds the frozen network policy"
+        )
+    with Path(injection_trigger_manifest).open("r", encoding="utf-8") as handle:
+        injections = [json.loads(line) for line in handle if line.strip()]
+    with Path(candidate_manifest).open("r", encoding="utf-8") as handle:
+        candidates = [json.loads(line) for line in handle if line.strip()]
+    rows, report = build_detector_set_injection_candidate_rankings(
+        injections,
+        candidates,
+        split,
+        settings["detector_subsets"],
+        settings["pairwise_light_travel_time_seconds"],
+        empirical_timing_uncertainty_seconds,
+        float(settings["truth_association_window_seconds"]),
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = (
+        output
+        / f"{split}_variable_detector_set_injection_candidate_rankings.jsonl"
+    )
+    atomic_write_text(
+        manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    result = {
+        **report,
+        "injection_trigger_manifest_path": str(
+            Path(injection_trigger_manifest).resolve()
+        ),
+        "injection_trigger_manifest_sha256": file_sha256(
+            injection_trigger_manifest
+        ),
+        "candidate_manifest_path": str(Path(candidate_manifest).resolve()),
+        "candidate_manifest_sha256": file_sha256(candidate_manifest),
+        "config_path": str(Path(config_path).resolve()),
+        "config_sha256": file_sha256(config_path),
+        "config_hash": canonical_hash(config, 64),
+        "manifest_path": str(manifest),
+        "manifest_sha256": file_sha256(manifest),
+        **execution_provenance(),
+    }
+    atomic_write_json(
+        output
+        / f"{split}_variable_detector_set_injection_candidate_ranking_report.json",
+        result,
+    )
+    return result
 
 
 def run_injection_candidate_rankings(
