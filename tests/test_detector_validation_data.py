@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gwyolo.detector_validation_data import (
+    audit_detector_stratified_physical_materialization,
     evict_streamed_detector_validation_sources,
     export_network_numeric_validation_background,
     freeze_source_disjoint_detector_acquisition_plan,
@@ -642,3 +643,198 @@ def test_detector_validation_eviction_removes_unused_dq_pair_sources(
         batch, background, bank, tmp_path / "cache", output
     )
     assert replay == result
+
+
+def test_detector_stratified_physical_audit_requires_nonzero_v1_projection(
+    tmp_path: Path,
+) -> None:
+    subsets = [
+        ["H1", "L1"],
+        ["H1", "V1"],
+        ["L1", "V1"],
+        ["H1", "L1", "V1"],
+    ]
+    rows = []
+    for index, ifos in enumerate(subsets):
+        signal = np.stack(
+            [
+                np.linspace(0.1 + ifo_index, 1.0 + ifo_index, 32)
+                for ifo_index in range(len(ifos))
+            ]
+        )
+        artifact = tmp_path / f"materialized-{index}.npz"
+        np.savez_compressed(
+            artifact,
+            signal=signal.astype(np.float32),
+            noise=np.zeros_like(signal, dtype=np.float32),
+            strain=signal.astype(np.float32),
+            ifos=np.asarray(ifos),
+            sample_rate=np.asarray(4),
+            context_gps_start=np.asarray(1000.0 + index * 100),
+            analysis_gps_start=np.asarray(1002.0 + index * 100),
+            analysis_start_index=np.asarray(8),
+            analysis_stop_index=np.asarray(24),
+        )
+        delays = {ifo: 0.001 * (ifo_index + 1) for ifo_index, ifo in enumerate(ifos)}
+        rows.append(
+            {
+                "injection_id": f"injection-{index}",
+                "waveform_id": f"waveform-{index}",
+                "split": "val",
+                "ifos": ifos,
+                "source_family": "BBH",
+                "materialized_path": str(artifact),
+                "materialized_sha256": file_sha256(artifact),
+                "signal_summary": {
+                    ifo: {"waveform_peak_absolute_strain": float(signal[i].max())}
+                    for i, ifo in enumerate(ifos)
+                },
+                "detector_arrival_gps": {
+                    ifo: 1003.0 + index * 100 + delay
+                    for ifo, delay in delays.items()
+                },
+                "geocenter_to_detector_delay_seconds": delays,
+                "optimal_snr_by_ifo": {ifo: 5.0 for ifo in ifos},
+            }
+        )
+    recipes = tmp_path / "recipes.jsonl"
+    recipes.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "injection_id": row["injection_id"],
+                    "waveform_id": row["waveform_id"],
+                }
+            )
+            + "\n"
+            for row in rows
+        ),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "frozen_detector_stratified_validation_injection_plan",
+                "passed": True,
+                "candidate_scores_inspected": False,
+                "test_rows_read": 0,
+                "required_detector_subsets": [
+                    "H1+L1",
+                    "H1+V1",
+                    "L1+V1",
+                    "H1+L1+V1",
+                ],
+                "rows": 4,
+                "injections_per_detector_subset": 1,
+                "detector_subset_counts": {
+                    "H1+L1": 1,
+                    "H1+V1": 1,
+                    "L1+V1": 1,
+                    "H1+L1+V1": 1,
+                },
+                "manifest_path": str(recipes),
+                "manifest_sha256": file_sha256(recipes),
+            }
+        ),
+        encoding="utf-8",
+    )
+    materialized = tmp_path / "materialized.jsonl"
+    materialized.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    materialization = tmp_path / "materialization.json"
+    materialization.write_text(
+        json.dumps(
+            {
+                "status": "materialized_externally_validated_backend",
+                "waveform_materialization_validated": True,
+                "selected_split": "val",
+                "selected_recipes": 4,
+                "recipe_manifest_sha256": file_sha256(recipes),
+                "manifest_path": str(materialized),
+                "manifest_sha256": file_sha256(materialized),
+            }
+        ),
+        encoding="utf-8",
+    )
+    snr_manifest = tmp_path / "snr.jsonl"
+    snr_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    snr = tmp_path / "snr.json"
+    snr.write_text(
+        json.dumps(
+            {
+                "status": "empirical_noise_optimal_snr_annotation",
+                "rows": 4,
+                "input_manifest_sha256": file_sha256(materialized),
+                "output_manifest_path": str(snr_manifest),
+                "output_manifest_sha256": file_sha256(snr_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    arrivals_manifest = tmp_path / "arrivals.jsonl"
+    arrivals_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    arrivals = tmp_path / "arrivals.json"
+    arrivals.write_text(
+        json.dumps(
+            {
+                "status": "verified_geometric_detector_arrival_annotation",
+                "rows": 4,
+                "input_manifest_sha256": file_sha256(snr_manifest),
+                "manifest_path": str(arrivals_manifest),
+                "manifest_sha256": file_sha256(arrivals_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = audit_detector_stratified_physical_materialization(
+        plan,
+        materialization,
+        snr,
+        arrivals,
+        tmp_path / "audit.json",
+    )
+
+    assert result["passed"] is True
+    assert result["v1_projected_signal_rows"] == 3
+    assert result["all_detector_analysis_signals_nonzero"] is True
+    assert result["detector_subset_counts"]["L1+V1"] == 1
+
+    changed = dict(rows[1])
+    changed_artifact = Path(changed["materialized_path"])
+    with np.load(changed_artifact, allow_pickle=False) as arrays:
+        payload = {key: np.asarray(arrays[key]) for key in arrays.files}
+    payload["signal"][1] = 0
+    payload["strain"][1] = 0
+    np.savez_compressed(changed_artifact, **payload)
+    changed["materialized_sha256"] = file_sha256(changed_artifact)
+    rows[1] = changed
+    arrivals_manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    arrivals.write_text(
+        json.dumps(
+            {
+                "status": "verified_geometric_detector_arrival_annotation",
+                "rows": 4,
+                "input_manifest_sha256": file_sha256(snr_manifest),
+                "manifest_path": str(arrivals_manifest),
+                "manifest_sha256": file_sha256(arrivals_manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="projection"):
+        audit_detector_stratified_physical_materialization(
+            plan,
+            materialization,
+            snr,
+            arrivals,
+            tmp_path / "failed-audit.json",
+        )

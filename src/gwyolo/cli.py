@@ -990,6 +990,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--minimum-per-detector-subset", type=int, default=25
     )
     detector_validation_merge.add_argument("--require-ready", action="store_true")
+    detector_validation_materialization = subparsers.add_parser(
+        "detector-validation-materialization-audit"
+    )
+    detector_validation_materialization.add_argument(
+        "--injection-plan", required=True
+    )
+    detector_validation_materialization.add_argument(
+        "--materialization-report", required=True
+    )
+    detector_validation_materialization.add_argument("--snr-report", required=True)
+    detector_validation_materialization.add_argument(
+        "--arrival-report", required=True
+    )
+    detector_validation_materialization.add_argument("--output", required=True)
 
     gravityspy_network_resplit = subparsers.add_parser(
         "gravityspy-network-corpus-resplit"
@@ -3656,6 +3670,20 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 args.minimum_per_detector_subset,
                 args.require_ready,
+            )
+        )
+    elif args.command == "detector-validation-materialization-audit":
+        from .detector_validation_data import (
+            audit_detector_stratified_physical_materialization,
+        )
+
+        _print(
+            audit_detector_stratified_physical_materialization(
+                args.injection_plan,
+                args.materialization_report,
+                args.snr_report,
+                args.arrival_report,
+                args.output,
             )
         )
     elif args.command == "gravityspy-network-corpus-resplit":

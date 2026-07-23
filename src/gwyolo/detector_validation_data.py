@@ -16,7 +16,7 @@ from .io import (
     file_sha256,
 )
 from .runtime import execution_provenance
-from .waveforms import _atomic_save_npz
+from .waveforms import _atomic_save_npz, load_materialized_context
 from .gwosc import _stratified_records
 
 
@@ -1180,4 +1180,195 @@ def merge_streamed_detector_validation_backgrounds(
         raise RuntimeError(
             f"Merged detector-validation background remains below floors: {deficits}"
         )
+    return result
+
+
+def audit_detector_stratified_physical_materialization(
+    injection_plan_path: str | Path,
+    materialization_report_path: str | Path,
+    snr_report_path: str | Path,
+    arrival_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Prove that every frozen detector stratum has a real projected signal."""
+
+    plan_path = Path(injection_plan_path).resolve()
+    materialization_path = Path(materialization_report_path).resolve()
+    snr_path = Path(snr_report_path).resolve()
+    arrival_path = Path(arrival_report_path).resolve()
+    target = Path(output_path).resolve()
+    plan = _read_json(plan_path)
+    materialization = _read_json(materialization_path)
+    snr = _read_json(snr_path)
+    arrival = _read_json(arrival_path)
+    recipe_manifest = Path(str(plan.get("manifest_path", ""))).resolve()
+    materialized_manifest = Path(
+        str(materialization.get("manifest_path", ""))
+    ).resolve()
+    snr_manifest = Path(str(snr.get("output_manifest_path", ""))).resolve()
+    arrival_manifest = Path(str(arrival.get("manifest_path", ""))).resolve()
+    required = tuple(str(value) for value in plan.get("required_detector_subsets", []))
+    expected_rows = int(plan.get("rows", -1))
+    if (
+        plan.get("status")
+        != "frozen_detector_stratified_validation_injection_plan"
+        or plan.get("passed") is not True
+        or plan.get("candidate_scores_inspected") is not False
+        or int(plan.get("test_rows_read", -1)) != 0
+        or plan.get("manifest_sha256") != file_sha256(recipe_manifest)
+        or tuple(required) != DEFAULT_DETECTOR_SUBSETS
+        or expected_rows < 1
+        or materialization.get("status")
+        != "materialized_externally_validated_backend"
+        or materialization.get("waveform_materialization_validated") is not True
+        or materialization.get("selected_split") != "val"
+        or int(materialization.get("selected_recipes", -1)) != expected_rows
+        or materialization.get("recipe_manifest_sha256")
+        != plan["manifest_sha256"]
+        or materialization.get("manifest_sha256")
+        != file_sha256(materialized_manifest)
+        or snr.get("status") != "empirical_noise_optimal_snr_annotation"
+        or int(snr.get("rows", -1)) != expected_rows
+        or snr.get("input_manifest_sha256")
+        != materialization["manifest_sha256"]
+        or snr.get("output_manifest_sha256") != file_sha256(snr_manifest)
+        or arrival.get("status")
+        != "verified_geometric_detector_arrival_annotation"
+        or int(arrival.get("rows", -1)) != expected_rows
+        or arrival.get("input_manifest_sha256")
+        != snr["output_manifest_sha256"]
+        or arrival.get("manifest_sha256") != file_sha256(arrival_manifest)
+    ):
+        raise ValueError("Detector-stratified physical materialization chain is invalid")
+    rows = [
+        json.loads(line)
+        for line in arrival_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    injection_ids = [str(row.get("injection_id", "")) for row in rows]
+    waveform_ids = [str(row.get("waveform_id", "")) for row in rows]
+    if (
+        len(rows) != expected_rows
+        or any(not value for value in injection_ids + waveform_ids)
+        or len(injection_ids) != len(set(injection_ids))
+        or len(waveform_ids) != len(set(waveform_ids))
+    ):
+        raise ValueError("Detector-stratified materialization identities are incomplete")
+
+    counts: Counter[str] = Counter()
+    family_counts: Counter[str] = Counter()
+    v1_rows = 0
+    minimum_analysis_peak = float("inf")
+    maximum_absolute_delay = 0.0
+    verified_background_hashes: dict[str, str] = {}
+    for row in rows:
+        ifos = [str(value) for value in row.get("ifos", [])]
+        subset = "+".join(ifos)
+        if subset not in required or row.get("split") != "val":
+            raise ValueError("Materialized row has a foreign detector subset or split")
+        context = load_materialized_context(row, verified_background_hashes)
+        signal = np.asarray(context["signal"], dtype=np.float64)
+        start = int(context["analysis_start_index"])
+        stop = int(context["analysis_stop_index"])
+        if (
+            context["ifos"] != ifos
+            or signal.ndim != 2
+            or signal.shape[0] != len(ifos)
+            or start < 0
+            or stop > signal.shape[1]
+            or stop <= start
+            or not np.isfinite(signal).all()
+        ):
+            raise ValueError("Projected physical signal tensor contract is invalid")
+        analysis_peaks = np.max(np.abs(signal[:, start:stop]), axis=1)
+        summary = row.get("signal_summary", {})
+        arrivals = row.get("detector_arrival_gps", {})
+        delays = row.get("geocenter_to_detector_delay_seconds", {})
+        snrs = row.get("optimal_snr_by_ifo", {})
+        if (
+            set(summary) != set(ifos)
+            or set(arrivals) != set(ifos)
+            or set(delays) != set(ifos)
+            or set(snrs) != set(ifos)
+            or np.any(analysis_peaks <= 0)
+            or any(
+                not np.isfinite(float(summary[ifo]["waveform_peak_absolute_strain"]))
+                or float(summary[ifo]["waveform_peak_absolute_strain"]) <= 0
+                or not np.isfinite(float(arrivals[ifo]))
+                or not np.isfinite(float(delays[ifo]))
+                or abs(float(delays[ifo])) > 0.03
+                or not np.isfinite(float(snrs[ifo]))
+                or float(snrs[ifo]) <= 0
+                for ifo in ifos
+            )
+        ):
+            raise ValueError("Detector projection, arrival, or SNR evidence is invalid")
+        minimum_analysis_peak = min(
+            minimum_analysis_peak, float(np.min(analysis_peaks))
+        )
+        maximum_absolute_delay = max(
+            maximum_absolute_delay,
+            max(abs(float(delays[ifo])) for ifo in ifos),
+        )
+        counts[subset] += 1
+        family_counts[str(row.get("source_family", ""))] += 1
+        v1_rows += "V1" in ifos
+
+    expected_counts = {
+        subset: int(plan["detector_subset_counts"][subset])
+        for subset in required
+    }
+    if (
+        {subset: int(counts.get(subset, 0)) for subset in required}
+        != expected_counts
+        or any(value != int(plan["injections_per_detector_subset"]) for value in expected_counts.values())
+        or v1_rows
+        != sum(value for subset, value in expected_counts.items() if "V1" in subset)
+        or "" in family_counts
+    ):
+        raise ValueError("Materialized physical detector quotas differ from the frozen plan")
+    result = {
+        "status": "verified_detector_stratified_physical_injection_materialization",
+        "passed": True,
+        "publication_calibration_eligible": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "split": "val",
+        "rows": len(rows),
+        "unique_injection_ids": len(set(injection_ids)),
+        "unique_waveform_ids": len(set(waveform_ids)),
+        "detector_subset_counts": expected_counts,
+        "v1_projected_signal_rows": v1_rows,
+        "all_detector_analysis_signals_nonzero": True,
+        "minimum_analysis_signal_peak": minimum_analysis_peak,
+        "maximum_absolute_geocenter_delay_seconds": maximum_absolute_delay,
+        "source_family_counts": dict(sorted(family_counts.items())),
+        "human_ground_truth_claimed": False,
+        "injection_plan_path": str(plan_path),
+        "injection_plan_sha256": file_sha256(plan_path),
+        "materialization_report_path": str(materialization_path),
+        "materialization_report_sha256": file_sha256(materialization_path),
+        "snr_report_path": str(snr_path),
+        "snr_report_sha256": file_sha256(snr_path),
+        "arrival_report_path": str(arrival_path),
+        "arrival_report_sha256": file_sha256(arrival_path),
+        "manifest_path": str(arrival_manifest),
+        "manifest_sha256": file_sha256(arrival_manifest),
+        **execution_provenance(),
+    }
+    if target.is_file():
+        prior = _read_json(target)
+        identity_fields = (
+            "injection_plan_sha256",
+            "materialization_report_sha256",
+            "snr_report_sha256",
+            "arrival_report_sha256",
+            "manifest_sha256",
+        )
+        if any(prior.get(field) != result.get(field) for field in identity_fields):
+            raise ValueError("Existing detector-stratified materialization audit changed")
+        return prior
+    atomic_write_json(target, result)
     return result
