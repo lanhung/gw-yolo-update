@@ -24,16 +24,15 @@ def test_post_five_seed_candidate_chain_is_fail_closed_and_ordered() -> None:
     assert "run_promoted_candidate_validation.sh" in source
     assert "run_candidate_validation_comparison.sh" in source
     assert "run_candidate_background_range.sh" in source
-    assert "run_candidate_validation_detector_set_successor.sh" in source
+    assert "run_candidate_validation_detector_set_successor.sh" not in source
     assert source.index("run_promoted_candidate_validation.sh") < source.index(
         "run_candidate_validation_comparison.sh"
     )
     assert source.index("run_candidate_validation_comparison.sh") < source.index(
         "run_candidate_background_range.sh"
     )
-    assert source.index("run_candidate_background_range.sh") < source.index(
-        "run_candidate_validation_detector_set_successor.sh"
-    )
+    assert "completed_post_five_seed_h1l1_candidate_publication_chain" in source
+    assert '"variable_detector_calibration_frozen": False' in source
 
 
 def test_post_five_seed_candidate_chain_binds_locked_inputs() -> None:
@@ -45,7 +44,6 @@ def test_post_five_seed_candidate_chain_binds_locked_inputs() -> None:
         "CAPACITY_FORECAST",
         "EVENT_EXCLUSIONS",
         "FIVE_SEED_SUMMARY",
-        "NETWORK_CONFIG",
     ):
         assert value in source
     assert "purpose_gps_block_overlap" in source
@@ -112,7 +110,6 @@ def test_post_five_seed_candidate_chain_retains_negative_gate(
         "VALIDATION_PURPOSE_AUDIT",
         "CAPACITY_FORECAST",
         "EVENT_EXCLUSIONS",
-        "NETWORK_CONFIG",
     ):
         path = tmp_path / variable.lower()
         path.write_text("{}\n", encoding="utf-8")

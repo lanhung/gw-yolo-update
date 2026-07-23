@@ -23,7 +23,6 @@ required_variables=(
   VALIDATION_PURPOSE_AUDIT
   CAPACITY_FORECAST
   EVENT_EXCLUSIONS
-  NETWORK_CONFIG
   CACHE_ROOT
   OUTPUT_ROOT
 )
@@ -51,8 +50,7 @@ for input in \
   "$PARENT_PLAN" \
   "$VALIDATION_PURPOSE_AUDIT" \
   "$CAPACITY_FORECAST" \
-  "$EVENT_EXCLUSIONS" \
-  "$NETWORK_CONFIG"; do
+  "$EVENT_EXCLUSIONS"; do
   if [[ ! -f "$input" ]]; then
     echo "post-five-seed candidate input is absent: $input" >&2
     exit 2
@@ -72,6 +70,7 @@ if (
     receipt.get("status")
     not in {
         "completed_post_five_seed_candidate_publication_chain",
+        "completed_post_five_seed_h1l1_candidate_publication_chain",
         "completed_post_five_seed_candidate_negative_promotion",
     }
     or receipt.get("test_rows_read") != 0
@@ -336,24 +335,10 @@ injection_ranking="$promoted_root/pipeline/injection_rankings/val_injection_cand
 )
 
 merge_report="$continuous_root/merged/streamed_background_merge_report.json"
-background_manifest="$continuous_root/merged/background_windows.jsonl"
 authorization="$continuous_root/publication_background_plan_authorization.json"
-variable_root="$OUTPUT_ROOT/variable-detector"
-(
-  cd "$TASK_CODE_DIR"
-  export PYTHONPATH=src GWYOLO_CODE_COMMIT
-  env \
-    TASK_PYTHON="$TASK_PYTHON" \
-    TASK_CODE_DIR="$TASK_CODE_DIR" \
-    GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
-    SOURCE_PIPELINE_REPORT="$promoted_pipeline" \
-    BACKGROUND_MANIFEST="$background_manifest" \
-    EXPANDED_BACKGROUND_MERGE_REPORT="$merge_report" \
-    BACKGROUND_PLAN_AUTHORIZATION="$authorization" \
-    NETWORK_CONFIG="$NETWORK_CONFIG" \
-    OUTPUT_ROOT="$variable_root" \
-    bash scripts/run_candidate_validation_detector_set_successor.sh
-)
+block_schedule="$continuous_root/candidate_block_permutation_schedule.json"
+block_report="$continuous_root/candidate_block_background/val_candidate_time_slide_report.json"
+calibration="$continuous_root/frozen_validation_candidate_search_calibration.json"
 
 (
   cd "$TASK_CODE_DIR"
@@ -361,8 +346,7 @@ variable_root="$OUTPUT_ROOT/variable-detector"
   "$TASK_PYTHON" - "$final_receipt" \
     "$SOURCE_SAFE_CHAIN_RECEIPT" "$FIVE_SEED_SUMMARY" "$promoted_pipeline" \
     "$comparison" "$merge_report" "$authorization" \
-    "$variable_root/candidate_validation_detector_set_block_pipeline_report.json" \
-    "$variable_root/frozen_validation_candidate_search_calibration_endpoint_bound.json" <<'PY'
+    "$block_schedule" "$block_report" "$calibration" <<'PY'
 import json
 import pathlib
 import sys
@@ -378,8 +362,9 @@ from gwyolo.runtime import execution_provenance
     comparison_arg,
     merge_arg,
     authorization_arg,
-    variable_arg,
-    binding_arg,
+    schedule_arg,
+    block_arg,
+    calibration_arg,
 ) = sys.argv[1:]
 paths = {
     name: pathlib.Path(value)
@@ -390,8 +375,9 @@ paths = {
         "candidate_comparison": comparison_arg,
         "continuous_background_merge": merge_arg,
         "background_authorization": authorization_arg,
-        "variable_detector_pipeline": variable_arg,
-        "endpoint_binding": binding_arg,
+        "h1l1_block_schedule": schedule_arg,
+        "h1l1_block_background": block_arg,
+        "h1l1_frozen_calibration": calibration_arg,
     }.items()
 }
 if any(not path.is_file() for path in paths.values()):
@@ -408,23 +394,38 @@ if (
     or values["continuous_background_merge"].get("complete_parent_plan") is not True
     or int(values["continuous_background_merge"].get("split_counts", {}).get("test", -1))
     != 0
-    or values["variable_detector_pipeline"].get("status")
-    != "validation_only_clustered_candidate_search_pipeline"
-    or values["variable_detector_pipeline"].get("frozen_search", {}).get(
+    or values["h1l1_block_schedule"].get("status")
+    != "frozen_candidate_block_permutation_schedule"
+    or values["h1l1_block_schedule"].get(
+        "schedule_exposure_target_reached"
+    )
+    is not True
+    or values["h1l1_block_schedule"].get("candidate_scores_inspected")
+    is not False
+    or values["h1l1_block_background"].get("status")
+    != "subwindow_clustered_time_slide_integration_only"
+    or values["h1l1_frozen_calibration"].get("status")
+    != "frozen_validation_candidate_search_calibration"
+    or values["h1l1_frozen_calibration"].get(
         "publication_calibration_eligible"
     )
     is not True
-    or values["endpoint_binding"].get("status")
-    != "frozen_validation_candidate_search_calibration_endpoint_bound"
-    or values["endpoint_binding"].get("passed") is not True
+    or values["h1l1_frozen_calibration"].get(
+        "slide_schedule_audit", {}
+    ).get("schedule_kind")
+    != "gps_block_permutation"
 ):
     raise SystemExit("post-five-seed candidate final gate failed")
 result = {
-    "status": "completed_post_five_seed_candidate_publication_chain",
+    "status": "completed_post_five_seed_h1l1_candidate_publication_chain",
     "execution_passed": True,
     "continuous_background_started": True,
     "continuous_background_completed": True,
-    "variable_detector_calibration_frozen": True,
+    "h1l1_continuous_calibration_frozen": True,
+    "variable_detector_calibration_frozen": False,
+    "variable_detector_successor": (
+        "requires independent numeric four-subset background baseline"
+    ),
     "scientific_claim_allowed": False,
     "test_rows_read": 0,
     "artifacts": {
