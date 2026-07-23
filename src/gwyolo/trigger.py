@@ -302,14 +302,109 @@ def _window_strain(
     if not valid_ifos:
         raise ValueError("background window has no enabled detector")
     context_by_ifo = {}
-    for ifo in valid_ifos:
-        source = row["source_files"][ifo]["path"]
-        segment = read_hdf5_segment(source, center, context_duration)
-        context_by_ifo[ifo] = _fft_downsample(
-            segment["strain"], segment["sample_rate"], target_sample_rate
-        )
     output_samples = int(round(window_duration * target_sample_rate))
     override_record: dict[str, Any] = {}
+    analysis_start_index: int | None = None
+    bank_reference = row.get("background_bank")
+    if bank_reference is not None:
+        if (
+            not isinstance(bank_reference, dict)
+            or not bank_reference.get("path")
+            or not bank_reference.get("sha256")
+        ):
+            raise ValueError("Numeric background bank requires a path and SHA256")
+        bank_path = Path(str(bank_reference["path"])).resolve()
+        bank_sha256 = str(bank_reference["sha256"])
+        if not bank_path.is_file() or file_sha256(bank_path) != bank_sha256:
+            raise ValueError("Numeric background bank hash mismatch")
+        with np.load(bank_path, allow_pickle=False) as arrays:
+            required_arrays = {
+                "noise",
+                "ifos",
+                "sample_rate",
+                "context_gps_start",
+                "analysis_gps_start",
+                "analysis_start_index",
+                "analysis_stop_index",
+                "window_id",
+            }
+            missing = required_arrays - set(arrays.files)
+            if missing:
+                raise ValueError(
+                    f"Numeric background bank lacks arrays: {sorted(missing)}"
+                )
+            noise = np.asarray(arrays["noise"], dtype=np.float64)
+            bank_ifos = [str(value) for value in arrays["ifos"].tolist()]
+            bank_sample_rate = int(arrays["sample_rate"])
+            context_gps_start = float(arrays["context_gps_start"])
+            analysis_gps_start = float(arrays["analysis_gps_start"])
+            stored_start = int(arrays["analysis_start_index"])
+            stored_stop = int(arrays["analysis_stop_index"])
+            stored_window_id = str(arrays["window_id"])
+        if (
+            noise.ndim != 2
+            or noise.shape[0] != len(bank_ifos)
+            or bank_ifos != source_ifos
+            or len(bank_ifos) != len(set(bank_ifos))
+            or bank_sample_rate <= 0
+            or not np.isfinite(noise).all()
+            or not np.isfinite(context_gps_start)
+            or not np.isfinite(analysis_gps_start)
+            or stored_start < 0
+            or stored_stop <= stored_start
+            or stored_stop > noise.shape[1]
+            or stored_window_id != str(row["window_id"])
+            or stored_start
+            != int(
+                round(
+                    (analysis_gps_start - context_gps_start)
+                    * bank_sample_rate
+                )
+            )
+            or not np.isclose(
+                analysis_gps_start,
+                float(row["gps_start"]),
+                rtol=0.0,
+                atol=1e-9,
+            )
+            or stored_stop - stored_start
+            != int(round(window_duration * bank_sample_rate))
+        ):
+            raise ValueError("Numeric background bank tensor/GPS contract differs")
+        for ifo in valid_ifos:
+            context_by_ifo[ifo] = _fft_downsample(
+                noise[bank_ifos.index(ifo)],
+                bank_sample_rate,
+                target_sample_rate,
+            )
+        analysis_start_index = int(
+            round((analysis_gps_start - context_gps_start) * target_sample_rate)
+        )
+        override_record = {
+            "numeric_background_bank_path": str(bank_path),
+            "numeric_background_bank_sha256": bank_sha256,
+            "numeric_background_primary": True,
+        }
+    else:
+        for ifo in valid_ifos:
+            source = row["source_files"][ifo]["path"]
+            segment = read_hdf5_segment(source, center, context_duration)
+            context_by_ifo[ifo] = _fft_downsample(
+                segment["strain"], segment["sample_rate"], target_sample_rate
+            )
+        analysis_start_index = (
+            next(iter(context_by_ifo.values())).size // 2
+            - output_samples // 2
+        )
+    if (
+        analysis_start_index is None
+        or analysis_start_index < 0
+        or any(
+            values.size < analysis_start_index + output_samples
+            for values in context_by_ifo.values()
+        )
+    ):
+        raise ValueError("Background context cannot cover its analysis interval")
     override_path = row.get("analysis_override_path")
     override_sha = row.get("analysis_override_sha256")
     if override_path is not None or override_sha is not None:
@@ -337,20 +432,22 @@ def _window_strain(
             raise ValueError("Background analysis override GPS start differs")
         for ifo in valid_ifos:
             context = context_by_ifo[ifo].copy()
-            center_index = context.size // 2
-            start = center_index - output_samples // 2
-            context[start : start + output_samples] = cleaned[model_ifos.index(ifo)]
+            context[
+                analysis_start_index : analysis_start_index + output_samples
+            ] = cleaned[model_ifos.index(ifo)]
             context_by_ifo[ifo] = context
         for ifo in model_ifos:
             if ifo not in valid_ifos and np.any(cleaned[model_ifos.index(ifo)] != 0):
                 raise ValueError("Background override has strain for an unavailable detector")
-        override_record = {
-            "analysis_override_path": str(path),
-            "analysis_override_sha256": str(override_sha),
-            "analysis_override_kind": str(
-                row.get("analysis_override_kind", "unspecified")
-            ),
-        }
+        override_record.update(
+            {
+                "analysis_override_path": str(path),
+                "analysis_override_sha256": str(override_sha),
+                "analysis_override_kind": str(
+                    row.get("analysis_override_kind", "unspecified")
+                ),
+            }
+        )
     strains = []
     for ifo in model_ifos:
         if ifo not in context_by_ifo:
@@ -364,9 +461,11 @@ def _window_strain(
                 response_for_row(calibration_scenario, row, ifo),
             )
         whitened = _whiten(values)
-        center_index = whitened.size // 2
-        start = center_index - output_samples // 2
-        strains.append(whitened[start : start + output_samples])
+        strains.append(
+            whitened[
+                analysis_start_index : analysis_start_index + output_samples
+            ]
+        )
     return np.stack(strains), valid_ifos, override_record
 
 
@@ -416,6 +515,15 @@ def score_background_manifest(
         manifest_rows = [json.loads(line) for line in handle if line.strip()]
     if not manifest_rows:
         raise ValueError("Background manifest cannot be empty")
+    numeric_bank_identity = [
+        {
+            "window_id": str(row["window_id"]),
+            "path": str(Path(str(row["background_bank"]["path"])).resolve()),
+            "sha256": str(row["background_bank"]["sha256"]),
+        }
+        for row in manifest_rows
+        if row.get("background_bank") is not None
+    ]
     observed_splits = sorted({str(row.get("split")) for row in manifest_rows})
     if required_split is not None and observed_splits != [required_split]:
         raise ValueError(
@@ -457,6 +565,12 @@ def score_background_manifest(
         "q_values": list(q_values),
         "target_sample_rate": target_sample_rate,
         "context_duration": context_duration,
+        "numeric_background_primary_windows": len(numeric_bank_identity),
+        "numeric_background_bank_identity_hash": (
+            canonical_hash(numeric_bank_identity, 64)
+            if numeric_bank_identity
+            else None
+        ),
         "save_probabilities": save_probabilities,
         "probability_schema": (
             "mask_probabilities_plus_whitened_strain_v2"
@@ -613,6 +727,9 @@ def score_background_manifest(
         "failed_windows": len(failures),
         "analysis_override_windows": sum(
             bool(row.get("analysis_override_sha256")) for row in rows
+        ),
+        "numeric_background_primary_windows": sum(
+            bool(row.get("numeric_background_primary")) for row in rows
         ),
         "failures": failures,
         "split_counts": dict(sorted(Counter(row["split"] for row in rows).items())),

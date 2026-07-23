@@ -141,3 +141,94 @@ def test_window_override_is_inserted_before_full_context_whitening(
     assert valid_ifos == ["H1"]
     assert strain.tolist() == [[10.0, 11.0], [0.0, 0.0]]
     assert record["analysis_override_sha256"] == file_sha256(override)
+
+
+def test_window_strain_reads_frozen_numeric_background_bank(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bank = tmp_path / "background.npz"
+    noise = np.stack(
+        (
+            np.arange(16, dtype=np.float32) + 1,
+            np.arange(16, dtype=np.float32) + 101,
+        )
+    )
+    np.savez(
+        bank,
+        noise=noise,
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(4),
+        context_gps_start=np.asarray(100.0),
+        analysis_gps_start=np.asarray(101.0),
+        analysis_start_index=np.asarray(4),
+        analysis_stop_index=np.asarray(8),
+        window_id=np.asarray("numeric-window"),
+    )
+    monkeypatch.setattr("gwyolo.trigger._whiten", lambda values: values)
+    row = {
+        "window_id": "numeric-window",
+        "gps_start": 101.0,
+        "gps_end": 102.0,
+        "duration": 1.0,
+        "ifos": ["H1", "L1"],
+        "source_files": {
+            "H1": {"path": str(tmp_path / "evicted-H1.hdf5")},
+            "L1": {"path": str(tmp_path / "evicted-L1.hdf5")},
+        },
+        "background_bank": {
+            "path": str(bank),
+            "sha256": file_sha256(bank),
+        },
+    }
+    strain, valid_ifos, record = _window_strain(
+        row,
+        ("H1", "L1", "V1"),
+        4,
+        context_duration=64.0,
+    )
+    assert valid_ifos == ["H1", "L1"]
+    assert strain.tolist() == [
+        noise[0, 4:8].tolist(),
+        noise[1, 4:8].tolist(),
+        [0.0, 0.0, 0.0, 0.0],
+    ]
+    assert record == {
+        "numeric_background_bank_path": str(bank.resolve()),
+        "numeric_background_bank_sha256": file_sha256(bank),
+        "numeric_background_primary": True,
+    }
+
+
+def test_window_strain_rejects_changed_numeric_background_bank(
+    tmp_path: Path,
+) -> None:
+    bank = tmp_path / "background.npz"
+    np.savez(
+        bank,
+        noise=np.ones((2, 8), dtype=np.float32),
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(4),
+        context_gps_start=np.asarray(100.0),
+        analysis_gps_start=np.asarray(100.0),
+        analysis_start_index=np.asarray(0),
+        analysis_stop_index=np.asarray(4),
+        window_id=np.asarray("numeric-window"),
+    )
+    row = {
+        "window_id": "numeric-window",
+        "gps_start": 100.0,
+        "gps_end": 101.0,
+        "duration": 1.0,
+        "ifos": ["H1", "L1"],
+        "background_bank": {
+            "path": str(bank),
+            "sha256": "0" * 64,
+        },
+    }
+    with pytest.raises(ValueError, match="hash mismatch"):
+        _window_strain(
+            row,
+            ("H1", "L1", "V1"),
+            4,
+            context_duration=64.0,
+        )
