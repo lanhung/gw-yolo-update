@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,6 +14,28 @@ from .runtime import execution_provenance
 
 
 SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
+
+def parse_gps_block_identity(value: str) -> tuple[str, float, float]:
+    """Parse a canonical or observing-run-qualified GPS block identity."""
+
+    parts = str(value).split(":")
+    if (
+        len(parts) != 3
+        or (
+            parts[0] != "gps"
+            and re.fullmatch(r"O[1-9][0-9]*[a-z]?", parts[0]) is None
+        )
+    ):
+        raise ValueError(f"unsupported GPS block identity: {value}")
+    try:
+        start = float(parts[1])
+        duration = float(parts[2])
+    except ValueError as exc:
+        raise ValueError(f"unsupported GPS block identity: {value}") from exc
+    if not math.isfinite(start) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"unsupported GPS block identity: {value}")
+    return parts[0], start, duration
 
 
 def validate_source_verification(

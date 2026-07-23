@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .background import SECONDS_PER_YEAR, _union_duration
+from .background import SECONDS_PER_YEAR, _union_duration, parse_gps_block_identity
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
     CANDIDATE_BLOCK_SELECTION_DATA,
@@ -2398,11 +2398,7 @@ def build_detector_set_candidate_block_permutations(
         block = str(row["gps_block"])
         if block not in block_positions:
             raise ValueError("background window uses an unscheduled GPS block")
-        parts = block.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError("detector-set blocks require canonical GPS identities")
-        block_start = float(parts[1])
-        block_duration = float(parts[2])
+        _, block_start, block_duration = parse_gps_block_identity(block)
         slot_value = (float(row["gps_start"]) - block_start) / duration
         slot = int(round(slot_value))
         if (
@@ -3508,10 +3504,7 @@ def run_candidate_block_permutations(
     by_window: dict[str, dict[str, Any]] = {}
     for row in windows:
         block = str(row["gps_block"])
-        parts = block.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError(f"unsupported GPS block identity: {block}")
-        block_start = float(parts[1])
+        _, block_start, _ = parse_gps_block_identity(block)
         offset = (float(row["gps_start"]) - block_start) / window_duration
         slot = int(round(offset))
         if not np.isclose(offset, slot, rtol=0.0, atol=1e-6):

@@ -1017,7 +1017,7 @@ def test_detector_set_block_permutations_replay_all_hlv_subsets(
     delays = {"H1": 0.001, "L1": 0.006, "V1": 0.021}
     for block_index in range(5):
         start = 1000.0 + block_index * 100.0
-        block = f"gps:{int(start)}:8"
+        block = f"O3b:{int(start)}:8"
         window_id = f"w{block_index}"
         windows.append(
             {

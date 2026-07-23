@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
-from .background import SECONDS_PER_YEAR, _union_duration
+from .background import SECONDS_PER_YEAR, _union_duration, parse_gps_block_identity
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
@@ -516,11 +516,7 @@ def freeze_candidate_block_permutation_schedule(
     blocks: dict[str, dict[str, Any]] = {}
     for row in rows:
         block_id = str(row["gps_block"])
-        parts = block_id.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError(f"unsupported GPS block identity: {block_id}")
-        block_start = float(parts[1])
-        block_duration = float(parts[2])
+        _, block_start, block_duration = parse_gps_block_identity(block_id)
         offset = (float(row["gps_start"]) - block_start) / window_duration
         slot = int(round(offset))
         if not math.isclose(offset, slot, rel_tol=0.0, abs_tol=1e-6):
@@ -724,11 +720,7 @@ def freeze_detector_set_block_permutation_schedule(
     blocks: dict[str, dict[str, Any]] = {}
     for row in rows:
         block_id = str(row["gps_block"])
-        parts = block_id.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError(f"unsupported GPS block identity: {block_id}")
-        block_start = float(parts[1])
-        block_duration = float(parts[2])
+        _, block_start, block_duration = parse_gps_block_identity(block_id)
         offset = (float(row["gps_start"]) - block_start) / window_duration
         slot = int(round(offset))
         if (

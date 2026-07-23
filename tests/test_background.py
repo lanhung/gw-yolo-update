@@ -10,6 +10,7 @@ import pytest
 
 from gwyolo.background import (
     _assign_blocks_hash_threshold,
+    parse_gps_block_identity,
     plan_background_windows,
     run_background_purpose_partition,
     run_batch_background_plan,
@@ -33,6 +34,13 @@ def _write_quality_file(path: Path, gps_start: int, duration: int, bad_second: i
         simple.create_dataset("DQmask", data=dq)
         injections = quality.create_group("injections")
         injections.create_dataset("Injmask", data=np.full(duration, 3, dtype=np.int32))
+
+
+def test_gps_block_identity_preserves_observing_run_qualification() -> None:
+    assert parse_gps_block_identity("gps:1000:64") == ("gps", 1000.0, 64.0)
+    assert parse_gps_block_identity("O3b:1000:64") == ("O3b", 1000.0, 64.0)
+    with pytest.raises(ValueError, match="unsupported GPS block"):
+        parse_gps_block_identity("development:1000:64")
 
 
 def test_background_windows_use_common_dq_and_disjoint_blocks(tmp_path) -> None:

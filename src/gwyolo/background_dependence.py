@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .background import SECONDS_PER_YEAR
+from .background import SECONDS_PER_YEAR, parse_gps_block_identity
 from .candidates import _available_ifos
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
@@ -230,10 +230,8 @@ def audit_candidate_background_dependence(
         block = str(row.get("gps_block"))
         if block not in slots:
             raise ValueError("background manifest contains an unscheduled GPS block")
-        parts = block.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError("background dependence requires canonical GPS blocks")
-        offset = (float(row["gps_start"]) - float(parts[1])) / window_duration
+        _, block_start, _ = parse_gps_block_identity(block)
+        offset = (float(row["gps_start"]) - block_start) / window_duration
         slot = int(round(offset))
         if not np.isclose(offset, slot, rtol=0.0, atol=1e-6):
             raise ValueError("background window is not aligned to its GPS block")
@@ -569,12 +567,8 @@ def audit_detector_set_candidate_background_dependence(
             raise ValueError(
                 "background manifest contains an unscheduled GPS block"
             )
-        parts = block.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError(
-                "detector-set dependence requires canonical GPS blocks"
-            )
-        offset = (float(row["gps_start"]) - float(parts[1])) / duration
+        _, block_start, _ = parse_gps_block_identity(block)
+        offset = (float(row["gps_start"]) - block_start) / duration
         slot = int(round(offset))
         if not np.isclose(offset, slot, rtol=0.0, atol=1e-6):
             raise ValueError(
