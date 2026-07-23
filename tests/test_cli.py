@@ -479,6 +479,45 @@ def test_detector_set_injection_ranking_cli_routes_exact_inputs() -> None:
     )
 
 
+def test_detector_set_block_schedule_cli_routes_only_declared_inputs() -> None:
+    target = "gwyolo.exposure.freeze_detector_set_block_permutation_schedule"
+    with patch(target, return_value={}) as freeze:
+        assert (
+            main(
+                [
+                    "detector-set-block-permutation-schedule-freeze",
+                    "--background-manifest",
+                    "background.jsonl",
+                    "--network-config",
+                    "network.yaml",
+                    "--output",
+                    "schedule.json",
+                    "--split",
+                    "val",
+                    "--target-far-per-year",
+                    "1000",
+                    "--zero-count-confidence",
+                    "0.9",
+                    "--maximum-shifts",
+                    "17",
+                    "--exposure-safety-factor",
+                    "1.5",
+                ]
+            )
+            == 0
+        )
+    freeze.assert_called_once_with(
+        "background.jsonl",
+        "network.yaml",
+        "schedule.json",
+        "val",
+        1000.0,
+        0.9,
+        17,
+        1.5,
+    )
+
+
 def test_locked_search_input_reducer_cli_routes_frozen_inputs() -> None:
     target = "gwyolo.locked_streaming.reduce_locked_o4b_search_inputs"
     with patch(target, return_value={}) as reduce:

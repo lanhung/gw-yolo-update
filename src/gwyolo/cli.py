@@ -4349,8 +4349,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.zero_count_confidence,
                 args.maximum_shifts,
                 args.exposure_safety_factor,
-                args.expanded_background_merge_report,
-                args.background_plan_authorization,
             )
         )
     elif args.command == "candidate-block-permutation-capacity-forecast":
