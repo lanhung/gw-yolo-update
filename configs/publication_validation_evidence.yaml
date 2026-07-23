@@ -97,13 +97,14 @@ publication_evidence:
         - {field: passed, op: equals, value: true}
         - {field: publication_calibration_eligible, op: equals, value: true}
         - {field: slide_schedule_audit.passed, op: equals, value: true}
-        - {field: slide_schedule_audit.schedule_kind, op: equals, value: gps_block_permutation}
-        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: slide_schedule_audit.schedule_kind, op: equals, value: variable_detector_set_block_permutation}
+        - {field: background_dependence_audit.status, op: equals, value: detector_set_candidate_background_dependence_audit_v1}
         - {field: background_dependence_audit.passed, op: equals, value: true}
         - {field: background_dependence_audit.gates.cluster_bootstrap_complete, op: equals, value: true}
-        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: background_dependence_audit.multiway_cluster_bootstrap.replicates, op: at_least, value: 10000}
         - {field: background_dependence_audit.unique_gps_blocks, op: at_least, value: 25}
         - {field: background_dependence_audit.unique_shifts, op: at_least, value: 25}
+        - {field: expanded_background_lineage, op: nonempty}
         - {field: target_far_per_year, op: equals, value: 0.1}
         - {field: target_far_has_at_least_one_expected_background_count, op: equals, value: true}
         - {field: bootstrap_replicates, op: at_least, value: 10000}
@@ -143,9 +144,9 @@ publication_evidence:
         - {field: human_ground_truth_claimed, op: equals, value: false}
         - {field: pixel_accuracy_claim_allowed, op: equals, value: false}
         - {field: automatic_glitch_masks_are_pseudo_labels, op: equals, value: true}
-        - {field: background_dependence_audits.raw.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audits.raw.status, op: equals, value: detector_set_candidate_background_dependence_audit_v1}
         - {field: background_dependence_audits.raw.passed, op: equals, value: true}
-        - {field: background_dependence_audits.mask.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audits.mask.status, op: equals, value: detector_set_candidate_background_dependence_audit_v1}
         - {field: background_dependence_audits.mask.passed, op: equals, value: true}
         - {field: injection_bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
         - {field: injection_bootstrap_independence.passed, op: equals, value: true}

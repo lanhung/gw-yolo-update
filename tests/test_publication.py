@@ -467,20 +467,24 @@ def test_official_validation_protocol_requires_automatic_bound_raw_mask_receipt(
                 "pixel_accuracy_claim_allowed": False,
                 "automatic_glitch_masks_are_pseudo_labels": True,
                 "negative_and_null_masks_retained": True,
-                    "background_dependence_audits": {
-                        arm: {
-                            "status": "candidate_background_dependence_audit_v1",
-                            "passed": True,
-                        }
-                        for arm in ("raw", "mask")
-                    },
-                    "injection_bootstrap_independence": {
-                        "status": "injection_bootstrap_independence_audit_v1",
+                "background_dependence_audits": {
+                    arm: {
+                        "status": (
+                            "detector_set_candidate_background_dependence_audit_v1"
+                        ),
                         "passed": True,
-                        "method": "gps_block_then_paired_injection_hierarchical_bootstrap_v1",
-                        "physical_groups": 25,
-                    },
-                    "validation_only": True,
+                    }
+                    for arm in ("raw", "mask")
+                },
+                "injection_bootstrap_independence": {
+                    "status": "injection_bootstrap_independence_audit_v1",
+                    "passed": True,
+                    "method": (
+                        "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+                    ),
+                    "physical_groups": 25,
+                },
+                "validation_only": True,
                 "checks": {
                     "minimum_rows": True,
                     "minimum_unique_glitches": True,
@@ -509,6 +513,121 @@ def test_official_validation_protocol_requires_automatic_bound_raw_mask_receipt(
     )
     assert gate["state"] == "passed"
     assert len(gate["artifact_replay"]) == 5
+
+
+def test_official_validation_protocol_requires_variable_detector_calibration(
+    tmp_path: Path,
+) -> None:
+    protocol = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "publication_validation_evidence.yaml"
+    )
+    artifacts = {}
+    for label in (
+        "independent_validation_endpoint",
+        "candidate_pipeline",
+        "calibration",
+        "validation_time_slide",
+        "background_manifest",
+        "candidate_manifest",
+        "schedule",
+        "validation_injection_ranking",
+        "model_selection",
+    ):
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps({"label": label}), encoding="utf-8")
+        artifacts[label] = {"path": str(path), "sha256": file_sha256(path)}
+
+    evidence = tmp_path / "candidate-search.json"
+    valid = {
+        "status": "frozen_validation_candidate_search_calibration_endpoint_bound",
+        "passed": True,
+        "publication_calibration_eligible": True,
+        "slide_schedule_audit": {
+            "passed": True,
+            "schedule_kind": "variable_detector_set_block_permutation",
+        },
+        "background_dependence_audit": {
+            "status": "detector_set_candidate_background_dependence_audit_v1",
+            "passed": True,
+            "gates": {"cluster_bootstrap_complete": True},
+            "multiway_cluster_bootstrap": {"replicates": 10000},
+            "unique_gps_blocks": 25,
+            "unique_shifts": 25,
+            "background_manifest": artifacts["background_manifest"],
+            "candidate_manifest": artifacts["candidate_manifest"],
+            "schedule": artifacts["schedule"],
+        },
+        "expanded_background_lineage": {"authorization": "purpose_disjoint"},
+        "target_far_per_year": 0.1,
+        "target_far_has_at_least_one_expected_background_count": True,
+        "bootstrap_replicates": 10000,
+        "validation_purpose_gps_block_overlap": 0,
+        "independent_validation_rows": 3000,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "validation_injection_diagnostic": {"status": "validation_only"},
+        "injection_bootstrap_independence": {
+            "status": "injection_bootstrap_independence_audit_v1",
+            "passed": True,
+            "method": "gps_block_then_paired_injection_hierarchical_bootstrap_v1",
+            "physical_groups": 25,
+        },
+        "scientific_claim_allowed": False,
+        "code_commit": "variable-detector",
+        "independent_validation_endpoint": artifacts[
+            "independent_validation_endpoint"
+        ],
+        "candidate_pipeline": artifacts["candidate_pipeline"],
+        "calibration": artifacts["calibration"],
+        "validation_time_slide": artifacts["validation_time_slide"],
+        "validation_injection_ranking": artifacts["validation_injection_ranking"],
+        "model_selection": artifacts["model_selection"],
+    }
+    evidence.write_text(json.dumps(valid), encoding="utf-8")
+    passed = run_publication_evidence_audit(
+        protocol,
+        [f"continuous_candidate_calibration={evidence}"],
+        tmp_path / "passed-variable-detector-audit.json",
+    )
+    gate = next(
+        row
+        for row in passed["requirements"]
+        if row["id"] == "continuous_candidate_calibration"
+    )
+    assert gate["state"] == "passed"
+    assert len(gate["artifact_replay"]) == 9
+
+    legacy = json.loads(json.dumps(valid))
+    legacy["slide_schedule_audit"]["schedule_kind"] = "gps_block_permutation"
+    legacy["background_dependence_audit"][
+        "status"
+    ] = "candidate_background_dependence_audit_v1"
+    legacy["background_dependence_audit"]["three_way_cluster_bootstrap"] = legacy[
+        "background_dependence_audit"
+    ].pop("multiway_cluster_bootstrap")
+    legacy.pop("expanded_background_lineage")
+    evidence.write_text(json.dumps(legacy), encoding="utf-8")
+    failed = run_publication_evidence_audit(
+        protocol,
+        [f"continuous_candidate_calibration={evidence}"],
+        tmp_path / "failed-legacy-detector-audit.json",
+    )
+    gate = next(
+        row
+        for row in failed["requirements"]
+        if row["id"] == "continuous_candidate_calibration"
+    )
+    assert gate["state"] == "failed"
+    assert {
+        row["field"] for row in gate["checks"] if row["passed"] is False
+    } == {
+        "slide_schedule_audit.schedule_kind",
+        "background_dependence_audit.status",
+        "background_dependence_audit.multiway_cluster_bootstrap.replicates",
+        "expanded_background_lineage",
+    }
 
 
 def test_official_validation_protocol_requires_hard_endpoint_scaling_binding(
