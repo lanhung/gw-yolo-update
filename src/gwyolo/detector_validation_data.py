@@ -17,6 +17,7 @@ from .io import (
 )
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz
+from .gwosc import _stratified_records
 
 
 DEFAULT_DETECTOR_SUBSETS = (
@@ -442,4 +443,159 @@ def plan_detector_stratified_validation_injections(
         **execution_provenance(),
     }
     atomic_write_json(plan_path, result)
+    return result
+
+
+def freeze_source_disjoint_detector_acquisition_plan(
+    inventory_plan_path: str | Path,
+    frozen_network_manifests: Iterable[str | Path],
+    output_path: str | Path,
+    target_pairs: int,
+    seed: int = 20260723,
+    exclusion_plan_paths: Iterable[str | Path] = (),
+) -> dict[str, Any]:
+    """Select unlocked GWOSC pairs disjoint from every frozen source component."""
+
+    inventory_path = Path(inventory_plan_path).resolve()
+    inventory = _read_json(inventory_path)
+    frozen_paths = [Path(path).resolve() for path in frozen_network_manifests]
+    exclusion_paths = [Path(path).resolve() for path in exclusion_plan_paths]
+    target = Path(output_path).resolve()
+    pairs = list(inventory.get("pairs", []))
+    detectors = tuple(str(value) for value in inventory.get("detectors", []))
+    if (
+        inventory.get("status") != "development_acquisition_plan"
+        or inventory.get("locked_evaluation_data") is not False
+        or str(inventory.get("run", "")).lower().startswith("o4b")
+        or len(detectors) != 2
+        or not set(detectors) <= {"H1", "L1", "V1"}
+        or not pairs
+        or target_pairs < 1
+        or seed < 1
+        or not frozen_paths
+    ):
+        raise ValueError("Detector acquisition inventory or policy is invalid")
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    if (
+        any(not value for value in pair_ids)
+        or len(pair_ids) != len(set(pair_ids))
+        or int(inventory.get("selected_pairs", -1)) != len(pairs)
+    ):
+        raise ValueError("Detector acquisition inventory has invalid pair identities")
+
+    excluded_urls: set[str] = set()
+    excluded_gps_starts: set[int] = set()
+    frozen_records = []
+    for path in frozen_paths:
+        rows = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if not rows:
+            raise ValueError("Frozen network exclusion manifest is empty")
+        for row in rows:
+            sources = row.get("network_strain_sources")
+            if not isinstance(sources, dict) or len(sources) < 2:
+                raise ValueError("Frozen network row lacks source components")
+            for source in sources.values():
+                excluded_urls.add(str(source["hdf5_url"]))
+                excluded_gps_starts.add(int(source["gps_start"]))
+        frozen_records.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "rows": len(rows),
+            }
+        )
+    plan_records = []
+    for path in exclusion_paths:
+        plan = _read_json(path)
+        if (
+            plan.get("status") != "development_acquisition_plan"
+            or plan.get("locked_evaluation_data") is not False
+            or str(plan.get("run")) != str(inventory["run"])
+            or not isinstance(plan.get("pairs"), list)
+        ):
+            raise ValueError("Detector acquisition exclusion plan is invalid")
+        for pair in plan["pairs"]:
+            excluded_gps_starts.add(int(pair["gps_start"]))
+            excluded_urls.update(
+                str(source["hdf5_url"])
+                for source in pair["detectors"].values()
+            )
+        plan_records.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "pairs": len(plan["pairs"]),
+            }
+        )
+    eligible = [
+        pair
+        for pair in pairs
+        if int(pair["gps_start"]) not in excluded_gps_starts
+        and not (
+            {
+                str(source["hdf5_url"])
+                for source in pair["detectors"].values()
+            }
+            & excluded_urls
+        )
+    ]
+    if len(eligible) < target_pairs:
+        raise ValueError(
+            "Source-disjoint detector acquisition inventory is below target"
+        )
+    selected = _stratified_records(eligible, target_pairs, seed)
+    selected_gps = [int(row["gps_start"]) for row in selected]
+    selected_urls = {
+        str(source["hdf5_url"])
+        for pair in selected
+        for source in pair["detectors"].values()
+    }
+    if (
+        len(selected_gps) != len(set(selected_gps))
+        or set(selected_gps) & excluded_gps_starts
+        or selected_urls & excluded_urls
+    ):
+        raise RuntimeError("Detector acquisition selection is not source disjoint")
+    result = {
+        **{key: value for key, value in inventory.items() if key != "pairs"},
+        "status": "development_acquisition_plan",
+        "selected_pairs": len(selected),
+        "selected_gps_span": [min(selected_gps), max(selected_gps)],
+        "pairs": selected,
+        "seed": seed,
+        "selection_rule": "source_file_and_gps_disjoint_stratified_v1",
+        "selection_data": "GWOSC strain-file metadata only",
+        "candidate_scores_inspected": False,
+        "test_data_opened": False,
+        "locked_evaluation_data": False,
+        "inventory_plan_path": str(inventory_path),
+        "inventory_plan_sha256": file_sha256(inventory_path),
+        "frozen_network_exclusions": frozen_records,
+        "acquisition_plan_exclusions": plan_records,
+        "excluded_source_urls": len(excluded_urls),
+        "excluded_gps_starts": len(excluded_gps_starts),
+        "eligible_pairs_after_exclusion": len(eligible),
+        "selected_pair_ids_hash": canonical_hash(
+            [str(row["pair_id"]) for row in selected], 64
+        ),
+        "selected_gps_starts_hash": canonical_hash(selected_gps, 64),
+        **execution_provenance(),
+    }
+    if target.exists():
+        prior = _read_json(target)
+        identity_fields = (
+            "inventory_plan_sha256",
+            "frozen_network_exclusions",
+            "acquisition_plan_exclusions",
+            "selected_pair_ids_hash",
+            "seed",
+        )
+        if any(prior.get(field) != result.get(field) for field in identity_fields):
+            raise ValueError("Existing detector acquisition plan has another identity")
+        return prior
+    atomic_write_json(target, result)
     return result

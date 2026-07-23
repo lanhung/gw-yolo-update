@@ -933,6 +933,25 @@ def build_parser() -> argparse.ArgumentParser:
     detector_validation_injections.add_argument(
         "--seed", type=int, default=20260723
     )
+    detector_validation_acquisition = subparsers.add_parser(
+        "detector-validation-acquisition-plan"
+    )
+    detector_validation_acquisition.add_argument(
+        "--inventory-plan", required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--frozen-network-manifest", action="append", required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--exclude-plan", action="append", default=[]
+    )
+    detector_validation_acquisition.add_argument(
+        "--target-pairs", type=int, required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--seed", type=int, default=20260723
+    )
+    detector_validation_acquisition.add_argument("--output", required=True)
 
     gravityspy_network_resplit = subparsers.add_parser(
         "gravityspy-network-corpus-resplit"
@@ -3524,6 +3543,21 @@ def main(argv: list[str] | None = None) -> int:
                     else DEFAULT_DETECTOR_SUBSETS
                 ),
                 args.seed,
+            )
+        )
+    elif args.command == "detector-validation-acquisition-plan":
+        from .detector_validation_data import (
+            freeze_source_disjoint_detector_acquisition_plan,
+        )
+
+        _print(
+            freeze_source_disjoint_detector_acquisition_plan(
+                args.inventory_plan,
+                args.frozen_network_manifest,
+                args.output,
+                args.target_pairs,
+                args.seed,
+                args.exclude_plan,
             )
         )
     elif args.command == "gravityspy-network-corpus-resplit":

@@ -8,6 +8,7 @@ import pytest
 
 from gwyolo.detector_validation_data import (
     export_network_numeric_validation_background,
+    freeze_source_disjoint_detector_acquisition_plan,
     plan_detector_stratified_validation_injections,
 )
 from gwyolo.io import file_sha256
@@ -211,3 +212,85 @@ def test_detector_validation_background_rejects_changed_numeric_source(
             required_detector_subsets=["H1+L1"],
             minimum_per_detector_subset=1,
         )
+
+
+def test_detector_acquisition_plan_excludes_frozen_sources_and_prior_plan(
+    tmp_path: Path,
+) -> None:
+    def pair(index: int) -> dict:
+        gps = 1000 + index * 100
+        return {
+            "pair_id": f"O3-{gps}-L1-V1",
+            "run": "O3",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://gwosc.org/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://gwosc.org/api/{ifo}-{gps}",
+                }
+                for ifo in ("L1", "V1")
+            },
+        }
+
+    inventory = tmp_path / "inventory.json"
+    pairs = [pair(index) for index in range(4)]
+    inventory.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "run": "O3",
+                "detectors": ["L1", "V1"],
+                "sample_rate_khz": 4,
+                "seed": 1,
+                "selected_pairs": 4,
+                "pairs": pairs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    frozen = tmp_path / "frozen.jsonl"
+    frozen.write_text(
+        json.dumps(
+            {
+                "network_strain_sources": {
+                    ifo: {
+                        "gps_start": 1000,
+                        "hdf5_url": pairs[0]["detectors"][ifo]["hdf5_url"],
+                    }
+                    for ifo in ("L1", "V1")
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    excluded = tmp_path / "excluded.json"
+    excluded.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "run": "O3",
+                "pairs": [pairs[1]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = freeze_source_disjoint_detector_acquisition_plan(
+        inventory,
+        [frozen],
+        tmp_path / "selected.json",
+        target_pairs=2,
+        seed=123,
+        exclusion_plan_paths=[excluded],
+    )
+
+    assert result["selected_pairs"] == 2
+    assert {row["gps_start"] for row in result["pairs"]} == {1200, 1300}
+    assert result["candidate_scores_inspected"] is False
+    assert result["test_data_opened"] is False
