@@ -865,6 +865,7 @@ def audit_physical_overlap_expansion_capacity(
     gravityspy_corpus_audit_path: str | Path,
     output_path: str | Path,
     seed: int = 20260728,
+    candidate_injection_audit_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Determine whether an authorized next scale has real independent-source capacity."""
 
@@ -909,6 +910,29 @@ def audit_physical_overlap_expansion_capacity(
         )
     ):
         raise ValueError("Candidate Gravity Spy corpus failed its group-safe audit")
+    injection_audit_path = (
+        None
+        if candidate_injection_audit_path is None
+        else Path(candidate_injection_audit_path).resolve()
+    )
+    if injection_audit_path is not None:
+        injection_audit = json.loads(
+            injection_audit_path.read_text(encoding="utf-8")
+        )
+        if (
+            injection_audit.get("status")
+            != "verified_physical_detector_set_expansion"
+            or injection_audit.get("passed") is not True
+            or injection_audit.get("test_rows_read") != 0
+            or injection_audit.get("test_evaluation") is not None
+            or injection_audit.get("selected_split") != "train"
+            or injection_audit.get("same_distribution_data_scaling_claim_allowed")
+            is not False
+            or injection_audit.get("manifest_sha256") != file_sha256(injection_path)
+        ):
+            raise ValueError(
+                "Candidate detector-expanded injection corpus failed its audit"
+            )
 
     current = _read_jsonl(current_path)
     glitches = _read_jsonl(glitch_path)
@@ -1071,6 +1095,14 @@ def audit_physical_overlap_expansion_capacity(
                 "path": str(injection_path),
                 "sha256": file_sha256(injection_path),
             },
+            "candidate_injection_audit": (
+                None
+                if injection_audit_path is None
+                else {
+                    "path": str(injection_audit_path),
+                    "sha256": file_sha256(injection_audit_path),
+                }
+            ),
             "gravityspy_corpus_audit": {
                 "path": str(audit_path),
                 "sha256": file_sha256(audit_path),

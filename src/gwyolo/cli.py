@@ -1061,6 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     overlap_expansion_capacity.add_argument(
         "--candidate-injection-manifest", required=True
     )
+    overlap_expansion_capacity.add_argument("--candidate-injection-audit")
     overlap_expansion_capacity.add_argument(
         "--gravityspy-corpus-audit", required=True
     )
@@ -3871,6 +3872,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.gravityspy_corpus_audit,
                 args.output,
                 args.seed,
+                args.candidate_injection_audit,
             )
         )
     elif args.command == "physical-overlap-scale-hard-subset-freeze":

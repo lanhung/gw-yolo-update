@@ -70,11 +70,22 @@ done
 
 export PYTHONPATH="$TASK_CODE_DIR/src"
 export GWYOLO_CODE_COMMIT
+candidate_injection_audit_args=()
+if [[ -n "${CANDIDATE_INJECTION_AUDIT:-}" ]]; then
+  if [[ ! -s "$CANDIDATE_INJECTION_AUDIT" ]]; then
+    echo "candidate injection audit is absent" >&2
+    exit 2
+  fi
+  candidate_injection_audit_args+=(
+    --candidate-injection-audit "$CANDIDATE_INJECTION_AUDIT"
+  )
+fi
 "$TASK_PYTHON" -m gwyolo.cli physical-overlap-expansion-capacity \
   --hard-endpoint-report "$HARD_ENDPOINT_REPORT" \
   --current-overlap-manifest "$CURRENT_OVERLAP_MANIFEST" \
   --candidate-glitch-manifest "$CANDIDATE_GLITCH_MANIFEST" \
   --candidate-injection-manifest "$CANDIDATE_INJECTION_MANIFEST" \
+  "${candidate_injection_audit_args[@]}" \
   --gravityspy-corpus-audit "$GRAVITYSPY_CORPUS_AUDIT" \
   --output "$OUTPUT_REPORT" \
   --seed "${OVERLAP_PAIRING_SEED:-20260728}"

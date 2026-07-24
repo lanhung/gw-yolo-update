@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gwyolo.io import file_sha256
 from gwyolo.overlaps import audit_physical_overlap_expansion_capacity
 
@@ -95,6 +97,21 @@ def test_expansion_capacity_separates_new_data_from_detector_set_change(
         ),
         encoding="utf-8",
     )
+    injection_audit = tmp_path / "injection-audit.json"
+    injection_audit.write_text(
+        json.dumps(
+            {
+                "status": "verified_physical_detector_set_expansion",
+                "passed": True,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "selected_split": "train",
+                "same_distribution_data_scaling_claim_allowed": False,
+                "manifest_sha256": file_sha256(injections),
+            }
+        ),
+        encoding="utf-8",
+    )
     report = audit_physical_overlap_expansion_capacity(
         _hard_endpoint(tmp_path / "hard.json", 4),
         current,
@@ -103,6 +120,7 @@ def test_expansion_capacity_separates_new_data_from_detector_set_change(
         audit,
         tmp_path / "capacity.json",
         seed=7,
+        candidate_injection_audit_path=injection_audit,
     )
     assert report["current_physical_groups"] == 2
     assert report["maximum_same_distribution_physical_groups"] == 3
@@ -114,6 +132,29 @@ def test_expansion_capacity_separates_new_data_from_detector_set_change(
         report["expansion_mode"]
         == "detector_set_expansion_requires_separate_ablation"
     )
+    assert report["inputs"]["candidate_injection_audit"]["sha256"] == file_sha256(
+        injection_audit
+    )
+
+    injection_audit.write_text(
+        injection_audit.read_text(encoding="utf-8").replace(
+            file_sha256(injections), "0" * 64
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError, match="detector-expanded injection corpus failed"
+    ):
+        audit_physical_overlap_expansion_capacity(
+            _hard_endpoint(tmp_path / "hard-tamper.json", 4),
+            current,
+            glitches,
+            injections,
+            audit,
+            tmp_path / "capacity-tamper.json",
+            seed=7,
+            candidate_injection_audit_path=injection_audit,
+        )
 
 
 def test_expansion_capacity_reports_hand_calculated_new_source_gap(
@@ -193,3 +234,4 @@ def test_capacity_queue_waits_for_validation_and_never_opens_test_data() -> None
     assert '"test_rows_read": 0' in script
     assert '"test_evaluation": None' in script
     assert "next-scale training remains unauthorized" in script
+    assert "--candidate-injection-audit" in script
