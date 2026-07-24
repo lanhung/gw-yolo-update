@@ -25,7 +25,10 @@ def test_mask_deglitch_validation_binds_independent_six_arm_protocol() -> None:
     assert 'git -C "$TASK_CODE_DIR" rev-parse HEAD' in source
     assert "completed_five_seed_source_safe_overlap_validation" in source
     assert 'selection_commit = str(summary.get("code_commit", ""))' in source
-    assert 'model_report.get("code_commit") != selection_commit' in source
+    assert "MODEL_TRAINING_COMPATIBILITY_REPORT" in source
+    assert "audited_overlap_training_code_compatibility" in source
+    assert "mixed training commits failed compatibility replay" in source
+    assert '"model_training_code_commits"' in source
     assert 'summary.get("code_commit") != commit' not in source
     assert '"model_selection_code_commit"' in source
     assert '"scale_mask_conditioned_morphology_background"' in source

@@ -1114,6 +1114,18 @@ def build_parser() -> argparse.ArgumentParser:
     overlap_adapter_five_seed_gate.add_argument("--five-seed-summary", required=True)
     overlap_adapter_five_seed_gate.add_argument("--output", required=True)
 
+    overlap_training_compatibility = subparsers.add_parser(
+        "physical-overlap-training-code-compatibility"
+    )
+    overlap_training_compatibility.add_argument("--repository", required=True)
+    overlap_training_compatibility.add_argument(
+        "--commit", action="append", required=True
+    )
+    overlap_training_compatibility.add_argument(
+        "--config-relative-path", required=True
+    )
+    overlap_training_compatibility.add_argument("--output", required=True)
+
     overlap_five_seed_replay = subparsers.add_parser(
         "physical-overlap-five-seed-stability-replay"
     )
@@ -3861,6 +3873,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.original_report,
                 args.promotion_report,
                 args.five_seed_summary,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-training-code-compatibility":
+        from .training_compatibility import (
+            audit_overlap_training_code_compatibility,
+        )
+
+        _print(
+            audit_overlap_training_code_compatibility(
+                args.repository,
+                args.commit,
+                args.config_relative_path,
                 args.output,
             )
         )

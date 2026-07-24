@@ -10,7 +10,7 @@ if [[ -z "${TASK_PYTHON:-}" ]]; then
   exit 2
 fi
 
-"$TASK_PYTHON" - "$@" <<'PY'
+"$TASK_PYTHON" - "$@" "${MODEL_TRAINING_COMPATIBILITY_REPORT:--}" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -27,6 +27,7 @@ configs = {
     "family_balanced": pathlib.Path(sys.argv[3]).resolve(),
     "glitch_adapter": pathlib.Path(sys.argv[4]).resolve(),
 }
+compatibility_arg = sys.argv[5]
 if not summary_path.is_file():
     raise SystemExit("five-seed summary is absent")
 summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -52,6 +53,35 @@ if (
     != summary.get("common_artifact_hashes", {}).get("config_file_sha256")
 ):
     raise SystemExit("promoted checkpoint/config failed exact hash replay")
+training_commits = set()
+for identity in summary.get("finetune_reports", []):
+    report_path = pathlib.Path(str(identity.get("path", ""))).resolve()
+    if (
+        not report_path.is_file()
+        or digest(report_path) != identity.get("sha256")
+    ):
+        raise SystemExit("promoted finetune report failed exact hash replay")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    commit = str(report.get("code_commit", ""))
+    if not commit:
+        raise SystemExit("promoted finetune report omits its training commit")
+    training_commits.add(commit)
+if len(training_commits) > 1:
+    compatibility_path = pathlib.Path(compatibility_arg)
+    if not compatibility_path.is_file():
+        raise SystemExit("mixed training commits lack a compatibility audit")
+    compatibility = json.loads(
+        compatibility_path.read_text(encoding="utf-8")
+    )
+    if (
+        compatibility.get("status")
+        != "audited_overlap_training_code_compatibility"
+        or compatibility.get("passed") is not True
+        or compatibility.get("test_data_opened") is not False
+        or set(compatibility.get("audited_commits", [])) != training_commits
+        or not all(compatibility.get("checks", {}).values())
+    ):
+        raise SystemExit("mixed training commits failed compatibility replay")
 print(arm)
 print(checkpoint)
 print(config)
