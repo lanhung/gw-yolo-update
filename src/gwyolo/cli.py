@@ -2233,6 +2233,16 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--limit", type=int)
     materialize.add_argument("--backend-validation-report")
 
+    detector_set_expand = subparsers.add_parser("injection-detector-set-expand")
+    detector_set_expand.add_argument("--manifest", required=True)
+    detector_set_expand.add_argument("--config", required=True)
+    detector_set_expand.add_argument("--backend-validation-report", required=True)
+    detector_set_expand.add_argument("--output-dir", required=True)
+    detector_set_expand.add_argument(
+        "--split", choices=("train", "val"), default="train"
+    )
+    detector_set_expand.add_argument("--limit", type=int)
+
     waveform_validate = subparsers.add_parser("waveform-validate")
     waveform_validate.add_argument("--recipes", required=True)
     waveform_validate.add_argument("--output", required=True)
@@ -5160,6 +5170,21 @@ def main(argv: list[str] | None = None) -> int:
                 backend_validation_report=args.backend_validation_report,
                 context_duration=args.context_duration,
                 storage_mode=args.storage_mode,
+            )
+        )
+    elif args.command == "injection-detector-set-expand":
+        from .detector_expansion import (
+            expand_materialized_injection_detector_set,
+        )
+
+        _print(
+            expand_materialized_injection_detector_set(
+                args.manifest,
+                args.config,
+                args.backend_validation_report,
+                args.output_dir,
+                args.split,
+                args.limit,
             )
         )
     elif args.command == "background-bank-materialize":

@@ -87,6 +87,41 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
     assert score.call_args.kwargs["calibration_scenario_id"] is None
 
 
+def test_detector_set_expansion_cli_routes_frozen_inputs() -> None:
+    target = (
+        "gwyolo.detector_expansion.expand_materialized_injection_detector_set"
+    )
+    with patch(target, return_value={}) as expand:
+        assert (
+            main(
+                [
+                    "injection-detector-set-expand",
+                    "--manifest",
+                    "train.jsonl",
+                    "--config",
+                    "expansion.yaml",
+                    "--backend-validation-report",
+                    "waveform.json",
+                    "--output-dir",
+                    "expanded",
+                    "--split",
+                    "train",
+                    "--limit",
+                    "10",
+                ]
+            )
+            == 0
+        )
+    expand.assert_called_once_with(
+        "train.jsonl",
+        "expansion.yaml",
+        "waveform.json",
+        "expanded",
+        "train",
+        10,
+    )
+
+
 def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
     target = "gwyolo.cli.run_frozen_candidate_search_evaluation"
     with patch(target, return_value={}) as evaluate:
