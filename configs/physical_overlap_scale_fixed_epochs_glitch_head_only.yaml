@@ -1,6 +1,7 @@
 overlap_training:
   seed: 20260728
   training_scope: glitch_head_only
+  checkpoint_selection_metric: validation_loss
   training_control: fixed_epochs
   epochs: 20
   batch_size: 8

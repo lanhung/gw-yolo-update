@@ -77,6 +77,7 @@ def test_glitch_head_scaling_configs_preserve_scope_and_compute_controls() -> No
 
     for settings in (fixed_epochs, fixed_updates):
         assert settings["training_scope"] == "glitch_head_only"
+        assert settings["checkpoint_selection_metric"] == "validation_loss"
         assert settings["learning_rate"] == 1e-4
         assert settings["weight_decay"] == 0.0
         assert settings["clean_chirp_weight"] == 0.25

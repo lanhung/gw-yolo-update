@@ -24,6 +24,8 @@ def test_glitch_head_fallback_requires_teacher_failure_and_is_test_blind() -> No
         "20-epoch clean-retention failure",
         "physical_overlap_finetune_glitch_head_only.yaml",
         "physical_overlap_finetune_family_balanced_glitch_head_only.yaml",
+        "checkpoint_selection_metric",
+        "validation_loss",
         "authorized_validation_only_glitch_head_only_overlap_fallback",
         "backbone_and_chirp_head_bit_exact",
         "physical_overlap_report.json",

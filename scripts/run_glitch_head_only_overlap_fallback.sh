@@ -144,6 +144,7 @@ settings = [
 for value in settings:
     if (
         value.get("training_scope") != "glitch_head_only"
+        or value.get("checkpoint_selection_metric") != "validation_loss"
         or float(value.get("clean_chirp_distillation_weight", -1)) != 0.0
         or float(value.get("clean_chirp_weight", -1)) != 0.25
         or float(value.get("clean_glitch_distillation_weight", -1)) != 0.25
@@ -183,6 +184,7 @@ result = {
     ],
     "frozen_revision": {
         "training_scope": "glitch_head_only",
+        "checkpoint_selection_metric": "validation_loss",
         "learning_rate": 0.0001,
         "weight_decay": 0.0,
         "clean_chirp_weight": 0.25,

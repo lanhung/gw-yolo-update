@@ -1879,6 +1879,24 @@ def resolve_overlap_training_control(
     }
 
 
+def overlap_checkpoint_selection_score(
+    overlap_validation: dict[str, Any], metric: str
+) -> float:
+    """Return a higher-is-better, validation-only checkpoint score."""
+    if metric == "fixed_threshold_mean_iou":
+        score = float(overlap_validation["mean_iou"])
+    elif metric == "validation_loss":
+        score = -float(overlap_validation["loss"])
+    else:
+        raise ValueError(
+            "Overlap checkpoint_selection_metric must be "
+            "fixed_threshold_mean_iou or validation_loss"
+        )
+    if not np.isfinite(score):
+        raise ValueError("Overlap checkpoint selection score must be finite")
+    return score
+
+
 def _calibrate_overlap_thresholds(
     model: Any, loader: Any, device: Any, q_count: int, grid: tuple[float, ...]
 ) -> tuple[tuple[float, float], dict[str, Any]]:
@@ -2075,6 +2093,20 @@ def run_physical_overlap_finetune(
         lr=float(settings["learning_rate"]),
         weight_decay=effective_weight_decay,
     )
+    checkpoint_selection_metric = str(
+        settings.get("checkpoint_selection_metric", "fixed_threshold_mean_iou")
+    )
+    if (
+        checkpoint_selection_metric == "validation_loss"
+        and training_scope["scope"] != "glitch_head_only"
+    ):
+        raise ValueError(
+            "validation_loss checkpoint selection is restricted to glitch_head_only, "
+            "where the frozen chirp contribution is constant"
+        )
+    overlap_checkpoint_selection_score(
+        {"mean_iou": 0.0, "loss": 0.0}, checkpoint_selection_metric
+    )
     q_count = len(q_values)
     frozen_non_glitch_state = None
     if training_scope["scope"] == "glitch_head_only":
@@ -2088,7 +2120,8 @@ def run_physical_overlap_finetune(
     checkpoint_path = output / "best_overlap_finetune.pt"
     resume_path = output / "last_overlap_finetune.pt"
     history = []
-    best_metric = -1.0
+    best_selection_score = -float("inf")
+    best_validation_overlap_mean_iou = None
     best_epoch = None
     start_epoch = 1
     if resume_path.is_file():
@@ -2099,7 +2132,18 @@ def run_physical_overlap_finetune(
         optimizer.load_state_dict(resume["optimizer"])
         generator.set_state(resume["data_generator_state"])
         history = list(resume["history"])
-        best_metric = float(resume["best_validation_overlap_mean_iou"])
+        best_selection_score = float(
+            resume.get(
+                "best_checkpoint_selection_score",
+                resume["best_validation_overlap_mean_iou"],
+            )
+        )
+        resumed_best_mean_iou = resume.get("best_validation_overlap_mean_iou")
+        best_validation_overlap_mean_iou = (
+            None
+            if resumed_best_mean_iou is None
+            else float(resumed_best_mean_iou)
+        )
         best_epoch = resume["best_epoch"]
         start_epoch = int(resume["epoch"]) + 1
     completed_optimizer_updates = sum(
@@ -2143,6 +2187,9 @@ def run_physical_overlap_finetune(
         )
         retention = clean_validation["iou"] / max(float(teacher_clean["iou"]), 1e-12)
         eligible = retention >= retention_fraction
+        selection_score = overlap_checkpoint_selection_score(
+            overlap_validation, checkpoint_selection_metric
+        )
         history.append(
             {
                 "epoch": epoch,
@@ -2152,11 +2199,13 @@ def run_physical_overlap_finetune(
                 "clean_validation": clean_validation,
                 "clean_chirp_iou_retention": retention,
                 "checkpoint_eligible": eligible,
+                "checkpoint_selection_metric": checkpoint_selection_metric,
+                "checkpoint_selection_score": selection_score,
             }
         )
-        metric = float(overlap_validation["mean_iou"])
-        if eligible and metric > best_metric:
-            best_metric = metric
+        if eligible and selection_score > best_selection_score:
+            best_selection_score = selection_score
+            best_validation_overlap_mean_iou = float(overlap_validation["mean_iou"])
             best_epoch = epoch
             _atomic_torch_save(
                 checkpoint_path,
@@ -2168,7 +2217,11 @@ def run_physical_overlap_finetune(
                     "input_channels": len(model_ifos) * len(q_values),
                     "base_channels": int(pretrained["base_channels"]),
                     "epoch": epoch,
-                    "validation_overlap_mean_iou": metric,
+                    "validation_overlap_mean_iou": float(
+                        overlap_validation["mean_iou"]
+                    ),
+                    "checkpoint_selection_metric": checkpoint_selection_metric,
+                    "checkpoint_selection_score": selection_score,
                     "clean_chirp_iou_retention": retention,
                     "training_scope": training_scope,
                     "config_hash": canonical_hash(config),
@@ -2185,7 +2238,11 @@ def run_physical_overlap_finetune(
                 "data_generator_state": generator.get_state(),
                 "epoch": epoch,
                 "history": history,
-                "best_validation_overlap_mean_iou": best_metric,
+                "checkpoint_selection_metric": checkpoint_selection_metric,
+                "best_checkpoint_selection_score": best_selection_score,
+                "best_validation_overlap_mean_iou": (
+                    best_validation_overlap_mean_iou
+                ),
                 "best_epoch": best_epoch,
             },
         )
@@ -2277,8 +2334,10 @@ def run_physical_overlap_finetune(
         "teacher_architecture": teacher_architecture,
         "teacher_clean_validation": teacher_clean,
         "minimum_clean_chirp_iou_retention": retention_fraction,
+        "checkpoint_selection_metric": checkpoint_selection_metric,
+        "best_checkpoint_selection_score": best_selection_score,
         "best_epoch": best_epoch,
-        "best_validation_overlap_mean_iou": best_metric,
+        "best_validation_overlap_mean_iou": best_validation_overlap_mean_iou,
         "validation_selected_thresholds": {"chirp": thresholds[0], "glitch": thresholds[1]},
         "threshold_curves": curves,
         "calibrated_overlap_validation": calibrated_overlap,

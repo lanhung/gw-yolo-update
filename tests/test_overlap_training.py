@@ -14,6 +14,7 @@ from gwyolo.overlap_training import (
     bind_physical_overlap_scaling_hard_endpoints,
     configure_overlap_training_scope,
     glitch_family_sampling_weights,
+    overlap_checkpoint_selection_score,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
     replay_overlap_five_seed_stability,
@@ -98,6 +99,22 @@ def test_overlap_training_controls_separate_epochs_from_optimizer_updates() -> N
                 "max_optimizer_updates": 401,
             },
             13,
+        )
+
+
+def test_overlap_checkpoint_selection_score_supports_threshold_free_loss() -> None:
+    validation = {"mean_iou": 0.25, "loss": 1.75}
+    assert overlap_checkpoint_selection_score(
+        validation, "fixed_threshold_mean_iou"
+    ) == pytest.approx(0.25)
+    assert overlap_checkpoint_selection_score(
+        validation, "validation_loss"
+    ) == pytest.approx(-1.75)
+    with pytest.raises(ValueError, match="checkpoint_selection_metric"):
+        overlap_checkpoint_selection_score(validation, "test_metric")
+    with pytest.raises(ValueError, match="finite"):
+        overlap_checkpoint_selection_score(
+            {"mean_iou": np.nan, "loss": 1.0}, "fixed_threshold_mean_iou"
         )
 
 
