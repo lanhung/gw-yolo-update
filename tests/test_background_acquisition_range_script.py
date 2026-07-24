@@ -18,12 +18,16 @@ def test_background_acquisition_range_is_retryable_and_fail_closed() -> None:
     assert "exhausted retries without a batch report" in source
     assert "--verified-source-inventory" in source
     assert 'TEST_FRACTION=${TEST_FRACTION:-0}' in source
+    assert 'DOWNLOAD_ONLY=${DOWNLOAD_ONLY:-false}' in source
+    assert "verified_score_blind_background_download_range" in source
+    assert "authorized_validation_candidate_continuous_background_plan" in source
+    assert "candidate_scores_inspected" in source
 
 
 def test_background_acquisition_embedded_python_compiles() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     snippets = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
-    assert len(snippets) == 3
+    assert len(snippets) == 5
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:heredoc-{index}", "exec")
 
