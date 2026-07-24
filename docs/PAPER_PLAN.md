@@ -57,6 +57,31 @@ The same waveform prior, detector set, PSD, calibration assumptions and injectio
 Published numbers from different populations are context only, never a head-to-head result. AMPLFI
 and DINGO remain PE systems; no detection-mAP comparison is permitted.
 
+### Distributed paired-PE evidence transport
+
+DINGO and AMPLFI may run on different assigned GPUs or machines, but their outputs may be combined
+only through the content-addressed validation bundle:
+
+```bash
+python -m gwyolo.cli pe-within-backend-bundle-export \
+  --summary /artifacts/backend/within_backend_paired_smoke_summary.json \
+  --output-dir /artifacts/backend-portable-bundle
+
+python -m gwyolo.cli pe-within-backend-bundle-import \
+  --bundle-receipt \
+    /transferred/backend-portable-bundle/within_backend_pe_evidence_bundle.json \
+  --output-dir /artifacts/backend-import
+```
+
+The export contains the original summary, batch report, robustness report and manifest plus every
+unique posterior, analysis input, base manifest, native-conditioning object, contamination
+manifest, mask, mask model and mask policy referenced by the validation rows. Objects are
+deduplicated by SHA-256. Import replays every byte count and hash, then creates an explicit local
+path projection; it never edits the original scientific reports. The projected summary can enter
+`run_paired_pe_portfolio_validation.sh`. That evaluator reopens every posterior and provenance
+file, requires the same injections and input hashes across backends and still forbids absolute
+DINGO-versus-AMPLFI ranking. Test-split rows are rejected by both export and import.
+
 ## 3. Venue-specific framing
 
 ### Physical Review D
