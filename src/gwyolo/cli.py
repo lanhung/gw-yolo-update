@@ -2316,6 +2316,18 @@ def build_parser() -> argparse.ArgumentParser:
     pe_bundle_import.add_argument("--bundle-receipt", required=True)
     pe_bundle_import.add_argument("--output-dir", required=True)
 
+    pe_input_bundle_export = subparsers.add_parser(
+        "pe-input-bundle-export"
+    )
+    pe_input_bundle_export.add_argument("--summary", required=True)
+    pe_input_bundle_export.add_argument("--output-dir", required=True)
+
+    pe_input_bundle_import = subparsers.add_parser(
+        "pe-input-bundle-import"
+    )
+    pe_input_bundle_import.add_argument("--bundle-receipt", required=True)
+    pe_input_bundle_import.add_argument("--output-dir", required=True)
+
     pe_promotion = subparsers.add_parser("pe-robustness-promote")
     pe_promotion.add_argument("--joint-report", required=True)
     pe_promotion.add_argument("--config", required=True)
@@ -5267,6 +5279,24 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             import_within_backend_pe_evidence_bundle(
+                args.bundle_receipt,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-input-bundle-export":
+        from .pe_input_transfer import export_paired_pe_input_bundle
+
+        _print(
+            export_paired_pe_input_bundle(
+                args.summary,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-input-bundle-import":
+        from .pe_input_transfer import import_paired_pe_input_bundle
+
+        _print(
+            import_paired_pe_input_bundle(
                 args.bundle_receipt,
                 args.output_dir,
             )
