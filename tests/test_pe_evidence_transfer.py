@@ -35,6 +35,7 @@ def _source_rows(tmp_path: Path, backend: str) -> list[dict]:
         tmp_path / backend.lower() / "conditioning.yaml",
         "sample_rate: 2048\n",
     )
+    common_prior = _write(common / "prior.yaml", "population: BBH\n")
     contamination = _write(common / "contamination.json", '{"glitch_id":"g-1"}\n')
     mask_artifact = _write(common / "mask.npz", "deterministic-mask")
     mask_model = _write(common / "mask-model.pt", "model")
@@ -92,6 +93,8 @@ def _source_rows(tmp_path: Path, backend: str) -> list[dict]:
             "input_ifos": ["H1", "L1"],
             "base_injection_manifest_path": base_path,
             "base_injection_manifest_sha256": base_sha,
+            "common_prior_path": str(common_prior.resolve()),
+            "common_prior_sha256": file_sha256(common_prior),
             "native_conditioning_path": native_path,
             "native_conditioning_sha256": native_sha,
             "native_conditioning_config_path": config_path,
@@ -165,6 +168,25 @@ def _within_backend_summary(
         minimum_physical_groups=1,
     )
     summary = root / "summary.json"
+    model = _write(root / "model.pt", f"{backend}-validation-model")
+    native_prior = _write(root / "native-prior.yaml", f"backend: {backend}\n")
+    model_metadata = root / "model-metadata.json"
+    model_metadata.write_text(
+        json.dumps(
+            {
+                "backend": backend,
+                "model_path": str(model.resolve()),
+                "model_sha256": file_sha256(model),
+                "artifacts": {
+                    "native_prior": {
+                        "path": str(native_prior.resolve()),
+                        "sha256": file_sha256(native_prior),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     summary.write_text(
         json.dumps(
             {
@@ -185,6 +207,10 @@ def _within_backend_summary(
                         "path": str(robustness.resolve()),
                         "sha256": file_sha256(robustness),
                     },
+                    "model_metadata": {
+                        "path": str(model_metadata.resolve()),
+                        "sha256": file_sha256(model_metadata),
+                    },
                 },
             }
         ),
@@ -203,6 +229,7 @@ def test_portable_pe_evidence_bundle_survives_cross_machine_relocation(
         export_root = tmp_path / "exports" / backend.lower()
         exported = export_within_backend_pe_evidence_bundle(summary, export_root)
         assert exported["backend"] == backend
+        assert exported["bundle_schema_version"] == 2
         assert exported["required_split"] == "val"
         assert exported["test_rows_read"] == 0
         assert exported["total_files"] > 4
@@ -214,6 +241,22 @@ def test_portable_pe_evidence_bundle_survives_cross_machine_relocation(
             tmp_path / "imports" / backend.lower(),
         )
         assert imported["backend"] == backend
+        projected_summary = json.loads(
+            Path(imported["projected_summary_path"]).read_text(encoding="utf-8")
+        )
+        projected_metadata = json.loads(
+            Path(
+                projected_summary["artifacts"]["model_metadata"]["path"]
+            ).read_text(encoding="utf-8")
+        )
+        assert Path(projected_metadata["model_path"]).is_file()
+        assert (
+            file_sha256(projected_metadata["model_path"])
+            == projected_metadata["model_sha256"]
+        )
+        assert Path(
+            projected_metadata["artifacts"]["native_prior"]["path"]
+        ).is_file()
         assert imported["test_rows_read"] == 0
         imports[backend] = imported
 

@@ -32,6 +32,7 @@ _PORTABLE_PATH_HASH_FIELDS = (
     ("posterior_path", "posterior_sha256"),
     ("analysis_input_path", "analysis_input_sha256"),
     ("base_injection_manifest_path", "base_injection_manifest_sha256"),
+    ("common_prior_path", "common_prior_sha256"),
     ("native_conditioning_path", "native_conditioning_sha256"),
     ("native_conditioning_config_path", "native_conditioning_config_sha256"),
     ("contamination_manifest_path", "contamination_manifest_sha256"),
@@ -39,6 +40,57 @@ _PORTABLE_PATH_HASH_FIELDS = (
     ("mask_model_path", "mask_model_sha256"),
     ("mask_policy_path", "mask_policy_sha256"),
 )
+
+
+def _metadata_identity_locations(
+    metadata: dict[str, Any],
+) -> list[dict[str, str]]:
+    result = []
+    for label, path_field, hash_field in (
+        ("model", "model_path", "model_sha256"),
+        (
+            "initialization_model",
+            "initialization_model_path",
+            "initialization_model_sha256",
+        ),
+    ):
+        path_value = metadata.get(path_field)
+        hash_value = metadata.get(hash_field)
+        if path_value in (None, "") and hash_value in (None, ""):
+            continue
+        if path_value in (None, "") or hash_value in (None, ""):
+            raise ValueError(f"PE model metadata has an incomplete {label} identity")
+        result.append(
+            {
+                "location": "top",
+                "label": label,
+                "path_field": path_field,
+                "hash_field": hash_field,
+                "path": str(path_value),
+                "sha256": str(hash_value),
+            }
+        )
+    artifacts = metadata.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        raise ValueError("PE model metadata artifacts are not a mapping")
+    for label, identity in sorted(artifacts.items()):
+        if not isinstance(identity, dict):
+            raise ValueError(f"PE model metadata artifact is not a mapping: {label}")
+        path_value = identity.get("path")
+        hash_value = identity.get("sha256")
+        if path_value in (None, "") or hash_value in (None, ""):
+            raise ValueError(f"PE model metadata artifact is incomplete: {label}")
+        result.append(
+            {
+                "location": "artifact",
+                "label": str(label),
+                "path_field": "path",
+                "hash_field": "sha256",
+                "path": str(path_value),
+                "sha256": str(hash_value),
+            }
+        )
+    return result
 
 
 def _load_json(path: str | Path) -> dict[str, Any]:
@@ -105,7 +157,9 @@ def _validate_source_evidence(
         raise ValueError("Within-backend summary violates the validation-only boundary")
 
     resolved: dict[str, Path] = {}
-    for label in ("posterior_batch", "robustness"):
+    for label, identity in artifacts.items():
+        if not isinstance(identity, dict):
+            raise ValueError(f"Within-backend artifact is not a mapping: {label}")
         identity = artifacts[label]
         path = Path(str(identity.get("path", ""))).resolve()
         if not path.is_file() or file_sha256(path) != identity.get("sha256"):
@@ -163,7 +217,7 @@ def export_within_backend_pe_evidence_bundle(
     source_summary = Path(summary_path).resolve()
     (
         backend,
-        _summary,
+        summary,
         batch_path,
         _batch,
         robustness_path,
@@ -177,6 +231,7 @@ def export_within_backend_pe_evidence_bundle(
         existing = _load_json(receipt_path)
         if (
             existing.get("status") != "portable_within_backend_pe_evidence_bundle"
+            or existing.get("bundle_schema_version") != 2
             or existing.get("source_summary_sha256") != file_sha256(source_summary)
         ):
             raise ValueError("Existing PE evidence bundle has another identity")
@@ -193,6 +248,12 @@ def export_within_backend_pe_evidence_bundle(
         "robustness_report": robustness_path,
         "posterior_manifest": manifest_path,
     }
+    for label, identity in summary["artifacts"].items():
+        if label in {"posterior_batch", "robustness"}:
+            continue
+        payload_sources[f"summary_artifact:{label}"] = Path(
+            str(identity["path"])
+        ).resolve()
     files: list[dict[str, Any]] = []
     for role, source in payload_sources.items():
         relative = Path("reports") / f"{role}{source.suffix}"
@@ -209,6 +270,23 @@ def export_within_backend_pe_evidence_bundle(
 
     objects_by_hash: dict[str, dict[str, Any]] = {}
     row_bindings: list[dict[str, Any]] = []
+
+    def add_object(source: Path, digest: str) -> str:
+        prior = objects_by_hash.get(digest)
+        if prior is not None:
+            return str(prior["relative_path"])
+        suffix = "".join(source.suffixes[-2:]) or ".bin"
+        relative = Path("objects") / digest[:2] / f"{digest}{suffix}"
+        target = root / relative
+        _atomic_copy(source, target)
+        objects_by_hash[digest] = {
+            "role": "content_object",
+            "relative_path": relative.as_posix(),
+            "sha256": digest,
+            "bytes": target.stat().st_size,
+        }
+        return relative.as_posix()
+
     for row_index, row in enumerate(rows):
         for path_field, hash_field in _PORTABLE_PATH_HASH_FIELDS:
             path_value = row.get(path_field)
@@ -224,34 +302,46 @@ def export_within_backend_pe_evidence_bundle(
                 raise ValueError(
                     f"PE row {row_index} portable artifact failed hash replay: {path_field}"
                 )
-            suffix = "".join(source.suffixes[-2:]) or ".bin"
-            relative = Path("objects") / str(hash_value)[:2] / f"{hash_value}{suffix}"
-            target = root / relative
-            if str(hash_value) not in objects_by_hash:
-                _atomic_copy(source, target)
-                objects_by_hash[str(hash_value)] = {
-                    "role": "content_object",
-                    "relative_path": relative.as_posix(),
-                    "sha256": str(hash_value),
-                    "bytes": target.stat().st_size,
-                }
-            elif (
-                objects_by_hash[str(hash_value)]["relative_path"]
-                != relative.as_posix()
-            ):
-                raise AssertionError("Content-addressed PE object path changed")
+            relative = add_object(source, str(hash_value))
             row_bindings.append(
                 {
                     "row_index": row_index,
                     "path_field": path_field,
                     "hash_field": hash_field,
                     "sha256": str(hash_value),
-                    "relative_path": relative.as_posix(),
+                    "relative_path": relative,
+                }
+            )
+    metadata_bindings = []
+    metadata_identity = summary["artifacts"].get("model_metadata")
+    if metadata_identity is not None:
+        metadata_path = Path(str(metadata_identity["path"])).resolve()
+        metadata = _load_json(metadata_path)
+        for identity in _metadata_identity_locations(metadata):
+            source = Path(identity["path"]).resolve()
+            if not source.is_file() or file_sha256(source) != identity["sha256"]:
+                raise ValueError(
+                    f"PE model metadata artifact failed hash replay: {identity['label']}"
+                )
+            metadata_bindings.append(
+                {
+                    key: identity[key]
+                    for key in (
+                        "location",
+                        "label",
+                        "path_field",
+                        "hash_field",
+                        "sha256",
+                    )
+                }
+                | {
+                    "relative_path": add_object(source, identity["sha256"]),
                 }
             )
     files.extend(sorted(objects_by_hash.values(), key=lambda row: row["relative_path"]))
     result = {
         "status": "portable_within_backend_pe_evidence_bundle",
+        "bundle_schema_version": 2,
         "passed": True,
         "scientific_claim_allowed": False,
         "scientific_blocker": (
@@ -265,6 +355,7 @@ def export_within_backend_pe_evidence_bundle(
         "source_summary_sha256": file_sha256(source_summary),
         "rows": len(rows),
         "row_bindings": row_bindings,
+        "model_metadata_bindings": metadata_bindings,
         "files": files,
         "total_files": len(files),
         "total_bytes": sum(int(identity["bytes"]) for identity in files),
@@ -287,6 +378,7 @@ def import_within_backend_pe_evidence_bundle(
     if (
         source_receipt.get("status")
         != "portable_within_backend_pe_evidence_bundle"
+        or source_receipt.get("bundle_schema_version") != 2
         or source_receipt.get("passed") is not True
         or source_receipt.get("scientific_claim_allowed") is not False
         or source_receipt.get("required_split") != "val"
@@ -311,16 +403,25 @@ def import_within_backend_pe_evidence_bundle(
             if role in by_role:
                 raise ValueError(f"PE evidence bundle repeats report role: {role}")
             by_role[role] = path
-    expected_roles = {
+    fixed_roles = {
         "summary",
         "batch_report",
         "robustness_report",
         "posterior_manifest",
     }
-    if set(by_role) != expected_roles:
+    if not fixed_roles.issubset(by_role):
         raise ValueError("PE evidence bundle report inventory is incomplete")
 
     summary = _load_json(by_role["summary"])
+    extra_labels = set(summary.get("artifacts", {})) - {
+        "posterior_batch",
+        "robustness",
+    }
+    expected_roles = fixed_roles | {
+        f"summary_artifact:{label}" for label in extra_labels
+    }
+    if set(by_role) != expected_roles:
+        raise ValueError("PE evidence bundle summary-artifact inventory changed")
     batch = _load_json(by_role["batch_report"])
     robustness = _load_json(by_role["robustness_report"])
     with by_role["posterior_manifest"].open("r", encoding="utf-8") as handle:
@@ -398,6 +499,70 @@ def import_within_backend_pe_evidence_bundle(
         "path": str(projected_robustness),
         "sha256": file_sha256(projected_robustness),
     }
+    for label in extra_labels - {"model_metadata"}:
+        path = by_role[f"summary_artifact:{label}"]
+        projected_summary["artifacts"][label] = {
+            "path": str(path.resolve()),
+            "sha256": file_sha256(path),
+        }
+    if "model_metadata" in extra_labels:
+        source_metadata_path = by_role["summary_artifact:model_metadata"]
+        metadata = _load_json(source_metadata_path)
+        projected_metadata = dict(metadata)
+        projected_metadata["artifacts"] = {
+            label: dict(identity)
+            for label, identity in metadata.get("artifacts", {}).items()
+        }
+        seen_metadata_bindings = set()
+        for binding in source_receipt.get("model_metadata_bindings", []):
+            location = str(binding.get("location", ""))
+            label = str(binding.get("label", ""))
+            path_field = str(binding.get("path_field", ""))
+            hash_field = str(binding.get("hash_field", ""))
+            key = (location, label, path_field)
+            if key in seen_metadata_bindings:
+                raise ValueError("Transferred PE model metadata repeats a binding")
+            relative = Path(str(binding.get("relative_path", "")))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("Transferred PE model metadata has an unsafe path")
+            object_path = bundle_root / relative
+            if (
+                not object_path.is_file()
+                or file_sha256(object_path) != binding.get("sha256")
+            ):
+                raise ValueError("Transferred PE model artifact failed hash replay")
+            if location == "top":
+                if (
+                    metadata.get(hash_field) != binding.get("sha256")
+                    or metadata.get(path_field) in (None, "")
+                ):
+                    raise ValueError("Transferred PE top-level model identity changed")
+                projected_metadata[path_field] = str(object_path.resolve())
+            elif location == "artifact":
+                identity = projected_metadata["artifacts"].get(label)
+                if (
+                    not isinstance(identity, dict)
+                    or identity.get(hash_field) != binding.get("sha256")
+                    or identity.get(path_field) in (None, "")
+                ):
+                    raise ValueError("Transferred PE model artifact identity changed")
+                identity[path_field] = str(object_path.resolve())
+            else:
+                raise ValueError("Transferred PE model metadata location is invalid")
+            seen_metadata_bindings.add(key)
+        expected_metadata_bindings = {
+            (identity["location"], identity["label"], identity["path_field"])
+            for identity in _metadata_identity_locations(metadata)
+        }
+        if seen_metadata_bindings != expected_metadata_bindings:
+            raise ValueError("Transferred PE model metadata bindings are incomplete")
+        projected_metadata["transport_projection"] = transport_identity
+        projected_metadata_path = root / "model_metadata.projected.json"
+        atomic_write_json(projected_metadata_path, projected_metadata)
+        projected_summary["artifacts"]["model_metadata"] = {
+            "path": str(projected_metadata_path),
+            "sha256": file_sha256(projected_metadata_path),
+        }
     projected_summary["transport_projection"] = transport_identity
     projected_summary_path = root / "within_backend_summary.projected.json"
     atomic_write_json(projected_summary_path, projected_summary)
