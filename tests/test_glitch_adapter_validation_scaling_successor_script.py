@@ -34,6 +34,7 @@ def test_glitch_adapter_successor_orders_all_validation_gates() -> None:
     for token in (
         "completed_glitch_adapter_negative_one_seed",
         "completed_glitch_adapter_negative_five_seed",
+        "completed_glitch_adapter_five_seed_gate",
         "not_authorized_by_one_seed_gate",
         "not_authorized_by_five_seed_gate",
         "scale_promotion_authorized",
@@ -51,6 +52,6 @@ def test_glitch_adapter_successor_orders_all_validation_gates() -> None:
 def test_glitch_adapter_successor_embedded_python_compiles() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     snippets = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
-    assert len(snippets) == 5
+    assert len(snippets) == 6
     for index, snippet in enumerate(snippets):
         compile(snippet, f"{SCRIPT.name}:{index}", "exec")

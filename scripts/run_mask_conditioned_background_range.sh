@@ -66,40 +66,18 @@ if [[ -z "$CHECKPOINT" || -z "$CONFIG" ]]; then
       exit 2
     fi
   done
-  selection=$(
-    "$TASK_PYTHON" - "$FIVE_SEED_SUMMARY" <<'PY'
-import json
-import pathlib
-import sys
-
-report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if (
-    report.get("status") != "completed_five_seed_source_safe_overlap_validation"
-    or report.get("passed") is not True
-    or report.get("five_seed_stability", {}).get("status")
-    != "five_seed_reproducibility_gate_v1"
-    or report.get("five_seed_stability", {}).get("passed") is not True
-    or report.get("test_data_opened") is not False
-):
-    raise SystemExit("five-seed summary is not a promoted validation model")
-print(report["promoted_arm"])
-print(report["selected_checkpoint_path"])
-PY
-  )
+  adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
+  selection=$(TASK_PYTHON="$TASK_PYTHON" bash \
+    "$TASK_CODE_DIR/scripts/resolve_promoted_overlap_model.sh" \
+    "$FIVE_SEED_SUMMARY" "$UNIFORM_CONFIG" "$FAMILY_BALANCED_CONFIG" \
+    "$adapter_config")
   readarray -t selected <<<"$selection"
-  if (( ${#selected[@]} != 2 )); then
-    echo "five-seed selector did not return one arm and checkpoint" >&2
+  if (( ${#selected[@]} != 3 )); then
+    echo "five-seed selector did not return one arm, checkpoint and config" >&2
     exit 2
   fi
   CHECKPOINT=${selected[1]}
-  if [[ "${selected[0]}" == uniform ]]; then
-    CONFIG=$UNIFORM_CONFIG
-  elif [[ "${selected[0]}" == family_balanced ]]; then
-    CONFIG=$FAMILY_BALANCED_CONFIG
-  else
-    echo "five-seed selector returned an unknown arm" >&2
-    exit 2
-  fi
+  CONFIG=${selected[2]}
 fi
 
 for path in \

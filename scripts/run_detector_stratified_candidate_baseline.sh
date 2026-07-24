@@ -26,6 +26,7 @@ for variable in "${required[@]}"; do
     exit 2
   fi
 done
+adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
 for path in \
   "$TASK_PYTHON" \
   "$FIVE_SEED_SUMMARY" \
@@ -64,6 +65,7 @@ mapfile -t settings < <(
     "$INJECTION_MANIFEST" \
     "$UNIFORM_CONFIG" \
     "$FAMILY_BALANCED_CONFIG" \
+    "$adapter_config" \
     "$policy" <<'PY'
 import hashlib
 import json
@@ -85,6 +87,7 @@ def digest(path):
     injection_path,
     uniform_path,
     family_path,
+    adapter_path,
     policy_path,
 ) = sys.argv[1:]
 summary = json.loads(pathlib.Path(summary_path).read_text(encoding="utf-8"))
@@ -171,6 +174,8 @@ if arm == "uniform":
     config = pathlib.Path(uniform_path)
 elif arm == "family_balanced":
     config = pathlib.Path(family_path)
+elif arm == "glitch_adapter":
+    config = pathlib.Path(adapter_path)
 else:
     raise SystemExit("five-seed summary selected an unknown arm")
 if (
@@ -402,4 +407,3 @@ part.write_text(
 os.replace(part, target)
 print(json.dumps(result, indent=2, sort_keys=True))
 PY
-

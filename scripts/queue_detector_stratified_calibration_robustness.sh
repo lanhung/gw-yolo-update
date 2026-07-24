@@ -31,6 +31,7 @@ for variable in "${required[@]}"; do
     exit 2
   fi
 done
+adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
 for path in \
   "$TASK_PYTHON" \
   "$BACKGROUND_MANIFEST" \
@@ -125,6 +126,7 @@ env \
   INJECTION_MANIFEST="$INJECTION_MANIFEST" \
   UNIFORM_CONFIG="$UNIFORM_CONFIG" \
   FAMILY_BALANCED_CONFIG="$FAMILY_BALANCED_CONFIG" \
+  ADAPTER_CONFIG="$adapter_config" \
   COHERENCE_CONFIG="$COHERENCE_CONFIG" \
   NETWORK_CONFIG="$NETWORK_CONFIG" \
   TIMING_CALIBRATION_REPORT="$TIMING_CALIBRATION_REPORT" \

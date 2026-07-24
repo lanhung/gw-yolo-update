@@ -32,6 +32,7 @@ for variable in "${required_variables[@]}"; do
     exit 2
   fi
 done
+adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
 
 if [[ "$(git -C "$TASK_CODE_DIR" rev-parse HEAD 2>/dev/null || true)" \
   != "$GWYOLO_CODE_COMMIT" ]]; then
@@ -45,6 +46,7 @@ for input in \
   "$BASELINE_CONFIG" \
   "$UNIFORM_CONFIG" \
   "$FAMILY_BALANCED_CONFIG" \
+  "$adapter_config" \
   "$COHERENCE_CONFIG" \
   "$PROMOTION_CONFIG" \
   "$PARENT_PLAN" \
@@ -111,14 +113,26 @@ if receipt.get("five_seed_promoted") is not True:
     if receipt.get("status") not in {
         "completed_source_safe_overlap_negative_five_seed",
         "completed_source_safe_overlap_negative_promotion",
+        "completed_glitch_adapter_negative_one_seed",
+        "completed_glitch_adapter_negative_five_seed",
     }:
         raise SystemExit("negative source-safe outcome has the wrong status")
     print("SKIP")
     raise SystemExit(0)
-entry = receipt.get("five_seed_summary")
+if receipt.get("status") == "completed_source_safe_overlap_five_seed_chain":
+    entry = receipt.get("five_seed_summary")
+elif (
+    receipt.get("status")
+    in {
+        "completed_glitch_adapter_five_seed_gate",
+        "completed_glitch_adapter_validation_scaling_successor",
+    }
+):
+    entry = receipt.get("artifacts", {}).get("five_seed_summary")
+else:
+    raise SystemExit("positive overlap outcome has the wrong status")
 if (
-    receipt.get("status") != "completed_source_safe_overlap_five_seed_chain"
-    or not isinstance(entry, dict)
+    not isinstance(entry, dict)
     or pathlib.Path(str(entry.get("path", ""))).resolve()
     != summary_path.resolve()
     or not summary_path.is_file()
@@ -246,6 +260,7 @@ promoted_pipeline="$promoted_root/pipeline/candidate_validation_pipeline_report.
     INJECTION_MANIFEST="$validation_injections" \
     UNIFORM_CONFIG="$UNIFORM_CONFIG" \
     FAMILY_BALANCED_CONFIG="$FAMILY_BALANCED_CONFIG" \
+    ADAPTER_CONFIG="$adapter_config" \
     COHERENCE_CONFIG="$COHERENCE_CONFIG" \
     OUTPUT_ROOT="$promoted_root" \
     GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
@@ -331,6 +346,7 @@ injection_ranking="$promoted_root/pipeline/injection_rankings/val_injection_cand
     FIVE_SEED_SUMMARY="$FIVE_SEED_SUMMARY" \
     UNIFORM_CONFIG="$UNIFORM_CONFIG" \
     FAMILY_BALANCED_CONFIG="$FAMILY_BALANCED_CONFIG" \
+    ADAPTER_CONFIG="$adapter_config" \
     bash scripts/run_candidate_background_range.sh
 )
 

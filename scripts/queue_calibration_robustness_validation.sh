@@ -27,6 +27,9 @@ for variable in "${required_variables[@]}"; do
     exit 2
   fi
 done
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+adapter_config=${ADAPTER_CONFIG:-$script_dir/../configs/physical_overlap_finetune_glitch_adapter.yaml}
+# The shared resolver enforces test_data_opened=false and exact config hashes.
 
 upstream_pid=${UPSTREAM_PID:-}
 while [[ ! -s "$FIVE_SEED_SUMMARY" || ! -s "$PROMOTED_BLOCK_PIPELINE_REPORT" \
@@ -38,41 +41,18 @@ while [[ ! -s "$FIVE_SEED_SUMMARY" || ! -s "$PROMOTED_BLOCK_PIPELINE_REPORT" \
   sleep 30
 done
 
-selection_output=$("$TASK_PYTHON" - "$FIVE_SEED_SUMMARY" <<'PY'
-import json
-import pathlib
-import sys
-
-report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if (
-    report.get("status") != "completed_five_seed_source_safe_overlap_validation"
-    or report.get("passed") is not True
-    or report.get("five_seed_stability", {}).get("status")
-    != "five_seed_reproducibility_gate_v1"
-    or report.get("five_seed_stability", {}).get("passed") is not True
-    or len(report.get("seeds", [])) < 5
-    or report.get("test_data_opened") is not False
-):
-    raise SystemExit("five-seed calibration prerequisite did not pass")
-print(report["promoted_arm"])
-print(report["selected_checkpoint_path"])
-PY
-)
+selection_output=$(TASK_PYTHON="$TASK_PYTHON" bash \
+  "$script_dir/resolve_promoted_overlap_model.sh" \
+  "$FIVE_SEED_SUMMARY" "$UNIFORM_CONFIG" "$FAMILY_BALANCED_CONFIG" \
+  "$adapter_config")
 readarray -t selection <<< "$selection_output"
-if (( ${#selection[@]} != 2 )); then
-  echo "five-seed summary did not resolve one arm and checkpoint" >&2
+if (( ${#selection[@]} != 3 )); then
+  echo "five-seed summary did not resolve one arm, checkpoint and config" >&2
   exit 2
 fi
 arm=${selection[0]}
 checkpoint=${selection[1]}
-if [[ "$arm" == uniform ]]; then
-  model_config=$UNIFORM_CONFIG
-elif [[ "$arm" == family_balanced ]]; then
-  model_config=$FAMILY_BALANCED_CONFIG
-else
-  echo "five-seed summary selected an unknown arm: $arm" >&2
-  exit 2
-fi
+model_config=${selection[2]}
 
 physics_output=$("$TASK_PYTHON" - "$PROMOTED_BLOCK_PIPELINE_REPORT" <<'PY'
 import json

@@ -24,6 +24,7 @@ for variable in "${required[@]}"; do
     exit 2
   fi
 done
+adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
 for path in \
   "$TASK_PYTHON" \
   "$FIVE_SEED_SUMMARY" \
@@ -52,6 +53,7 @@ if ! selection_output=$(
     "$FIVE_SEED_SUMMARY" \
     "$UNIFORM_CONFIG" \
     "$FAMILY_BALANCED_CONFIG" \
+    "$adapter_config" \
     "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
     "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
     "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" <<'PY'
@@ -73,6 +75,7 @@ def digest(path):
     summary_path,
     uniform,
     balanced,
+    adapter,
     selection_train_overlap,
     selection_validation_overlap,
     selection_clean_validation,
@@ -92,6 +95,8 @@ if arm == "uniform":
     config = uniform
 elif arm == "family_balanced":
     config = balanced
+elif arm == "glitch_adapter":
+    config = adapter
 else:
     raise SystemExit("five-seed summary selected an unknown arm")
 selected_checkpoint = str(summary["selected_checkpoint_path"])
