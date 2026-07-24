@@ -287,56 +287,11 @@ if [[ "$five_seed_passed" != true ]]; then
   exit 0
 fi
 if [[ ! -s "$five_seed_gate_receipt" ]]; then
-  "$TASK_PYTHON" - \
-    "$five_seed_gate_receipt" "$ORIGINAL_ADAPTER_REPORT" "$promotion" \
-    "$summary" "$GWYOLO_CODE_COMMIT" <<'PY'
-import hashlib
-import json
-import os
-import pathlib
-import sys
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-output_arg, original_arg, promotion_arg, summary_arg, commit = sys.argv[1:]
-artifacts = {}
-for label, raw_path in (
-    ("original_adapter_report", original_arg),
-    ("one_seed_promotion", promotion_arg),
-    ("five_seed_summary", summary_arg),
-):
-    path = pathlib.Path(raw_path).resolve()
-    if not path.is_file():
-        raise SystemExit(f"adapter five-seed gate artifact is absent: {label}")
-    artifacts[label] = {"path": str(path), "sha256": digest(path)}
-summary = json.loads(pathlib.Path(summary_arg).read_text(encoding="utf-8"))
-if (
-    summary.get("status")
-    != "completed_five_seed_source_safe_overlap_validation"
-    or summary.get("passed") is not True
-    or summary.get("promoted_arm") != "glitch_adapter"
-    or summary.get("test_data_opened") is not False
-):
-    raise SystemExit("adapter five-seed gate did not pass")
-result = {
-    "status": "completed_glitch_adapter_five_seed_gate",
-    "execution_passed": True,
-    "five_seed_promoted": True,
-    "scientific_claim_allowed": False,
-    "search_claim_allowed": False,
-    "test_rows_read": 0,
-    "test_evaluation": None,
-    "code_commit": commit,
-    "artifacts": artifacts,
-}
-output = pathlib.Path(output_arg)
-part = output.with_suffix(output.suffix + ".part")
-part.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-os.replace(part, output)
-PY
+  "$TASK_PYTHON" -m gwyolo.cli physical-overlap-adapter-five-seed-gate \
+    --original-report "$ORIGINAL_ADAPTER_REPORT" \
+    --promotion-report "$promotion" \
+    --five-seed-summary "$summary" \
+    --output "$five_seed_gate_receipt"
 fi
 
 if [[ ! -s "$scaling_summary" ]]; then

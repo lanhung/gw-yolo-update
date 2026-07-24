@@ -874,6 +874,88 @@ def summarize_overlap_five_seed_promotion(
     return result
 
 
+def bind_glitch_adapter_five_seed_gate(
+    original_report_path: str | Path,
+    promotion_report_path: str | Path,
+    five_seed_summary_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind a positive adapter five-seed result for downstream consumers."""
+
+    paths = {
+        "original_adapter_report": Path(original_report_path).resolve(),
+        "one_seed_promotion": Path(promotion_report_path).resolve(),
+        "five_seed_summary": Path(five_seed_summary_path).resolve(),
+    }
+    if any(not path.is_file() for path in paths.values()):
+        raise ValueError("Adapter five-seed gate input is absent")
+    original = json.loads(
+        paths["original_adapter_report"].read_text(encoding="utf-8")
+    )
+    promotion = json.loads(paths["one_seed_promotion"].read_text(encoding="utf-8"))
+    summary = json.loads(paths["five_seed_summary"].read_text(encoding="utf-8"))
+    original_hash = file_sha256(paths["original_adapter_report"])
+    promotion_hash = file_sha256(paths["one_seed_promotion"])
+    finetune_hashes = {
+        str(identity.get("sha256"))
+        for identity in summary.get("finetune_reports", [])
+    }
+    if (
+        original.get("status")
+        != "validation_selected_real_glitch_overlap_finetune"
+        or original.get("scientific_claim_allowed") is not False
+        or original.get("search_claim_allowed") is not False
+        or original.get("checkpoint_selection_metric") != "validation_loss"
+        or original.get("training_scope", {}).get("scope")
+        != "glitch_adapter_only"
+        or original.get("training_scope", {}).get(
+            "non_glitch_state_preserved_bit_exact"
+        )
+        is not True
+        or promotion.get("status")
+        != "validation_only_overlap_single_arm_promotion"
+        or promotion.get("passed") is not True
+        or promotion.get("promoted_arm") != "glitch_adapter"
+        or promotion.get("test_data_opened") is not False
+        or promotion.get("input_report_hashes", {}).get("glitch_adapter")
+        != original_hash
+        or summary.get("status")
+        != "completed_five_seed_source_safe_overlap_validation"
+        or summary.get("passed") is not True
+        or summary.get("promoted_arm") != "glitch_adapter"
+        or summary.get("test_data_opened") is not False
+        or summary.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or summary.get("five_seed_stability", {}).get("passed") is not True
+        or len(summary.get("seeds", [])) != 5
+        or original_hash not in finetune_hashes
+        or summary.get("promotion_report_sha256") != promotion_hash
+    ):
+        raise ValueError("Adapter five-seed gate failed provenance replay")
+    checkpoint = Path(str(summary.get("selected_checkpoint_path", ""))).resolve()
+    if (
+        not checkpoint.is_file()
+        or file_sha256(checkpoint) != summary.get("selected_checkpoint_sha256")
+    ):
+        raise ValueError("Adapter five-seed selected checkpoint failed hash replay")
+    result = {
+        "status": "completed_glitch_adapter_five_seed_gate",
+        "execution_passed": True,
+        "five_seed_promoted": True,
+        "scientific_claim_allowed": False,
+        "search_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "artifacts": {
+            label: {"path": str(path), "sha256": file_sha256(path)}
+            for label, path in paths.items()
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def replay_overlap_five_seed_stability(
     source_summary_path: str | Path,
     stability_config_path: str | Path,

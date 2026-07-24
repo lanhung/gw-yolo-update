@@ -11,6 +11,7 @@ from gwyolo.numeric import DetectorSetQNet
 from gwyolo.overlap_training import (
     PhysicalOverlapDataset,
     _train_epoch,
+    bind_glitch_adapter_five_seed_gate,
     bind_physical_overlap_scaling_hard_endpoints,
     configure_overlap_training_scope,
     glitch_family_sampling_weights,
@@ -1048,6 +1049,18 @@ def test_glitch_adapter_single_arm_gate_controls_five_seed_expansion(
     assert summary["selected_seed"] == 7
     assert summary["five_seed_stability"]["passing_seed_fraction"] == 1.0
     assert "human_weak_mask_audit" not in summary["required_next_gates"]
+    gate = bind_glitch_adapter_five_seed_gate(
+        reports[0],
+        tmp_path / "adapter-promotion.json",
+        tmp_path / "adapter-five-seed.json",
+        tmp_path / "adapter-five-seed-gate.json",
+    )
+    assert gate["status"] == "completed_glitch_adapter_five_seed_gate"
+    assert gate["five_seed_promoted"] is True
+    assert gate["test_rows_read"] == 0
+    assert gate["artifacts"]["five_seed_summary"]["sha256"] == file_sha256(
+        tmp_path / "adapter-five-seed.json"
+    )
 
     failed_payload = json.loads(reports[0].read_text())
     failed_payload["calibrated_overlap_validation"]["glitch"]["iou"] = 0.0

@@ -1106,6 +1106,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overlap_single_arm_promotion.add_argument("--output", required=True)
 
+    overlap_adapter_five_seed_gate = subparsers.add_parser(
+        "physical-overlap-adapter-five-seed-gate"
+    )
+    overlap_adapter_five_seed_gate.add_argument("--original-report", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--promotion-report", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--five-seed-summary", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--output", required=True)
+
     overlap_five_seed_replay = subparsers.add_parser(
         "physical-overlap-five-seed-stability-replay"
     )
@@ -3843,6 +3851,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.output,
                 args.arm,
+            )
+        )
+    elif args.command == "physical-overlap-adapter-five-seed-gate":
+        from .overlap_training import bind_glitch_adapter_five_seed_gate
+
+        _print(
+            bind_glitch_adapter_five_seed_gate(
+                args.original_report,
+                args.promotion_report,
+                args.five_seed_summary,
+                args.output,
             )
         )
     elif args.command == "physical-overlap-five-seed-stability-replay":
