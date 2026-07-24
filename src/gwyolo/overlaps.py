@@ -1030,20 +1030,24 @@ def audit_physical_overlap_expansion_capacity(
             "candidate_injections": subset_counts(injections, False),
         },
         "required_followup": (
-            [
-                "acquire new unique glitch IDs and GPS blocks compatible with the "
-                "current detector-set distribution",
-                "pair with disjoint unique waveform/injection IDs",
-                "rerun the joint train/validation leakage audit before training",
-            ]
-            if mode == "new_physical_sources_required"
+            ["wait for the frozen validation hard-endpoint decision; do not train"]
+            if mode == "not_authorized_by_hard_endpoint"
             else (
                 [
-                    "treat detector-set expansion as a separate predeclared robustness "
-                    "ablation, not same-distribution data scaling"
+                    "acquire new unique glitch IDs and GPS blocks compatible with the "
+                    "current detector-set distribution",
+                    "pair with disjoint unique waveform/injection IDs",
+                    "rerun the joint train/validation leakage audit before training",
                 ]
-                if mode == "detector_set_expansion_requires_separate_ablation"
-                else []
+                if mode == "new_physical_sources_required"
+                else (
+                    [
+                        "treat detector-set expansion as a separate predeclared robustness "
+                        "ablation, not same-distribution data scaling"
+                    ]
+                    if mode == "detector_set_expansion_requires_separate_ablation"
+                    else []
+                )
             )
         ),
         "inputs": {

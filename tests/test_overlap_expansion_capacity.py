@@ -6,6 +6,8 @@ from pathlib import Path
 from gwyolo.io import file_sha256
 from gwyolo.overlaps import audit_physical_overlap_expansion_capacity
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _jsonl(path: Path, rows: list[dict]) -> Path:
     path.write_text(
@@ -179,3 +181,15 @@ def test_expansion_capacity_reports_hand_calculated_new_source_gap(
     assert report["minimum_new_detector_compatible_physical_groups"] == 2
     assert report["expansion_mode"] == "new_physical_sources_required"
     assert report["next_scale_training_authorized"] is False
+
+
+def test_capacity_queue_waits_for_validation_and_never_opens_test_data() -> None:
+    script = (
+        ROOT / "scripts/queue_physical_overlap_expansion_capacity.sh"
+    ).read_text(encoding="utf-8")
+    assert 'while [[ ! -s "$HARD_ENDPOINT_REPORT" ]]' in script
+    assert "physical-overlap-expansion-capacity" in script
+    assert "physical_overlap_expansion_capacity_queue_upstream_incomplete" in script
+    assert '"test_rows_read": 0' in script
+    assert '"test_evaluation": None' in script
+    assert "next-scale training remains unauthorized" in script
