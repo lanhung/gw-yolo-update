@@ -25,6 +25,11 @@ for variable in "${required[@]}"; do
   fi
 done
 adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
+training_compatibility=${MODEL_TRAINING_COMPATIBILITY_REPORT:--}
+if [[ "$training_compatibility" != - && ! -s "$training_compatibility" ]]; then
+  echo "model-training compatibility report is absent" >&2
+  exit 2
+fi
 for path in \
   "$TASK_PYTHON" \
   "$FIVE_SEED_SUMMARY" \
@@ -56,7 +61,8 @@ if ! selection_output=$(
     "$adapter_config" \
     "$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST" \
     "$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST" \
-    "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" <<'PY'
+    "$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST" \
+    "$training_compatibility" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -79,6 +85,7 @@ def digest(path):
     selection_train_overlap,
     selection_validation_overlap,
     selection_clean_validation,
+    compatibility_path,
 ) = sys.argv[1:]
 summary = json.loads(pathlib.Path(summary_path).read_text(encoding="utf-8"))
 if (
@@ -103,15 +110,36 @@ selected_checkpoint = str(summary["selected_checkpoint_path"])
 if digest(selected_checkpoint) != str(summary["selected_checkpoint_sha256"]):
     raise SystemExit("selected checkpoint differs from five-seed summary")
 matches = []
+training_commits = set()
 for identity in summary.get("finetune_reports", []):
     path = str(identity["path"])
     if digest(path) != str(identity["sha256"]):
         raise SystemExit("a five-seed finetune report hash changed")
     report = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    training_commit = str(report.get("code_commit", ""))
+    if not training_commit:
+        raise SystemExit("a five-seed report omits its training code commit")
+    training_commits.add(training_commit)
     if str(report.get("checkpoint_path")) == selected_checkpoint:
         matches.append((path, report))
 if len(matches) != 1:
     raise SystemExit("selected checkpoint does not resolve to exactly one finetune report")
+if len(training_commits) > 1:
+    compatibility_file = pathlib.Path(compatibility_path)
+    if not compatibility_file.is_file():
+        raise SystemExit("mixed training commits lack a compatibility audit")
+    compatibility = json.loads(
+        compatibility_file.read_text(encoding="utf-8")
+    )
+    if (
+        compatibility.get("status")
+        != "audited_overlap_training_code_compatibility"
+        or compatibility.get("passed") is not True
+        or compatibility.get("test_data_opened") is not False
+        or set(compatibility.get("audited_commits", [])) != training_commits
+        or not all(compatibility.get("checks", {}).values())
+    ):
+        raise SystemExit("mixed training commits failed compatibility replay")
 report_path, report = matches[0]
 expected = {
     "checkpoint_sha256": digest(selected_checkpoint),
@@ -245,6 +273,7 @@ export GWYOLO_MODEL_CONFIG="${selection[1]}"
 export GWYOLO_MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST="$MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST"
 export GWYOLO_MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST="$MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST"
 export GWYOLO_MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST="$MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST"
+export GWYOLO_MODEL_TRAINING_COMPATIBILITY_REPORT="$training_compatibility"
 export GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT="$INDEPENDENT_VALIDATION_ENDPOINT_REPORT"
 export GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT="$INDEPENDENT_PE_OVERLAP_REPORT"
 export GWYOLO_INDEPENDENT_OVERLAP_AUDIT="$INDEPENDENT_OVERLAP_AUDIT"

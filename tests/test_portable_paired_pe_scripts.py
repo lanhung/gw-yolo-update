@@ -8,10 +8,20 @@ def test_adapter_paired_pe_queue_is_validation_gated_and_publication_sized() -> 
     script = (ROOT / "scripts/queue_adapter_paired_pe_input_bundle.sh").read_text()
     assert 'value.get("test_data_opened") is False' in script
     assert 'value.get("promoted_arm") == "glitch_adapter"' in script
+    assert "MODEL_TRAINING_COMPATIBILITY_REPORT" in script
     assert 'PE_VALIDATION_LIMIT:-100' in script
     assert 'PE_MINIMUM_GPS_BLOCKS:-25' in script
     assert "pe-input-bundle-export" in script
     assert "adapter_paired_pe_input_queue_negative_validation" in script
+
+
+def test_promoted_paired_pe_inputs_bind_mixed_training_commit_audit() -> None:
+    promoted = (ROOT / "scripts/run_promoted_paired_pe_smoke.sh").read_text()
+    materialization = (ROOT / "scripts/run_paired_pe_smoke.sh").read_text()
+    assert "mixed training commits lack a compatibility audit" in promoted
+    assert "audited_overlap_training_code_compatibility" in promoted
+    assert "GWYOLO_MODEL_TRAINING_COMPATIBILITY_REPORT" in promoted
+    assert "model_training_compatibility" in materialization
 
 
 def test_portable_backend_wrappers_import_shared_inputs_and_export_evidence() -> None:

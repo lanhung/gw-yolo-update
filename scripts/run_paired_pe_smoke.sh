@@ -201,6 +201,19 @@ for label, value in receipt_paths.items():
         "path": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
+training_compatibility = os.environ.get(
+    "GWYOLO_MODEL_TRAINING_COMPATIBILITY_REPORT", "-"
+)
+if training_compatibility != "-":
+    path = Path(training_compatibility).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"paired PE training-compatibility receipt is absent: {path}"
+        )
+    source_receipts["model_training_compatibility"] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 loaded_reports = {
     name: json.loads(path.read_text(encoding="utf-8"))
     for name, path in reports.items()
