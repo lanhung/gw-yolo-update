@@ -2250,6 +2250,26 @@ def build_parser() -> argparse.ArgumentParser:
     detector_set_readiness.add_argument("--report", action="append", required=True)
     detector_set_readiness.add_argument("--output", required=True)
 
+    detector_training_export = subparsers.add_parser(
+        "detector-set-training-bundle-export"
+    )
+    detector_training_export.add_argument("--overlap-receipt", required=True)
+    detector_training_export.add_argument("--clean-train-manifest", required=True)
+    detector_training_export.add_argument(
+        "--clean-validation-manifest", required=True
+    )
+    detector_training_export.add_argument("--pretrained-checkpoint", required=True)
+    detector_training_export.add_argument(
+        "--config", action="append", required=True
+    )
+    detector_training_export.add_argument("--output-dir", required=True)
+
+    detector_training_import = subparsers.add_parser(
+        "detector-set-training-bundle-import"
+    )
+    detector_training_import.add_argument("--bundle-receipt", required=True)
+    detector_training_import.add_argument("--output-dir", required=True)
+
     waveform_validate = subparsers.add_parser("waveform-validate")
     waveform_validate.add_argument("--recipes", required=True)
     waveform_validate.add_argument("--output", required=True)
@@ -5204,6 +5224,36 @@ def main(argv: list[str] | None = None) -> int:
             audit_detector_set_expansion_readiness(
                 args.report,
                 args.output,
+            )
+        )
+    elif args.command == "detector-set-training-bundle-export":
+        from .training_transfer import export_detector_set_training_bundle
+
+        configs = {}
+        for value in args.config:
+            label, separator, path = value.partition("=")
+            if not separator or not label or not path or label in configs:
+                raise ValueError(
+                    "--config must use a unique non-empty LABEL=PATH value"
+                )
+            configs[label] = path
+        _print(
+            export_detector_set_training_bundle(
+                args.overlap_receipt,
+                args.clean_train_manifest,
+                args.clean_validation_manifest,
+                args.pretrained_checkpoint,
+                configs,
+                args.output_dir,
+            )
+        )
+    elif args.command == "detector-set-training-bundle-import":
+        from .training_transfer import import_detector_set_training_bundle
+
+        _print(
+            import_detector_set_training_bundle(
+                args.bundle_receipt,
+                args.output_dir,
             )
         )
     elif args.command == "background-bank-materialize":

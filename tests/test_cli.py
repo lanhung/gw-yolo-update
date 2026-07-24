@@ -143,6 +143,55 @@ def test_detector_set_expansion_cli_routes_frozen_inputs() -> None:
     )
 
 
+def test_detector_training_bundle_cli_routes_portable_inputs() -> None:
+    target = "gwyolo.training_transfer.export_detector_set_training_bundle"
+    with patch(target, return_value={}) as export:
+        assert (
+            main(
+                [
+                    "detector-set-training-bundle-export",
+                    "--overlap-receipt",
+                    "overlap.json",
+                    "--clean-train-manifest",
+                    "clean-train.jsonl",
+                    "--clean-validation-manifest",
+                    "clean-val.jsonl",
+                    "--pretrained-checkpoint",
+                    "model.pt",
+                    "--config",
+                    "finetune=finetune.yaml",
+                    "--output-dir",
+                    "bundle",
+                ]
+            )
+            == 0
+        )
+    export.assert_called_once_with(
+        "overlap.json",
+        "clean-train.jsonl",
+        "clean-val.jsonl",
+        "model.pt",
+        {"finetune": "finetune.yaml"},
+        "bundle",
+    )
+
+    target = "gwyolo.training_transfer.import_detector_set_training_bundle"
+    with patch(target, return_value={}) as import_bundle:
+        assert (
+            main(
+                [
+                    "detector-set-training-bundle-import",
+                    "--bundle-receipt",
+                    "bundle.json",
+                    "--output-dir",
+                    "projected",
+                ]
+            )
+            == 0
+        )
+    import_bundle.assert_called_once_with("bundle.json", "projected")
+
+
 def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
     target = "gwyolo.cli.run_frozen_candidate_search_evaluation"
     with patch(target, return_value={}) as evaluate:
