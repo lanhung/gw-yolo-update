@@ -25,6 +25,9 @@ def test_glitch_adapter_fallback_is_negative_head_gated() -> None:
         "authorized_validation_only_glitch_adapter_overlap_fallback",
         "zero_initialized_residual_glitch_decoder_v1",
         "test_rows_read",
+        "GWYOLO_ASSIGNED_GPU_INDEX",
+        "--query-compute-apps=pid",
+        "CUDA_VISIBLE_DEVICES",
     ):
         assert token in source
 

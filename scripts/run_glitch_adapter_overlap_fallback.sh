@@ -21,8 +21,14 @@ done
 
 SEED=${SEED:-20260720}
 CLEAN_VALIDATION_FEATURE_CACHE_DIR=${CLEAN_VALIDATION_FEATURE_CACHE_DIR:-}
+GWYOLO_ASSIGNED_GPU_INDEX=${GWYOLO_ASSIGNED_GPU_INDEX:-}
 if ! [[ "$SEED" =~ ^[1-9][0-9]*$ ]]; then
   echo "glitch-adapter fallback seed must be a positive integer" >&2
+  exit 2
+fi
+if [[ -n "$GWYOLO_ASSIGNED_GPU_INDEX" ]] \
+  && ! [[ "$GWYOLO_ASSIGNED_GPU_INDEX" =~ ^[0-9]+$ ]]; then
+  echo "assigned GPU index must be a non-negative integer" >&2
   exit 2
 fi
 if [[ "$(git -C "$TASK_CODE_DIR" rev-parse HEAD 2>/dev/null || true)" \
@@ -185,7 +191,28 @@ if [[ -n "$CLEAN_VALIDATION_FEATURE_CACHE_DIR" ]]; then
     "$CLEAN_VALIDATION_FEATURE_CACHE_DIR"
   )
 fi
-exec env PYTHONPATH="$TASK_CODE_DIR/src" GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
+while :; do
+  if [[ -n "$GWYOLO_ASSIGNED_GPU_INDEX" ]]; then
+    gpu_pids=$(
+      nvidia-smi -i "$GWYOLO_ASSIGNED_GPU_INDEX" \
+        --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+        | sed '/^[[:space:]]*$/d' || true
+    )
+  else
+    gpu_pids=$(
+      nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
+        2>/dev/null | sed '/^[[:space:]]*$/d' || true
+    )
+  fi
+  [[ -z "$gpu_pids" ]] && break
+  sleep 30
+done
+cuda_environment=()
+if [[ -n "$GWYOLO_ASSIGNED_GPU_INDEX" ]]; then
+  cuda_environment=(CUDA_VISIBLE_DEVICES="$GWYOLO_ASSIGNED_GPU_INDEX")
+fi
+exec env "${cuda_environment[@]}" \
+  PYTHONPATH="$TASK_CODE_DIR/src" GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT" \
   "$TASK_PYTHON" -m gwyolo.cli physical-overlap-finetune \
   --config "$config" \
   --overlap-train-manifest \
