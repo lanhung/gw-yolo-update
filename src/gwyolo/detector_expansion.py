@@ -23,6 +23,112 @@ from .waveforms import (
 )
 
 
+def audit_detector_set_expansion_readiness(
+    report_paths: list[str | Path],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Separate signal-projection readiness from detector-complete clean data."""
+
+    if len(report_paths) < 2:
+        raise ValueError("detector expansion readiness requires train and validation reports")
+    reports = []
+    all_rows: list[dict[str, Any]] = []
+    seen_splits = set()
+    for value in report_paths:
+        path = Path(value).resolve()
+        report = json.loads(path.read_text(encoding="utf-8"))
+        manifest = Path(str(report.get("manifest_path", ""))).resolve()
+        split = str(report.get("selected_split", ""))
+        if (
+            report.get("status") != "verified_physical_detector_set_expansion"
+            or report.get("passed") is not True
+            or report.get("test_rows_read") != 0
+            or report.get("test_evaluation") is not None
+            or split not in {"train", "val"}
+            or split in seen_splits
+            or not manifest.is_file()
+            or report.get("manifest_sha256") != file_sha256(manifest)
+        ):
+            raise ValueError("detector expansion report failed readiness replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(report.get("rows", -1)):
+            raise ValueError("detector expansion report row count differs from manifest")
+        for row in rows:
+            if (
+                row.get("split") != split
+                or row.get("detector_set_expansion_role")
+                != "robustness_ablation_not_sample_scaling"
+                or not set(map(str, row.get("source_ifos", [])))
+                < set(map(str, row.get("ifos", [])))
+                or set(map(str, row.get("optimal_snr_by_ifo", {})))
+                != set(map(str, row.get("ifos", [])))
+            ):
+                raise ValueError("detector-expanded row failed readiness replay")
+        seen_splits.add(split)
+        all_rows.extend(rows)
+        reports.append(
+            {
+                "split": split,
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "manifest": {
+                    "path": str(manifest),
+                    "sha256": file_sha256(manifest),
+                },
+                "rows": len(rows),
+            }
+        )
+    if seen_splits != {"train", "val"}:
+        raise ValueError("detector expansion readiness requires exact train/val splits")
+
+    detector_complete_clean_background_rows = sum(
+        set(map(str, row["source_ifos"])) == set(map(str, row["ifos"]))
+        for row in all_rows
+    )
+    clean_ready = detector_complete_clean_background_rows == len(all_rows)
+    result = {
+        "status": "audited_detector_set_signal_bank_readiness",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "same_distribution_data_scaling_claim_allowed": False,
+        "signal_overlap_materialization_authorized": True,
+        "detector_complete_clean_training_authorized": clean_ready,
+        "detector_set_robustness_ablation_ready": clean_ready,
+        "scientific_blocker": (
+            None
+            if clean_ready
+            else (
+                "the H1/L1/V1 signal projections are complete, but their source clean "
+                "backgrounds are H1/L1-only; detector-complete empirical-noise clean "
+                "training/validation and O4 transfer remain required"
+            )
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "rows": len(all_rows),
+        "detector_complete_clean_background_rows": (
+            detector_complete_clean_background_rows
+        ),
+        "reports": sorted(reports, key=lambda row: row["split"]),
+        **{
+            key: value
+            for key, value in {
+                "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+                "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
+                "environment": {
+                    "hostname": platform.node(),
+                    "platform": platform.platform(),
+                    "python": platform.python_version(),
+                    "numpy": np.__version__,
+                },
+            }.items()
+        },
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def _stored_signal(row: dict[str, Any]) -> dict[str, Any]:
     path = Path(row["materialized_path"]).resolve()
     if file_sha256(path) != str(row["materialized_sha256"]):
@@ -359,11 +465,12 @@ def expand_materialized_injection_detector_set(
         "passed": True,
         "scientific_claim_allowed": False,
         "same_distribution_data_scaling_claim_allowed": False,
-        "detector_set_robustness_ablation_ready": True,
+        "detector_set_signal_bank_ready": True,
+        "detector_set_robustness_ablation_ready": False,
         "scientific_blocker": (
-            "reference-PSD detector expansion is a training robustness ablation; "
-            "empirical-noise O4 transfer, continuous-background FAR/IFAR/<VT> and "
-            "locked evaluation remain required"
+            "the detector-complete signal bank supports overlap materialization, but "
+            "detector-complete empirical-noise clean training/validation, O4 transfer, "
+            "continuous-background FAR/IFAR/<VT> and locked evaluation remain required"
         ),
         "test_rows_read": 0,
         "test_evaluation": None,

@@ -16,6 +16,7 @@ required=(
   EXPANDED_TRAIN_REPORT
   EXPANDED_VALIDATION_MANIFEST
   EXPANDED_VALIDATION_REPORT
+  EXPANSION_READINESS_AUDIT
   EXPANSION_CAPACITY_REPORT
   OVERLAP_CONFIG
   OUTPUT_ROOT
@@ -35,6 +36,7 @@ for path in \
   "$EXPANDED_TRAIN_REPORT" \
   "$EXPANDED_VALIDATION_MANIFEST" \
   "$EXPANDED_VALIDATION_REPORT" \
+  "$EXPANSION_READINESS_AUDIT" \
   "$EXPANSION_CAPACITY_REPORT" \
   "$OVERLAP_CONFIG"; do
   if [[ ! -s "$path" ]]; then
@@ -64,6 +66,7 @@ fi
   "$EXPANDED_TRAIN_MANIFEST" \
   "$EXPANDED_VALIDATION_REPORT" \
   "$EXPANDED_VALIDATION_MANIFEST" \
+  "$EXPANSION_READINESS_AUDIT" \
   "$EXPANSION_CAPACITY_REPORT" \
   "$GRAVITYSPY_TRAIN_MANIFEST" \
   "$GRAVITYSPY_VALIDATION_MANIFEST" \
@@ -87,6 +90,7 @@ def digest(path):
     train_manifest,
     validation_report_path,
     validation_manifest,
+    readiness_path,
     capacity_path,
     glitch_train,
     glitch_validation,
@@ -94,6 +98,7 @@ def digest(path):
 ) = sys.argv[1:]
 train = load(train_report_path)
 validation = load(validation_report_path)
+readiness = load(readiness_path)
 capacity = load(capacity_path)
 corpus = load(corpus_audit_path)
 train_glitches = sum(
@@ -115,11 +120,23 @@ for report, manifest, split, expected_minimum in (
         or report.get("test_rows_read") != 0
         or report.get("test_evaluation") is not None
         or report.get("same_distribution_data_scaling_claim_allowed") is not False
-        or report.get("detector_set_robustness_ablation_ready") is not True
         or report.get("manifest_sha256") != digest(manifest)
         or int(report.get("rows", -1)) < expected_minimum
     ):
         raise SystemExit("detector-expanded signal bank failed replay")
+expected_report_hashes = {digest(train_report_path), digest(validation_report_path)}
+if (
+    readiness.get("status") != "audited_detector_set_signal_bank_readiness"
+    or readiness.get("passed") is not True
+    or readiness.get("signal_overlap_materialization_authorized") is not True
+    or readiness.get("detector_complete_clean_training_authorized") is not False
+    or readiness.get("detector_set_robustness_ablation_ready") is not False
+    or readiness.get("test_rows_read") != 0
+    or readiness.get("test_evaluation") is not None
+    or {row.get("sha256") for row in readiness.get("reports", [])}
+    != expected_report_hashes
+):
+    raise SystemExit("detector expansion readiness audit failed replay")
 if (
     capacity.get("status") != "audited_physical_overlap_expansion_capacity"
     or capacity.get("passed") is not True
@@ -186,6 +203,7 @@ receipt="$OUTPUT_ROOT/detector_set_overlap_materialization_receipt.json"
   "$train_root/physical_overlap_report.json" \
   "$validation_root/physical_overlap_report.json" \
   "$joint_audit" \
+  "$EXPANSION_READINESS_AUDIT" \
   "$EXPANSION_CAPACITY_REPORT" \
   "$GWYOLO_CODE_COMMIT" <<'PY'
 import hashlib
@@ -194,7 +212,15 @@ import os
 import pathlib
 import sys
 
-target, train_path, validation_path, audit_path, capacity_path, commit = sys.argv[1:]
+(
+    target,
+    train_path,
+    validation_path,
+    audit_path,
+    readiness_path,
+    capacity_path,
+    commit,
+) = sys.argv[1:]
 
 
 def load(path):
@@ -252,6 +278,7 @@ result = {
         "train_report": artifact(train_path),
         "validation_report": artifact(validation_path),
         "joint_group_audit": artifact(audit_path),
+        "expansion_readiness_audit": artifact(readiness_path),
         "capacity_report": artifact(capacity_path),
     },
     "code_commit": commit,

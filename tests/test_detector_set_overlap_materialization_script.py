@@ -18,6 +18,10 @@ def test_detector_set_overlap_materialization_is_audited_and_not_scaling() -> No
     assert "EXPANSION_CAPACITY_REPORT" in source
     assert "EXPANDED_TRAIN_REPORT" in source
     assert "EXPANDED_VALIDATION_REPORT" in source
+    assert "EXPANSION_READINESS_AUDIT" in source
+    assert "detector_set_robustness_ablation_ready" in source
+    assert "signal_overlap_materialization_authorized" in source
+    assert "detector_complete_clean_training_authorized" in source
     assert "same_distribution_data_scaling_claim_allowed" in source
     assert '"test_rows_read": 0' in source
     assert "next_scale_training_authorized" in source

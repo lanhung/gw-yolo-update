@@ -218,7 +218,9 @@ For the chirp-frozen residual adapter, scale promotion is explicitly conditional
    `aLIGOAdVO4T1800545` and V1 uses `AdVO4T1800545` for training-only SNR stratification.
 9. A detector-expanded manifest is unusable unless its audit hash is replayed by the physical
    capacity gate. Even after that gate, the arm is labeled a detector-set robustness ablation and
-   requires empirical-noise O4 transfer; it never authorizes H1+L1 same-distribution scaling.
+   the signal bank alone does not make the full ablation ready. It requires detector-complete
+   empirical-noise clean training/validation and O4 transfer; it never authorizes H1+L1
+   same-distribution scaling.
 
 These gates prevent a training schedule or a more aggressive sampler from being mislabeled as
 evidence that physical sample count caused the gain.

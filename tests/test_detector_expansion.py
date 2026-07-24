@@ -6,7 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gwyolo.detector_expansion import expand_materialized_injection_detector_set
+from gwyolo.detector_expansion import (
+    audit_detector_set_expansion_readiness,
+    expand_materialized_injection_detector_set,
+)
 from gwyolo.io import file_sha256
 from gwyolo.waveforms import _atomic_save_npz
 
@@ -115,7 +118,8 @@ def test_detector_expansion_projects_v1_and_reports_reference_psd_snr(
     )
     assert report["passed"] is True
     assert report["same_distribution_data_scaling_claim_allowed"] is False
-    assert report["detector_set_robustness_ablation_ready"] is True
+    assert report["detector_set_signal_bank_ready"] is True
+    assert report["detector_set_robustness_ablation_ready"] is False
     assert report["target_detector_sets"] == {"H1+L1+V1": 1}
     assert report["test_rows_read"] == 0
     row = json.loads(
@@ -144,3 +148,37 @@ def test_detector_expansion_rejects_changed_common_ifo_projection(
             backend=FakeBackend(mismatch=True),
             snr_calculator=_snr,
         )
+
+
+def test_readiness_audit_rejects_signal_bank_as_complete_clean_data(
+    tmp_path: Path,
+) -> None:
+    reports = []
+    for split in ("train", "val"):
+        root = tmp_path / split
+        manifest, config, validation = _inputs(root)
+        row = json.loads(manifest.read_text(encoding="utf-8"))
+        row["split"] = split
+        row["injection_id"] = f"injection-{split}"
+        row["waveform_id"] = f"waveform-{split}"
+        row["gps_block"] = f"gps-{split}"
+        manifest.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        report = expand_materialized_injection_detector_set(
+            manifest,
+            config,
+            validation,
+            root / "output",
+            split=split,
+            backend=FakeBackend(),
+            snr_calculator=_snr,
+        )
+        reports.append(root / "output" / "detector_set_expansion_report.json")
+        assert report["detector_set_signal_bank_ready"] is True
+    readiness = audit_detector_set_expansion_readiness(
+        reports, tmp_path / "readiness.json"
+    )
+    assert readiness["signal_overlap_materialization_authorized"] is True
+    assert readiness["detector_complete_clean_training_authorized"] is False
+    assert readiness["detector_set_robustness_ablation_ready"] is False
+    assert readiness["detector_complete_clean_background_rows"] == 0
+    assert readiness["test_rows_read"] == 0

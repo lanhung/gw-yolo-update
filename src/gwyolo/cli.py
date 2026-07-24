@@ -2244,6 +2244,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detector_set_expand.add_argument("--limit", type=int)
 
+    detector_set_readiness = subparsers.add_parser(
+        "injection-detector-set-readiness-audit"
+    )
+    detector_set_readiness.add_argument("--report", action="append", required=True)
+    detector_set_readiness.add_argument("--output", required=True)
+
     waveform_validate = subparsers.add_parser("waveform-validate")
     waveform_validate.add_argument("--recipes", required=True)
     waveform_validate.add_argument("--output", required=True)
@@ -5187,6 +5193,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.split,
                 args.limit,
+            )
+        )
+    elif args.command == "injection-detector-set-readiness-audit":
+        from .detector_expansion import (
+            audit_detector_set_expansion_readiness,
+        )
+
+        _print(
+            audit_detector_set_expansion_readiness(
+                args.report,
+                args.output,
             )
         )
     elif args.command == "background-bank-materialize":

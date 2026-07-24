@@ -121,6 +121,27 @@ def test_detector_set_expansion_cli_routes_frozen_inputs() -> None:
         10,
     )
 
+    target = "gwyolo.detector_expansion.audit_detector_set_expansion_readiness"
+    with patch(target, return_value={}) as audit:
+        assert (
+            main(
+                [
+                    "injection-detector-set-readiness-audit",
+                    "--report",
+                    "train.json",
+                    "--report",
+                    "val.json",
+                    "--output",
+                    "readiness.json",
+                ]
+            )
+            == 0
+        )
+    audit.assert_called_once_with(
+        ["train.json", "val.json"],
+        "readiness.json",
+    )
+
 
 def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
     target = "gwyolo.cli.run_frozen_candidate_search_evaluation"
