@@ -1777,6 +1777,71 @@ def _train_epoch(
     }
 
 
+def configure_overlap_training_scope(
+    student: Any,
+    teacher_architecture: str,
+    settings: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Configure full-model or bit-exact chirp-preserving overlap updates."""
+
+    scope = str(settings.get("training_scope", "full_model"))
+    if scope == "full_model":
+        student.requires_grad_(True)
+        parameters = [
+            parameter for parameter in student.parameters() if parameter.requires_grad
+        ]
+        return parameters, {
+            "scope": scope,
+            "backbone_frozen": False,
+            "chirp_output_frozen": False,
+            "glitch_output_trainable": True,
+            "gradient_mask_policy": None,
+            "trainable_parameter_tensors": len(parameters),
+            "effective_trainable_parameters": sum(
+                parameter.numel() for parameter in parameters
+            ),
+        }
+    if scope != "glitch_head_only":
+        raise ValueError("Overlap training_scope must be full_model or glitch_head_only")
+    if teacher_architecture != "detector_set":
+        raise ValueError(
+            "glitch_head_only requires an exact detector-set pretrained checkpoint"
+        )
+    head = getattr(student, "shared_head", None)
+    q_count = int(getattr(student, "q_count", 0))
+    if (
+        head is None
+        or q_count <= 0
+        or int(head.weight.shape[0]) != 2 * q_count
+        or (head.bias is not None and int(head.bias.shape[0]) != 2 * q_count)
+    ):
+        raise ValueError("glitch_head_only requires the detector-set two-class head")
+    student.requires_grad_(False)
+    head.weight.requires_grad_(True)
+    weight_mask = torch.zeros_like(head.weight)
+    weight_mask[q_count:] = 1
+    head.weight.register_hook(lambda gradient, mask=weight_mask: gradient * mask)
+    parameters = [head.weight]
+    if head.bias is not None:
+        head.bias.requires_grad_(True)
+        bias_mask = torch.zeros_like(head.bias)
+        bias_mask[q_count:] = 1
+        head.bias.register_hook(lambda gradient, mask=bias_mask: gradient * mask)
+        parameters.append(head.bias)
+    glitch_parameters = int(head.weight[q_count:].numel())
+    if head.bias is not None:
+        glitch_parameters += int(head.bias[q_count:].numel())
+    return parameters, {
+        "scope": scope,
+        "backbone_frozen": True,
+        "chirp_output_frozen": True,
+        "glitch_output_trainable": True,
+        "gradient_mask_policy": "zero_chirp_rows_v1",
+        "trainable_parameter_tensors": len(parameters),
+        "effective_trainable_parameters": glitch_parameters,
+    }
+
+
 def resolve_overlap_training_control(
     settings: dict[str, Any], batches_per_epoch: int
 ) -> dict[str, Any]:
@@ -1995,10 +2060,28 @@ def run_physical_overlap_finetune(
         warm_start = {"status": "exact_detector_set_state_dict"}
     else:
         warm_start = initialize_detector_set_from_early_fusion(student, pretrained)
+    optimized_parameters, training_scope = configure_overlap_training_scope(
+        student, teacher_architecture, settings
+    )
+    effective_weight_decay = (
+        0.0
+        if training_scope["scope"] == "glitch_head_only"
+        else float(settings["weight_decay"])
+    )
+    training_scope["configured_weight_decay"] = float(settings["weight_decay"])
+    training_scope["effective_weight_decay"] = effective_weight_decay
     optimizer = torch.optim.AdamW(
-        student.parameters(), lr=float(settings["learning_rate"]), weight_decay=float(settings["weight_decay"])
+        optimized_parameters,
+        lr=float(settings["learning_rate"]),
+        weight_decay=effective_weight_decay,
     )
     q_count = len(q_values)
+    frozen_non_glitch_state = None
+    if training_scope["scope"] == "glitch_head_only":
+        frozen_non_glitch_state = {
+            name: value.detach().cpu().clone()
+            for name, value in student.state_dict().items()
+        }
     teacher_clean = _clean_metrics(
         teacher, teacher_architecture, clean_loaders["val"], device, q_count
     )
@@ -2087,6 +2170,7 @@ def run_physical_overlap_finetune(
                     "epoch": epoch,
                     "validation_overlap_mean_iou": metric,
                     "clean_chirp_iou_retention": retention,
+                    "training_scope": training_scope,
                     "config_hash": canonical_hash(config),
                     "seed": seed,
                     "run_identity": run_identity,
@@ -2116,6 +2200,36 @@ def run_physical_overlap_finetune(
         raise RuntimeError("No overlap checkpoint passed the clean-chirp retention gate")
     selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
     student.load_state_dict(selected["model"])
+    chirp_head_preserved_bit_exact = None
+    backbone_preserved_bit_exact = None
+    non_glitch_state_preserved_bit_exact = None
+    if frozen_non_glitch_state is not None:
+        selected_state = student.state_dict()
+        chirp_head_preserved_bit_exact = bool(
+            torch.equal(
+                selected_state["shared_head.weight"][:q_count].detach().cpu(),
+                frozen_non_glitch_state["shared_head.weight"][:q_count],
+            )
+            and (
+                "shared_head.bias" not in frozen_non_glitch_state
+                or torch.equal(
+                    selected_state["shared_head.bias"][:q_count].detach().cpu(),
+                    frozen_non_glitch_state["shared_head.bias"][:q_count],
+                )
+            )
+        )
+        backbone_preserved_bit_exact = all(
+            torch.equal(value.detach().cpu(), frozen_non_glitch_state[name])
+            for name, value in selected_state.items()
+            if name not in {"shared_head.weight", "shared_head.bias"}
+        )
+        non_glitch_state_preserved_bit_exact = bool(
+            chirp_head_preserved_bit_exact and backbone_preserved_bit_exact
+        )
+        if not non_glitch_state_preserved_bit_exact:
+            raise RuntimeError(
+                "glitch-head-only training changed frozen non-glitch state"
+            )
     grid = tuple(float(value) for value in settings["threshold_grid"])
     thresholds, curves = _calibrate_overlap_thresholds(
         student, overlap_loaders["val"], device, q_count, grid
@@ -2149,6 +2263,14 @@ def run_physical_overlap_finetune(
         "split_audit": split_audit,
         "clean_split_audit": clean_split_audit,
         "glitch_family_sampling": sampling_report,
+        "training_scope": {
+            **training_scope,
+            "chirp_head_preserved_bit_exact": chirp_head_preserved_bit_exact,
+            "backbone_preserved_bit_exact": backbone_preserved_bit_exact,
+            "non_glitch_state_preserved_bit_exact": (
+                non_glitch_state_preserved_bit_exact
+            ),
+        },
         "training_control": training_control,
         "completed_optimizer_updates": completed_optimizer_updates,
         "warm_start": warm_start,

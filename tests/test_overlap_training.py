@@ -12,6 +12,7 @@ from gwyolo.overlap_training import (
     PhysicalOverlapDataset,
     _train_epoch,
     bind_physical_overlap_scaling_hard_endpoints,
+    configure_overlap_training_scope,
     glitch_family_sampling_weights,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
@@ -97,6 +98,58 @@ def test_overlap_training_controls_separate_epochs_from_optimizer_updates() -> N
                 "max_optimizer_updates": 401,
             },
             13,
+        )
+
+
+@pytest.mark.skipif(torch is None, reason="torch is optional")
+def test_glitch_head_only_scope_preserves_chirp_and_backbone_bit_exact() -> None:
+    torch.manual_seed(7)
+    student = DetectorSetQNet(ifo_count=3, q_count=2, base_channels=8)
+    original = {
+        name: value.detach().clone() for name, value in student.state_dict().items()
+    }
+    parameters, report = configure_overlap_training_scope(
+        student,
+        "detector_set",
+        {"training_scope": "glitch_head_only"},
+    )
+    optimizer = torch.optim.AdamW(parameters, lr=0.1, weight_decay=0.0)
+    features = torch.randn(2, 6, 8, 8)
+    availability = torch.ones(2, 3)
+    logits = student(features, availability)
+    optimizer.zero_grad(set_to_none=True)
+    logits.sum().backward()
+    optimizer.step()
+
+    current = student.state_dict()
+    for name, value in original.items():
+        if name == "shared_head.weight":
+            assert torch.equal(current[name][:2], value[:2])
+            assert not torch.equal(current[name][2:], value[2:])
+        elif name == "shared_head.bias":
+            assert torch.equal(current[name][:2], value[:2])
+            assert not torch.equal(current[name][2:], value[2:])
+        else:
+            assert torch.equal(current[name], value)
+    assert report == {
+        "scope": "glitch_head_only",
+        "backbone_frozen": True,
+        "chirp_output_frozen": True,
+        "glitch_output_trainable": True,
+        "gradient_mask_policy": "zero_chirp_rows_v1",
+        "trainable_parameter_tensors": 2,
+        "effective_trainable_parameters": 18,
+    }
+
+
+@pytest.mark.skipif(torch is None, reason="torch is optional")
+def test_glitch_head_only_scope_rejects_non_detector_set_teacher() -> None:
+    student = DetectorSetQNet(ifo_count=3, q_count=2, base_channels=8)
+    with pytest.raises(ValueError, match="exact detector-set"):
+        configure_overlap_training_scope(
+            student,
+            "early_fusion",
+            {"training_scope": "glitch_head_only"},
         )
 
 
