@@ -27,10 +27,15 @@ def test_detector_materialization_projects_and_audits_all_ifos() -> None:
         "import lal; import lalsimulation; import pycbc",
         "--storage-mode signal_scaled_float16",
         "--split val",
+        "manifest_context_duration",
+        'noise.shape[1] / sample_rate',
+        "banks require one positive context duration",
+        "configured context duration differs",
         '"candidate_scores_inspected"',
         '"test_rows_read"',
     ):
         assert token in source
+    assert "CONTEXT_DURATION_SECONDS:-64" not in source
     assert "trigger-score" not in source
     assert "evaluation-corpus-open-once" not in source
     assert "O4b" not in source

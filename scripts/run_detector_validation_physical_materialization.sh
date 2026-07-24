@@ -36,7 +36,7 @@ if ! "$WAVEFORM_PYTHON" -c 'import lal; import lalsimulation; import pycbc'; the
 fi
 
 sample_rate=${SAMPLE_RATE:-1024}
-context_duration=${CONTEXT_DURATION_SECONDS:-64}
+context_duration=${CONTEXT_DURATION_SECONDS:-}
 waveform_cases_per_family=${WAVEFORM_CASES_PER_FAMILY:-10}
 maximum_attempts=${MAXIMUM_MATERIALIZATION_ATTEMPTS:-3}
 retry_delay_seconds=${RETRY_DELAY_SECONDS:-60}
@@ -60,12 +60,16 @@ done
 mkdir -p "$OUTPUT_ROOT"
 cd "$TASK_CODE_DIR"
 export PYTHONPATH=src GWYOLO_CODE_COMMIT
-"$TASK_PYTHON" - "$data_receipt" "$background_report" "$injection_plan" \
-  "$background_manifest" "$recipes" <<'PY'
+manifest_context_duration=$(
+  "$TASK_PYTHON" - "$data_receipt" "$background_report" "$injection_plan" \
+    "$background_manifest" "$recipes" <<'PY'
 import hashlib
 import json
+import math
 import pathlib
 import sys
+
+import numpy as np
 
 
 def digest(path):
@@ -94,7 +98,54 @@ if (
     or int(plan.get("test_rows_read", -1)) != 0
 ):
     raise SystemExit("detector physical-materialization preflight failed replay")
+rows = [
+    json.loads(line)
+    for line in pathlib.Path(manifest_path).read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+durations = set()
+rows_without_banks = 0
+for row in rows:
+    bank = row.get("background_bank")
+    if not isinstance(bank, dict):
+        rows_without_banks += 1
+        continue
+    with np.load(bank["path"], allow_pickle=False) as arrays:
+        noise = arrays["noise"]
+        sample_rate = int(arrays["sample_rate"])
+        if noise.ndim != 2 or sample_rate <= 0:
+            raise SystemExit("detector background bank has invalid context shape")
+        durations.add(noise.shape[1] / sample_rate)
+if (
+    not rows
+    or rows_without_banks
+    or len(durations) != 1
+    or not all(math.isfinite(value) and value > 0 for value in durations)
+):
+    raise SystemExit(
+        "detector background banks require one positive context duration"
+    )
+print(next(iter(durations)))
 PY
+)
+if [[ -z "$context_duration" ]]; then
+  context_duration=$manifest_context_duration
+else
+  "$TASK_PYTHON" - "$context_duration" "$manifest_context_duration" <<'PY'
+import math
+import sys
+
+configured, manifest = map(float, sys.argv[1:])
+if (
+    not math.isfinite(configured)
+    or configured <= 0
+    or abs(configured - manifest) > 1e-9
+):
+    raise SystemExit(
+        "configured context duration differs from detector background manifest"
+    )
+PY
+fi
 
 waveform_report="$OUTPUT_ROOT/waveform_validation_report.json"
 if [[ ! -s "$waveform_report" ]]; then
