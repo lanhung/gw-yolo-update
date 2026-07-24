@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import h5py
 import numpy as np
@@ -17,9 +19,126 @@ from gwyolo.waveforms import (
     pack_scaled_float16_signal,
     place_waveform_samples,
     run_injection_materialization,
+    validate_waveform_backend,
     validate_recipe_identities,
     waveform_equivalence_metrics,
 )
+
+
+def test_waveform_validation_covers_primary_alternative_and_in_plane_spins(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    class Series:
+        start_time = 0.0
+
+        def numpy(self):
+            return np.asarray([1.0 + 0.0j, 2.0 + 0.0j])
+
+    class Reference:
+        epoch = 0.0
+        data = types.SimpleNamespace(data=np.asarray([1.0 + 0.0j, 2.0 + 0.0j]))
+
+    def get_fd_waveform(**kwargs):
+        calls.append(("pycbc", kwargs))
+        return Series(), Series()
+
+    def get_td_waveform(**kwargs):
+        calls.append(("pycbc_td", kwargs))
+        return Series(), Series()
+
+    def choose_fd(*args):
+        calls.append(("lal", args))
+        return Reference(), Reference()
+
+    def choose_td(*args):
+        calls.append(("lal_td", args))
+        return Reference(), Reference()
+
+    lal = types.ModuleType("lal")
+    lal.MSUN_SI = 1.0
+    lal.PC_SI = 1.0
+    lal.CreateDict = lambda: {}
+    lalsimulation = types.ModuleType("lalsimulation")
+    lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1 = lambda *_: None
+    lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2 = lambda *_: None
+    lalsimulation.SimInspiralChooseFDWaveform = choose_fd
+    lalsimulation.SimInspiralChooseTDWaveform = choose_td
+    approximant_ids = {"AlternativeP": 1, "PrimaryP": 2, "PrimaryT": 3}
+    approximant_names = {value: key for key, value in approximant_ids.items()}
+    lalsimulation.GetApproximantFromString = lambda value: approximant_ids[value]
+    lalsimulation.GetStringFromApproximant = lambda value: approximant_names[value]
+    lalsimulation.SimInspiralImplementedFDApproximants = (
+        lambda value: value != approximant_ids["AlternativeP"]
+    )
+    lalsimulation.SimInspiralImplementedTDApproximants = lambda _value: True
+    pycbc = types.ModuleType("pycbc")
+    pycbc_waveform = types.ModuleType("pycbc.waveform")
+    pycbc_waveform.get_fd_waveform = get_fd_waveform
+    pycbc_waveform.get_td_waveform = get_td_waveform
+    monkeypatch.setitem(sys.modules, "lal", lal)
+    monkeypatch.setitem(sys.modules, "lalsimulation", lalsimulation)
+    monkeypatch.setitem(sys.modules, "pycbc", pycbc)
+    monkeypatch.setitem(sys.modules, "pycbc.waveform", pycbc_waveform)
+    monkeypatch.setattr("gwyolo.waveforms.version", lambda _name: "test")
+
+    def recipe(injection_id: str, family: str, approximant: str) -> dict:
+        return {
+            "injection_id": injection_id,
+            "source_family": family,
+            "waveform_approximant": approximant,
+            "mass_1_detector_msun": 30.0,
+            "mass_2_detector_msun": 20.0,
+            "spin_1x": 0.6,
+            "spin_1y": 0.2,
+            "spin_1z": 0.3,
+            "spin_2x": 0.1,
+            "spin_2y": 0.0,
+            "spin_2z": -0.2,
+            "lambda_1": 0.0,
+            "lambda_2": 0.0,
+            "inclination": 0.5,
+            "coalescence_phase": 0.2,
+            "luminosity_distance_mpc": 500.0,
+            "f_lower_hz": 20.0,
+        }
+
+    rows = [
+        {
+            **recipe("bbh", "BBH", "PrimaryP"),
+            "alternative_waveform_approximant": "AlternativeP",
+        },
+        recipe("bns", "BNS", "PrimaryT"),
+    ]
+    manifest = tmp_path / "recipes.jsonl"
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = validate_waveform_backend(
+        manifest,
+        tmp_path / "waveform-validation.json",
+        per_family=1,
+        selection_mode="family_approximant",
+        include_alternatives=True,
+    )
+    assert report["passed"] is True
+    assert report["selected_cases"] == 3
+    assert set(report["case_strata"]) == {
+        "BBH:alternative:AlternativeP",
+        "BBH:primary:PrimaryP",
+        "BNS:primary:PrimaryT",
+    }
+    pycbc_calls = [
+        value for role, value in calls if role in {"pycbc", "pycbc_td"}
+    ]
+    assert all(value["spin1x"] == 0.6 for value in pycbc_calls)
+    assert all(value["spin1y"] == 0.2 for value in pycbc_calls)
+    lal_calls = [value for role, value in calls if role in {"lal", "lal_td"}]
+    assert all(value[2:8] == (0.6, 0.2, 0.3, 0.1, 0.0, -0.2) for value in lal_calls)
+    by_approximant = {case["approximant"]: case for case in report["cases"]}
+    assert by_approximant["AlternativeP"]["waveform_domain"] == "time"
+    assert by_approximant["PrimaryP"]["waveform_domain"] == "frequency"
 
 
 def test_detector_arrivals_use_geometric_delay_not_waveform_array_end() -> None:
@@ -96,8 +215,68 @@ def test_numeric_background_bank_survives_source_eviction(tmp_path) -> None:
         storage_mode="signal_scaled_float16",
     )
     loaded = load_materialized_context(materialized)
+    assert materialized["background_bank_context_policy"] == "analysis_center_crop_v1"
     assert loaded["noise"].shape == (1, 16)
     assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
+
+
+def test_longer_numeric_background_bank_is_cropped_around_analysis_window(
+    tmp_path,
+) -> None:
+    bank = tmp_path / "long-bank.npz"
+    noise = np.arange(32, dtype=np.float64).reshape(1, 32)
+    np.savez(
+        bank,
+        noise=noise,
+        ifos=np.asarray(["H1"]),
+        sample_rate=np.asarray(4, dtype=np.int64),
+        context_gps_start=np.asarray(100.0),
+        analysis_gps_start=np.asarray(102.0),
+        analysis_start_index=np.asarray(8, dtype=np.int64),
+        analysis_stop_index=np.asarray(16, dtype=np.int64),
+        window_id=np.asarray("long-window"),
+    )
+    background = {
+        "window_id": "long-window",
+        "gps_block": "long-block",
+        "split": "val",
+        "gps_start": 102.0,
+        "duration": 2.0,
+        "ifos": ["H1"],
+        "source_files": {
+            "H1": {"path": "evicted-source.hdf5", "sha256": "a" * 64}
+        },
+        "background_bank": {"path": str(bank), "sha256": file_sha256(bank)},
+    }
+
+    class FakeBackend:
+        def generate(self, recipe, ifos, sample_rate):
+            assert ifos == ["H1"]
+            assert sample_rate == 4
+            return {"H1": (102.0, np.asarray([1.0, 2.0]))}, {
+                "H1": {"fake": True}
+            }
+
+    materialized = materialize_recipe(
+        {
+            "injection_id": "cropped-injection",
+            "background_window_id": "long-window",
+            "gps_block": "long-block",
+            "split": "val",
+        },
+        background,
+        FakeBackend(),
+        4,
+        tmp_path / "cropped-injection.npz",
+        context_duration=4.0,
+        storage_mode="signal_scaled_float16",
+    )
+    loaded = load_materialized_context(materialized)
+    assert loaded["noise"].shape == (1, 16)
+    assert loaded["context_gps_start"] == pytest.approx(101.0)
+    assert loaded["analysis_start_index"] == 4
+    assert loaded["analysis_stop_index"] == 12
+    assert loaded["noise"][0] == pytest.approx(noise[0, 4:20])
 
 
 def test_background_bank_source_eviction_requires_complete_hash_verification(tmp_path) -> None:

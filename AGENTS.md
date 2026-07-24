@@ -27,6 +27,8 @@ Build a reproducible, publication-grade, physics-coherent GW-YOLO front end that
 19. Do not scale to 50k/200k by schedule alone. Promote a scale only after the frozen O4a endpoint or a predeclared hard subset improves materially under both fixed-epoch and fixed-update controls.
 20. Calibration perturbations, missing detectors, new glitch families and observing-run transfer are required robustness strata, not optional image augmentation.
 21. Incremental continuous-background shards must use the frozen `hash_threshold_v1` GPS-block split. `balanced_rank_v1` may reproduce an existing frozen corpus but may not assign independently streamed shards.
+22. Human pixel annotations are optional diagnostics, not training targets or publication/unlock gates. Never merge disagreeing annotators into ground truth and never present model-generated masks as human consensus.
+23. Primary mask supervision must be reproducible from isolated physical components or a frozen deterministic pseudo-mask policy. Real-glitch automatic masks must be identified as pseudo-labels; downstream claims come from fixed-FAR search and paired PE robustness, not pixel accuracy.
 
 ## Repository conventions
 
@@ -49,6 +51,7 @@ Before a training result is accepted:
 - test evaluation uses a checkpoint selected only by validation performance;
 - the checkpoint is saved against the configured primary metric, not a framework-default fitness proxy;
 - catalog predictions retain every instance and mask;
+- automatic masks replay exactly from their frozen numeric components/configuration, and reports state `human_ground_truth_claimed=false`;
 - failures are explicit and produce a non-zero exit status.
 
 Before a paper claim is accepted:
@@ -62,6 +65,7 @@ Before a paper claim is accepted:
 - O4 transfer is evaluated independently of in-domain mAP.
 - the primary model supports all predeclared detector subsets without retraining, or clearly limits its claim;
 - a leave-one-glitch-family-out or later-run OOD audit quantifies abstention and false acceptance;
+- real-glitch mask value is established by paired functional endpoints; no human-consensus IoU gate is required;
 - clean injections satisfy the frozen non-inferiority margin before deglitch gains are promoted;
 - any PE claim is based on paired raw/contaminated/mask-conditioned analyses with identical priors and waveform assumptions;
 - the O4b/GWTC-5 strain access log shows no model, threshold, veto, calibration, or OOD selection before the one-time locked evaluation.

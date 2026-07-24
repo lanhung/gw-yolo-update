@@ -126,6 +126,300 @@ def evict_candidate_probability_artifacts(
     return result
 
 
+def validate_mask_conditioned_stream_gate(
+    mask_validation_receipt: str | Path,
+    mask_timing_receipt: str | Path,
+    checkpoint: str | Path,
+    config: str | Path,
+) -> dict[str, Any]:
+    """Replay the ranking and separate raw/mask timing gates for continuous streaming."""
+
+    ranking_receipt_path = Path(mask_validation_receipt).resolve()
+    timing_path = Path(mask_timing_receipt).resolve()
+    ranking = _load_json(ranking_receipt_path)
+    timing = _load_json(timing_path)
+    pipeline_identity = ranking.get("artifacts", {}).get("pipeline_report", {})
+    pipeline_path = Path(str(pipeline_identity.get("path", ""))).resolve()
+    if (
+        ranking.get("status") != "completed_validation_only_mask_deglitch_gate"
+        or ranking.get("execution_passed") is not True
+        or ranking.get("development_gates_passed") is not True
+        or ranking.get("scientific_claim_allowed") is not False
+        or ranking.get("locked_test_allowed") is not False
+        or ranking.get("test_rows_read") != 0
+        or ranking.get("coherent_background_scale_allowed") is not False
+        or not pipeline_path.is_file()
+        or pipeline_identity.get("sha256") != file_sha256(pipeline_path)
+    ):
+        raise ValueError("mask ranking receipt does not authorize validation scaling")
+    pipeline = _load_json(pipeline_path)
+    if (
+        pipeline.get("status") != "validation_only_end_to_end_mask_search_pipeline"
+        or pipeline.get("development_gates_passed") is not True
+        or pipeline.get("scientific_claim_allowed") is not False
+        or pipeline.get("promotion_allowed") is not False
+        or pipeline.get("test_rows_read") != 0
+        or pipeline.get("test_evaluation") is not None
+        or pipeline.get("checkpoint_sha256") != file_sha256(checkpoint)
+        or pipeline.get("config_sha256") != file_sha256(config)
+    ):
+        raise ValueError("mask ranking pipeline differs from the selected stream model")
+    strength = float(pipeline.get("strength", -1.0))
+    if not 0 <= strength <= 1:
+        raise ValueError("mask ranking pipeline has an invalid deglitch strength")
+    if (
+        timing.get("status") != "completed_validation_only_mask_timing_gate"
+        or timing.get("scientific_claim_allowed") is not False
+        or timing.get("locked_test_allowed") is not False
+        or timing.get("test_rows_read") != 0
+        or timing.get("ranking_development_gates_passed") is not True
+        or timing.get("timing_evaluated") is not True
+        or timing.get("raw_timing_gate_passed") is not True
+        or timing.get("mask_timing_gate_passed") is not True
+        or timing.get("coherent_background_scale_allowed") is not True
+        or Path(str(timing.get("mask_validation_receipt_path", ""))).resolve()
+        != ranking_receipt_path
+        or timing.get("mask_validation_receipt_sha256")
+        != file_sha256(ranking_receipt_path)
+        or Path(str(timing.get("pipeline_report_path", ""))).resolve()
+        != pipeline_path
+        or timing.get("pipeline_report_sha256") != file_sha256(pipeline_path)
+    ):
+        raise ValueError("mask timing receipt does not authorize coherent dual-arm scaling")
+    required_method = str(timing.get("required_method", ""))
+    if required_method != "local_whitened_strain_envelope_per_mask_cluster_v1":
+        raise ValueError("mask timing receipt uses an unsupported candidate timing method")
+    timing_reports = {}
+    injection_ranking_reports = {}
+    probability_eviction_reports = {}
+    for condition in ("raw", "mask"):
+        identity = timing.get("timing_reports", {}).get(condition, {})
+        report_path = Path(str(identity.get("path", ""))).resolve()
+        if (
+            identity.get("gate_passed") is not True
+            or not report_path.is_file()
+            or identity.get("sha256") != file_sha256(report_path)
+        ):
+            raise ValueError(f"{condition} timing report failed its hash gate")
+        report = _load_json(report_path)
+        method = report.get("methods", {}).get(required_method, {})
+        source = report.get("source_scoring_provenance", {})
+        if (
+            report.get("status") != "validation_only_candidate_timing_calibration"
+            or report.get("scientific_claim_allowed") is not False
+            or report.get("selection_data") != "validation_injections_only"
+            or report.get("test_evaluation") is not None
+            or method.get("calibration_gate_passed") is not True
+            or int(method.get("matches", 0)) < 30
+            or float(method.get("empirical_timing_uncertainty_seconds", 1.0)) > 0.01
+            or source.get("available") is not True
+            or source.get("checkpoint_sha256") != pipeline.get("checkpoint_sha256")
+            or source.get("config_sha256") != pipeline.get("config_sha256")
+            or source.get("code_commit") != pipeline.get("code_commit")
+        ):
+            raise ValueError(f"{condition} timing calibration failed replay")
+        timing_reports[condition] = {
+            "path": str(report_path),
+            "sha256": file_sha256(report_path),
+            "source_code_commit": str(source["code_commit"]),
+        }
+        ranking_identity = timing.get("injection_ranking_reports", {}).get(
+            condition, {}
+        )
+        ranking_path = Path(str(ranking_identity.get("path", ""))).resolve()
+        candidate_report_path = Path(
+            str(ranking_identity.get("candidate_extraction_report_path", ""))
+        ).resolve()
+        if (
+            not ranking_path.is_file()
+            or ranking_identity.get("sha256") != file_sha256(ranking_path)
+            or not candidate_report_path.is_file()
+            or ranking_identity.get("candidate_extraction_report_sha256")
+            != file_sha256(candidate_report_path)
+        ):
+            raise ValueError(f"{condition} injection ranking failed its hash gate")
+        ranking = _load_json(ranking_path)
+        manifest_path = Path(str(ranking.get("manifest_path", ""))).resolve()
+        if (
+            ranking.get("status") != "physical_network_injection_candidate_rankings"
+            or ranking.get("split") != "val"
+            or ranking.get("timing_calibration_report_sha256")
+            != identity.get("sha256")
+            or ranking.get("candidate_checkpoint_sha256")
+            != pipeline.get("checkpoint_sha256")
+            or ranking.get("candidate_config_sha256")
+            != pipeline.get("config_sha256")
+            or ranking.get("candidate_code_commit") != pipeline.get("code_commit")
+            or ranking.get("candidate_scoring_provenance_consistent") is not True
+            or not manifest_path.is_file()
+            or ranking.get("manifest_sha256") != file_sha256(manifest_path)
+        ):
+            raise ValueError(f"{condition} injection ranking failed replay")
+        injection_ranking_reports[condition] = {
+            "path": str(ranking_path),
+            "sha256": file_sha256(ranking_path),
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": file_sha256(manifest_path),
+        }
+        eviction_identity = timing.get("probability_eviction_reports", {}).get(
+            condition, {}
+        )
+        eviction_path = Path(str(eviction_identity.get("path", ""))).resolve()
+        score_identity = timing.get(f"{condition}_score_report", {})
+        score_path = Path(str(score_identity.get("path", ""))).resolve()
+        if (
+            not score_path.is_file()
+            or score_identity.get("sha256") != file_sha256(score_path)
+            or not eviction_path.is_file()
+            or eviction_identity.get("sha256") != file_sha256(eviction_path)
+        ):
+            raise ValueError(f"{condition} probability eviction failed its hash gate")
+        eviction = _load_json(eviction_path)
+        if (
+            eviction.get("status") != "verified_candidate_probability_eviction"
+            or eviction.get("recoverable") is not True
+            or eviction.get("score_report_sha256") != file_sha256(score_path)
+            or eviction.get("candidate_extraction_report_sha256")
+            != file_sha256(candidate_report_path)
+            or int(eviction.get("removed_files", -1))
+            != int(timing.get("paired_injections", -2))
+            or int(eviction.get("removed_bytes", 0)) <= 0
+        ):
+            raise ValueError(f"{condition} probability eviction failed replay")
+        probability_eviction_reports[condition] = {
+            "path": str(eviction_path),
+            "sha256": file_sha256(eviction_path),
+            "removed_files": int(eviction["removed_files"]),
+            "removed_bytes": int(eviction["removed_bytes"]),
+        }
+    reference_ifo = str(timing.get("reference_ifo", ""))
+    second_ifo = str(timing.get("second_ifo", ""))
+    physical_delay = float(timing.get("physical_delay_limit_seconds", -1.0))
+    if (
+        reference_ifo == second_ifo
+        or {reference_ifo, second_ifo} != {"H1", "L1"}
+        or not 0 < physical_delay <= 0.01
+    ):
+        raise ValueError("mask timing receipt has an invalid H1/L1 physical delay contract")
+    return {
+        "mask_validation_receipt_path": str(ranking_receipt_path),
+        "mask_validation_receipt_sha256": file_sha256(ranking_receipt_path),
+        "mask_timing_receipt_path": str(timing_path),
+        "mask_timing_receipt_sha256": file_sha256(timing_path),
+        "pipeline_report_path": str(pipeline_path),
+        "pipeline_report_sha256": file_sha256(pipeline_path),
+        "pipeline_code_commit": str(pipeline["code_commit"]),
+        "deglitch_strength": strength,
+        "timing_reports": timing_reports,
+        "injection_ranking_reports": injection_ranking_reports,
+        "probability_eviction_reports": probability_eviction_reports,
+        "reference_ifo": reference_ifo,
+        "second_ifo": second_ifo,
+        "physical_delay_limit_seconds": physical_delay,
+    }
+
+
+def evict_mask_conditioned_background_overrides(
+    cleaning_report: str | Path,
+    mask_score_report: str | Path,
+    mask_candidate_report: str | Path,
+    override_root: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Release cleaned strain only after the mask arm is fully scored and reduced."""
+
+    output_path, intent_path = _prepare_output(output)
+    cleaning = _load_json(cleaning_report)
+    score = _load_json(mask_score_report)
+    candidates = _load_json(mask_candidate_report)
+    manifest_path = Path(str(cleaning.get("manifest_path", "")))
+    trigger_path = Path(str(score.get("triggers_path", "")))
+    candidate_manifest = Path(str(candidates.get("manifest_path", "")))
+    source = candidates.get("source_scoring_provenance", {})
+    if (
+        cleaning.get("status") != "learned_mask_background_analysis_overrides"
+        or not manifest_path.is_file()
+        or cleaning.get("manifest_sha256") != file_sha256(manifest_path)
+        or score.get("status") != "real_o4a_domain_transfer_diagnostic"
+        or score.get("probabilities_saved") is not True
+        or int(score.get("failed_windows", -1)) != 0
+        or int(score.get("analysis_override_windows", -1))
+        != int(cleaning.get("windows", -2))
+        or score.get("manifest_sha256") != file_sha256(manifest_path)
+        or not trigger_path.is_file()
+        or score.get("triggers_sha256") != file_sha256(trigger_path)
+        or candidates.get("status") != "subwindow_cluster_integration_only"
+        or source.get("available") is not True
+        or source.get("score_report_sha256") != file_sha256(mask_score_report)
+        or not candidate_manifest.is_file()
+        or candidates.get("manifest_sha256") != file_sha256(candidate_manifest)
+    ):
+        raise ValueError("mask-conditioned override eviction lacks a complete reduced arm")
+    cleaned_rows = _load_jsonl(manifest_path)
+    trigger_rows = _load_jsonl(trigger_path)
+    cleaned_by_id = {str(row["window_id"]): row for row in cleaned_rows}
+    trigger_by_id = {str(row["window_id"]): row for row in trigger_rows}
+    if (
+        len(cleaned_by_id) != len(cleaned_rows)
+        or len(trigger_by_id) != len(trigger_rows)
+        or set(cleaned_by_id) != set(trigger_by_id)
+        or len(cleaned_rows) != int(cleaning["windows"])
+        or len(trigger_rows) != int(score.get("scored_windows", -1))
+        or int(candidates.get("input_windows", -1)) != len(trigger_rows)
+    ):
+        raise ValueError("mask-conditioned override IDs are incomplete or duplicated")
+    root = Path(override_root).resolve()
+    validated = []
+    for window_id, row in sorted(cleaned_by_id.items()):
+        path = _bounded_file(row["analysis_override_path"], root)
+        expected_sha = str(row["analysis_override_sha256"])
+        trigger = trigger_by_id[window_id]
+        if (
+            not path.is_file()
+            or file_sha256(path) != expected_sha
+            or trigger.get("analysis_override_sha256") != expected_sha
+        ):
+            raise ValueError(f"mask-conditioned override changed before eviction: {path}")
+        validated.append((path, path.stat().st_size, expected_sha))
+    atomic_write_json(
+        intent_path,
+        {
+            "status": "validated_mask_override_eviction_intent",
+            "cleaning_report_sha256": file_sha256(cleaning_report),
+            "mask_score_report_sha256": file_sha256(mask_score_report),
+            "mask_candidate_report_sha256": file_sha256(mask_candidate_report),
+            "targets": [str(path) for path, _, _ in validated],
+        },
+    )
+    removed = []
+    for path, size, sha256 in validated:
+        path.unlink()
+        removed.append({"path": str(path), "bytes": size, "sha256": sha256})
+    result = {
+        "status": "verified_mask_conditioned_override_eviction",
+        "recoverable": True,
+        "recovery": (
+            "re-run the hash-bound raw scorer and learned background deglitch stage before "
+            "re-scoring the mask-conditioned arm"
+        ),
+        "cleaning_report_path": str(Path(cleaning_report).resolve()),
+        "cleaning_report_sha256": file_sha256(cleaning_report),
+        "mask_score_report_path": str(Path(mask_score_report).resolve()),
+        "mask_score_report_sha256": file_sha256(mask_score_report),
+        "mask_candidate_report_path": str(Path(mask_candidate_report).resolve()),
+        "mask_candidate_report_sha256": file_sha256(mask_candidate_report),
+        "override_root": str(root),
+        "removed_files": len(removed),
+        "removed_bytes": sum(row["bytes"] for row in removed),
+        "removed": removed,
+        "intent_path": str(intent_path),
+        "intent_sha256": file_sha256(intent_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def evict_scored_background_batch_sources(
     batch_download_report: str | Path,
     background_plan_report: str | Path,
@@ -262,6 +556,109 @@ def evict_scored_background_batch_sources(
     return result
 
 
+def evict_amplfi_background_batch_sources(
+    batch_download_report: str | Path,
+    background_plan_report: str | Path,
+    amplfi_export_report: str | Path,
+    cache_root: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Release public source HDFs after a hash-complete AMPLFI background export."""
+
+    output_path, intent_path = _prepare_output(output)
+    batch = _load_json(batch_download_report)
+    plan = _load_json(background_plan_report)
+    export = _load_json(amplfi_export_report)
+    if batch.get("status") != "verified_development_strain_batch" or not batch.get("passed"):
+        raise ValueError("AMPLFI source eviction requires a verified GWOSC batch")
+    if (
+        plan.get("status") != "verified_multi_segment_development_background"
+        or not plan.get("passed")
+        or plan.get("split_strategy") != "hash_threshold_v1"
+        or int(plan.get("splits", {}).get("test", {}).get("windows", -1)) != 0
+    ):
+        raise ValueError("AMPLFI source eviction requires a stable train/validation plan")
+    if export.get("status") != "group_safe_amplfi_background":
+        raise ValueError("AMPLFI source eviction requires a complete group-safe export")
+    batch_sha = file_sha256(batch_download_report)
+    bound_batch_hashes = set(
+        str(value) for value in plan.get("source_batch_report_sha256s", [])
+    )
+    if plan.get("source_batch_report_sha256"):
+        bound_batch_hashes.add(str(plan["source_batch_report_sha256"]))
+    if batch_sha not in bound_batch_hashes:
+        raise ValueError("AMPLFI background plan does not bind the supplied batch")
+    manifest_path = Path(str(plan.get("manifest_path", ""))).resolve()
+    if (
+        not manifest_path.is_file()
+        or file_sha256(manifest_path) != plan.get("manifest_sha256")
+        or Path(str(export.get("manifest_path", ""))).resolve() != manifest_path
+        or export.get("manifest_sha256") != plan.get("manifest_sha256")
+        or int(export.get("split_file_counts", {}).get("test", -1)) != 0
+    ):
+        raise ValueError("AMPLFI export does not bind the train/validation background manifest")
+    for row in export.get("files", []):
+        path = Path(str(row.get("path", ""))).resolve()
+        if not path.is_file() or file_sha256(path) != row.get("sha256"):
+            raise ValueError(f"AMPLFI exported background hash mismatch: {path}")
+    batch_sources = {
+        str(Path(row["path"]).resolve()): str(row["sha256"]) for row in batch["files"]
+    }
+    manifest_sources = {
+        str(Path(source["path"]).resolve()): str(source["sha256"])
+        for row in _load_jsonl(manifest_path)
+        for source in row["source_files"].values()
+    }
+    export_sources = {
+        str(Path(source["path"]).resolve()): str(source["sha256"])
+        for row in export.get("files", [])
+        for source in row["source_files"].values()
+    }
+    if manifest_sources != batch_sources or export_sources != batch_sources:
+        raise ValueError("AMPLFI export does not cover every verified batch source")
+    root = Path(cache_root).resolve()
+    validated = []
+    for path_value, expected_sha in sorted(batch_sources.items()):
+        path = _bounded_file(path_value, root)
+        if not path.is_file() or file_sha256(path) != expected_sha:
+            raise ValueError(f"GWOSC source hash mismatch before AMPLFI eviction: {path}")
+        validated.append((path, path.stat().st_size, expected_sha))
+    atomic_write_json(
+        intent_path,
+        {
+            "status": "validated_amplfi_source_eviction_intent",
+            "batch_download_report_sha256": batch_sha,
+            "background_plan_report_sha256": file_sha256(background_plan_report),
+            "amplfi_export_report_sha256": file_sha256(amplfi_export_report),
+            "targets": [str(path) for path, _, _ in validated],
+        },
+    )
+    removed = []
+    for path, size, sha256 in validated:
+        path.unlink()
+        removed.append({"path": str(path), "bytes": size, "sha256": sha256})
+    result = {
+        "status": "verified_exported_amplfi_source_eviction",
+        "recoverable": True,
+        "recovery": "re-run gwosc-batch-download from the hash-bound public plan",
+        "batch_download_report_path": str(Path(batch_download_report).resolve()),
+        "batch_download_report_sha256": batch_sha,
+        "background_plan_report_path": str(Path(background_plan_report).resolve()),
+        "background_plan_report_sha256": file_sha256(background_plan_report),
+        "amplfi_export_report_path": str(Path(amplfi_export_report).resolve()),
+        "amplfi_export_report_sha256": file_sha256(amplfi_export_report),
+        "cache_root": str(root),
+        "removed_files": len(removed),
+        "removed_bytes": sum(row["bytes"] for row in removed),
+        "removed": removed,
+        "intent_path": str(intent_path),
+        "intent_sha256": file_sha256(intent_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_streamed_background_shard(
     parent_plan: str | Path,
     event_exclusions: str | Path,
@@ -284,6 +681,10 @@ def run_streamed_background_shard(
     minimum_bins: int = 1,
     download_workers: int = 8,
     allow_uncalibrated_morphology_baseline: bool = False,
+    verified_source_inventories: Iterable[str | Path] = (),
+    mask_validation_receipt: str | Path | None = None,
+    mask_timing_receipt: str | Path | None = None,
+    scoring_compatibility_report: str | Path | None = None,
 ) -> dict[str, Any]:
     """Download, score, reduce, and safely release one stable-split background shard."""
 
@@ -296,6 +697,40 @@ def run_streamed_background_shard(
     from .manifests import select_jsonl_split
     from .trigger import score_background_manifest
 
+    mask_values = (mask_validation_receipt, mask_timing_receipt)
+    mask_mode = any(value is not None for value in mask_values)
+    if mask_mode and not all(value is not None for value in mask_values):
+        raise ValueError("mask streaming requires both ranking and timing receipts")
+    if mask_mode and allow_uncalibrated_morphology_baseline:
+        raise ValueError("mask streaming cannot use the uncalibrated morphology mode")
+    mask_gate = None
+    if mask_mode:
+        if test_fraction != 0:
+            raise ValueError("mask-conditioned development streaming requires test_fraction=0")
+        mask_gate = validate_mask_conditioned_stream_gate(
+            mask_validation_receipt,  # type: ignore[arg-type]
+            mask_timing_receipt,  # type: ignore[arg-type]
+            checkpoint,
+            config,
+        )
+        timing_calibration_report = mask_gate["timing_reports"]["raw"]["path"]
+        source_commits = {
+            str(value["source_code_commit"])
+            for value in mask_gate["timing_reports"].values()
+        }
+        current_commit = str(execution_provenance()["code_commit"])
+        if source_commits != {current_commit}:
+            if len(source_commits) != 1 or scoring_compatibility_report is None:
+                raise ValueError(
+                    "cross-commit mask streaming requires one scoring compatibility report"
+                )
+            from .code_compatibility import validate_candidate_scoring_compatibility
+
+            validate_candidate_scoring_compatibility(
+                scoring_compatibility_report,
+                next(iter(source_commits)),
+                current_commit,
+            )
     if allow_uncalibrated_morphology_baseline:
         if timing_calibration_report is not None:
             raise ValueError("morphology-only streaming cannot accept timing calibration")
@@ -305,6 +740,7 @@ def run_streamed_background_shard(
         raise ValueError("coherent streaming requires a timing calibration report")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    inventory_paths = [Path(path) for path in verified_source_inventories]
     identity = {
         "parent_plan_sha256": file_sha256(parent_plan),
         "event_exclusions_sha256": file_sha256(event_exclusions),
@@ -328,6 +764,9 @@ def run_streamed_background_shard(
         "chirp_threshold": chirp_threshold,
         "minimum_bins": minimum_bins,
         "download_workers": download_workers,
+        "verified_source_inventory_sha256s": [
+            file_sha256(path) for path in inventory_paths
+        ],
         "streaming_mode": (
             "morphology_only_validation"
             if allow_uncalibrated_morphology_baseline
@@ -335,6 +774,44 @@ def run_streamed_background_shard(
         ),
         "code_commit": execution_provenance()["code_commit"],
     }
+    if mask_gate is not None:
+        identity.update(
+            {
+                "streaming_mode": "paired_raw_mask_empirically_calibrated_timing",
+                "mask_validation_receipt_sha256": mask_gate[
+                    "mask_validation_receipt_sha256"
+                ],
+                "mask_timing_receipt_sha256": mask_gate[
+                    "mask_timing_receipt_sha256"
+                ],
+                "mask_pipeline_report_sha256": mask_gate[
+                    "pipeline_report_sha256"
+                ],
+                "raw_timing_calibration_report_sha256": mask_gate[
+                    "timing_reports"
+                ]["raw"]["sha256"],
+                "mask_timing_calibration_report_sha256": mask_gate[
+                    "timing_reports"
+                ]["mask"]["sha256"],
+                "raw_injection_ranking_report_sha256": mask_gate[
+                    "injection_ranking_reports"
+                ]["raw"]["sha256"],
+                "mask_injection_ranking_report_sha256": mask_gate[
+                    "injection_ranking_reports"
+                ]["mask"]["sha256"],
+                "reference_ifo": mask_gate["reference_ifo"],
+                "second_ifo": mask_gate["second_ifo"],
+                "physical_delay_limit_seconds": mask_gate[
+                    "physical_delay_limit_seconds"
+                ],
+                "deglitch_strength": mask_gate["deglitch_strength"],
+                "scoring_compatibility_report_sha256": (
+                    file_sha256(scoring_compatibility_report)
+                    if scoring_compatibility_report is not None
+                    else None
+                ),
+            }
+        )
     final_path = output / "streamed_background_shard_report.json"
     if final_path.is_file():
         prior = _load_json(final_path)
@@ -369,6 +846,8 @@ def run_streamed_background_shard(
             batch_dir,
             None,
             download_workers,
+            1_048_576,
+            inventory_paths,
         )
 
     background_dir = output / "background"
@@ -404,6 +883,277 @@ def run_streamed_background_shard(
         if not split_counts[split]:
             continue
         split_dir = output / split
+        if mask_gate is not None:
+            split_manifest_report = select_jsonl_split(
+                background["manifest_path"], split, split_dir / "manifest"
+            )
+            reduction_path = split_dir / "paired_raw_mask_reduction_report.json"
+            raw_root = split_dir / "raw"
+            mask_root = split_dir / "mask"
+            cleaning_root = split_dir / "cleaning"
+            raw_score_path = raw_root / "score" / "trigger_score_report.json"
+            raw_candidate_path = (
+                raw_root / "candidates" / "candidate_extraction_report.json"
+            )
+            raw_calibrated_path = raw_root / "candidates_calibrated.jsonl"
+            raw_calibrated_report_path = raw_calibrated_path.with_suffix(
+                raw_calibrated_path.suffix + ".report.json"
+            )
+            cleaning_report_path = (
+                cleaning_root / "learned_background_deglitch_report.json"
+            )
+            mask_score_path = mask_root / "score" / "trigger_score_report.json"
+            mask_candidate_path = (
+                mask_root / "candidates" / "candidate_extraction_report.json"
+            )
+            mask_calibrated_path = mask_root / "candidates_calibrated.jsonl"
+            mask_calibrated_report_path = mask_calibrated_path.with_suffix(
+                mask_calibrated_path.suffix + ".report.json"
+            )
+            if reduction_path.is_file():
+                reduction = _load_json(reduction_path)
+                expected = {
+                    "raw_score_report_sha256": file_sha256(raw_score_path),
+                    "raw_candidate_report_sha256": file_sha256(raw_candidate_path),
+                    "raw_calibrated_report_sha256": file_sha256(
+                        raw_calibrated_report_path
+                    ),
+                    "cleaning_report_sha256": file_sha256(cleaning_report_path),
+                    "mask_score_report_sha256": file_sha256(mask_score_path),
+                    "mask_candidate_report_sha256": file_sha256(mask_candidate_path),
+                    "mask_calibrated_report_sha256": file_sha256(
+                        mask_calibrated_report_path
+                    ),
+                }
+                if (
+                    reduction.get("status")
+                    != "complete_paired_raw_mask_candidate_reduction"
+                    or reduction.get("split") != split
+                    or any(reduction.get(key) != value for key, value in expected.items())
+                ):
+                    raise ValueError(f"existing {split} raw/mask reduction is inconsistent")
+                raw_score = _load_json(raw_score_path)
+                raw_candidates = _load_json(raw_candidate_path)
+                raw_calibrated = _load_json(raw_calibrated_report_path)
+                cleaning = _load_json(cleaning_report_path)
+                mask_score = _load_json(mask_score_path)
+                mask_candidates = _load_json(mask_candidate_path)
+                mask_calibrated = _load_json(mask_calibrated_report_path)
+            else:
+                raw_score = score_background_manifest(
+                    split_manifest_report["manifest_path"],
+                    checkpoint,
+                    config,
+                    raw_root / "score",
+                    model_ifos,
+                    q_values,
+                    target_sample_rate,
+                    context_duration,
+                    True,
+                    split,
+                    None,
+                    coherence_config,
+                )
+                raw_candidates = run_candidate_extraction(
+                    raw_score["triggers_path"],
+                    raw_root / "candidates",
+                    chirp_threshold,
+                    minimum_bins,
+                )
+                raw_calibrated = run_apply_candidate_timing_calibration(
+                    raw_candidates["manifest_path"],
+                    mask_gate["timing_reports"]["raw"]["path"],
+                    raw_calibrated_path,
+                    scoring_compatibility_report,
+                )
+                if raw_calibrated["uncalibrated_candidates"]:
+                    raise RuntimeError(
+                        f"{split} raw candidates exceed their frozen timing support"
+                    )
+                from .learned_deglitch import run_learned_background_deglitch
+
+                cleaning = run_learned_background_deglitch(
+                    split_manifest_report["manifest_path"],
+                    raw_score["triggers_path"],
+                    cleaning_root,
+                    float(mask_gate["deglitch_strength"]),
+                    model_ifos,
+                    target_sample_rate,
+                    context_duration,
+                    split,
+                )
+                mask_score = score_background_manifest(
+                    cleaning["manifest_path"],
+                    checkpoint,
+                    config,
+                    mask_root / "score",
+                    model_ifos,
+                    q_values,
+                    target_sample_rate,
+                    context_duration,
+                    True,
+                    split,
+                    None,
+                    coherence_config,
+                )
+                mask_candidates = run_candidate_extraction(
+                    mask_score["triggers_path"],
+                    mask_root / "candidates",
+                    chirp_threshold,
+                    minimum_bins,
+                )
+                mask_calibrated = run_apply_candidate_timing_calibration(
+                    mask_candidates["manifest_path"],
+                    mask_gate["timing_reports"]["mask"]["path"],
+                    mask_calibrated_path,
+                    scoring_compatibility_report,
+                )
+                if mask_calibrated["uncalibrated_candidates"]:
+                    raise RuntimeError(
+                        f"{split} mask candidates exceed their frozen timing support"
+                    )
+                reduction = {
+                    "status": "complete_paired_raw_mask_candidate_reduction",
+                    "split": split,
+                    "windows": split_counts[split],
+                    "raw_score_report_sha256": file_sha256(raw_score_path),
+                    "raw_candidate_report_sha256": file_sha256(raw_candidate_path),
+                    "raw_calibrated_report_sha256": file_sha256(
+                        raw_calibrated_report_path
+                    ),
+                    "cleaning_report_sha256": file_sha256(cleaning_report_path),
+                    "mask_score_report_sha256": file_sha256(mask_score_path),
+                    "mask_candidate_report_sha256": file_sha256(mask_candidate_path),
+                    "mask_calibrated_report_sha256": file_sha256(
+                        mask_calibrated_report_path
+                    ),
+                    **execution_provenance(),
+                }
+                atomic_write_json(reduction_path, reduction)
+            raw_eviction_path = raw_root / "probability_eviction_report.json"
+            if raw_eviction_path.is_file():
+                raw_eviction = _load_json(raw_eviction_path)
+            else:
+                raw_eviction = evict_candidate_probability_artifacts(
+                    raw_candidate_path,
+                    raw_score_path,
+                    raw_root / "score" / "probabilities",
+                    raw_eviction_path,
+                )
+            if (
+                raw_eviction.get("status")
+                != "verified_candidate_probability_eviction"
+                or raw_eviction.get("score_report_sha256")
+                != file_sha256(raw_score_path)
+                or raw_eviction.get("candidate_extraction_report_sha256")
+                != file_sha256(raw_candidate_path)
+            ):
+                raise ValueError(f"existing {split} raw probability eviction is inconsistent")
+            mask_eviction_path = mask_root / "probability_eviction_report.json"
+            if mask_eviction_path.is_file():
+                mask_eviction = _load_json(mask_eviction_path)
+            else:
+                mask_eviction = evict_candidate_probability_artifacts(
+                    mask_candidate_path,
+                    mask_score_path,
+                    mask_root / "score" / "probabilities",
+                    mask_eviction_path,
+                )
+            if (
+                mask_eviction.get("status")
+                != "verified_candidate_probability_eviction"
+                or mask_eviction.get("score_report_sha256")
+                != file_sha256(mask_score_path)
+                or mask_eviction.get("candidate_extraction_report_sha256")
+                != file_sha256(mask_candidate_path)
+            ):
+                raise ValueError(f"existing {split} mask probability eviction is inconsistent")
+            override_eviction_path = cleaning_root / "override_eviction_report.json"
+            if override_eviction_path.is_file():
+                override_eviction = _load_json(override_eviction_path)
+            else:
+                override_eviction = evict_mask_conditioned_background_overrides(
+                    cleaning_report_path,
+                    mask_score_path,
+                    mask_candidate_path,
+                    cleaning_root / "arrays",
+                    override_eviction_path,
+                )
+            if (
+                override_eviction.get("status")
+                != "verified_mask_conditioned_override_eviction"
+                or override_eviction.get("cleaning_report_sha256")
+                != file_sha256(cleaning_report_path)
+                or override_eviction.get("mask_score_report_sha256")
+                != file_sha256(mask_score_path)
+                or override_eviction.get("mask_candidate_report_sha256")
+                != file_sha256(mask_candidate_path)
+            ):
+                raise ValueError(f"existing {split} mask override eviction is inconsistent")
+            score_report_paths.extend((raw_score_path, mask_score_path))
+            candidate_report_paths.extend((raw_candidate_path, mask_candidate_path))
+            split_artifacts[split] = {
+                "windows": split_counts[split],
+                "paired_reduction_report_sha256": file_sha256(reduction_path),
+                "cleaning_report_sha256": file_sha256(cleaning_report_path),
+                "override_eviction_report_sha256": file_sha256(
+                    override_eviction_path
+                ),
+                "override_files_removed": int(override_eviction["removed_files"]),
+                "arms": {
+                    "raw": {
+                        "score_report_sha256": file_sha256(raw_score_path),
+                        "candidate_report_sha256": file_sha256(raw_candidate_path),
+                        "candidate_manifest_path": str(
+                            raw_candidates["manifest_path"]
+                        ),
+                        "candidate_manifest_sha256": file_sha256(
+                            raw_candidates["manifest_path"]
+                        ),
+                        "calibrated_candidate_manifest_path": str(
+                            raw_calibrated_path
+                        ),
+                        "calibrated_candidate_manifest_sha256": file_sha256(
+                            raw_calibrated_path
+                        ),
+                        "calibrated_candidate_report_sha256": file_sha256(
+                            raw_calibrated_report_path
+                        ),
+                        "probability_eviction_report_sha256": file_sha256(
+                            raw_eviction_path
+                        ),
+                        "probability_files_removed": int(
+                            raw_eviction["removed_files"]
+                        ),
+                    },
+                    "mask": {
+                        "score_report_sha256": file_sha256(mask_score_path),
+                        "candidate_report_sha256": file_sha256(mask_candidate_path),
+                        "candidate_manifest_path": str(
+                            mask_candidates["manifest_path"]
+                        ),
+                        "candidate_manifest_sha256": file_sha256(
+                            mask_candidates["manifest_path"]
+                        ),
+                        "calibrated_candidate_manifest_path": str(
+                            mask_calibrated_path
+                        ),
+                        "calibrated_candidate_manifest_sha256": file_sha256(
+                            mask_calibrated_path
+                        ),
+                        "calibrated_candidate_report_sha256": file_sha256(
+                            mask_calibrated_report_path
+                        ),
+                        "probability_eviction_report_sha256": file_sha256(
+                            mask_eviction_path
+                        ),
+                        "probability_files_removed": int(
+                            mask_eviction["removed_files"]
+                        ),
+                    },
+                },
+            }
+            continue
         score_report_path = split_dir / "score" / "trigger_score_report.json"
         candidate_report_path = (
             split_dir / "candidates" / "candidate_extraction_report.json"
@@ -510,13 +1260,18 @@ def run_streamed_background_shard(
         )
     result = {
         "status": (
-            "verified_streamed_morphology_background_shard"
-            if allow_uncalibrated_morphology_baseline
-            else "verified_streamed_candidate_background_shard"
+            "verified_streamed_raw_mask_candidate_background_shard"
+            if mask_gate is not None
+            else (
+                "verified_streamed_morphology_background_shard"
+                if allow_uncalibrated_morphology_baseline
+                else "verified_streamed_candidate_background_shard"
+            )
         ),
         "scientific_claim_allowed": False,
         "network_coherence_claim_allowed": False,
         "timing_empirically_calibrated": not allow_uncalibrated_morphology_baseline,
+        "paired_raw_mask_arms": mask_gate is not None,
         "scientific_blocker": (
             "morphology-only validation baseline; no test scoring or network-coherence claim is "
             "allowed until a separate empirical timing calibration passes"
@@ -568,6 +1323,7 @@ def run_streamed_morphology_background_shard(
     chirp_threshold: float = 0.3,
     minimum_bins: int = 1,
     download_workers: int = 8,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Stream a validation-only morphology baseline without implying timing coherence."""
     return run_streamed_background_shard(
@@ -592,11 +1348,14 @@ def run_streamed_morphology_background_shard(
         minimum_bins,
         download_workers,
         True,
+        verified_source_inventories,
     )
 
 
 def merge_streamed_background_shards(
-    shard_reports: Iterable[str | Path], output_dir: str | Path
+    shard_reports: Iterable[str | Path],
+    output_dir: str | Path,
+    parent_plan: str | Path | None = None,
 ) -> dict[str, Any]:
     """Merge stable-split background/candidate shards with global overlap checks."""
 
@@ -620,7 +1379,6 @@ def merge_streamed_background_shards(
         if report.get("split_strategy") != "hash_threshold_v1":
             raise ValueError("only stable hash-threshold shards can be merged")
     common_fields = (
-        "parent_plan_sha256",
         "event_exclusions_sha256",
         "timing_calibration_report_sha256",
         "checkpoint_sha256",
@@ -635,6 +1393,7 @@ def merge_streamed_background_shards(
         "context_duration",
         "chirp_threshold",
         "minimum_bins",
+        "pairs_per_shard",
         "streaming_mode",
         "code_commit",
     )
@@ -644,12 +1403,71 @@ def merge_streamed_background_shards(
         for report in reports[1:]
     ):
         raise ValueError("streamed shards do not share one scoring/split identity")
+    reported_parent_hashes = {
+        str(report["run_identity"]["parent_plan_sha256"]) for report in reports
+    }
+    authoritative_plan = None
+    authoritative_plan_path = None
+    authoritative_plan_sha256 = None
+    parent_pair_ids = None
+    base_parent_sha256 = None
+    base_parent_count = None
+    if parent_plan is not None:
+        authoritative_plan_path = Path(parent_plan).resolve()
+        authoritative_plan = _load_json(authoritative_plan_path)
+        parent_pairs = list(authoritative_plan.get("pairs", []))
+        parent_pair_ids = [str(row.get("pair_id", "")) for row in parent_pairs]
+        if (
+            authoritative_plan.get("status") != "development_acquisition_plan"
+            or authoritative_plan.get("locked_evaluation_data") is not False
+            or not parent_pairs
+            or any(not pair_id for pair_id in parent_pair_ids)
+            or len(set(parent_pair_ids)) != len(parent_pair_ids)
+            or int(authoritative_plan.get("selected_pairs", -1)) != len(parent_pairs)
+        ):
+            raise ValueError("stream merge parent is not a complete development plan")
+        authoritative_plan_sha256 = file_sha256(authoritative_plan_path)
+        base_value = authoritative_plan.get("base_parent_plan_sha256")
+        allowed_parent_hashes = {authoritative_plan_sha256}
+        if base_value is not None:
+            base_parent_sha256 = str(base_value)
+            base_parent_count = int(authoritative_plan.get("base_selected_pairs", 0))
+            if (
+                authoritative_plan.get("selection_rule")
+                != "frozen_prefix_stratified_complement_v1"
+                or authoritative_plan.get("candidate_scores_inspected") is not False
+                or not 0 < base_parent_count < len(parent_pair_ids)
+            ):
+                raise ValueError("extended stream parent has an invalid frozen-prefix count")
+            if canonical_hash(parent_pair_ids[:base_parent_count], 64) != str(
+                authoritative_plan.get("base_pair_ids_hash", "")
+            ):
+                raise ValueError("extended stream parent frozen-prefix hash mismatch")
+            base_path = Path(
+                str(authoritative_plan.get("base_parent_plan_path", ""))
+            ).resolve()
+            if not base_path.is_file() or file_sha256(base_path) != base_parent_sha256:
+                raise ValueError("extended stream parent base artifact hash mismatch")
+            base_plan = _load_json(base_path)
+            base_ids = [str(row.get("pair_id", "")) for row in base_plan.get("pairs", [])]
+            if (
+                base_plan.get("status") != "development_acquisition_plan"
+                or base_plan.get("locked_evaluation_data") is not False
+                or int(base_plan.get("selected_pairs", -1)) != base_parent_count
+                or base_ids != parent_pair_ids[:base_parent_count]
+            ):
+                raise ValueError("extended stream parent is not an exact base-plan prefix")
+            allowed_parent_hashes.add(base_parent_sha256)
+        if not reported_parent_hashes <= allowed_parent_hashes:
+            raise ValueError("streamed shard parent is outside the declared plan lineage")
+    elif len(reported_parent_hashes) != 1:
+        raise ValueError("streamed shards do not share one parent plan")
     indices = [int(report["run_identity"]["shard_index"]) for report in reports]
     if len(indices) != len(set(indices)):
         raise ValueError("streamed shard indices repeat")
     parent_counts = {int(report["parent_selected_pairs"]) for report in reports}
     shard_counts = {int(report["shard_count"]) for report in reports}
-    if len(parent_counts) != 1 or len(shard_counts) != 1:
+    if authoritative_plan is None and (len(parent_counts) != 1 or len(shard_counts) != 1):
         raise ValueError("streamed shards disagree on parent plan size")
     ranges = sorted(
         (
@@ -663,6 +1481,37 @@ def merge_streamed_background_shards(
         for (_, left_stop), (right_start, _) in zip(ranges, ranges[1:])
     ):
         raise ValueError("streamed acquisition pair ranges overlap or are empty")
+    if authoritative_plan is not None:
+        if parent_pair_ids is None:
+            raise RuntimeError("authoritative stream parent pair inventory is missing")
+        for report in reports:
+            parent_hash = str(report["run_identity"]["parent_plan_sha256"])
+            start = int(report["pair_index_start_inclusive"])
+            stop = int(report["pair_index_stop_exclusive"])
+            declared_count = int(report["parent_selected_pairs"])
+            expected_count = (
+                base_parent_count
+                if parent_hash == base_parent_sha256
+                else len(parent_pair_ids)
+            )
+            pairs_per_shard = int(report["run_identity"].get("pairs_per_shard", 0))
+            shard_index = int(report["run_identity"].get("shard_index", -1))
+            expected_shards = (
+                math.ceil(expected_count / pairs_per_shard)
+                if expected_count is not None and pairs_per_shard > 0
+                else -1
+            )
+            if (
+                declared_count != expected_count
+                or stop > expected_count
+                or int(report["shard_count"]) != expected_shards
+                or start != shard_index * pairs_per_shard
+            ):
+                raise ValueError("streamed shard range exceeds its declared lineage parent")
+            if canonical_hash(parent_pair_ids[start:stop], 64) != str(
+                report.get("selected_pair_ids_hash", "")
+            ):
+                raise ValueError("streamed shard pair IDs differ from the authoritative plan")
 
     background_rows = []
     candidates_by_split: dict[str, list[dict[str, Any]]] = {"val": [], "test": []}
@@ -759,7 +1608,11 @@ def merge_streamed_background_shards(
             "sha256": file_sha256(path),
             "candidates": len(ordered),
         }
-    parent_count = next(iter(parent_counts))
+    parent_count = (
+        len(parent_pair_ids)
+        if parent_pair_ids is not None
+        else next(iter(parent_counts))
+    )
     covered_indices = {index for start, stop in ranges for index in range(start, stop)}
     complete_parent = covered_indices == set(range(parent_count))
     split_counts = {
@@ -782,6 +1635,18 @@ def merge_streamed_background_shards(
         split_detector_time_seconds[split] = sum(
             _union_duration(intervals) for intervals in intervals_by_ifo.values()
         )
+    common_run_identity = {field: reference.get(field) for field in common_fields}
+    common_run_identity["parent_plan_sha256"] = (
+        authoritative_plan_sha256
+        if authoritative_plan_sha256 is not None
+        else next(iter(reported_parent_hashes))
+    )
+    pairs_per_shard = int(reference.get("pairs_per_shard") or 1)
+    parent_shard_count = (
+        math.ceil(parent_count / pairs_per_shard)
+        if authoritative_plan is not None
+        else next(iter(shard_counts))
+    )
     result = {
         "status": (
             "verified_merged_streamed_morphology_background"
@@ -798,12 +1663,23 @@ def merge_streamed_background_shards(
             else "adequate time-slide exposure, validation-only threshold freeze and an independent "
             "locked test evaluation remain required"
         ),
-        "common_run_identity": {field: reference.get(field) for field in common_fields},
+        "common_run_identity": common_run_identity,
+        "parent_plan_lineage": (
+            {
+                "authoritative_parent_plan_path": str(authoritative_plan_path),
+                "authoritative_parent_plan_sha256": authoritative_plan_sha256,
+                "base_parent_plan_sha256": base_parent_sha256,
+                "base_selected_pairs": base_parent_count,
+                "reported_parent_plan_sha256s": sorted(reported_parent_hashes),
+            }
+            if authoritative_plan is not None
+            else None
+        ),
         "shard_reports": [
             {"path": str(path), "sha256": file_sha256(path)} for path in report_paths
         ],
         "shard_count_merged": len(reports),
-        "parent_shard_count": next(iter(shard_counts)),
+        "parent_shard_count": parent_shard_count,
         "parent_selected_pairs": parent_count,
         "covered_pair_ranges": [list(value) for value in ranges],
         "covered_parent_pair_indices": len(covered_indices),
@@ -842,6 +1718,175 @@ def merge_streamed_background_shards(
         **execution_provenance(),
     }
     atomic_write_json(report_path, result)
+    return result
+
+
+def merge_raw_mask_streamed_background_shards(
+    shard_reports: Iterable[str | Path],
+    output_dir: str | Path,
+    parent_plan: str | Path | None = None,
+) -> dict[str, Any]:
+    """Merge paired raw/mask shards through two independently calibrated arm merges."""
+
+    report_paths = [Path(path).resolve() for path in shard_reports]
+    if not report_paths:
+        raise ValueError("at least one paired raw/mask shard is required")
+    reports = [_load_json(path) for path in report_paths]
+    if any(
+        report.get("status")
+        != "verified_streamed_raw_mask_candidate_background_shard"
+        or report.get("paired_raw_mask_arms") is not True
+        or report.get("split_strategy") != "hash_threshold_v1"
+        or int(report.get("split_counts", {}).get("test", -1)) != 0
+        for report in reports
+    ):
+        raise ValueError("paired raw/mask merge requires validation-only dual-arm shards")
+    common_gate_fields = (
+        "mask_validation_receipt_sha256",
+        "mask_timing_receipt_sha256",
+        "mask_pipeline_report_sha256",
+        "raw_timing_calibration_report_sha256",
+        "mask_timing_calibration_report_sha256",
+        "raw_injection_ranking_report_sha256",
+        "mask_injection_ranking_report_sha256",
+        "reference_ifo",
+        "second_ifo",
+        "physical_delay_limit_seconds",
+        "deglitch_strength",
+        "scoring_compatibility_report_sha256",
+        "checkpoint_sha256",
+        "config_sha256",
+        "coherence_config_sha256",
+        "code_commit",
+    )
+    reference = reports[0]["run_identity"]
+    if any(
+        any(report["run_identity"].get(field) != reference.get(field) for field in common_gate_fields)
+        for report in reports[1:]
+    ):
+        raise ValueError("paired raw/mask shards do not share one frozen gate identity")
+    output = Path(output_dir)
+    final_path = output / "raw_mask_streamed_background_merge_report.json"
+    input_identities = [
+        {"path": str(path), "sha256": file_sha256(path)} for path in report_paths
+    ]
+    if final_path.is_file():
+        prior = _load_json(final_path)
+        if (
+            prior.get("status")
+            != "verified_merged_streamed_raw_mask_candidate_background"
+            or prior.get("shard_reports") != input_identities
+        ):
+            raise ValueError("existing paired raw/mask merge has another identity")
+        return prior
+    output.mkdir(parents=True, exist_ok=True)
+    proxy_root = output / "arm-proxies"
+    proxy_root.mkdir(parents=True, exist_ok=True)
+    arm_results = {}
+    for arm in ("raw", "mask"):
+        proxy_paths = []
+        for index, (source_path, report) in enumerate(zip(report_paths, reports)):
+            proxy_path = proxy_root / arm / f"shard-{index:05d}.json"
+            proxy_path.parent.mkdir(parents=True, exist_ok=True)
+            run_identity = dict(report["run_identity"])
+            run_identity["timing_calibration_report_sha256"] = run_identity[
+                f"{arm}_timing_calibration_report_sha256"
+            ]
+            run_identity["streaming_mode"] = f"paired_raw_mask_arm_{arm}"
+            proxy = {
+                **report,
+                "status": "verified_streamed_candidate_background_shard",
+                "paired_raw_mask_arms": False,
+                "run_identity": run_identity,
+                "run_identity_hash": canonical_hash(run_identity, 64),
+                "split_artifacts": {
+                    split: {
+                        "windows": artifact["windows"],
+                        **artifact["arms"][arm],
+                    }
+                    for split, artifact in report.get("split_artifacts", {}).items()
+                },
+                "paired_source_shard_report_path": str(source_path),
+                "paired_source_shard_report_sha256": file_sha256(source_path),
+                "selected_arm": arm,
+            }
+            if proxy_path.is_file():
+                if _load_json(proxy_path) != proxy:
+                    raise ValueError("existing paired arm proxy has another identity")
+            else:
+                atomic_write_json(proxy_path, proxy)
+            proxy_paths.append(proxy_path)
+        arm_output = output / arm
+        arm_report_path = arm_output / "streamed_background_merge_report.json"
+        if arm_report_path.is_file():
+            merged = _load_json(arm_report_path)
+            if merged.get("status") != "verified_merged_streamed_candidate_background":
+                raise ValueError(f"existing {arm} merge report has the wrong status")
+        else:
+            merged = merge_streamed_background_shards(
+                proxy_paths, arm_output, parent_plan
+            )
+        arm_results[arm] = {
+            "report": merged,
+            "report_path": str(arm_report_path),
+            "report_sha256": file_sha256(arm_report_path),
+        }
+    raw = arm_results["raw"]["report"]
+    mask = arm_results["mask"]["report"]
+    paired_fields = (
+        "parent_selected_pairs",
+        "covered_pair_ranges",
+        "covered_parent_pair_indices",
+        "complete_parent_plan",
+        "background_windows",
+        "gps_blocks",
+        "observing_runs",
+        "available_ifos",
+        "detector_subset_counts",
+        "zero_lag_live_time_seconds",
+        "detector_time_seconds",
+        "split_live_time_seconds",
+        "split_detector_time_seconds",
+        "split_counts",
+        "background_manifest_sha256",
+    )
+    if any(raw.get(field) != mask.get(field) for field in paired_fields):
+        raise ValueError("raw and mask merges do not cover identical physical background")
+    if int(raw.get("split_counts", {}).get("test", -1)) != 0:
+        raise ValueError("paired raw/mask development merge unexpectedly contains test rows")
+    result = {
+        "status": "verified_merged_streamed_raw_mask_candidate_background",
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "scientific_blocker": (
+            "fit paired validation-only time-slide thresholds, verify adequate exposure and "
+            "clean non-inferiority, then evaluate the independently locked test corpus once"
+        ),
+        "shard_reports": input_identities,
+        "common_gate_identity": {
+            field: reference.get(field) for field in common_gate_fields
+        },
+        "background_manifest_path": raw["background_manifest_path"],
+        "background_manifest_sha256": raw["background_manifest_sha256"],
+        "split_counts": raw["split_counts"],
+        "split_live_time_seconds": raw["split_live_time_seconds"],
+        "split_detector_time_seconds": raw["split_detector_time_seconds"],
+        "zero_lag_live_time_seconds": raw["zero_lag_live_time_seconds"],
+        "detector_time_seconds": raw["detector_time_seconds"],
+        "complete_parent_plan": raw["complete_parent_plan"],
+        "arm_merges": {
+            arm: {
+                "report_path": values["report_path"],
+                "report_sha256": values["report_sha256"],
+                "candidate_manifests": values["report"]["candidate_manifests"],
+            }
+            for arm, values in arm_results.items()
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(final_path, result)
     return result
 
 

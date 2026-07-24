@@ -11,6 +11,8 @@ from gwyolo.overlaps import (
     _fft_upsample,
     audit_physical_overlap_manifests,
     build_contaminated_injection_overrides,
+    freeze_physical_overlap_scaling_hard_subset,
+    freeze_physical_overlap_scaling_subsets,
     materialize_physical_overlaps,
     pair_overlap_rows,
 )
@@ -38,7 +40,57 @@ def test_overlap_pairing_is_unique_detector_compatible_and_deterministic() -> No
     assert all(set(g.get("available_ifos", [g["ifo"]])) <= set(i["ifos"]) for g, i in first)
 
 
-def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(tmp_path) -> None:
+def test_overlap_pairing_uses_maximum_detector_subset_flow() -> None:
+    glitches = [
+        {
+            "split": "train",
+            "glitch_id": "single-h1",
+            "network_gps_block": "g0",
+            "ifo": "H1",
+            "available_ifos": ["H1"],
+        },
+        {
+            "split": "train",
+            "glitch_id": "network-h1l1",
+            "network_gps_block": "g1",
+            "ifo": "H1",
+            "available_ifos": ["H1", "L1"],
+        },
+    ]
+    injections = [
+        {
+            "split": "train",
+            "injection_id": "broad",
+            "waveform_id": "w0",
+            "ifos": ["H1", "L1"],
+        },
+        {
+            "split": "train",
+            "injection_id": "h1-only",
+            "waveform_id": "w1",
+            "ifos": ["H1"],
+        },
+    ]
+
+    pairs = pair_overlap_rows(glitches, injections, "train", seed=4)
+    mapping = {glitch["glitch_id"]: injection["injection_id"] for glitch, injection in pairs}
+    assert mapping == {"single-h1": "h1-only", "network-h1l1": "broad"}
+
+    incompatible = [
+        {
+            "split": "train",
+            "injection_id": "l1-only",
+            "waveform_id": "w2",
+            "ifos": ["L1"],
+        }
+    ]
+    with pytest.raises(ValueError, match="No detector-compatible"):
+        pair_overlap_rows(glitches, incompatible, "train", seed=4)
+
+
+def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(
+    tmp_path, monkeypatch
+) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
         """overlap_factory:
@@ -146,6 +198,32 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
     assert report["rendered_image_count"] == 0
     assert report["network_coherence_claim_allowed"] is False
     assert report["gravityspy_corpus_audit_sha256"] == file_sha256(corpus_audit)
+    assert report["resumable_materialization"]["policy"] == (
+        "verified_pairing_prefix_v1"
+    )
+    state = json.loads(
+        (
+            tmp_path / "output" / "physical_overlap_materialization_state.json"
+        ).read_text()
+    )
+    assert state["status"] == "complete"
+    assert state["completed"] == 1
+
+    def should_not_reload(*_args, **_kwargs):
+        raise AssertionError("verified overlap prefix was recomputed")
+
+    monkeypatch.setattr("gwyolo.overlaps._load_gravityspy_sample", should_not_reload)
+    replayed = materialize_physical_overlaps(
+        gravity_manifest,
+        injection_manifest,
+        config,
+        tmp_path / "output",
+        "train",
+        seed=7,
+        gravityspy_corpus_audit=corpus_audit,
+    )
+    assert replayed["manifest_sha256"] == report["manifest_sha256"]
+
     bad_audit = tmp_path / "bad-corpus-audit.json"
     bad_payload = json.loads(corpus_audit.read_text())
     bad_payload["train_manifest_sha256"] = "0" * 64
@@ -167,10 +245,16 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
         assert arrays["detector_availability"].tolist() == [0, 1, 0]
         assert np.count_nonzero(arrays["features"][[0, 2]]) == 0
         assert np.count_nonzero(arrays["chirp_mask"][1]) > 0
-        assert np.array_equal(arrays["glitch_mask"], weak_mask)
+        assert np.count_nonzero(arrays["glitch_mask"][1]) > 0
+        assert np.array_equal(arrays["legacy_metadata_glitch_mask"], weak_mask)
         assert arrays["mixture_strain"][1] == pytest.approx(
             arrays["raw_glitch_strain"][1] + arrays["signal_strain"][1]
         )
+    assert row["mask_provenance"] == "isolated_real_glitch_component_power_v1"
+    assert row["automatic_pseudo_mask"] is True
+    assert row["human_pixel_mask"] is False
+    assert report["manual_annotation_required"] is False
+    assert report["automatic_pseudo_masks"] == 1
 
 
 def test_network_overlap_adds_coherent_signal_to_every_available_ifo(tmp_path) -> None:
@@ -334,3 +418,157 @@ def test_overlap_cross_split_audit_rejects_reused_waveform_or_glitch(tmp_path) -
     )
     with pytest.raises(ValueError, match="split leakage"):
         audit_physical_overlap_manifests([train, val], tmp_path / "audit.json")
+
+
+def test_overlap_scaling_subsets_are_nested_group_safe_and_hash_verified(
+    tmp_path: Path,
+) -> None:
+    corpus_audit = tmp_path / "corpus-audit.json"
+    corpus_audit.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+                "passed": True,
+            }
+        )
+    )
+    corpus_audit_sha256 = file_sha256(corpus_audit)
+    manifests = {}
+    for split, count in (("train", 6), ("val", 2)):
+        rows = []
+        for index in range(count):
+            suffix = f"{split}-{index}"
+            artifact = tmp_path / f"{suffix}.npz"
+            artifact.write_bytes(suffix.encode())
+            rows.append(
+                {
+                    "split": split,
+                    "mixture_id": f"m-{suffix}",
+                    "injection_id": f"i-{suffix}",
+                    "waveform_id": f"w-{suffix}",
+                    "glitch_id": f"g-{suffix}",
+                    "injection_gps_block": f"ib-{suffix}",
+                    "gps_block": f"gb-{suffix}",
+                    "network_gps_block": f"gb-{suffix}",
+                    "path": str(artifact),
+                    "sha256": file_sha256(artifact),
+                    "ml_label": "Blip" if index % 2 == 0 else "Tomte",
+                    "source_family": "BBH" if index % 2 == 0 else "NSBH",
+                    "available_ifos": ["H1", "L1"] if index % 2 == 0 else ["H1"],
+                    "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
+                }
+            )
+        manifest = tmp_path / f"{split}.jsonl"
+        _write_jsonl(manifest, rows)
+        manifests[split] = manifest
+
+    result = freeze_physical_overlap_scaling_subsets(
+        manifests["train"],
+        manifests["val"],
+        corpus_audit,
+        [2, 4],
+        tmp_path / "scales",
+        seed=17,
+        include_full=True,
+    )
+    assert result["passed"] is True
+    assert result["scales"] == [2, 4, 6]
+    assert result["test_rows_read"] == 0
+    assert result["required_training_controls"] == [
+        "fixed_epochs",
+        "fixed_optimizer_updates",
+    ]
+    subsets = []
+    for identity in result["subsets"]:
+        rows = [
+            json.loads(line)
+            for line in Path(identity["manifest_path"]).read_text().splitlines()
+        ]
+        assert len(rows) == identity["scale"]
+        assert identity["unique_physical_counts"]["glitch_id"] == len(rows)
+        subsets.append({row["mixture_id"] for row in rows})
+    assert subsets[0] < subsets[1] < subsets[2]
+
+    tampered = tmp_path / "train-0.npz"
+    tampered.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="artifact hash mismatch"):
+        freeze_physical_overlap_scaling_subsets(
+            manifests["train"],
+            manifests["val"],
+            corpus_audit,
+            [2],
+            tmp_path / "tampered-scales",
+        )
+
+
+def test_overlap_scaling_hard_subset_freezes_four_score_blind_strata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GWYOLO_CODE_COMMIT", "a" * 40)
+    corpus = tmp_path / "hard-corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_safe_gravityspy_aligned_network_corpus",
+                "passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    corpus_sha = file_sha256(corpus)
+    rows = []
+    for index in range(100):
+        artifact = tmp_path / f"hard-{index}.npz"
+        artifact.write_bytes(f"hard-{index}".encode())
+        rows.append(
+            {
+                "split": "val",
+                "mixture_id": f"m-{index}",
+                "injection_id": f"i-{index}",
+                "waveform_id": f"w-{index}",
+                "glitch_id": f"g-{index}",
+                "injection_gps_block": f"ib-{index}",
+                "network_gps_block": f"gb-{index}",
+                "observing_run": "O3b",
+                "ml_label": f"family-{index % 10}",
+                "available_ifos": ["H1", "L1"],
+                "optimal_snr_by_ifo": {"H1": 3.0, "L1": 4.0},
+                "path": str(artifact),
+                "sha256": file_sha256(artifact),
+                "gravityspy_corpus_audit_sha256": corpus_sha,
+            }
+        )
+    validation = tmp_path / "hard-validation.jsonl"
+    _write_jsonl(validation, rows)
+    config = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "physical_overlap_scaling_hard_subset.yaml"
+    )
+
+    result = freeze_physical_overlap_scaling_hard_subset(
+        validation,
+        corpus,
+        config,
+        tmp_path / "hard-subset",
+    )
+
+    assert result["rows"] == 100
+    assert result["candidate_scores_inspected"] is False
+    assert result["model_outputs_inspected"] is False
+    assert result["test_rows_read"] == 0
+    assert set(result["strata"]) == {
+        "low_network_snr",
+        "missing_detector",
+        "o3b_transfer",
+        "rare_glitch_family",
+    }
+    assert all(value["rows"] == 100 for value in result["strata"].values())
+    frozen_rows = [
+        json.loads(line)
+        for line in Path(result["hard_subset_manifest_path"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert frozen_rows[0]["hard_subset_network_snr"] == pytest.approx(5.0)
+    assert len(frozen_rows[0]["hard_subset_strata"]) == 4

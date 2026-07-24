@@ -319,14 +319,32 @@ aligned H1/L1/V1 Gravity Spy bank, then replace both with a detector-set dual-ma
 known-validation-calibrated energy/distance or contrastive OOD arm. The fresh 301-window O4a
 validation shard provides only 0.01145 years of positive-lag exposure and a zero-count 90% upper
 limit of 201.17 events/year. Independent background GPS support, not additional waveform copies,
-is consequently the dominant data acquisition priority. A dated execution snapshot is maintained
-in `docs/STATUS_2026-07-21.md`.
+is consequently the dominant data acquisition priority. The historical snapshot is retained in
+`docs/STATUS_2026-07-21.md`.
 
 The final fixed-GPS representation control is also closed. A precommitted three-resolution STFT
 candidate encoder improves overall top-1 by only 0.17 percentage points and p90 by 0.074 seconds;
 it fails all three material-improvement checks and may not scale to 5k. No further candidate arm may
 claim novelty from waveform multiplication or STFT resolution alone. Resume candidate ranking only
 after independent GPS support and aligned real-glitch/network contexts are available, and require an
-explicit temporal/coherence objective rather than another pooled spectral embedding.
+explicit temporal/coherence objective rather than another pooled spectral embedding. The current
+execution snapshot, including the completed 3,016-row source-safe corpus and detector-compatible
+overlap capacity, is maintained in `docs/STATUS_2026-07-23.md`.
 
 6. reproducibility lead: CI, containers, artifact registry, paper tables.
+
+The real-glitch data-size decision is now executable rather than inferred from rendered counts.
+After source-component-safe aligned overlap materialization, run nested 250/500/1,000/full physical
+mixture prefixes with five paired seeds under both 20 fixed epochs and 4,000 fixed optimizer
+updates. Promote more same-distribution data only when the paired bootstrap and clean non-inferiority
+gates pass under both controls; otherwise prioritize independent GPS/run/family coverage or a new
+representation. This validation-only curve precedes any claim from the 800/880-pair continuous
+background and does not alter the locked O4b/GWTC-5 boundary.
+
+`scripts/run_source_safe_overlap_publication.sh` is the immutable handoff from the expanded
+Gravity Spy audit to the one-seed sampling ablation, validation-only promotion and conditional
+five-seed expansion. It replays the exact checkout, source-corpus hashes, zero cross-split overlap,
+both clean manifests, pretrained checkpoint, arm configs, selected checkpoints and promotion
+receipt. A valid negative promotion is retained atomically and does not start more training; a
+positive promotion must finish all five seeds before the chain receipt can be written. The runner
+reads zero test rows and cannot authorize a search claim.

@@ -33,6 +33,7 @@ MINIMUM_BINS=${MINIMUM_BINS:-1}
 DOWNLOAD_WORKERS=${DOWNLOAD_WORKERS:-2}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
 TARGET_RATE_PER_DETECTOR_YEAR=${TARGET_RATE_PER_DETECTOR_YEAR:-8766}
+VERIFIED_SOURCE_INVENTORY=${VERIFIED_SOURCE_INVENTORY:-}
 
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[0-9]+$ ]] \
@@ -54,6 +55,15 @@ for input in \
     exit 2
   fi
 done
+
+inventory_args=()
+if [[ -n "$VERIFIED_SOURCE_INVENTORY" ]]; then
+  if [[ ! -f "$VERIFIED_SOURCE_INVENTORY" ]]; then
+    echo "verified source inventory is absent: $VERIFIED_SOURCE_INVENTORY" >&2
+    exit 2
+  fi
+  inventory_args+=(--verified-source-inventory "$VERIFIED_SOURCE_INVENTORY")
+fi
 
 read -r -a model_ifos <<<"$MODEL_IFOS"
 read -r -a q_values <<<"$Q_VALUES"
@@ -91,7 +101,8 @@ for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
     --context-duration "$CONTEXT_DURATION" \
     --chirp-threshold "$CHIRP_THRESHOLD" \
     --minimum-bins "$MINIMUM_BINS" \
-    --download-workers "$DOWNLOAD_WORKERS"
+    --download-workers "$DOWNLOAD_WORKERS" \
+    "${inventory_args[@]}"
   report="$shard_output/streamed_background_shard_report.json"
   if [[ ! -s "$report" ]]; then
     echo "streaming shard completed without its immutable report: $shard" >&2

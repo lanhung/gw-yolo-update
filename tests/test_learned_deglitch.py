@@ -93,3 +93,103 @@ def test_background_deglitch_writes_rescorable_override(tmp_path: Path, monkeypa
     with np.load(row["analysis_override_path"], allow_pickle=False) as arrays:
         assert arrays["cleaned_strain"].shape == (3, 128)
         assert np.count_nonzero(arrays["cleaned_strain"][1:]) == 0
+
+
+def test_background_deglitch_uses_numeric_bank_and_ignores_evicted_hdf(
+    tmp_path: Path,
+) -> None:
+    rate = 64
+    context_start = 100.0
+    analysis_start = 101.125
+    analysis_index = int((analysis_start - context_start) * rate)
+    duration = 2.0
+    samples = int(duration * rate)
+    noise = np.stack(
+        [
+            np.linspace(-2.0, 3.0, 256),
+            np.linspace(4.0, -1.0, 256),
+        ]
+    )
+    bank = tmp_path / "bank.npz"
+    np.savez(
+        bank,
+        noise=noise,
+        ifos=np.asarray(["H1", "L1"]),
+        sample_rate=np.asarray(rate),
+        context_gps_start=np.asarray(context_start),
+        analysis_gps_start=np.asarray(analysis_start),
+        analysis_start_index=np.asarray(analysis_index),
+        analysis_stop_index=np.asarray(analysis_index + samples),
+        window_id=np.asarray("numeric-window"),
+    )
+    background = tmp_path / "background.jsonl"
+    background.write_text(
+        json.dumps(
+            {
+                "window_id": "numeric-window",
+                "split": "val",
+                "gps_start": analysis_start,
+                "gps_end": analysis_start + duration,
+                "duration": duration,
+                "gps_block": "O3b:100:64",
+                "ifos": ["H1", "L1"],
+                "background_bank": {
+                    "path": str(bank),
+                    "sha256": file_sha256(bank),
+                },
+                "source_files": {
+                    "H1": {
+                        "path": str(tmp_path / "evicted-H1.hdf5"),
+                        "sha256": "0" * 64,
+                    },
+                    "L1": {
+                        "path": str(tmp_path / "evicted-L1.hdf5"),
+                        "sha256": "1" * 64,
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    probability = tmp_path / "probability.npz"
+    probabilities = np.zeros((3, 1, 8, 8), dtype=np.float32)
+    np.savez(
+        probability,
+        chirp_probability=probabilities,
+        glitch_probability=probabilities,
+        ifos=np.asarray(["H1", "L1", "V1"]),
+        q_values=np.asarray([4]),
+    )
+    scored = tmp_path / "scores.jsonl"
+    scored.write_text(
+        json.dumps(
+            {
+                "window_id": "numeric-window",
+                "probability_path": str(probability),
+                "probability_sha256": file_sha256(probability),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report = run_learned_background_deglitch(
+        background,
+        scored,
+        tmp_path / "cleaned",
+        strength=0.0,
+        model_ifos=("H1", "L1", "V1"),
+        target_sample_rate=rate,
+        context_duration=4.0,
+        required_split="val",
+    )
+    assert report["numeric_background_primary_windows"] == 1
+    assert report["numeric_background_bank_identity_hash"] is not None
+    row = json.loads(Path(report["manifest_path"]).read_text().strip())
+    with np.load(row["analysis_override_path"], allow_pickle=False) as arrays:
+        cleaned = arrays["cleaned_strain"]
+    assert np.allclose(
+        cleaned[:2],
+        noise[:, analysis_index : analysis_index + samples],
+    )
+    assert np.count_nonzero(cleaned[2]) == 0

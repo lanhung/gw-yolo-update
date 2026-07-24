@@ -306,6 +306,7 @@ def materialize_common_pe_inputs(
     asd_guard_seconds: float = 2.0,
     limit: int | None = None,
     selection_seed: int = 20260721,
+    minimum_selected_gps_blocks: int = 1,
 ) -> dict[str, Any]:
     """Build one backend-neutral strain artifact per injection and PE condition."""
 
@@ -323,6 +324,8 @@ def materialize_common_pe_inputs(
         raise ValueError("PE common ASD settings are invalid")
     if limit is not None and limit <= 0:
         raise ValueError("PE source limit must be positive")
+    if minimum_selected_gps_blocks < 1:
+        raise ValueError("PE source GPS-block minimum must be positive")
 
     paths = {
         "clean": Path(clean_manifest).resolve(),
@@ -404,9 +407,43 @@ def materialize_common_pe_inputs(
         eligible.append(injection_id)
 
     eligible.sort(key=lambda injection_id: _selection_key(injection_id, selection_seed))
-    selected_ids = eligible[:limit] if limit is not None else eligible
+    unique_waveform_eligible = []
+    seen_waveforms = set()
+    for injection_id in eligible:
+        waveform_id = str(indexed["clean"][injection_id].get("waveform_id", ""))
+        if not waveform_id:
+            raise ValueError("PE source selection requires waveform IDs")
+        if waveform_id in seen_waveforms:
+            rejection_counts["duplicate_waveform_id"] += 1
+            continue
+        seen_waveforms.add(waveform_id)
+        unique_waveform_eligible.append(injection_id)
+    first_by_block = {}
+    for injection_id in unique_waveform_eligible:
+        block = str(indexed["clean"][injection_id].get("gps_block", ""))
+        if not block:
+            raise ValueError("PE source selection requires GPS blocks")
+        first_by_block.setdefault(block, injection_id)
+    diverse = list(first_by_block.values())
+    diverse_ids = set(diverse)
+    remaining = [
+        injection_id
+        for injection_id in unique_waveform_eligible
+        if injection_id not in diverse_ids
+    ]
+    ordered = diverse + remaining
+    selected_ids = ordered[:limit] if limit is not None else ordered
     if not selected_ids:
         raise ValueError("No paired BBH PE inputs satisfy the common-prior support contract")
+    selected_gps_blocks = {
+        str(indexed["clean"][injection_id]["gps_block"])
+        for injection_id in selected_ids
+    }
+    if len(selected_gps_blocks) < minimum_selected_gps_blocks:
+        raise ValueError(
+            f"PE source selection has {len(selected_gps_blocks)} GPS blocks; "
+            f"requires {minimum_selected_gps_blocks}"
+        )
 
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -427,6 +464,8 @@ def materialize_common_pe_inputs(
         "asd_guard_seconds": asd_guard_seconds,
         "limit": limit,
         "selection_seed": selection_seed,
+        "selection_method": "gps_block_first_then_hash_rank_v1",
+        "minimum_selected_gps_blocks": minimum_selected_gps_blocks,
         "selected_ids_hash": canonical_hash(selected_ids, 64),
     }
     state_path = output / "pe_input_materialization_state.json"
@@ -617,6 +656,11 @@ def materialize_common_pe_inputs(
             "source": "clean off-source materialized noise",
         },
         "eligible_before_limit": len(eligible),
+        "eligible_unique_waveforms": len(unique_waveform_eligible),
+        "selected_unique_waveforms": len(selected_ids),
+        "selected_unique_gps_blocks": len(selected_gps_blocks),
+        "minimum_selected_gps_blocks": minimum_selected_gps_blocks,
+        "selection_method": "gps_block_first_then_hash_rank_v1",
         "rejection_counts": dict(sorted(rejection_counts.items())),
         "selection_seed": selection_seed,
         "selected_ids_hash": run_identity["selected_ids_hash"],

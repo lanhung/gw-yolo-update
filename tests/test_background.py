@@ -10,8 +10,12 @@ import pytest
 
 from gwyolo.background import (
     _assign_blocks_hash_threshold,
+    assign_relative_gps_block_slots,
+    parse_gps_block_identity,
     plan_background_windows,
+    run_background_purpose_partition,
     run_batch_background_plan,
+    run_disjoint_background_subset,
     run_background_plan,
     validate_source_verification,
 )
@@ -31,6 +35,35 @@ def _write_quality_file(path: Path, gps_start: int, duration: int, bad_second: i
         simple.create_dataset("DQmask", data=dq)
         injections = quality.create_group("injections")
         injections.create_dataset("Injmask", data=np.full(duration, 3, dtype=np.int32))
+
+
+def test_gps_block_identity_preserves_observing_run_qualification() -> None:
+    assert parse_gps_block_identity("gps:1000:64") == ("gps", 1000.0, 64.0)
+    assert parse_gps_block_identity("O3b:1000:64") == ("O3b", 1000.0, 64.0)
+    with pytest.raises(ValueError, match="unsupported GPS block"):
+        parse_gps_block_identity("development:1000:64")
+
+
+def test_relative_gps_block_slots_use_physical_order_not_integer_grid() -> None:
+    rows = [
+        {
+            "window_id": "later",
+            "gps_block": "O3b:1000:64",
+            "gps_start": 1033.75,
+            "gps_end": 1037.75,
+        },
+        {
+            "window_id": "earlier",
+            "gps_block": "O3b:1000:64",
+            "gps_start": 1007.125,
+            "gps_end": 1011.125,
+        },
+    ]
+    slots, metadata = assign_relative_gps_block_slots(rows, 4.0)
+    assert slots == {"earlier": 0, "later": 1}
+    assert metadata == {
+        "O3b:1000:64": {"gps_start": 1000.0, "duration": 64.0}
+    }
 
 
 def test_background_windows_use_common_dq_and_disjoint_blocks(tmp_path) -> None:
@@ -291,3 +324,141 @@ def test_batch_background_merges_reports_before_global_split(tmp_path: Path) -> 
     assert len(result["source_batch_report_sha256s"]) == 2
     assert result["unique_gps_blocks"] == 8
     assert all(not values for values in result["cross_split_block_overlaps"].values())
+
+
+def test_disjoint_background_subset_excludes_declared_gps_groups(tmp_path: Path) -> None:
+    manifest = tmp_path / "background.jsonl"
+    rows = [
+        {
+            "window_id": "old",
+            "split": "val",
+            "gps_block": "block-old",
+            "gps_start": 0.0,
+            "gps_end": 8.0,
+        },
+        {
+            "window_id": "fresh-a",
+            "split": "val",
+            "gps_block": "block-fresh",
+            "gps_start": 8.0,
+            "gps_end": 16.0,
+        },
+        {
+            "window_id": "fresh-b",
+            "split": "val",
+            "gps_block": "block-fresh",
+            "gps_start": 16.0,
+            "gps_end": 24.0,
+        },
+        {
+            "window_id": "train",
+            "split": "train",
+            "gps_block": "block-train",
+            "gps_start": 24.0,
+            "gps_end": 32.0,
+        },
+    ]
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = tmp_path / "background-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "passed": True,
+                "split_strategy": "hash_threshold_v1",
+                "split_seed": 7,
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    exclusion = tmp_path / "exclude.jsonl"
+    exclusion.write_text(
+        json.dumps({"gps_block": "block-old"})
+        + "\n"
+        + json.dumps({"gps_block": "block-not-present"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_disjoint_background_subset(
+        manifest, report, [exclusion], tmp_path / "disjoint", "val"
+    )
+
+    selected = [
+        json.loads(line)
+        for line in Path(result["manifest_path"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["window_id"] for row in selected] == ["fresh-a", "fresh-b"]
+    assert result["windows"] == 2
+    assert result["unique_gps_blocks"] == 1
+    assert result["excluded_source_split_windows"] == 1
+    assert result["selected_exclusion_gps_block_overlap"] == 0
+    assert result["splits"]["val"]["live_time_seconds"] == 16.0
+    assert result["splits"]["test"]["windows"] == 0
+    assert result["exclusion_manifests"][0]["sha256"] == file_sha256(exclusion)
+
+
+def test_background_purpose_partition_is_complete_and_group_disjoint(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "validation-background.jsonl"
+    rows = [
+        {
+            "window_id": f"window-{index}",
+            "split": "val",
+            "gps_block": f"block-{index}",
+            "gps_start": float(index * 8),
+            "gps_end": float(index * 8 + 8),
+        }
+        for index in range(20)
+    ]
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    source_report = tmp_path / "validation-background-report.json"
+    source_report.write_text(
+        json.dumps(
+            {
+                "status": "verified_group_disjoint_development_background_subset",
+                "passed": True,
+                "split_strategy": "hash_threshold_v1",
+                "split_seed": 5,
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_background_purpose_partition(
+        manifest, source_report, tmp_path / "purposes", injection_fraction=0.5, seed=7
+    )
+
+    assert result["passed"]
+    assert result["purpose_gps_block_overlap"] == 0
+    assert result["complete_source_gps_block_coverage"] is True
+    assert result["source_unique_gps_blocks"] == 20
+    purpose_blocks = []
+    total_windows = 0
+    total_live_seconds = 0.0
+    for purpose in ("candidate_calibration", "injection_validation"):
+        summary = result["purposes"][purpose]
+        purpose_rows = [
+            json.loads(line)
+            for line in Path(summary["manifest_path"])
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        blocks = {row["gps_block"] for row in purpose_rows}
+        purpose_blocks.append(blocks)
+        assert blocks
+        assert summary["manifest_sha256"] == file_sha256(summary["manifest_path"])
+        assert summary["report_sha256"] == file_sha256(summary["report_path"])
+        total_windows += summary["windows"]
+        total_live_seconds += summary["live_time_seconds"]
+    assert purpose_blocks[0].isdisjoint(purpose_blocks[1])
+    assert purpose_blocks[0] | purpose_blocks[1] == {row["gps_block"] for row in rows}
+    assert total_windows == 20
+    assert total_live_seconds == 160.0

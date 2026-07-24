@@ -126,6 +126,7 @@ def run_mask_search_validation_pipeline(
         model_ifos,
         q_values,
         target_sample_rate,
+        save_probabilities=True,
         required_split="val",
     )
 
@@ -160,6 +161,7 @@ def run_mask_search_validation_pipeline(
         "status": "validation_only_end_to_end_mask_search_pipeline",
         "scientific_claim_allowed": False,
         "promotion_allowed": False,
+        "test_rows_read": 0,
         "development_gates_passed": comparison["development_gates_passed"],
         "scientific_blocker": (
             "passing validation gates still requires continuous clustered time-slide background, "
@@ -169,6 +171,20 @@ def run_mask_search_validation_pipeline(
         "checkpoint_sha256": file_sha256(checkpoint_path),
         "config_path": str(config_path),
         "config_sha256": file_sha256(config_path),
+        "input_manifests": {
+            "background": {
+                "path": str(background_manifest),
+                "sha256": file_sha256(background_manifest),
+            },
+            "clean_injections": {
+                "path": str(clean_injection_manifest),
+                "sha256": file_sha256(clean_injection_manifest),
+            },
+            "contaminated_injections": {
+                "path": str(contaminated_injection_manifest),
+                "sha256": file_sha256(contaminated_injection_manifest),
+            },
+        },
         "strength": strength,
         "maximum_validation_false_alarms": maximum_validation_false_alarms,
         "clean_noninferiority_margin": clean_noninferiority_margin,

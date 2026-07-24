@@ -1,0 +1,178 @@
+publication_evidence:
+  schema: publication_evidence_v1
+  protocol: gw_yolo_gwtc5_locked_final_v1
+  phase: locked_final
+  groups: [governance, search, robustness, pe, catalog, reproducibility]
+  requirements:
+    - id: frozen_locked_suite_plan
+      group: governance
+      description: Complete validation evidence froze every O4b/GWTC-5 output before access.
+      checks:
+        - {field: status, op: equals, value: frozen_locked_evaluation_suite_plan}
+        - {field: passed, op: equals, value: true}
+        - {field: locked_corpus_opened, op: equals, value: false}
+        - {field: test_rows_read, op: equals, value: 0}
+        - {field: candidate_scores_inspected, op: equals, value: false}
+        - {field: inputs, op: length_at_least, value: 14}
+        - {field: outputs, op: length_at_least, value: 9}
+        - {field: required_frozen_artifacts, op: length_at_least, value: 11}
+        - {field: endpoints.primary_search_metric, op: equals, value: paired_delta_recovered_vt_at_common_far}
+        - {field: endpoints.threshold_policy, op: equals, value: validation_frozen_no_test_retuning}
+        - {field: code_commit, op: nonempty}
+      replay_artifacts:
+        - {path_field: validation_evidence.path, sha256_field: validation_evidence.sha256}
+        - {path_field: config.path, sha256_field: config.sha256}
+
+    - id: one_time_locked_access
+      group: governance
+      description: Exclusive access receipt binds the suite, code and all frozen dependencies.
+      checks:
+        - {field: status, op: equals, value: locked_evaluation_corpus_opened_once}
+        - {field: evaluation_opened, op: equals, value: true}
+        - {field: test_metrics, op: equals, value: null}
+        - {field: frozen_artifacts.locked_suite_plan, op: nonempty}
+        - {field: frozen_artifacts.locked_execution_plan, op: nonempty}
+        - {field: comparison_manifest_audits, op: nonempty}
+        - {field: code_commit, op: nonempty}
+        - {field: predeclared_evaluation_output, op: nonempty}
+      replay_artifacts:
+        - {path_field: frozen_artifacts.locked_suite_plan.path, sha256_field: frozen_artifacts.locked_suite_plan.sha256}
+        - {path_field: frozen_artifacts.locked_execution_plan.path, sha256_field: frozen_artifacts.locked_execution_plan.sha256}
+        - {path_field: freeze_report_path, sha256_field: freeze_report_sha256}
+
+    - id: locked_raw_candidate_search
+      group: search
+      description: Raw arm applies its validation-frozen threshold to continuous locked background.
+      checks:
+        - {field: status, op: equals, value: locked_candidate_search_evaluation}
+        - {field: candidate_endpoint_gates_passed, op: equals, value: true}
+        - {field: threshold_source, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audit.passed, op: equals, value: true}
+        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: test_evaluation.injections.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: test_evaluation.injections.bootstrap_independence.passed, op: equals, value: true}
+        - {field: test_evaluation.injections.bootstrap_independence.physical_groups, op: at_least, value: 25}
+        - {field: locked_suite_access.output_key, op: equals, value: raw_candidate_search}
+        - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
+        - {field: test_evaluation.injections.total, op: at_least, value: 3000}
+      replay_artifacts:
+        - {path_field: calibration_report_path, sha256_field: calibration_report_sha256}
+        - {path_field: test_time_slide_report_path, sha256_field: test_time_slide_report_sha256}
+        - {path_field: test_injection_ranking_report_path, sha256_field: test_injection_ranking_report_sha256}
+        - {path_field: background_dependence_audit.background_manifest.path, sha256_field: background_dependence_audit.background_manifest.sha256}
+        - {path_field: background_dependence_audit.candidate_manifest.path, sha256_field: background_dependence_audit.candidate_manifest.sha256}
+        - {path_field: background_dependence_audit.schedule.path, sha256_field: background_dependence_audit.schedule.sha256}
+
+    - id: locked_mask_candidate_search
+      group: search
+      description: Mask arm applies its independent validation-frozen threshold to the same endpoint.
+      checks:
+        - {field: status, op: equals, value: locked_candidate_search_evaluation}
+        - {field: candidate_endpoint_gates_passed, op: equals, value: true}
+        - {field: threshold_source, op: equals, value: frozen_validation_candidate_search_calibration}
+        - {field: background_dependence_audit.status, op: equals, value: candidate_background_dependence_audit_v1}
+        - {field: background_dependence_audit.passed, op: equals, value: true}
+        - {field: background_dependence_audit.three_way_cluster_bootstrap.replicates, op: at_least, value: 10000}
+        - {field: test_evaluation.injections.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: test_evaluation.injections.bootstrap_independence.passed, op: equals, value: true}
+        - {field: test_evaluation.injections.bootstrap_independence.physical_groups, op: at_least, value: 25}
+        - {field: locked_suite_access.output_key, op: equals, value: mask_candidate_search}
+        - {field: test_evaluation.background.live_time_years, op: at_least, value: 23.02585093}
+        - {field: test_evaluation.injections.total, op: at_least, value: 3000}
+      replay_artifacts:
+        - {path_field: calibration_report_path, sha256_field: calibration_report_sha256}
+        - {path_field: test_time_slide_report_path, sha256_field: test_time_slide_report_sha256}
+        - {path_field: test_injection_ranking_report_path, sha256_field: test_injection_ranking_report_sha256}
+        - {path_field: background_dependence_audit.background_manifest.path, sha256_field: background_dependence_audit.background_manifest.sha256}
+        - {path_field: background_dependence_audit.candidate_manifest.path, sha256_field: background_dependence_audit.candidate_manifest.sha256}
+        - {path_field: background_dependence_audit.schedule.path, sha256_field: background_dependence_audit.schedule.sha256}
+
+    - id: locked_paired_raw_mask_vt
+      group: search
+      description: Primary paired raw-minus-mask fixed-FAR recovered-VT endpoint, including null results.
+      checks:
+        - {field: status, op: equals, value: locked_paired_raw_mask_candidate_search_comparison}
+        - {field: endpoint_complete, op: equals, value: true}
+        - {field: threshold_refits_on_test, op: equals, value: 0}
+        - {field: paired_injections, op: at_least, value: 3000}
+        - {field: background_live_time_years, op: at_least, value: 23.02585093}
+        - {field: primary_endpoint_result.metric, op: equals, value: paired_delta_recovered_vt_at_common_far}
+        - {field: paired_vt.bootstrap_independence.status, op: equals, value: injection_bootstrap_independence_audit_v1}
+        - {field: paired_vt.bootstrap_independence.passed, op: equals, value: true}
+        - {field: paired_vt.bootstrap_independence.physical_groups, op: at_least, value: 25}
+        - {field: locked_suite_access.output_key, op: equals, value: paired_raw_mask_search}
+      replay_artifacts:
+        - {path_field: raw_locked_report.path, sha256_field: raw_locked_report.sha256}
+        - {path_field: mask_locked_report.path, sha256_field: mask_locked_report.sha256}
+        - {path_field: validation_comparison_report.path, sha256_field: validation_comparison_report.sha256}
+
+    - id: locked_ood_transfer
+      group: robustness
+      description: Frozen abstention policy is evaluated on O4b detector-set and glitch-family shift.
+      checks:
+        - {field: status, op: equals, value: locked_detector_set_ood_transfer_evaluation}
+        - {field: endpoint_complete, op: equals, value: true}
+        - {field: threshold_refits_on_test, op: equals, value: 0}
+        - {field: locked_suite_access.output_key, op: equals, value: locked_ood_transfer}
+        - {field: unknown_false_acceptance, op: nonempty}
+        - {field: detector_subset_strata, op: nonempty}
+        - {field: observing_run_strata, op: nonempty}
+      replay_artifacts:
+        - {path_field: validation_ood_report.path, sha256_field: validation_ood_report.sha256}
+        - {path_field: locked_score_report.path, sha256_field: locked_score_report.sha256}
+        - {path_field: locked_score_manifest.path, sha256_field: locked_score_manifest.sha256}
+        - {path_field: checkpoint.path, sha256_field: checkpoint.sha256}
+
+    - id: locked_dingo_amplfi_pe_portfolio
+      group: pe
+      description: Matched locked events measure within-backend raw/contaminated/mask PE deltas.
+      checks:
+        - {field: status, op: equals, value: locked_paired_pe_robustness_portfolio_complete}
+        - {field: endpoint_complete, op: equals, value: true}
+        - {field: paired_injections, op: at_least, value: 100}
+        - {field: comparison_scope, op: equals, value: matched_event_within_backend_deltas_only}
+        - {field: absolute_cross_backend_comparison_allowed, op: equals, value: false}
+        - {field: matched_event_gate, op: equals, value: true}
+        - {field: within_backend_provenance_gate, op: equals, value: true}
+        - {field: coverage, op: nonempty}
+        - {field: bias, op: nonempty}
+        - {field: posterior_width, op: nonempty}
+        - {field: latency, op: nonempty}
+        - {field: pe_bootstrap_independence.status, op: equals, value: paired_pe_bootstrap_independence_audit_v1}
+        - {field: pe_bootstrap_independence.passed, op: equals, value: true}
+        - {field: pe_bootstrap_independence.method, op: equals, value: gps_block_then_paired_injection_hierarchical_bootstrap_v1}
+        - {field: pe_bootstrap_independence.physical_groups, op: at_least, value: 25}
+        - {field: locked_suite_access.output_key, op: equals, value: paired_pe_portfolio}
+      replay_artifacts:
+        - {path_field: dingo_batch.path, sha256_field: dingo_batch.sha256}
+        - {path_field: amplfi_batch.path, sha256_field: amplfi_batch.sha256}
+
+    - id: gwtc5_catalog_diagnostic
+      group: catalog
+      description: Candidate recovery is descriptive and uses only the already frozen own-search threshold.
+      checks:
+        - {field: status, op: equals, value: locked_gwtc5_catalog_diagnostic}
+        - {field: endpoint_complete, op: equals, value: true}
+        - {field: descriptive_only, op: equals, value: true}
+        - {field: threshold_refits_on_catalog, op: equals, value: 0}
+        - {field: predictions_retain_all_instances_and_masks, op: equals, value: true}
+        - {field: locked_suite_access.output_key, op: equals, value: catalog_diagnostic}
+      replay_artifacts:
+        - {path_field: candidate_search_report.path, sha256_field: candidate_search_report.sha256}
+        - {path_field: catalog_metadata.path, sha256_field: catalog_metadata.sha256}
+        - {path_field: prediction_manifest.path, sha256_field: prediction_manifest.sha256}
+        - {path_field: prediction_report.path, sha256_field: prediction_report.sha256}
+
+    - id: locked_suite_receipt
+      group: reproducibility
+      description: Final receipt hashes all predeclared outputs and records negative/null endpoints.
+      checks:
+        - {field: status, op: equals, value: completed_locked_evaluation_suite_receipt}
+        - {field: passed, op: equals, value: true}
+        - {field: all_predeclared_outputs_present, op: equals, value: true}
+        - {field: negative_and_null_results_retained, op: equals, value: true}
+        - {field: outputs, op: length_at_least, value: 8}
+        - {field: code_commit, op: nonempty}
+        - {field: exact_command, op: nonempty}
+        - {field: environment, op: nonempty}

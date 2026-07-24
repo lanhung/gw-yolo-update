@@ -27,7 +27,11 @@ AMPLFI_MODEL_METADATA_ARTIFACTS = (
     "native_prior",
     "prior_projection_report",
 )
-DINGO_MODEL_METADATA_ARTIFACTS = ("initialization_model",)
+DINGO_MODEL_METADATA_ARTIFACTS = (
+    "native_prior",
+    "prior_projection_report",
+    "initialization_model",
+)
 
 
 def _run(command: list[str], cwd: Path | None = None) -> str:
@@ -260,6 +264,41 @@ def _audit_amplfi_prior_projection_metadata(
     return projection, failures
 
 
+def _audit_dingo_prior_projection_metadata(
+    artifacts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    failures: list[str] = []
+    projection_artifact = artifacts.get("prior_projection_report", {})
+    projection_path = Path(
+        str(projection_artifact.get("path") or "")
+    ).expanduser().resolve()
+    if not projection_path.is_file():
+        return {}, failures
+    try:
+        projection = load_yaml(projection_path)
+    except (OSError, ValueError) as error:
+        return {}, [f"cannot load DINGO prior projection report: {error}"]
+    if projection.get("status") != "passed" or projection.get("publication_ready") is not True:
+        failures.append("DINGO prior projection report did not pass")
+    if projection.get("failures") not in (None, []):
+        failures.append("DINGO prior projection report contains failures")
+    expected_hashes = {
+        "canonical_prior_sha256": artifacts.get("analysis_prior", {}).get(
+            "observed_sha256"
+        ),
+        "dingo_prior_config_sha256": artifacts.get("native_prior", {}).get(
+            "observed_sha256"
+        ),
+        "dingo_training_config_sha256": artifacts.get("training_config", {}).get(
+            "observed_sha256"
+        ),
+    }
+    for field, expected in expected_hashes.items():
+        if not _valid_sha256(expected) or projection.get(field) != expected:
+            failures.append(f"DINGO prior projection {field} does not match model metadata")
+    return projection, failures
+
+
 def _audit_model_metadata_semantics(
     name: str,
     metadata_path: str | None,
@@ -343,6 +382,11 @@ def _audit_model_metadata_semantics(
             verified_artifacts
         )
         failures.extend(projection_failures)
+    elif name == "DINGO":
+        prior_projection, projection_failures = _audit_dingo_prior_projection_metadata(
+            verified_artifacts
+        )
+        failures.extend(projection_failures)
     selection = verified_artifacts.get("selection_report", {})
     selection_path = selection.get("path")
     if selection_path and Path(selection_path).is_file():
@@ -363,7 +407,7 @@ def _audit_model_metadata_semantics(
                 failures.append("selection metric differs between report and model metadata")
     normalized = dict(metadata)
     normalized["verified_artifacts"] = verified_artifacts
-    if name == "AMPLFI":
+    if name in {"AMPLFI", "DINGO"}:
         normalized["verified_prior_projection"] = prior_projection
     return normalized, [f"{name}: {failure}" for failure in failures]
 
@@ -464,6 +508,10 @@ def audit_pe_backend_lock(config_path: str | Path) -> dict[str, Any]:
                 "analysis_waveform_approximant"
             ):
                 failures.append("DINGO/AMPLFI model metadata differ in analysis waveform")
+            if semantics[0].get("native_model_waveform_approximant") != semantics[1].get(
+                "native_model_waveform_approximant"
+            ):
+                failures.append("DINGO/AMPLFI model metadata differ in native model waveform")
             common_parameters = [
                 sorted(value.get("reported_parameter_mapping", {})) for value in semantics
             ]
@@ -501,6 +549,176 @@ def run_pe_backend_lock_audit(
     if not report["publication_ready"] and not allow_incomplete:
         raise RuntimeError(
             f"PE backend lock is incomplete; inspect the atomic report at {output_path}"
+        )
+    return report
+
+
+def audit_joint_pe_model_compatibility(
+    dingo_metadata_path: str | Path,
+    amplfi_metadata_path: str | Path,
+    dingo_native_prior_path: str | Path,
+    amplfi_native_prior_path: str | Path,
+    dingo_initialization_model_path: str | Path,
+) -> dict[str, Any]:
+    """Audit the model-level boundary for an absolute DINGO/AMPLFI join.
+
+    Official-native checkpoints remain useful for within-backend paired robustness,
+    but they may not enter this contract unless they were validation-selected for the
+    same canonical prior, analysis waveform and source-input definition.
+    """
+
+    contract = {
+        "population": "BBH",
+        "source_ifos": ["H1", "L1"],
+        "source_sample_rate_hz": 4096,
+        "source_duration_seconds": 16,
+        "source_post_trigger_seconds": 2,
+        "common_asd_required": True,
+    }
+    inputs = {
+        "DINGO": {
+            "metadata": Path(dingo_metadata_path).resolve(),
+            "native_prior": Path(dingo_native_prior_path).resolve(),
+        },
+        "AMPLFI": {
+            "metadata": Path(amplfi_metadata_path).resolve(),
+            "native_prior": Path(amplfi_native_prior_path).resolve(),
+        },
+    }
+    failures: list[str] = []
+    backends: dict[str, Any] = {}
+    for backend, paths in inputs.items():
+        metadata_path = paths["metadata"]
+        native_prior_path = paths["native_prior"]
+        if not metadata_path.is_file():
+            failures.append(f"{backend}: model metadata is absent")
+            continue
+        try:
+            raw = load_yaml(metadata_path)
+        except (OSError, ValueError) as error:
+            failures.append(f"{backend}: cannot load model metadata: {error}")
+            continue
+        model_hash = str(raw.get("model_sha256", ""))
+        semantic, semantic_failures = _audit_model_metadata_semantics(
+            backend, str(metadata_path), model_hash, contract
+        )
+        failures.extend(semantic_failures)
+        if raw.get("cross_backend_absolute_comparison_allowed") is False:
+            failures.append(
+                f"{backend}: metadata explicitly forbids absolute cross-backend comparison"
+            )
+        if raw.get("common_prior_equivalent") is False:
+            failures.append(
+                f"{backend}: native checkpoint is explicitly not common-prior equivalent"
+            )
+        model_path = Path(str(raw.get("model_path", ""))).resolve()
+        if not model_path.is_file() or file_sha256(model_path) != model_hash:
+            failures.append(f"{backend}: model path/hash differs from metadata")
+        artifacts = raw.get("artifacts", {})
+        native_prior_identity = artifacts.get("native_prior", {})
+        if (
+            not native_prior_path.is_file()
+            or file_sha256(native_prior_path) != native_prior_identity.get("sha256")
+        ):
+            failures.append(f"{backend}: runtime native prior differs from metadata")
+        backends[backend] = {
+            "metadata_path": str(metadata_path),
+            "metadata_sha256": file_sha256(metadata_path),
+            "model_path": str(model_path),
+            "model_sha256": model_hash,
+            "native_prior_path": str(native_prior_path),
+            "native_prior_sha256": (
+                file_sha256(native_prior_path) if native_prior_path.is_file() else None
+            ),
+            "semantics": semantic,
+        }
+
+    initialization = Path(dingo_initialization_model_path).resolve()
+    dingo_artifacts = backends.get("DINGO", {}).get("semantics", {}).get(
+        "verified_artifacts", {}
+    )
+    initialization_identity = dingo_artifacts.get("initialization_model", {})
+    if (
+        not initialization.is_file()
+        or file_sha256(initialization) != initialization_identity.get("observed_sha256")
+    ):
+        failures.append("DINGO: runtime initialization model differs from metadata")
+
+    if set(backends) == set(REQUIRED_BACKENDS):
+        dingo = backends["DINGO"]["semantics"]
+        amplfi = backends["AMPLFI"]["semantics"]
+        if dingo.get("analysis_waveform_approximant") != amplfi.get(
+            "analysis_waveform_approximant"
+        ):
+            failures.append("DINGO/AMPLFI analysis waveform assumptions differ")
+        if dingo.get("native_model_waveform_approximant") != amplfi.get(
+            "native_model_waveform_approximant"
+        ):
+            failures.append("DINGO/AMPLFI native model waveform assumptions differ")
+        dingo_prior = dingo.get("verified_artifacts", {}).get("analysis_prior", {})
+        amplfi_prior = amplfi.get("verified_artifacts", {}).get("analysis_prior", {})
+        if (
+            not dingo_prior.get("observed_sha256")
+            or dingo_prior.get("observed_sha256")
+            != amplfi_prior.get("observed_sha256")
+        ):
+            failures.append("DINGO/AMPLFI canonical analysis priors differ")
+        dingo_parameters = sorted(dingo.get("reported_parameter_mapping", {}))
+        amplfi_parameters = sorted(amplfi.get("reported_parameter_mapping", {}))
+        if not dingo_parameters or dingo_parameters != amplfi_parameters:
+            failures.append("DINGO/AMPLFI reported common parameter sets differ")
+        if dingo.get("source_input") != amplfi.get("source_input"):
+            failures.append("DINGO/AMPLFI source-input contracts differ")
+
+    unique_failures = list(dict.fromkeys(failures))
+    ready = not unique_failures
+    return {
+        "status": (
+            "joint_pe_models_compatible"
+            if ready
+            else "joint_pe_models_incompatible"
+        ),
+        "publication_ready": ready,
+        "cross_backend_absolute_comparison_allowed": ready,
+        "within_backend_paired_robustness_remains_allowed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation posterior batches and frozen promotion remain required"
+            if ready
+            else "model/prior/waveform compatibility failures forbid an absolute backend join"
+        ),
+        "comparison_contract": contract,
+        "backends": backends,
+        "dingo_initialization_model_path": str(initialization),
+        "dingo_initialization_model_sha256": (
+            file_sha256(initialization) if initialization.is_file() else None
+        ),
+        "failures": unique_failures,
+        "test_rows_read": 0,
+        **execution_provenance(),
+    }
+
+
+def run_joint_pe_model_compatibility_audit(
+    dingo_metadata_path: str | Path,
+    amplfi_metadata_path: str | Path,
+    dingo_native_prior_path: str | Path,
+    amplfi_native_prior_path: str | Path,
+    dingo_initialization_model_path: str | Path,
+    output_path: str | Path,
+    allow_incompatible: bool = False,
+) -> dict[str, Any]:
+    report = audit_joint_pe_model_compatibility(
+        dingo_metadata_path,
+        amplfi_metadata_path,
+        dingo_native_prior_path,
+        amplfi_native_prior_path,
+        dingo_initialization_model_path,
+    )
+    atomic_write_json(output_path, report)
+    if not report["publication_ready"] and not allow_incompatible:
+        raise RuntimeError(
+            "joint PE models are incompatible; inspect the atomic compatibility report"
         )
     return report
 
@@ -567,22 +785,19 @@ def freeze_pe_backend_model_metadata(
         "selection_report": Path(selection_report_path).resolve(),
         "native_conditioning_config": Path(native_conditioning_config_path).resolve(),
     }
-    amplfi_specific = (native_prior_path, prior_projection_report_path)
-    if normalized_backend == "AMPLFI":
-        if any(value is None for value in amplfi_specific):
-            raise ValueError(
-                "AMPLFI model metadata requires native prior and prior projection report"
-            )
-        paths.update(
-            {
-                "native_prior": Path(str(native_prior_path)).resolve(),
-                "prior_projection_report": Path(
-                    str(prior_projection_report_path)
-                ).resolve(),
-            }
+    prior_specific = (native_prior_path, prior_projection_report_path)
+    if any(value is None for value in prior_specific):
+        raise ValueError(
+            f"{normalized_backend} model metadata requires native prior and prior projection report"
         )
-    elif any(value is not None for value in amplfi_specific):
-        raise ValueError("native prior projection artifacts are AMPLFI-specific")
+    paths.update(
+        {
+            "native_prior": Path(str(native_prior_path)).resolve(),
+            "prior_projection_report": Path(
+                str(prior_projection_report_path)
+            ).resolve(),
+        }
+    )
     if normalized_backend == "DINGO":
         if initialization_model_path is None:
             raise ValueError("DINGO model metadata requires an initialization model")
@@ -606,16 +821,22 @@ def freeze_pe_backend_model_metadata(
     selection_metric = selection_report.get("selection_metric")
     if not isinstance(selection_metric, str) or not selection_metric:
         raise ValueError("selection report requires selection_metric")
-    if normalized_backend == "AMPLFI":
-        verified_artifacts = {
-            label: {
-                "path": str(path),
-                "sha256": file_sha256(path),
-                "observed_sha256": file_sha256(path),
-            }
-            for label, path in paths.items()
+    verified_artifacts = {
+        label: {
+            "path": str(path),
+            "sha256": file_sha256(path),
+            "observed_sha256": file_sha256(path),
         }
+        for label, path in paths.items()
+    }
+    if normalized_backend == "AMPLFI":
         _, projection_failures = _audit_amplfi_prior_projection_metadata(
+            verified_artifacts
+        )
+        if projection_failures:
+            raise ValueError("; ".join(projection_failures))
+    else:
+        _, projection_failures = _audit_dingo_prior_projection_metadata(
             verified_artifacts
         )
         if projection_failures:
@@ -733,7 +954,36 @@ def select_lightning_validation_checkpoint(
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("checkpoint index lacks epoch/global_step") from error
         verified.append({**entry, "path": str(path), "epoch": epoch, "global_step": global_step})
-    selectable = [entry for entry in verified if Path(entry["path"]).name != "last.ckpt"]
+    selectable = [
+        entry for entry in verified if Path(entry["path"]).name != "last.ckpt"
+    ]
+    # Lightning commonly exposes the validation-best checkpoint twice: once
+    # through a stable ``best.ckpt`` alias and once through its epoch/step
+    # filename.  They are the same immutable model, not two scientifically
+    # ambiguous candidates.  Collapse only byte-identical aliases with the
+    # same training identity; distinct checkpoint hashes for one epoch remain
+    # fail-closed below.
+    checkpoint_groups: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+    for entry in selectable:
+        identity = (
+            str(entry["sha256"]),
+            int(entry["epoch"]),
+            int(entry["global_step"]),
+        )
+        checkpoint_groups.setdefault(identity, []).append(entry)
+    selectable = []
+    for aliases in checkpoint_groups.values():
+        aliases = sorted(
+            aliases,
+            key=lambda entry: (
+                Path(entry["path"]).name in {"best.ckpt"},
+                Path(entry["path"]).name,
+                entry["path"],
+            ),
+        )
+        canonical = dict(aliases[0])
+        canonical["alias_paths"] = [entry["path"] for entry in aliases]
+        selectable.append(canonical)
     exact = [
         entry
         for entry in selectable
@@ -772,6 +1022,8 @@ def select_lightning_validation_checkpoint(
         "checkpoint_match_rule": match_rule,
         "selected_checkpoint_path": selected["path"],
         "selected_checkpoint_sha256": selected["sha256"],
+        "selected_checkpoint_alias_paths": selected["alias_paths"],
+        "selected_checkpoint_alias_count": len(selected["alias_paths"]),
         "configured_max_epochs": configured_max_epochs,
         "observed_validation_epochs": observed_epochs,
         "validation_points": len(validation_rows),

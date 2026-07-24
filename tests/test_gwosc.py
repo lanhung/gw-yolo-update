@@ -2,27 +2,193 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.request
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 import h5py
 import numpy as np
 import pytest
 
+from gwyolo.io import file_sha256
 from gwyolo.gwosc import (
     _fft_downsample,
+    _download_range,
     _whiten,
     _whiten_with_reference,
+    _remote_size,
+    _urlopen_metadata,
+    audit_gwosc_plan_against_validation_purposes,
     download_resumable,
+    extend_gwosc_run_plan,
     event_strain_files,
     plan_run_strain_pairs,
+    run_disjoint_gwosc_run_plan,
+    run_gwosc_batch_download,
     read_hdf5_segment,
     run_gwosc_event_exclusions,
     run_gwosc_plan_shard,
     run_gwosc_pilot,
+    run_gwtc5_locked_availability_plan,
     verify_hdf5_against_detail,
 )
+
+
+SUITE_CONFIG = (
+    Path(__file__).resolve().parents[1] / "configs/locked_evaluation_suite_gwtc5.yaml"
+)
+
+
+class _MetadataResponse:
+    def __init__(self, payload: bytes = b"{}", content_length: str = "123") -> None:
+        self.payload = payload
+        self.headers = Message()
+        self.headers["Content-Length"] = content_length
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+def test_public_metadata_retry_is_bounded_and_rejects_permanent_http_errors() -> None:
+    request = urllib.request.Request("https://example.test/metadata")
+    response = _MetadataResponse()
+    with (
+        patch(
+            "gwyolo.gwosc.urllib.request.urlopen",
+            side_effect=[URLError("TLS timeout"), response],
+        ) as opener,
+        patch("gwyolo.gwosc.time.sleep") as sleep,
+    ):
+        assert _urlopen_metadata(request, timeout=1, max_attempts=2) is response
+    assert opener.call_count == 2
+    sleep.assert_called_once_with(0.5)
+
+    permanent = HTTPError(request.full_url, 404, "not found", {}, None)
+    with (
+        patch("gwyolo.gwosc.urllib.request.urlopen", side_effect=permanent) as opener,
+        pytest.raises(HTTPError),
+    ):
+        _urlopen_metadata(request, timeout=1, max_attempts=5)
+    assert opener.call_count == 1
+
+
+def test_remote_size_retries_transient_head_failure() -> None:
+    response = _MetadataResponse(content_length="456")
+    with (
+        patch(
+            "gwyolo.gwosc.urllib.request.urlopen",
+            side_effect=[TimeoutError("handshake"), response],
+        ),
+        patch("gwyolo.gwosc.time.sleep"),
+    ):
+        assert _remote_size("https://example.test/file.hdf5") == 456
+
+
+def test_gwtc5_locked_availability_is_metadata_only_and_immutable(tmp_path: Path) -> None:
+    def record(ifo: str, gps: int = 1000) -> dict:
+        return {
+            "gps_start": gps,
+            "detector": ifo,
+            "sample_rate_kHz": 4,
+            "hdf5_url": (
+                f"https://gwosc.org/archive/data/O4b_4KHZ_R1/0/"
+                f"{ifo[0]}-{ifo}_GWOSC_O4b_4KHZ_R1-{gps}-4096.hdf5"
+            ),
+            "detail_url": f"https://gwosc.org/api/v2/strain-files/{ifo}-{gps}-4kHz",
+        }
+
+    access_log = tmp_path / "locked-access.json"
+    output = tmp_path / "availability"
+    api_rows = [record(ifo) for ifo in ("H1", "L1", "V1")]
+    with patch(
+        "gwyolo.gwosc._api_results",
+        return_value=(api_rows, {"api_results_count": 3, "api_pages": 1}),
+    ) as query:
+        report = run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+    query.assert_called_once_with(
+        "https://gwosc.org/api/v2/runs/O4b/strain-files?sample-rate=4&pagesize=500"
+    )
+    assert report["status"] == "score_blind_gwtc5_o4b_availability_inventory"
+    assert report["availability_blocks"] == 1
+    assert report["required_detector_subsets_covered"] is True
+    assert set(report["compatible_detector_subset_counts"]) == {
+        "H1+L1",
+        "H1+V1",
+        "L1+V1",
+        "H1+L1+V1",
+    }
+    assert report["candidate_catalog_queried"] is False
+    assert report["candidate_scores_inspected"] is False
+    assert report["event_level_parameters_inspected"] is False
+    assert report["test_strain_files_downloaded"] == 0
+    assert report["test_strain_bytes_read"] == 0
+    assert report["test_strain_rows_read"] == 0
+    assert not access_log.exists()
+    manifest = Path(report["manifest_path"])
+    assert file_sha256(manifest) == report["manifest_sha256"]
+    row = json.loads(manifest.read_text(encoding="utf-8"))
+    assert row["split"] == "test"
+    assert row["observing_run"] == "O4b"
+    assert row["available_ifos"] == ["H1", "L1", "V1"]
+
+    with patch("gwyolo.gwosc._api_results", side_effect=AssertionError("must not query")):
+        replay = run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+    assert replay == report
+
+    access_log.write_text('{"status":"opened"}\n', encoding="utf-8")
+    with pytest.raises(FileExistsError, match="access log"):
+        run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            access_log,
+            output,
+        )
+
+
+def test_gwtc5_locked_availability_rejects_result_exposure(tmp_path: Path) -> None:
+    rows = [
+        {
+            "gps_start": 1000,
+            "detector": ifo,
+            "sample_rate_kHz": 4,
+            "hdf5_url": (
+                f"https://gwosc.org/archive/data/O4b_4KHZ_R1/0/"
+                f"{ifo[0]}-{ifo}_GWOSC_O4b_4KHZ_R1-1000-4096.hdf5"
+            ),
+            "detail_url": f"https://gwosc.org/api/v2/strain-files/{ifo}-1000-4kHz",
+            "p_astro": 0.9,
+        }
+        for ifo in ("H1", "L1", "V1")
+    ]
+    with (
+        patch(
+            "gwyolo.gwosc._api_results",
+            return_value=(rows, {"api_results_count": 3, "api_pages": 1}),
+        ),
+        pytest.raises(ValueError, match="forbidden result fields"),
+    ):
+        run_gwtc5_locked_availability_plan(
+            SUITE_CONFIG,
+            tmp_path / "access.json",
+            tmp_path / "must-not-exist",
+        )
+    assert not (tmp_path / "must-not-exist" / "gwtc5_o4b_availability.jsonl").exists()
 
 
 def test_gwosc_plan_shards_are_disjoint_and_parent_bound(tmp_path: Path) -> None:
@@ -77,6 +243,220 @@ def test_gwosc_plan_shards_are_disjoint_and_parent_bound(tmp_path: Path) -> None
     assert selected == {row["pair_id"] for row in pairs}
     with pytest.raises(ValueError, match="beyond"):
         run_gwosc_plan_shard(plan, tmp_path / "shard-3.json", 3, 2)
+
+
+def test_gwosc_plan_extension_preserves_parent_prefix_and_is_score_blind(
+    tmp_path: Path,
+) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://example/{ifo}-{gps}.json",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    parent = tmp_path / "parent.json"
+    base_pairs = [pair(100), pair(400)]
+    base = {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": "O4a",
+        "detectors": ["H1", "L1"],
+        "sample_rate_khz": 4,
+        "seed": 7,
+        "source_endpoint": "https://gwosc.org/api/v2/runs/O4a/strain-files",
+        "aligned_pairs_available": 5,
+        "selected_pairs": 2,
+        "pairs": base_pairs,
+    }
+    parent.write_text(json.dumps(base), encoding="utf-8")
+    full = {
+        **base,
+        "api_results_count": 10,
+        "api_pages": 1,
+        "aligned_pairs_available": 5,
+        "selected_pairs": 5,
+        "selected_gps_span": [100, 500],
+        "pairs": [pair(gps) for gps in (100, 200, 300, 400, 500)],
+    }
+    output = tmp_path / "extended.json"
+    with patch("gwyolo.gwosc.plan_run_strain_pairs", return_value=full):
+        extended = extend_gwosc_run_plan(parent, output, 4, extension_seed=9)
+
+    assert extended["pairs"][:2] == base_pairs
+    assert extended["selected_pairs"] == 4
+    assert len({row["pair_id"] for row in extended["pairs"]}) == 4
+    assert extended["base_parent_plan_sha256"] == file_sha256(parent)
+    assert extended["base_selected_pairs"] == 2
+    assert extended["extension_pairs"] == 2
+    assert extended["candidate_scores_inspected"] is False
+    assert extended["selection_data"] == "GWOSC strain-file metadata only"
+    with pytest.raises(FileExistsError, match="immutable"):
+        extend_gwosc_run_plan(parent, output, 5)
+
+
+def test_disjoint_gwosc_plan_excludes_frozen_source_pairs(tmp_path: Path) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}.hdf5",
+                    "detail_url": f"https://example/{ifo}-{gps}.json",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    full_pairs = [pair(gps) for gps in (100, 200, 300, 400, 500, 600)]
+    full = {
+        "status": "development_acquisition_plan",
+        "locked_evaluation_data": False,
+        "run": "O4a",
+        "detectors": ["H1", "L1"],
+        "sample_rate_khz": 4,
+        "seed": 11,
+        "source_endpoint": "https://gwosc.org/api/v2/runs/O4a/strain-files",
+        "aligned_pairs_available": len(full_pairs),
+        "selected_pairs": len(full_pairs),
+        "selected_gps_span": [100, 600],
+        "pairs": full_pairs,
+    }
+    exclusion = tmp_path / "reserved.json"
+    exclusion.write_text(
+        json.dumps({**full, "selected_pairs": 2, "pairs": [full_pairs[1], full_pairs[4]]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "training-plan.json"
+    with patch("gwyolo.gwosc.plan_run_strain_pairs", return_value=full):
+        report = run_disjoint_gwosc_run_plan(
+            "O4a",
+            ["H1", "L1"],
+            [exclusion],
+            output,
+            target_pairs=3,
+            seed=17,
+        )
+    selected = {row["gps_start"] for row in report["pairs"]}
+    assert len(selected) == 3
+    assert not selected & {200, 500}
+    assert report["excluded_unique_pair_ids"] == 2
+    assert report["eligible_pairs_after_exclusion"] == 4
+    assert report["candidate_scores_inspected"] is False
+    assert report["test_data_opened"] is False
+    assert report["exclusion_plans"][0]["sha256"] == file_sha256(exclusion)
+
+
+def test_gwosc_plan_purpose_audit_retains_overlap_and_passes_disjoint_plan(
+    tmp_path: Path,
+) -> None:
+    def pair(gps: int) -> dict:
+        return {
+            "pair_id": f"O4a-{gps}-H1-L1",
+            "run": "O4a",
+            "gps_start": gps,
+            "detectors": {
+                ifo: {
+                    "detector": ifo,
+                    "gps_start": gps,
+                    "sample_rate": 4096,
+                    "hdf5_url": f"https://example/{ifo}-{gps}-4096.hdf5",
+                }
+                for ifo in ("H1", "L1")
+            },
+        }
+
+    manifests = {}
+    reports = {}
+    for role, gps in (("candidate_calibration", 1000), ("injection_validation", 6000)):
+        manifest = tmp_path / f"{role}.jsonl"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "window_id": role,
+                    "split": "val",
+                    "gps_block": f"gps:{gps}:256",
+                    "pair_id": f"O4a-{gps}-H1-L1",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report = tmp_path / f"{role}.json"
+        report.write_text(json.dumps({"role": role}), encoding="utf-8")
+        manifests[role] = manifest
+        reports[role] = report
+    purpose = tmp_path / "purpose.json"
+    purpose.write_text(
+        json.dumps(
+            {
+                "status": "verified_validation_gps_purpose_partition",
+                "passed": True,
+                "purpose_gps_block_overlap": 0,
+                "complete_source_gps_block_coverage": True,
+                "purposes": {
+                    role: {
+                        "manifest_path": str(manifests[role]),
+                        "manifest_sha256": file_sha256(manifests[role]),
+                        "report_path": str(reports[role]),
+                        "report_sha256": file_sha256(reports[role]),
+                    }
+                    for role in manifests
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def write_plan(path: Path, pairs: list[dict]) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "development_acquisition_plan",
+                    "locked_evaluation_data": False,
+                    "run": "O4a",
+                    "candidate_scores_inspected": False,
+                    "selected_pairs": len(pairs),
+                    "pairs": pairs,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    overlapping = tmp_path / "overlapping.json"
+    write_plan(overlapping, [pair(1000), pair(9000)])
+    failed_output = tmp_path / "failed.json"
+    with pytest.raises(RuntimeError, match="overlaps validation-purpose"):
+        audit_gwosc_plan_against_validation_purposes(
+            overlapping, purpose, failed_output
+        )
+    failed = json.loads(failed_output.read_text(encoding="utf-8"))
+    assert failed["passed"] is False
+    assert failed["overlap_pair_ids"] == ["O4a-1000-H1-L1"]
+
+    disjoint = tmp_path / "disjoint.json"
+    write_plan(disjoint, [pair(12000), pair(18000)])
+    passed = audit_gwosc_plan_against_validation_purposes(
+        disjoint, purpose, tmp_path / "passed.json"
+    )
+    assert passed["passed"] is True
+    assert passed["overlap_pair_ids"] == []
+    assert passed["overlap_gps_blocks"] == []
 
 
 def test_reference_whitening_is_linear_for_signal_component() -> None:
@@ -156,6 +536,134 @@ def test_full_hdf5_verification_matches_official_statistics(tmp_path: Path) -> N
     assert report["passed"]
     assert report["strain_samples"] == 4
     assert report["observed_bitsums"] == {"0": 2, "1": 2, "32": 2}
+
+
+def test_batch_download_replays_exact_verified_inventory_without_network(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    run_cache = cache / "O4a"
+    run_cache.mkdir(parents=True)
+    pair = {
+        "pair_id": "O4a-100-H1-L1",
+        "run": "O4a",
+        "gps_start": 100,
+        "detectors": {},
+    }
+    files = []
+    for index, ifo in enumerate(("H1", "L1")):
+        filename = f"{ifo}-100-4096.hdf5"
+        path = run_cache / filename
+        values = np.arange(16, dtype=float) + index
+        with h5py.File(path, "w") as handle:
+            handle.create_group("strain").create_dataset("Strain", data=values)
+            quality = handle.create_group("quality")
+            quality.create_group("simple").create_dataset("DQmask", data=[3, 1])
+            quality.create_group("injections").create_dataset("Injmask", data=[1, 0])
+        detail = {
+            "filesize_bytes": path.stat().st_size,
+            "mean_strain": float(np.mean(values)),
+            "stdev_strain": float(np.std(values)),
+            "min_strain": float(np.min(values)),
+            "max_strain": float(np.max(values)),
+            "nans_fraction": 0.0,
+            "bitsums": [
+                {"bit": 0, "sum": 2},
+                {"bit": 1, "sum": 1},
+                {"bit": 32, "sum": 1},
+            ],
+        }
+        verification = verify_hdf5_against_detail(path, detail, chunk_samples=4)
+        pair["detectors"][ifo] = {
+            "detector": ifo,
+            "gps_start": 100,
+            "sample_rate": 4096,
+            "hdf5_url": f"https://example.test/{filename}",
+            "detail_url": f"https://example.test/{ifo}-detail",
+        }
+        files.append(
+            {
+                "pair_id": pair["pair_id"],
+                "run": "O4a",
+                "gps_start": 100,
+                "detector": ifo,
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "bytes": path.stat().st_size,
+                "downloaded": True,
+                "detail_url": pair["detectors"][ifo]["detail_url"],
+                "verification": verification,
+            }
+        )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "run": "O4a",
+                "detectors": ["H1", "L1"],
+                "sample_rate_khz": 4,
+                "seed": 7,
+                "selected_pairs": 1,
+                "pairs": [pair],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "status": "verified_development_strain_batch",
+                "passed": True,
+                "run": "O4a",
+                "files": files,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("gwyolo.gwosc.download_resumable") as download, patch(
+        "gwyolo.gwosc._api_json"
+    ) as metadata:
+        result = run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "output",
+            download_workers=2,
+            chunk_samples=4,
+            verified_source_inventories=[inventory],
+        )
+
+    download.assert_not_called()
+    metadata.assert_not_called()
+    assert result["verified_files"] == 2
+    assert result["imported_verified_files"] == 2
+    assert all(not row["downloaded"] for row in result["files"])
+    assert result["verified_source_inventory_sha256s"] == [file_sha256(inventory)]
+
+    with Path(files[0]["path"]).open("ab") as handle:
+        handle.write(b"tamper")
+    with pytest.raises(ValueError, match="byte count changed"):
+        run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "tampered-output",
+            download_workers=2,
+            chunk_samples=4,
+            verified_source_inventories=[inventory],
+        )
+
+    inventory.unlink()
+    with pytest.raises(ValueError, match="different run"):
+        run_gwosc_batch_download(
+            plan,
+            cache,
+            tmp_path / "output",
+            download_workers=2,
+            chunk_samples=4,
+        )
 
 
 def test_run_plan_keeps_only_aligned_pairs_and_stratifies() -> None:
@@ -305,3 +813,19 @@ def test_parallel_download_resumes_exact_prefix(tmp_path: Path) -> None:
     assert target.read_bytes() == payload
     assert report["bytes"] == len(payload)
     assert report["downloaded"]
+
+
+def test_range_download_has_a_hard_elapsed_limit(tmp_path: Path) -> None:
+    target = tmp_path / "never-started.part"
+    with patch("gwyolo.gwosc.time.monotonic", side_effect=(0.0, 2.0)):
+        with pytest.raises(IOError, match="elapsed limit"):
+            _download_range(
+                "https://example.invalid/strain.hdf5",
+                target,
+                0,
+                99,
+                16,
+                max_attempts=50,
+                maximum_elapsed_seconds=1.0,
+            )
+    assert not target.exists()

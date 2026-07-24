@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import tempfile
 import time
 import urllib.request
+from collections import Counter
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,12 +17,41 @@ from typing import Any, Iterable
 import numpy as np
 
 from .factory import _normalize_power, multiresolution_power
-from .io import atomic_write_json, canonical_hash, file_sha256
+from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
 API_ROOT = "https://gwosc.org/api/v2"
 USER_AGENT = "GW-YOLO-research/0.1"
+METADATA_MAX_ATTEMPTS = 5
+RETRYABLE_HTTP_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _urlopen_metadata(
+    request: urllib.request.Request,
+    timeout: float,
+    max_attempts: int = METADATA_MAX_ATTEMPTS,
+) -> Any:
+    """Open public metadata with bounded retry for transient transport failures."""
+
+    if max_attempts <= 0:
+        raise ValueError("metadata request max attempts must be positive")
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP_STATUS:
+                raise
+            last_error = exc
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+        if attempt + 1 < max_attempts:
+            time.sleep(min(0.5 * (2**attempt), 8.0))
+    raise IOError(
+        f"public metadata request failed after {max_attempts} attempts: "
+        f"{request.full_url}; last_error={last_error}"
+    ) from last_error
 
 
 def _api_json(url: str) -> dict[str, Any]:
@@ -27,7 +59,7 @@ def _api_json(url: str) -> dict[str, Any]:
         url,
         headers={"Accept": "application/json", "User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _urlopen_metadata(request, timeout=60) as response:
         value = json.load(response)
     if not isinstance(value, dict):
         raise ValueError(f"Expected an object from {url}")
@@ -199,6 +231,556 @@ def run_gwosc_run_plan(
     return {**result, "plan_path": str(output), "plan_sha256": file_sha256(output)}
 
 
+def run_gwtc5_locked_availability_plan(
+    suite_config_path: str | Path,
+    access_log_path: str | Path,
+    output_dir: str | Path,
+    sample_rate_khz: int = 4,
+) -> dict[str, Any]:
+    """Freeze score-blind O4b strain-file availability without downloading strain.
+
+    This is deliberately separate from :func:`run_gwosc_run_plan`: O4b may never be
+    admitted to a development plan.  The only permitted pre-access operation is an
+    exhaustive inventory of official strain-file metadata needed to predeclare a
+    locked injection/background schedule.
+    """
+
+    if sample_rate_khz != 4:
+        raise ValueError("GWTC-5 locked availability requires the frozen 4 kHz source tier")
+    config_path = Path(suite_config_path).resolve()
+    access_log = Path(access_log_path).resolve()
+    output = Path(output_dir).resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError("GWTC-5 locked suite config is absent")
+    if access_log.exists():
+        raise FileExistsError("GWTC-5 access log exists before availability planning")
+    settings = load_yaml(config_path).get("locked_evaluation_suite")
+    if (
+        not isinstance(settings, dict)
+        or settings.get("schema") != "locked_suite_v2"
+        or settings.get("corpus_label") != "GWTC-5.0_O4b_locked_suite_v2"
+        or settings.get("required_split") != "test"
+        or settings.get("observing_runs") != ["O4b"]
+        or settings.get("catalog_release") != "GWTC-5.0"
+    ):
+        raise ValueError("locked availability requires the exact GWTC-5.0/O4b suite")
+    required_subsets = settings.get("endpoints", {}).get("required_detector_subsets")
+    if not isinstance(required_subsets, list) or not required_subsets:
+        raise ValueError("locked suite has no required detector subsets")
+    parsed_subsets: dict[str, frozenset[str]] = {}
+    for label in required_subsets:
+        value = str(label)
+        detectors = frozenset(value.split("+"))
+        if (
+            not detectors
+            or not detectors <= {"H1", "L1", "V1"}
+            or len(detectors) < 2
+            or "+".join(sorted(detectors)) != value
+        ):
+            raise ValueError(f"invalid locked detector subset: {value}")
+        parsed_subsets[value] = detectors
+
+    endpoint = f"{API_ROOT}/runs/O4b/strain-files?sample-rate=4&pagesize=500"
+    identity = {
+        "schema": "score_blind_gwtc5_o4b_availability_v1",
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": file_sha256(config_path),
+        "access_log_path": str(access_log),
+        "source_endpoint": endpoint,
+        "sample_rate_khz": sample_rate_khz,
+        "required_detector_subsets": list(required_subsets),
+    }
+    manifest_path = output / "gwtc5_o4b_availability.jsonl"
+    report_path = output / "gwtc5_o4b_availability_report.json"
+    if report_path.is_file():
+        completed = json.loads(report_path.read_text(encoding="utf-8"))
+        if completed.get("freeze_identity") != identity:
+            raise ValueError("existing locked availability report has another identity")
+        if (
+            not manifest_path.is_file()
+            or completed.get("manifest_sha256") != file_sha256(manifest_path)
+        ):
+            raise ValueError("existing locked availability manifest changed")
+        return completed
+    if manifest_path.exists():
+        raise FileExistsError("partial GWTC-5 locked availability output exists")
+
+    records, api_summary = _api_results(endpoint)
+    if not records:
+        raise ValueError("GWOSC returned no O4b strain-file metadata")
+    forbidden_api_fields = {
+        "candidate_score",
+        "ranking_statistic",
+        "p_astro",
+        "posterior_samples",
+        "model_prediction",
+        "far",
+        "ifar",
+    }
+    by_gps: dict[int, dict[str, dict[str, Any]]] = {}
+    for record in records:
+        exposed = forbidden_api_fields & set(record)
+        if exposed:
+            raise ValueError(
+                f"O4b availability endpoint exposed forbidden result fields: {sorted(exposed)}"
+            )
+        if int(record.get("sample_rate_kHz", -1)) != sample_rate_khz:
+            continue
+        ifo = str(record.get("detector", ""))
+        if ifo not in {"H1", "L1", "V1"}:
+            continue
+        gps_start = int(record.get("gps_start", -1))
+        hdf5_url = str(record.get("hdf5_url", ""))
+        detail_url = str(record.get("detail_url", ""))
+        hdf5_parsed = urlparse(hdf5_url)
+        detail_parsed = urlparse(detail_url)
+        match = re.search(r"-(\d+)-(\d+)\.hdf5$", hdf5_parsed.path)
+        if (
+            gps_start <= 0
+            or hdf5_parsed.scheme != "https"
+            or hdf5_parsed.netloc != "gwosc.org"
+            or detail_parsed.scheme != "https"
+            or detail_parsed.netloc != "gwosc.org"
+            or match is None
+            or int(match.group(1)) != gps_start
+            or int(match.group(2)) <= 0
+        ):
+            raise ValueError("GWOSC O4b availability metadata has an invalid source identity")
+        if ifo in by_gps.setdefault(gps_start, {}):
+            raise ValueError(f"duplicate O4b {ifo} strain metadata at GPS {gps_start}")
+        by_gps[gps_start][ifo] = {
+            "detector": ifo,
+            "gps_start": gps_start,
+            "duration": int(match.group(2)),
+            "sample_rate_khz": sample_rate_khz,
+            "hdf5_url": hdf5_url,
+            "detail_url": detail_url,
+        }
+
+    rows = []
+    for gps_start, sources in sorted(by_gps.items()):
+        available_ifos = sorted(sources)
+        if len(available_ifos) < 2:
+            continue
+        durations = {int(source["duration"]) for source in sources.values()}
+        if len(durations) != 1:
+            raise ValueError(f"O4b detectors disagree about duration at GPS {gps_start}")
+        duration = next(iter(durations))
+        available = frozenset(available_ifos)
+        compatible = [
+            label for label, subset in parsed_subsets.items() if subset <= available
+        ]
+        if not compatible:
+            continue
+        rows.append(
+            {
+                "availability_id": "o4b-availability-"
+                + canonical_hash(
+                    {
+                        "gps_start": gps_start,
+                        "duration": duration,
+                        "available_ifos": available_ifos,
+                    },
+                    24,
+                ),
+                "split": "test",
+                "observing_run": "O4b",
+                "catalog_release": "GWTC-5.0",
+                "gps_start": gps_start,
+                "gps_end": gps_start + duration,
+                "gps_block": f"O4b:{gps_start}:{duration}",
+                "available_ifos": available_ifos,
+                "compatible_detector_subsets": compatible,
+                "sources": {ifo: sources[ifo] for ifo in available_ifos},
+            }
+        )
+    if not rows:
+        raise ValueError("GWOSC O4b metadata produced no multi-detector availability blocks")
+    availability_counts = Counter(
+        subset for row in rows for subset in row["compatible_detector_subsets"]
+    )
+    missing_subsets = sorted(set(parsed_subsets) - set(availability_counts))
+    if missing_subsets:
+        raise ValueError(
+            f"O4b metadata cannot support locked detector subsets: {missing_subsets}"
+        )
+
+    atomic_write_text(
+        manifest_path,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    report = {
+        "status": "score_blind_gwtc5_o4b_availability_inventory",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "locked_evaluation_data": True,
+        "selection_role": "pre_access_metadata_inventory_only",
+        "freeze_identity": identity,
+        "corpus_label": settings["corpus_label"],
+        "catalog_release": settings["catalog_release"],
+        "observing_run": "O4b",
+        "required_split": "test",
+        "source_endpoint": endpoint,
+        **api_summary,
+        "api_metadata_rows_read": len(records),
+        "availability_blocks": len(rows),
+        "unique_gps_blocks": len({row["gps_block"] for row in rows}),
+        "available_ifo_set_counts": dict(
+            sorted(Counter("+".join(row["available_ifos"]) for row in rows).items())
+        ),
+        "compatible_detector_subset_counts": dict(sorted(availability_counts.items())),
+        "required_detector_subsets_covered": True,
+        "candidate_catalog_queried": False,
+        "candidate_scores_inspected": False,
+        "event_level_parameters_inspected": False,
+        "test_strain_files_downloaded": 0,
+        "test_strain_bytes_read": 0,
+        "test_strain_rows_read": 0,
+        "access_log_path": str(access_log),
+        "access_log_exists": False,
+        "suite_config_path": str(config_path),
+        "suite_config_sha256": file_sha256(config_path),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": file_sha256(manifest_path),
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, report)
+    return report
+
+
+def extend_gwosc_run_plan(
+    base_plan_path: str | Path,
+    output: str | Path,
+    target_pairs: int,
+    extension_seed: int | None = None,
+) -> dict[str, Any]:
+    """Append score-blind pairs while preserving a frozen parent as an exact prefix."""
+
+    base_path = Path(base_plan_path).resolve()
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("extended GWOSC acquisition plans are immutable")
+    with base_path.open("r", encoding="utf-8") as handle:
+        base = json.load(handle)
+    base_pairs = list(base.get("pairs", []))
+    base_ids = [str(row.get("pair_id", "")) for row in base_pairs]
+    if (
+        base.get("status") != "development_acquisition_plan"
+        or base.get("locked_evaluation_data") is not False
+        or str(base.get("run", "")).lower().startswith("o4b")
+        or not base_pairs
+        or any(not pair_id for pair_id in base_ids)
+        or len(set(base_ids)) != len(base_ids)
+        or int(base.get("selected_pairs", -1)) != len(base_pairs)
+    ):
+        raise ValueError("GWOSC extension requires a complete unlocked development parent")
+    if base.get("base_parent_plan_sha256") is not None:
+        raise ValueError("GWOSC extension currently requires a root parent plan")
+    if target_pairs <= len(base_pairs):
+        raise ValueError("GWOSC extension target must exceed the frozen parent size")
+
+    run = str(base["run"])
+    detectors = tuple(str(value) for value in base["detectors"])
+    sample_rate_khz = int(base["sample_rate_khz"])
+    base_seed = int(base["seed"])
+    full = plan_run_strain_pairs(
+        run,
+        detectors,
+        sample_rate_khz,
+        maximum_pairs=None,
+        seed=base_seed,
+    )
+    identity_fields = ("run", "detectors", "sample_rate_khz", "source_endpoint")
+    if any(full.get(field) != base.get(field) for field in identity_fields):
+        raise ValueError("current GWOSC inventory does not match the frozen parent identity")
+    full_pairs = list(full["pairs"])
+    if target_pairs > len(full_pairs):
+        raise ValueError("GWOSC extension target exceeds aligned source-pair availability")
+    full_by_id = {str(row["pair_id"]): row for row in full_pairs}
+    if len(full_by_id) != len(full_pairs):
+        raise ValueError("current GWOSC inventory repeats source-pair IDs")
+    for row in base_pairs:
+        pair_id = str(row["pair_id"])
+        if full_by_id.get(pair_id) != row:
+            raise ValueError(
+                f"frozen parent pair {pair_id} is absent or changed in the current inventory"
+            )
+
+    seed = base_seed if extension_seed is None else extension_seed
+    base_id_set = set(base_ids)
+    complement = [row for row in full_pairs if str(row["pair_id"]) not in base_id_set]
+    additional = _stratified_records(complement, target_pairs - len(base_pairs), seed)
+    extended_pairs = [*base_pairs, *additional]
+    extended_ids = [str(row["pair_id"]) for row in extended_pairs]
+    if len(extended_pairs) != target_pairs or len(set(extended_ids)) != target_pairs:
+        raise RuntimeError("GWOSC extension did not produce the requested unique pair count")
+    gps_values = [int(row["gps_start"]) for row in extended_pairs]
+    result = {
+        **{key: value for key, value in full.items() if key != "pairs"},
+        "selected_pairs": len(extended_pairs),
+        "selected_gps_span": [min(gps_values), max(gps_values)],
+        "pairs": extended_pairs,
+        "selection_rule": "frozen_prefix_stratified_complement_v1",
+        "selection_data": "GWOSC strain-file metadata only",
+        "candidate_scores_inspected": False,
+        "base_parent_plan_path": str(base_path),
+        "base_parent_plan_sha256": file_sha256(base_path),
+        "base_selected_pairs": len(base_pairs),
+        "base_pair_ids_hash": canonical_hash(base_ids, 64),
+        "extension_seed": seed,
+        "extension_target_pairs": target_pairs,
+        "extension_pairs": len(additional),
+        "extension_pair_ids_hash": canonical_hash(
+            [str(row["pair_id"]) for row in additional], 64
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
+
+
+def run_disjoint_gwosc_run_plan(
+    run: str,
+    detectors: Iterable[str],
+    exclusion_plan_paths: Iterable[str | Path],
+    output: str | Path,
+    *,
+    target_pairs: int,
+    sample_rate_khz: int = 4,
+    seed: int = 20260727,
+) -> dict[str, Any]:
+    """Select a score-blind development plan disjoint from frozen source-pair plans."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError("disjoint GWOSC acquisition plans are immutable")
+    if target_pairs <= 0:
+        raise ValueError("disjoint GWOSC plan target_pairs must be positive")
+    paths = [Path(path).resolve() for path in exclusion_plan_paths]
+    if not paths:
+        raise ValueError("disjoint GWOSC plan requires at least one exclusion plan")
+    wanted = tuple(sorted(set(str(ifo).upper() for ifo in detectors)))
+    excluded_ids: set[str] = set()
+    excluded_gps: set[int] = set()
+    excluded_rows: dict[str, dict[str, Any]] = {}
+    exclusion_records = []
+    for path in paths:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        pairs = list(plan.get("pairs", []))
+        pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+        gps_values = [int(row.get("gps_start")) for row in pairs]
+        if (
+            plan.get("status") != "development_acquisition_plan"
+            or plan.get("locked_evaluation_data") is not False
+            or plan.get("run") != run
+            or tuple(sorted(plan.get("detectors", []))) != wanted
+            or int(plan.get("sample_rate_khz", -1)) != sample_rate_khz
+            or not pairs
+            or any(not value for value in pair_ids)
+            or len(pair_ids) != len(set(pair_ids))
+            or len(gps_values) != len(set(gps_values))
+            or int(plan.get("selected_pairs", -1)) != len(pairs)
+        ):
+            raise ValueError(f"invalid disjoint GWOSC exclusion plan: {path}")
+        for pair_id, row in zip(pair_ids, pairs):
+            if pair_id in excluded_rows and excluded_rows[pair_id] != row:
+                raise ValueError(f"exclusion plans disagree about source pair: {pair_id}")
+            excluded_rows[pair_id] = row
+        excluded_ids.update(pair_ids)
+        excluded_gps.update(gps_values)
+        exclusion_records.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "selected_pairs": len(pairs),
+                "pair_ids_hash": canonical_hash(pair_ids, 64),
+            }
+        )
+    full = plan_run_strain_pairs(
+        run,
+        wanted,
+        sample_rate_khz=sample_rate_khz,
+        maximum_pairs=None,
+        seed=seed,
+    )
+    full_by_id = {str(row["pair_id"]): row for row in full["pairs"]}
+    changed_exclusions = [
+        pair_id
+        for pair_id, row in excluded_rows.items()
+        if full_by_id.get(pair_id) != row
+    ]
+    if changed_exclusions:
+        raise ValueError(
+            f"frozen exclusion pairs are absent or changed: {changed_exclusions[:5]}"
+        )
+    eligible = [
+        row
+        for row in full["pairs"]
+        if str(row["pair_id"]) not in excluded_ids
+        and int(row["gps_start"]) not in excluded_gps
+    ]
+    if target_pairs > len(eligible):
+        raise ValueError("disjoint GWOSC target exceeds the unreserved source inventory")
+    selected = _stratified_records(eligible, target_pairs, seed)
+    selected_ids = [str(row["pair_id"]) for row in selected]
+    selected_gps = [int(row["gps_start"]) for row in selected]
+    if (
+        len(selected) != target_pairs
+        or len(selected_ids) != len(set(selected_ids))
+        or set(selected_ids) & excluded_ids
+        or set(selected_gps) & excluded_gps
+    ):
+        raise RuntimeError("disjoint GWOSC selection violated source-pair exclusion")
+    result = {
+        **{key: value for key, value in full.items() if key != "pairs"},
+        "status": "development_acquisition_plan",
+        "selected_pairs": len(selected),
+        "selected_gps_span": [min(selected_gps), max(selected_gps)],
+        "pairs": selected,
+        "selection_rule": "stratified_exclusion_complement_v1",
+        "selection_data": "GWOSC strain-file metadata only",
+        "candidate_scores_inspected": False,
+        "test_data_opened": False,
+        "exclusion_plans": exclusion_records,
+        "excluded_unique_pair_ids": len(excluded_ids),
+        "excluded_unique_gps_starts": len(excluded_gps),
+        "eligible_pairs_after_exclusion": len(eligible),
+        "selected_pair_ids_hash": canonical_hash(selected_ids, 64),
+        "selected_gps_starts_hash": canonical_hash(selected_gps, 64),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return {**result, "plan_path": str(target), "plan_sha256": file_sha256(target)}
+
+
+def audit_gwosc_plan_against_validation_purposes(
+    plan_path: str | Path,
+    purpose_partition_report_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Fail closed when a background acquisition plan reuses validation-purpose GPS."""
+
+    target = Path(output_path).resolve()
+    if target.exists():
+        raise FileExistsError("GWOSC purpose-disjoint plan audits are immutable")
+    plan_file = Path(plan_path).resolve()
+    purpose_file = Path(purpose_partition_report_path).resolve()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    purpose = json.loads(purpose_file.read_text(encoding="utf-8"))
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or str(plan.get("run")) != "O4a"
+        or plan.get("candidate_scores_inspected") is not False
+        or not pairs
+        or any(not value for value in pair_ids)
+        or len(pair_ids) != len(set(pair_ids))
+        or int(plan.get("selected_pairs", -1)) != len(pairs)
+    ):
+        raise ValueError("purpose-disjoint audit requires a score-blind O4a plan")
+    purposes = purpose.get("purposes", {})
+    if (
+        purpose.get("status") != "verified_validation_gps_purpose_partition"
+        or purpose.get("passed") is not True
+        or int(purpose.get("purpose_gps_block_overlap", -1)) != 0
+        or purpose.get("complete_source_gps_block_coverage") is not True
+        or set(purposes) != {"candidate_calibration", "injection_validation"}
+    ):
+        raise ValueError("validation purpose partition is invalid")
+
+    plan_intervals = []
+    for pair in pairs:
+        starts = {int(source.get("gps_start", -1)) for source in pair["detectors"].values()}
+        durations = set()
+        for source in pair["detectors"].values():
+            match = re.search(r"-(\d+)-(\d+)\.hdf5$", urlparse(source["hdf5_url"]).path)
+            if match is None or int(match.group(1)) != int(pair["gps_start"]):
+                raise ValueError("GWOSC plan source filename does not bind its GPS interval")
+            durations.add(int(match.group(2)))
+        if starts != {int(pair["gps_start"])} or len(durations) != 1:
+            raise ValueError("GWOSC plan detectors disagree about their GPS interval")
+        duration = next(iter(durations))
+        plan_intervals.append(
+            (int(pair["gps_start"]), int(pair["gps_start"]) + duration, str(pair["pair_id"]))
+        )
+
+    role_summaries = {}
+    overlap_pair_ids: set[str] = set()
+    overlap_blocks: set[str] = set()
+    for role in ("candidate_calibration", "injection_validation"):
+        identity = purposes[role]
+        manifest = Path(str(identity.get("manifest_path", ""))).resolve()
+        report = Path(str(identity.get("report_path", ""))).resolve()
+        if (
+            not manifest.is_file()
+            or identity.get("manifest_sha256") != file_sha256(manifest)
+            or not report.is_file()
+            or identity.get("report_sha256") != file_sha256(report)
+        ):
+            raise ValueError("validation purpose artifact replay failed")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        blocks = {}
+        row_pair_ids = set()
+        for row in rows:
+            block = str(row.get("gps_block", ""))
+            match = re.fullmatch(r"gps:(\d+):(\d+)", block)
+            if match is None or str(row.get("split")) != "val":
+                raise ValueError("validation purpose rows have invalid split/GPS identity")
+            start, duration = int(match.group(1)), int(match.group(2))
+            blocks[block] = (start, start + duration)
+            row_pair_ids.add(str(row.get("pair_id", "")))
+        direct = sorted(set(pair_ids) & row_pair_ids)
+        interval_hits = {
+            (block, pair_id)
+            for block, (block_start, block_end) in blocks.items()
+            for pair_start, pair_end, pair_id in plan_intervals
+            if max(block_start, pair_start) < min(block_end, pair_end)
+        }
+        overlap_pair_ids.update(direct)
+        overlap_pair_ids.update(pair_id for _, pair_id in interval_hits)
+        overlap_blocks.update(block for block, _ in interval_hits)
+        role_summaries[role] = {
+            "rows": len(rows),
+            "unique_gps_blocks": len(blocks),
+            "unique_source_pairs": len(row_pair_ids),
+            "direct_pair_id_overlaps": direct,
+            "gps_interval_overlap_count": len(interval_hits),
+            "gps_interval_overlap_samples": [
+                {"gps_block": block, "pair_id": pair_id}
+                for block, pair_id in sorted(interval_hits)[:20]
+            ],
+            "manifest": {"path": str(manifest), "sha256": file_sha256(manifest)},
+            "report": {"path": str(report), "sha256": file_sha256(report)},
+        }
+    passed = not overlap_pair_ids and not overlap_blocks
+    result = {
+        "status": "verified_gwosc_plan_validation_purpose_disjointness",
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "candidate_scores_inspected": False,
+        "plan": {"path": str(plan_file), "sha256": file_sha256(plan_file)},
+        "purpose_partition": {
+            "path": str(purpose_file),
+            "sha256": file_sha256(purpose_file),
+        },
+        "planned_pairs": len(pairs),
+        "roles": role_summaries,
+        "overlap_pair_ids": sorted(overlap_pair_ids),
+        "overlap_gps_blocks": sorted(overlap_blocks),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    if not passed:
+        raise RuntimeError(
+            "GWOSC acquisition plan overlaps validation-purpose source/GPS blocks"
+        )
+    return result
+
+
 def run_gwosc_plan_shard(
     plan_path: str | Path,
     output: str | Path,
@@ -318,6 +900,7 @@ def run_gwosc_batch_download(
     maximum_pairs: int | None = None,
     download_workers: int = 8,
     chunk_samples: int = 1_048_576,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     with Path(plan_path).open("r", encoding="utf-8") as handle:
         plan = json.load(handle)
@@ -329,11 +912,14 @@ def run_gwosc_batch_download(
     cache = Path(cache_dir)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    inventory_paths = [Path(path) for path in verified_source_inventories]
+    inventory_hashes = [file_sha256(path) for path in inventory_paths]
     run_identity = {
         "plan_sha256": file_sha256(plan_path),
         "selected_pair_ids_hash": canonical_hash([row["pair_id"] for row in pairs], 64),
         "download_workers": download_workers,
         "chunk_samples": chunk_samples,
+        "verified_source_inventory_sha256s": inventory_hashes,
     }
     state_path = output / "batch_download_state.json"
     partial_path = output / "batch_download_partial.json"
@@ -352,6 +938,33 @@ def run_gwosc_batch_download(
         if key in completed_keys or file_sha256(row["path"]) != row["sha256"]:
             raise ValueError(f"Invalid resumable batch-download entry: {key}")
         completed_keys.add(key)
+    requested = {
+        (str(pair["pair_id"]), str(ifo)): (pair, str(ifo), record)
+        for pair in pairs
+        for ifo, record in pair["detectors"].items()
+    }
+    imported = _import_verified_batch_sources(
+        inventory_paths,
+        requested,
+        cache,
+        str(plan["run"]),
+        chunk_samples,
+    )
+    for key, entry in sorted(imported.items()):
+        if key in completed_keys:
+            continue
+        completed.append(entry)
+        completed_keys.add(key)
+        atomic_write_json(partial_path, {"run_identity": run_identity, "files": completed})
+        atomic_write_json(
+            state_path,
+            {
+                "status": "in_progress",
+                "run_identity": run_identity,
+                "completed_files": len(completed),
+                "requested_files": len(requested),
+            },
+        )
     for pair in pairs:
         for ifo, record in sorted(pair["detectors"].items()):
             key = (str(pair["pair_id"]), str(ifo))
@@ -398,6 +1011,10 @@ def run_gwosc_batch_download(
         "plan_sha256": run_identity["plan_sha256"],
         "selected_pairs": len(pairs),
         "verified_files": len(completed),
+        "imported_verified_files": sum(
+            bool(row.get("imported_from_verified_source_inventory")) for row in completed
+        ),
+        "verified_source_inventory_sha256s": inventory_hashes,
         "files": completed,
         **execution_provenance(),
     }
@@ -414,6 +1031,91 @@ def run_gwosc_batch_download(
         },
     )
     return result
+
+
+def _import_verified_batch_sources(
+    inventory_paths: Iterable[Path],
+    requested: dict[tuple[str, str], tuple[dict[str, Any], str, dict[str, Any]]],
+    cache_dir: Path,
+    run: str,
+    chunk_samples: int,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Offline-reverify exact requested sources from completed batch reports."""
+
+    imported: dict[tuple[str, str], dict[str, Any]] = {}
+    for inventory_path in inventory_paths:
+        with inventory_path.open("r", encoding="utf-8") as handle:
+            inventory = json.load(handle)
+        if (
+            inventory.get("status") != "verified_development_strain_batch"
+            or not inventory.get("passed")
+            or str(inventory.get("run")) != run
+        ):
+            raise ValueError("Verified source inventory is not a passing batch for this run")
+        inventory_sha = file_sha256(inventory_path)
+        for source in inventory.get("files", []):
+            key = (str(source.get("pair_id")), str(source.get("detector")))
+            request = requested.get(key)
+            if request is None:
+                continue
+            pair, ifo, record = request
+            filename = Path(urlparse(str(record["hdf5_url"])).path).name
+            expected_path = (cache_dir / run / filename).resolve()
+            source_path = Path(str(source.get("path", ""))).resolve()
+            verification = source.get("verification", {})
+            if (
+                str(source.get("run")) != run
+                or int(source.get("gps_start", -1)) != int(pair["gps_start"])
+                or str(source.get("detail_url")) != str(record["detail_url"])
+                or str(source.get("detector")) != ifo
+                or source_path != expected_path
+                or str(verification.get("path", "")) != str(source.get("path", ""))
+                or not verification.get("passed")
+                or int(source.get("bytes", -1)) != int(verification.get("bytes", -2))
+                or str(source.get("sha256")) != str(verification.get("sha256"))
+            ):
+                raise ValueError(f"Verified source inventory entry differs from request: {key}")
+            if not source_path.is_file():
+                raise ValueError(f"Verified source inventory file is absent: {source_path}")
+            if source_path.stat().st_size != int(source["bytes"]):
+                raise ValueError(f"Verified source inventory byte count changed: {source_path}")
+            if file_sha256(source_path) != str(source["sha256"]):
+                raise ValueError(f"Verified source inventory hash changed: {source_path}")
+            expected = dict(verification.get("expected", {}))
+            bitsums = dict(verification.get("observed_bitsums", {}))
+            if not expected or not bitsums:
+                raise ValueError(f"Verified source inventory lacks full HDF evidence: {key}")
+            detail = {
+                **expected,
+                "bitsums": [
+                    {"bit": int(bit), "sum": int(value)}
+                    for bit, value in sorted(bitsums.items(), key=lambda item: int(item[0]))
+                ],
+            }
+            offline_verification = verify_hdf5_against_detail(
+                source_path, detail, chunk_samples
+            )
+            if not offline_verification["passed"]:
+                raise ValueError(f"Verified source inventory failed offline replay: {key}")
+            entry = {
+                "pair_id": pair["pair_id"],
+                "run": run,
+                "gps_start": pair["gps_start"],
+                "detector": ifo,
+                "path": str(source_path),
+                "sha256": offline_verification["sha256"],
+                "bytes": offline_verification["bytes"],
+                "downloaded": False,
+                "detail_url": record["detail_url"],
+                "verification": offline_verification,
+                "imported_from_verified_source_inventory": str(inventory_path),
+                "imported_from_verified_source_inventory_sha256": inventory_sha,
+            }
+            prior = imported.get(key)
+            if prior is not None and prior != entry:
+                raise ValueError(f"Verified source inventories conflict for {key}")
+            imported[key] = entry
+    return imported
 
 
 def verify_hdf5_against_detail(
@@ -540,7 +1242,7 @@ def run_gwosc_verification(
 
 def _remote_size(url: str) -> int | None:
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _urlopen_metadata(request, timeout=60) as response:
         value = response.headers.get("Content-Length")
     return int(value) if value else None
 
@@ -552,10 +1254,16 @@ def _download_range(
     stop: int,
     chunk_size: int,
     max_attempts: int = 50,
+    maximum_elapsed_seconds: float = 900.0,
 ) -> None:
+    if max_attempts <= 0 or maximum_elapsed_seconds <= 0:
+        raise ValueError("range download retry and elapsed limits must be positive")
     expected = stop - start + 1
     last_error: BaseException | None = None
+    started = time.monotonic()
     for attempt in range(max_attempts):
+        if time.monotonic() - started >= maximum_elapsed_seconds:
+            break
         present = path.stat().st_size if path.exists() else 0
         if present == expected:
             return
@@ -574,18 +1282,24 @@ def _download_range(
                     )
                 with path.open("ab") as handle:
                     while True:
+                        if time.monotonic() - started >= maximum_elapsed_seconds:
+                            raise TimeoutError(
+                                "range download exceeded its wall-clock limit"
+                            )
                         chunk = response.read(chunk_size)
                         if not chunk:
                             break
                         handle.write(chunk)
         except (OSError, TimeoutError) as exc:
             last_error = exc
-        if path.stat().st_size == expected:
+        if path.exists() and path.stat().st_size == expected:
             return
         time.sleep(min(0.25 * (attempt + 1), 2.0))
+    present = path.stat().st_size if path.exists() else 0
     raise IOError(
-        f"Incomplete range {start}-{stop} after {max_attempts} attempts: "
-        f"{path.stat().st_size} != {expected}; last_error={last_error}"
+        f"Incomplete range {start}-{stop} after {max_attempts} attempts or "
+        f"{maximum_elapsed_seconds:.1f}s elapsed limit: "
+        f"{present} != {expected}; last_error={last_error}"
     )
 
 

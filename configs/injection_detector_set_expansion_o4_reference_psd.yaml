@@ -1,0 +1,13 @@
+detector_set_expansion:
+  role: detector_set_robustness_ablation_not_same_distribution_scaling
+  target_ifos: [H1, L1, V1]
+  reference_psd_models_by_ifo:
+    H1: aLIGOAdVO4T1800545
+    L1: aLIGOAdVO4T1800545
+    V1: AdVO4T1800545
+  low_frequency_hz: 20.0
+  high_frequency_hz: 500.0
+  minimum_common_ifo_normalized_overlap: 0.999
+  maximum_common_ifo_relative_l2_error: 0.01
+  storage_mode: signal_scaled_float16
+  empirical_noise_transfer_required: true

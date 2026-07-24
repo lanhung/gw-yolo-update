@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).parents[1] / "scripts" / "run_mask_conditioned_background_range.sh"
+
+
+def test_mask_conditioned_background_runner_is_gate_bound_and_validation_only() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
+    for token in (
+        "MASK_VALIDATION_RECEIPT",
+        "MASK_TIMING_RECEIPT",
+        "INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
+        "VALIDATION_PURPOSE_AUDIT",
+        "CAPACITY_FORECAST",
+        "candidate-background-plan-authorize",
+        "publication_background_plan_authorization.json",
+        "authorized_validation_candidate_continuous_background_plan",
+        '"background_plan_authorization"',
+        '"background_plan_authorization_id"',
+        '"background_plan_purpose_disjoint": True',
+        '"background_plan_capacity_authorized": True',
+        '"passed": comparison.get("passed") is True',
+        "candidate-scoring-compatibility-audit",
+        "background-raw-mask-stream-shard",
+        "background-raw-mask-stream-merge",
+        "candidate-block-permutation-schedule-freeze",
+        "candidate-block-permutations",
+        "candidate-search-calibrate",
+        "candidate-search-raw-mask-compare",
+        '"$OUTPUT_ROOT/raw/frozen_validation_candidate_search_calibration.json"',
+        '"$OUTPUT_ROOT/mask/frozen_validation_candidate_search_calibration.json"',
+        '"test_rows_read": 0',
+        '"locked_test_allowed": False',
+        '"locked_test_open_allowed": False',
+        '"locked_test_prerequisites_satisfied": False',
+        '"mask_locked_test_arm_eligible"',
+        "raw/mask background validation receipts are immutable",
+        "must cover the complete parent plan",
+    ):
+        assert token in source
+    assert '"scale_locked_test_allowed": True' not in source
+    assert "--test-fraction" not in source
+    assert "evaluation-corpus-open-once" not in source

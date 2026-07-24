@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,6 +14,89 @@ from .runtime import execution_provenance
 
 
 SECONDS_PER_YEAR = 365.25 * 24 * 3600
+
+
+def parse_gps_block_identity(value: str) -> tuple[str, float, float]:
+    """Parse a canonical or observing-run-qualified GPS block identity."""
+
+    parts = str(value).split(":")
+    if (
+        len(parts) != 3
+        or (
+            parts[0] != "gps"
+            and re.fullmatch(r"O[1-9][0-9]*[a-z]?", parts[0]) is None
+        )
+    ):
+        raise ValueError(f"unsupported GPS block identity: {value}")
+    try:
+        start = float(parts[1])
+        duration = float(parts[2])
+    except ValueError as exc:
+        raise ValueError(f"unsupported GPS block identity: {value}") from exc
+    if not math.isfinite(start) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"unsupported GPS block identity: {value}")
+    return parts[0], start, duration
+
+
+def assign_relative_gps_block_slots(
+    rows: Iterable[dict[str, Any]],
+    expected_window_duration: float,
+) -> tuple[dict[str, int], dict[str, dict[str, float]]]:
+    """Assign score-blind within-block window ordinals.
+
+    Detector-validation windows may be centered on arbitrary physical times
+    inside an observing-run GPS block. Their stable within-block ordering,
+    rather than an artificial integer grid, defines the permutation slot.
+    """
+
+    if (
+        not math.isfinite(expected_window_duration)
+        or expected_window_duration <= 0
+    ):
+        raise ValueError("relative GPS-block slot duration is invalid")
+    grouped: dict[str, list[tuple[float, float, str]]] = {}
+    metadata: dict[str, dict[str, float]] = {}
+    seen_windows: set[str] = set()
+    for row in rows:
+        block = str(row.get("gps_block", ""))
+        _, block_start, block_duration = parse_gps_block_identity(block)
+        window_id = str(row.get("window_id", ""))
+        start = float(row["gps_start"])
+        end = float(row["gps_end"])
+        if (
+            not window_id
+            or window_id in seen_windows
+            or not math.isfinite(start)
+            or not math.isfinite(end)
+            or not math.isclose(
+                end - start,
+                expected_window_duration,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise ValueError("relative GPS-block window inventory is invalid")
+        seen_windows.add(window_id)
+        grouped.setdefault(block, []).append((start, end, window_id))
+        prior = metadata.setdefault(
+            block,
+            {"gps_start": block_start, "duration": block_duration},
+        )
+        if (
+            prior["gps_start"] != block_start
+            or prior["duration"] != block_duration
+        ):
+            raise ValueError("GPS block metadata is inconsistent")
+    slots: dict[str, int] = {}
+    for block, windows in grouped.items():
+        ordered = sorted(windows)
+        if len({(start, end) for start, end, _ in ordered}) != len(ordered):
+            raise ValueError(
+                f"GPS block {block} repeats a physical window interval"
+            )
+        for slot, (_, _, window_id) in enumerate(ordered):
+            slots[window_id] = slot
+    return slots, metadata
 
 
 def validate_source_verification(
@@ -493,4 +577,282 @@ def run_batch_background_plan(
     atomic_write_json(output / "background_plan_report.json", result)
     if not result["passed"]:
         raise RuntimeError("Batch background split audit failed")
+    return result
+
+
+def run_disjoint_background_subset(
+    background_manifest: str | Path,
+    background_report: str | Path,
+    exclude_manifests: Iterable[str | Path],
+    output_dir: str | Path,
+    split: str = "val",
+) -> dict[str, Any]:
+    """Select one development split after excluding every declared GPS block."""
+
+    if split not in {"train", "val"}:
+        raise ValueError("disjoint background subsets support train or val only")
+    manifest_path = Path(background_manifest)
+    report_path = Path(background_report)
+    with report_path.open("r", encoding="utf-8") as handle:
+        source_report = json.load(handle)
+    if (
+        source_report.get("status") != "verified_multi_segment_development_background"
+        or not source_report.get("passed")
+        or source_report.get("split_strategy") != "hash_threshold_v1"
+        or source_report.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError("source background is not a verified stable-hash development corpus")
+    rows = []
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    if any(not value for value in window_ids) or len(set(window_ids)) != len(window_ids):
+        raise ValueError("source background has missing or duplicate window IDs")
+
+    exclusion_paths = [Path(path) for path in exclude_manifests]
+    if not exclusion_paths:
+        raise ValueError("at least one exclusion manifest is required")
+    excluded_blocks: set[str] = set()
+    exclusion_summaries = []
+    for path in exclusion_paths:
+        blocks = set()
+        count = 0
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                block = str(row.get("gps_block", ""))
+                if not block:
+                    raise ValueError(f"exclusion manifest row lacks gps_block: {path}")
+                blocks.add(block)
+                count += 1
+        if not count:
+            raise ValueError(f"exclusion manifest is empty: {path}")
+        excluded_blocks.update(blocks)
+        exclusion_summaries.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "rows": count,
+                "unique_gps_blocks": len(blocks),
+            }
+        )
+
+    split_rows = [row for row in rows if str(row.get("split")) == split]
+    selected = [row for row in split_rows if str(row.get("gps_block")) not in excluded_blocks]
+    if not selected:
+        raise ValueError("no split rows remain after GPS-block exclusions")
+    selected_blocks = {str(row["gps_block"]) for row in selected}
+    if selected_blocks & excluded_blocks:
+        raise RuntimeError("disjoint background subset retained an excluded GPS block")
+    live_seconds = _union_duration(
+        (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    output_manifest = output / "background_windows.jsonl"
+    atomic_write_text(
+        output_manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+    )
+    splits = {
+        name: {
+            "windows": len(selected) if name == split else 0,
+            "gps_blocks": len(selected_blocks) if name == split else 0,
+            "live_time_seconds": live_seconds if name == split else 0.0,
+            "live_time_years": live_seconds / SECONDS_PER_YEAR if name == split else 0.0,
+        }
+        for name in ("train", "val", "test")
+    }
+    result = {
+        "status": "verified_group_disjoint_development_background_subset",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "requires physical injection materialization and a frozen validation-only model gate"
+        ),
+        "passed": True,
+        "required_split": split,
+        "split_strategy": "hash_threshold_v1",
+        "split_seed": source_report.get("split_seed"),
+        "windows": len(selected),
+        "unique_gps_blocks": len(selected_blocks),
+        "source_split_windows": len(split_rows),
+        "excluded_source_split_windows": len(split_rows) - len(selected),
+        "excluded_unique_gps_blocks": len(excluded_blocks),
+        "selected_exclusion_gps_block_overlap": 0,
+        "splits": splits,
+        "cross_split_block_overlaps": {
+            "train:val": [],
+            "train:test": [],
+            "val:test": [],
+        },
+        "source_background_manifest_path": str(manifest_path.resolve()),
+        "source_background_manifest_sha256": file_sha256(manifest_path),
+        "source_background_report_path": str(report_path.resolve()),
+        "source_background_report_sha256": file_sha256(report_path),
+        "exclusion_manifests": exclusion_summaries,
+        "manifest_path": str(output_manifest.resolve()),
+        "manifest_sha256": file_sha256(output_manifest),
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "background_plan_report.json", result)
+    return result
+
+
+def run_background_purpose_partition(
+    background_manifest: str | Path,
+    background_report: str | Path,
+    output_dir: str | Path,
+    injection_fraction: float = 0.5,
+    seed: int = 20260725,
+) -> dict[str, Any]:
+    """Partition validation GPS blocks between calibration and injection purposes."""
+
+    if not 0 < injection_fraction < 1:
+        raise ValueError("injection purpose fraction must be strictly between zero and one")
+    manifest_path = Path(background_manifest)
+    report_path = Path(background_report)
+    with report_path.open("r", encoding="utf-8") as handle:
+        source_report = json.load(handle)
+    allowed_statuses = {
+        "verified_multi_segment_development_background",
+        "verified_group_disjoint_development_background_subset",
+    }
+    if (
+        source_report.get("status") not in allowed_statuses
+        or not source_report.get("passed")
+        or source_report.get("split_strategy") != "hash_threshold_v1"
+        or source_report.get("manifest_sha256") != file_sha256(manifest_path)
+    ):
+        raise ValueError("purpose partition requires a verified stable-hash background")
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows or any(str(row.get("split")) != "val" for row in rows):
+        raise ValueError("purpose partition requires a non-empty validation-only manifest")
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    if any(not value for value in window_ids) or len(set(window_ids)) != len(window_ids):
+        raise ValueError("purpose partition source has missing or duplicate window IDs")
+    blocks = sorted({str(row.get("gps_block", "")) for row in rows})
+    if len(blocks) < 2 or any(not block for block in blocks):
+        raise ValueError("purpose partition requires at least two named GPS blocks")
+    denominator = float(16**64)
+    block_purpose = {
+        block: (
+            "injection_validation"
+            if int(
+                canonical_hash(
+                    {
+                        "gps_block": block,
+                        "seed": seed,
+                        "protocol": "validation_purpose_partition_v1",
+                    },
+                    64,
+                ),
+                16,
+            )
+            / denominator
+            < injection_fraction
+            else "candidate_calibration"
+        )
+        for block in blocks
+    }
+    if set(block_purpose.values()) != {
+        "candidate_calibration",
+        "injection_validation",
+    }:
+        raise ValueError("purpose partition produced an empty GPS-block arm")
+    grouped = {
+        purpose: [row for row in rows if block_purpose[str(row["gps_block"])] == purpose]
+        for purpose in ("candidate_calibration", "injection_validation")
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    purpose_reports = {}
+    purpose_blocks = {}
+    for purpose, selected in grouped.items():
+        purpose_dir = output / purpose
+        purpose_dir.mkdir(parents=True, exist_ok=True)
+        selected_blocks = {str(row["gps_block"]) for row in selected}
+        purpose_blocks[purpose] = selected_blocks
+        live_seconds = _union_duration(
+            (float(row["gps_start"]), float(row["gps_end"])) for row in selected
+        )
+        selected_manifest = purpose_dir / "background_windows.jsonl"
+        atomic_write_text(
+            selected_manifest,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in selected),
+        )
+        child = {
+            "status": "verified_purpose_disjoint_development_background",
+            "scientific_claim_allowed": False,
+            "scientific_blocker": "purpose-specific validation input; no locked test data",
+            "passed": True,
+            "purpose": purpose,
+            "required_split": "val",
+            "split_strategy": "hash_threshold_v1",
+            "split_seed": source_report.get("split_seed"),
+            "purpose_partition_seed": seed,
+            "injection_fraction": injection_fraction,
+            "windows": len(selected),
+            "unique_gps_blocks": len(selected_blocks),
+            "splits": {
+                name: {
+                    "windows": len(selected) if name == "val" else 0,
+                    "gps_blocks": len(selected_blocks) if name == "val" else 0,
+                    "live_time_seconds": live_seconds if name == "val" else 0.0,
+                    "live_time_years": (
+                        live_seconds / SECONDS_PER_YEAR if name == "val" else 0.0
+                    ),
+                }
+                for name in ("train", "val", "test")
+            },
+            "cross_split_block_overlaps": {
+                "train:val": [],
+                "train:test": [],
+                "val:test": [],
+            },
+            "source_background_manifest_path": str(manifest_path.resolve()),
+            "source_background_manifest_sha256": file_sha256(manifest_path),
+            "source_background_report_path": str(report_path.resolve()),
+            "source_background_report_sha256": file_sha256(report_path),
+            "manifest_path": str(selected_manifest.resolve()),
+            "manifest_sha256": file_sha256(selected_manifest),
+            **execution_provenance(),
+        }
+        child_report = purpose_dir / "background_plan_report.json"
+        atomic_write_json(child_report, child)
+        purpose_reports[purpose] = {
+            "windows": len(selected),
+            "unique_gps_blocks": len(selected_blocks),
+            "live_time_seconds": live_seconds,
+            "manifest_path": str(selected_manifest.resolve()),
+            "manifest_sha256": file_sha256(selected_manifest),
+            "report_path": str(child_report.resolve()),
+            "report_sha256": file_sha256(child_report),
+        }
+    overlap = purpose_blocks["candidate_calibration"] & purpose_blocks["injection_validation"]
+    covered = purpose_blocks["candidate_calibration"] | purpose_blocks["injection_validation"]
+    if overlap or covered != set(blocks):
+        raise RuntimeError("purpose partition is overlapping or incomplete")
+    result = {
+        "status": "verified_validation_gps_purpose_partition",
+        "scientific_claim_allowed": False,
+        "passed": True,
+        "protocol": "validation_purpose_partition_v1",
+        "seed": seed,
+        "injection_fraction": injection_fraction,
+        "source_windows": len(rows),
+        "source_unique_gps_blocks": len(blocks),
+        "purpose_gps_block_overlap": 0,
+        "complete_source_gps_block_coverage": True,
+        "block_assignment_hash": canonical_hash(block_purpose, 64),
+        "source_background_manifest_sha256": file_sha256(manifest_path),
+        "source_background_report_sha256": file_sha256(report_path),
+        "purposes": purpose_reports,
+        **execution_provenance(),
+    }
+    atomic_write_json(output / "background_purpose_partition_report.json", result)
     return result

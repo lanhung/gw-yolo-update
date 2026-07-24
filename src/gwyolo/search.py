@@ -13,10 +13,14 @@ from .background import SECONDS_PER_YEAR, _union_duration
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
     CANDIDATE_BLOCK_SELECTION_DATA,
+    DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
+    DETECTOR_SET_BLOCK_SELECTION_DATA,
     candidate_block_schedule_identity,
     candidate_slide_schedule_identity,
+    detector_set_block_schedule_identity,
 )
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -102,6 +106,8 @@ def evaluate_search(
     injections: Iterable[dict[str, Any]],
     bootstrap_replicates: int = 2000,
     bootstrap_seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     """Evaluate a frozen threshold on background and importance-weighted injections."""
     if background_live_time_years <= 0:
@@ -120,20 +126,19 @@ def evaluate_search(
     if total_weight <= 0:
         raise ValueError("sum of injection weights must be positive")
     recovered_weight = sum(weight for weight, hit in zip(weights, recovered) if hit)
-    rng = np.random.default_rng(bootstrap_seed)
-    bootstrap_efficiencies = []
     if bootstrap_replicates <= 0:
         raise ValueError("bootstrap_replicates must be positive")
     recovered_array = np.asarray(recovered, dtype=np.float64)
     weight_array = np.asarray(weights, dtype=np.float64)
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        sampled_weights = weight_array[indices]
-        denominator = float(sampled_weights.sum())
-        if denominator > 0:
-            bootstrap_efficiencies.append(
-                float((sampled_weights * recovered_array[indices]).sum() / denominator)
-            )
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        weight_array * recovered_array,
+        weight_array,
+        bootstrap_replicates,
+        bootstrap_seed,
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     efficiency_interval = wilson_interval(sum(recovered), len(rows))
     return {
         "threshold": threshold,
@@ -155,11 +160,9 @@ def evaluate_search(
             "total_vt_weight": total_weight,
             "recovered_vt": recovered_weight,
             "weighted_efficiency": recovered_weight / total_weight,
-            "weighted_efficiency_bootstrap_95": [
-                float(np.percentile(bootstrap_efficiencies, 2.5)),
-                float(np.percentile(bootstrap_efficiencies, 97.5)),
-            ],
+            "weighted_efficiency_bootstrap_95": bootstrap["interval_95"],
             "bootstrap_replicates": bootstrap_replicates,
+            "bootstrap_independence": bootstrap["independence_audit"],
         },
     }
 
@@ -170,6 +173,8 @@ def summarize_injection_efficiency(
     score_field: str = "ranking_score",
     bootstrap_replicates: int = 2000,
     seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     rows = list(injections)
     if not rows:
@@ -188,15 +193,15 @@ def summarize_injection_efficiency(
     recovered = scores >= threshold
     recovered_count = int(recovered.sum())
     recovered_weight = float(weights[recovered].sum())
-    rng = np.random.default_rng(seed)
-    bootstrap = []
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        denominator = float(weights[indices].sum())
-        if denominator > 0:
-            bootstrap.append(
-                float((weights[indices] * recovered[indices]).sum() / denominator)
-            )
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        weights * recovered,
+        weights,
+        bootstrap_replicates,
+        seed,
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     return {
         "injections": len(rows),
         "recovered": recovered_count,
@@ -205,11 +210,9 @@ def summarize_injection_efficiency(
         "total_vt_weight": float(weights.sum()),
         "recovered_vt": recovered_weight,
         "weighted_efficiency": recovered_weight / float(weights.sum()),
-        "weighted_efficiency_bootstrap_95": [
-            float(np.percentile(bootstrap, 2.5)),
-            float(np.percentile(bootstrap, 97.5)),
-        ],
+        "weighted_efficiency_bootstrap_95": bootstrap["interval_95"],
         "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_independence": bootstrap["independence_audit"],
     }
 
 
@@ -221,6 +224,8 @@ def paired_vt_comparison(
     score_field_b: str,
     bootstrap_replicates: int = 2000,
     seed: int = 20260719,
+    require_physical_groups: bool = False,
+    minimum_physical_groups: int = 2,
 ) -> dict[str, Any]:
     rows = list(injections)
     if not rows:
@@ -239,11 +244,16 @@ def paired_vt_comparison(
     delta = float(contributions.sum())
     recovered_vt_a = float((weights * recovered_a).sum())
     recovered_vt_b = float((weights * recovered_b).sum())
-    rng = np.random.default_rng(seed)
-    bootstrap_delta = []
-    for _ in range(bootstrap_replicates):
-        indices = rng.integers(0, len(rows), size=len(rows))
-        bootstrap_delta.append(float(contributions[indices].sum()))
+    bootstrap = hierarchical_injection_bootstrap(
+        rows,
+        contributions,
+        weights,
+        bootstrap_replicates,
+        seed,
+        output_scale=float(weights.sum()),
+        require_physical_groups=require_physical_groups,
+        minimum_physical_groups=minimum_physical_groups,
+    )
     strata = {}
     for stratum in sorted({str(row.get("stratum", "all")) for row in rows}):
         indices = [index for index, row in enumerate(rows) if str(row.get("stratum", "all")) == stratum]
@@ -267,11 +277,9 @@ def paired_vt_comparison(
         "method_b": {"score_field": score_field_b, "threshold": threshold_b, "recovered_vt": recovered_vt_b},
         "delta_recovered_vt_b_minus_a": delta,
         "relative_delta": delta / recovered_vt_a if recovered_vt_a > 0 else None,
-        "paired_bootstrap_95": [
-            float(np.percentile(bootstrap_delta, 2.5)),
-            float(np.percentile(bootstrap_delta, 97.5)),
-        ],
+        "paired_bootstrap_95": bootstrap["interval_95"],
         "bootstrap_replicates": bootstrap_replicates,
+        "bootstrap_independence": bootstrap["independence_audit"],
         "strata": strata,
     }
 
@@ -344,11 +352,16 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _verified_candidate_search_artifact(
-    report_path: str | Path, expected_status: str, split: str
+    report_path: str | Path,
+    expected_status: str | tuple[str, ...],
+    split: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with Path(report_path).open("r", encoding="utf-8") as handle:
         report = json.load(handle)
-    if report.get("status") != expected_status or str(report.get("split")) != split:
+    expected = (
+        (expected_status,) if isinstance(expected_status, str) else expected_status
+    )
+    if report.get("status") not in expected or str(report.get("split")) != split:
         raise ValueError(f"candidate search report is not the expected {split} artifact")
     manifest = report.get("manifest_path")
     expected_sha = report.get("manifest_sha256")
@@ -409,6 +422,15 @@ def _audit_candidate_slide_schedule(
             None,
             "absolute_gps_time_slide_v1",
         )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split")) == str(slide_report.get("split"))
+            and str(schedule.get("reference_ifo"))
+            == str(slide_report.get("reference_ifo"))
+            and str(schedule.get("shifted_ifo"))
+            == str(slide_report.get("shifted_ifo"))
+        )
     elif schedule_status == "frozen_candidate_block_permutation_schedule":
         schedule_kind = "gps_block_permutation"
         indices = [int(value) for value in schedule.get("shift_indices", [])]
@@ -432,6 +454,183 @@ def _audit_candidate_slide_schedule(
             and slide_report.get("input_gps_blocks")
             == schedule.get("ordered_gps_blocks")
         )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split")) == str(slide_report.get("split"))
+            and str(schedule.get("reference_ifo"))
+            == str(slide_report.get("reference_ifo"))
+            and str(schedule.get("shifted_ifo"))
+            == str(slide_report.get("shifted_ifo"))
+        )
+    elif (
+        schedule_status
+        == "frozen_score_blind_network_time_slide_schedule"
+    ):
+        schedule_kind = "variable_detector_set_time_slide"
+        slides = schedule.get("slides", [])
+        indices = [int(row["slide_index"]) for row in slides]
+        count_matches = int(schedule.get("slide_count", -1)) == len(indices)
+        indices_hash_matches = (
+            canonical_hash(slides, 64) == schedule.get("schedule_sha256")
+        )
+        derived_fields = {
+            "status",
+            "passed",
+            "slide_count",
+            "equivalent_live_time_seconds_predicted",
+            "equivalent_live_time_years_predicted",
+            "eligible_windows_by_detector_subset",
+            "schedule_id",
+            "schedule_sha256",
+        }
+        schedule_identity = {
+            key: value
+            for key, value in schedule.items()
+            if key not in derived_fields
+        }
+        identity_hash_matches = (
+            canonical_hash(schedule_identity, 32)
+            == schedule.get("schedule_id")
+        )
+        selection_matches = (
+            schedule.get("selection_data")
+            == "background_gps_and_detector_availability_only"
+        )
+        schedule_years = float(
+            schedule.get("equivalent_live_time_years_predicted", -1)
+        )
+        target_reached = bool(
+            schedule_years
+            >= float(schedule.get("minimum_test_live_time_years", float("inf")))
+        )
+        frozen_projection = [
+            {
+                "slide_index": int(row["slide_index"]),
+                "slide_id": str(row["slide_id"]),
+                "offset_seconds": {
+                    str(key): float(value)
+                    for key, value in row["offset_seconds"].items()
+                },
+            }
+            for row in slides
+        ]
+        executed_projection = [
+            {
+                "slide_index": int(row["slide_index"]),
+                "slide_id": str(row["slide_id"]),
+                "offset_seconds": {
+                    str(key): float(value)
+                    for key, value in row["offset_seconds"].items()
+                },
+            }
+            for row in slide_report.get("slide_schedule", [])
+        ]
+        pairing_contract_matches = bool(
+            slide_report.get("detector_duty_cycle_accounted") is True
+            and slide_report.get("detector_subset_channels_clustered_jointly")
+            is True
+            and slide_report.get("live_time_counted_once_per_slide") is True
+            and slide_report.get("independent_pairwise_offsets") is True
+            and frozen_projection == executed_projection
+        )
+        schedule_contract_matches = bool(
+            str(schedule.get("split")) == str(slide_report.get("split"))
+            and schedule.get("detector_subsets")
+            == [
+                value.split("+")
+                for value in slide_report.get(
+                    "required_detector_subsets",
+                    [],
+                )
+            ]
+            and schedule.get("pairwise_light_travel_time_seconds")
+            == slide_report.get("pairwise_light_travel_time_seconds")
+        )
+    elif (
+        schedule_status
+        == "frozen_detector_set_block_permutation_schedule"
+    ):
+        schedule_kind = "variable_detector_set_block_permutation"
+        permutations = schedule.get("permutations", [])
+        indices = [
+            int(row["permutation_index"]) for row in permutations
+        ]
+        count_matches = (
+            int(schedule.get("selected_shift_count", -1))
+            == len(indices)
+        )
+        indices_hash_matches = (
+            canonical_hash(permutations, 64)
+            == schedule.get("permutations_sha256")
+            and slide_report.get("slide_indices_sha256")
+            == canonical_hash(indices, 64)
+        )
+        identity_hash_matches = (
+            canonical_hash(
+                detector_set_block_schedule_identity(schedule),
+                32,
+            )
+            == schedule.get("schedule_id")
+        )
+        selection_matches = (
+            schedule.get("selection_data")
+            == DETECTOR_SET_BLOCK_SELECTION_DATA
+        )
+        schedule_years = float(
+            schedule.get(
+                "selected_equivalent_live_time_years",
+                -1,
+            )
+        )
+        target_reached = (
+            schedule.get("schedule_exposure_target_reached") is True
+            and schedule.get("required_detector_subsets_covered") is True
+        )
+        pairing_contract_matches = bool(
+            schedule.get("method")
+            == DETECTOR_SET_BLOCK_PERMUTATION_METHOD
+            and slide_report.get("background_pairing_method")
+            == schedule.get("method")
+            and slide_report.get("input_gps_blocks")
+            == schedule.get("ordered_gps_blocks")
+            and slide_report.get("detector_duty_cycle_accounted")
+            is True
+            and slide_report.get(
+                "detector_subset_channels_clustered_jointly"
+            )
+            is True
+            and slide_report.get(
+                "live_time_counted_once_per_permutation"
+            )
+            is True
+            and slide_report.get(
+                "independent_pairwise_block_shifts"
+            )
+            is True
+        )
+        schedule_contract_matches = bool(
+            schedule.get("background_manifest_sha256")
+            == slide_report.get("background_manifest_sha256")
+            and str(schedule.get("split"))
+            == str(slide_report.get("split"))
+            and schedule.get("network_config_sha256")
+            == slide_report.get("network_config_sha256")
+            and schedule.get("detector_subsets")
+            == [
+                value.split("+")
+                for value in slide_report.get(
+                    "required_detector_subsets",
+                    [],
+                )
+            ]
+            and schedule.get(
+                "pairwise_light_travel_time_seconds"
+            )
+            == slide_report.get(
+                "pairwise_light_travel_time_seconds"
+            )
+        )
     else:
         raise ValueError("candidate background schedule has an unsupported status")
     identity_verified = bool(
@@ -442,11 +641,7 @@ def _audit_candidate_slide_schedule(
         and int(slide_report.get("slide_schedule_count", -1)) == len(indices)
         and indices_hash_matches
         and identity_hash_matches
-        and schedule.get("background_manifest_sha256")
-        == slide_report.get("background_manifest_sha256")
-        and str(schedule.get("split")) == str(slide_report.get("split"))
-        and str(schedule.get("reference_ifo")) == str(slide_report.get("reference_ifo"))
-        and str(schedule.get("shifted_ifo")) == str(slide_report.get("shifted_ifo"))
+        and schedule_contract_matches
         and pairing_contract_matches
         and indices == sorted(set(indices))
         and all(value > 0 for value in indices)
@@ -475,9 +670,21 @@ def _audit_candidate_slide_schedule(
         )
     )
     report_years = float(slide_report.get("equivalent_live_time_years", -2))
-    exposure_matches = bool(
-        schedule_years >= 0
-        and np.isclose(schedule_years, report_years, rtol=0.0, atol=1e-12)
+    exposure_matches = (
+        bool(
+            report_years
+            >= float(schedule.get("minimum_test_live_time_years", float("inf")))
+        )
+        if schedule_kind == "variable_detector_set_time_slide"
+        else bool(
+            schedule_years >= 0
+            and np.isclose(
+                schedule_years,
+                report_years,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        )
     )
     gates = {
         "frozen_schedule_present": True,
@@ -502,13 +709,26 @@ def _audit_candidate_slide_schedule(
 def _candidate_search_identity(
     slide_report: dict[str, Any], injection_report: dict[str, Any]
 ) -> dict[str, Any]:
-    fields = (
+    common_fields = (
         "candidate_checkpoint_sha256",
         "candidate_config_sha256",
         "candidate_code_commit",
         "timing_calibration_report_sha256",
-        "physical_delay_limit_seconds",
         "empirical_timing_uncertainty_seconds",
+    )
+    variable_detector_set = (
+        slide_report.get("status")
+        in {
+            "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
+        }
+        and injection_report.get("status")
+        == "physical_variable_detector_set_injection_candidate_rankings"
+    )
+    fields = (
+        common_fields
+        if variable_detector_set
+        else (*common_fields, "physical_delay_limit_seconds")
     )
     mismatches = [
         field
@@ -519,7 +739,23 @@ def _candidate_search_identity(
     ]
     if mismatches:
         raise ValueError(f"background/injection candidate provenance differs: {mismatches}")
-    if (
+    if variable_detector_set:
+        network_fields = (
+            "required_detector_subsets",
+            "pairwise_light_travel_time_seconds",
+            "pairwise_allowed_peak_separation_seconds",
+        )
+        network_mismatches = [
+            field
+            for field in network_fields
+            if slide_report.get(field) != injection_report.get(field)
+        ]
+        if network_mismatches:
+            raise ValueError(
+                "background/injection network policy differs: "
+                f"{network_mismatches}"
+            )
+    elif (
         str(slide_report.get("reference_ifo"))
         != str(injection_report.get("reference_ifo"))
         or str(slide_report.get("shifted_ifo"))
@@ -532,13 +768,85 @@ def _candidate_search_identity(
         "candidate_scoring_provenance_consistent"
     ):
         raise ValueError("injection candidate timing/scoring provenance is inconsistent")
-    return {
-        field: slide_report[field]
-        for field in fields
-    } | {
-        "reference_ifo": slide_report["reference_ifo"],
-        "second_ifo": slide_report["shifted_ifo"],
-    }
+    identity = {field: slide_report[field] for field in fields}
+    if variable_detector_set:
+        identity.update(
+            {
+                "network_coherence_policy": {
+                    field: slide_report[field]
+                    for field in (
+                        "required_detector_subsets",
+                        "pairwise_light_travel_time_seconds",
+                        "pairwise_allowed_peak_separation_seconds",
+                    )
+                },
+                "detector_set_policy": (
+                    "single_model_explicit_missing_ifo_validity_v1"
+                ),
+            }
+        )
+    else:
+        identity.update(
+            {
+                "reference_ifo": slide_report["reference_ifo"],
+                "second_ifo": slide_report["shifted_ifo"],
+            }
+        )
+    return identity
+
+
+_PHYSICAL_BLOCK_SCHEDULE_KINDS = {
+    "gps_block_permutation",
+    "variable_detector_set_block_permutation",
+}
+
+
+def _audit_physical_candidate_background(
+    schedule_kind: str,
+    time_slide_report: str | Path,
+    background_manifest: str | Path,
+    threshold: float,
+    bootstrap_replicates: int,
+    seed: int,
+) -> dict[str, Any]:
+    if schedule_kind == "gps_block_permutation":
+        from .background_dependence import audit_candidate_background_dependence
+
+        return audit_candidate_background_dependence(
+            time_slide_report,
+            background_manifest,
+            threshold,
+            bootstrap_replicates,
+            seed,
+        )
+    if schedule_kind == "variable_detector_set_block_permutation":
+        from .background_dependence import (
+            audit_detector_set_candidate_background_dependence,
+        )
+
+        return audit_detector_set_candidate_background_dependence(
+            time_slide_report,
+            background_manifest,
+            threshold,
+            bootstrap_replicates,
+            seed,
+        )
+    raise ValueError("candidate background is not a physical block permutation")
+
+
+def _dependence_bootstrap_replicates(
+    dependence: dict[str, Any],
+) -> int:
+    if dependence.get("status") == "candidate_background_dependence_audit_v1":
+        key = "three_way_cluster_bootstrap"
+    elif (
+        dependence.get("status")
+        == "detector_set_candidate_background_dependence_audit_v1"
+    ):
+        key = "multiway_cluster_bootstrap"
+    else:
+        return -1
+    return int(dependence.get(key, {}).get("replicates", -1))
 
 
 def run_candidate_search_calibration(
@@ -548,17 +856,25 @@ def run_candidate_search_calibration(
     output: str | Path,
     bootstrap_replicates: int = 2000,
     seed: int = 20260720,
+    validation_background_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     """Freeze a candidate-level threshold using validation artifacts only."""
 
     slide, background = _verified_candidate_search_artifact(
         validation_time_slide_report,
-        "subwindow_clustered_time_slide_integration_only",
+        (
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
+        ),
         "val",
     )
     injections, injection_rows = _verified_candidate_search_artifact(
         validation_injection_ranking_report,
-        "physical_network_injection_candidate_rankings",
+        (
+            "physical_network_injection_candidate_rankings",
+            "physical_variable_detector_set_injection_candidate_rankings",
+        ),
         "val",
     )
     identity = _candidate_search_identity(slide, injections)
@@ -571,19 +887,37 @@ def run_candidate_search_calibration(
         live_time_years,
         target_far_per_year,
     )
+    dependence_audit = None
+    schedule_kind = str(schedule_audit.get("schedule_kind"))
+    if schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS:
+        if validation_background_manifest is None:
+            raise ValueError(
+                "block-permutation calibration requires its physical background manifest"
+            )
+        dependence_audit = _audit_physical_candidate_background(
+            schedule_kind,
+            validation_time_slide_report,
+            validation_background_manifest,
+            float(calibration["threshold"]),
+            bootstrap_replicates,
+            seed,
+        )
     validation_efficiency = summarize_injection_efficiency(
         injection_rows,
         float(calibration["threshold"]),
         "ranking_score",
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=25,
     )
     result = {
         "status": "frozen_validation_candidate_search_calibration",
         "scientific_claim_allowed": False,
         "selection_data": (
-            "validation_candidate_block_permutations_only"
-            if schedule_audit.get("schedule_kind") == "gps_block_permutation"
+            "validation_variable_detector_set_block_permutations_only"
+            if schedule_kind == "variable_detector_set_block_permutation"
+            else "validation_candidate_block_permutations_only"
+            if schedule_kind == "gps_block_permutation"
             else "validation_candidate_time_slides_only"
         ),
         "test_evaluation": None,
@@ -594,7 +928,15 @@ def run_candidate_search_calibration(
             live_time_years * target_far_per_year >= 1.0
         ),
         "slide_schedule_audit": schedule_audit,
-        "publication_calibration_eligible": bool(schedule_audit["passed"]),
+        "publication_calibration_eligible": bool(
+            schedule_audit["passed"]
+            and dependence_audit is not None
+            and dependence_audit["passed"]
+            and validation_efficiency["bootstrap_independence"]["passed"]
+        )
+        if schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS
+        else bool(schedule_audit["passed"]),
+        "background_dependence_audit": dependence_audit,
         "validation_injection_diagnostic": validation_efficiency,
         "validation_background_gps_blocks": list(slide["input_gps_blocks"]),
         "validation_injection_gps_blocks": sorted(
@@ -627,6 +969,1058 @@ def run_candidate_search_calibration(
     atomic_write_json(output, result)
     return result
 
+
+def bind_candidate_search_calibration_to_independent_endpoint(
+    independent_validation_endpoint: str | Path,
+    candidate_pipeline_report: str | Path,
+    calibration_report: str | Path,
+    output: str | Path,
+    expected_target_far_per_year: float = 0.1,
+    minimum_bootstrap_replicates: int = 10_000,
+    background_plan_authorization: str | Path | None = None,
+    expanded_background_merge_report: str | Path | None = None,
+) -> dict[str, Any]:
+    """Bind continuous calibration to the frozen injection endpoint and selected model."""
+
+    target = Path(output)
+    if target.exists():
+        raise FileExistsError("candidate calibration endpoint bindings are immutable")
+    if expected_target_far_per_year <= 0 or minimum_bootstrap_replicates < 1:
+        raise ValueError("candidate calibration endpoint binding settings are invalid")
+    endpoint_path = Path(independent_validation_endpoint).resolve()
+    pipeline_path = Path(candidate_pipeline_report).resolve()
+    calibration_path = Path(calibration_report).resolve()
+    endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    expanded_mode = (
+        background_plan_authorization is not None
+        or expanded_background_merge_report is not None
+    )
+    if expanded_mode and (
+        background_plan_authorization is None
+        or expanded_background_merge_report is None
+    ):
+        raise ValueError(
+            "expanded endpoint binding requires authorization and merge"
+        )
+
+    component_labels = {
+        "purpose_partition",
+        "injection_plan",
+        "waveform_validation",
+        "materialization",
+        "snr_annotation",
+        "arrival_annotation",
+    }
+    components = endpoint.get("component_reports", {})
+    if (
+        endpoint.get("status")
+        != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+        or endpoint.get("passed") is not True
+        or endpoint.get("scientific_claim_allowed") is not False
+        or endpoint.get("test_rows_read") != 0
+        or endpoint.get("test_evaluation") is not None
+        or int(endpoint.get("rows", -1)) != 3000
+        or int(endpoint.get("candidate_calibration_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("injection_validation_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        or set(components) != component_labels
+    ):
+        raise ValueError("candidate calibration requires the frozen independent endpoint")
+    for item in components.values():
+        path = Path(str(item.get("path", ""))).resolve()
+        if not path.is_file() or item.get("sha256") != file_sha256(path):
+            raise ValueError("independent endpoint component replay failed")
+    endpoint_injections = Path(
+        str(endpoint.get("injection_arrival_manifest_path", ""))
+    ).resolve()
+    endpoint_background = Path(
+        str(endpoint.get("candidate_calibration_background_manifest_path", ""))
+    ).resolve()
+    if (
+        not endpoint_injections.is_file()
+        or endpoint.get("injection_arrival_manifest_sha256")
+        != file_sha256(endpoint_injections)
+        or not endpoint_background.is_file()
+        or endpoint.get("candidate_calibration_background_manifest_sha256")
+        != file_sha256(endpoint_background)
+    ):
+        raise ValueError("independent endpoint manifest replay failed")
+
+    run_identity = pipeline.get("run_identity", {})
+    selection_identity = pipeline.get("model_selection")
+    if (
+        pipeline.get("status") != "validation_only_clustered_candidate_search_pipeline"
+        or pipeline.get("scientific_claim_allowed") is not False
+        or pipeline.get("test_evaluation") is not None
+        or not isinstance(selection_identity, dict)
+        or run_identity.get("injection_manifest_sha256")
+        != endpoint.get("injection_arrival_manifest_sha256")
+    ):
+        raise ValueError("candidate pipeline is not bound to the independent endpoint")
+    selection_path = Path(
+        str(selection_identity.get("model_selection_report_path", ""))
+    ).resolve()
+    if (
+        not selection_path.is_file()
+        or selection_identity.get("model_selection_report_sha256")
+        != file_sha256(selection_path)
+        or run_identity.get("model_selection_report_sha256")
+        != file_sha256(selection_path)
+    ):
+        raise ValueError("candidate pipeline model-selection report failed replay")
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if (
+        selection.get("status")
+        != "completed_five_seed_source_safe_overlap_validation"
+        or selection.get("passed") is not True
+        or selection.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or selection.get("five_seed_stability", {}).get("passed") is not True
+        or selection.get("test_data_opened") is not False
+        or selection.get("selected_checkpoint_sha256")
+        != run_identity.get("checkpoint_sha256")
+        or selection.get("common_artifact_hashes", {}).get("config_file_sha256")
+        != run_identity.get("config_sha256")
+    ):
+        raise ValueError("candidate calibration model selection is invalid")
+
+    calibration_background = endpoint_background
+    expanded_lineage = None
+    expanded_merge = None
+    if expanded_mode:
+        authorization_path = Path(
+            background_plan_authorization
+        ).resolve()
+        merge_path = Path(expanded_background_merge_report).resolve()
+        authorization = json.loads(
+            authorization_path.read_text(encoding="utf-8")
+        )
+        expanded_merge = json.loads(
+            merge_path.read_text(encoding="utf-8")
+        )
+        parent_path = Path(
+            str(authorization.get("parent_plan", {}).get("path", ""))
+        ).resolve()
+        authorized_endpoint = authorization.get(
+            "independent_validation_endpoint",
+            {},
+        )
+        common = expanded_merge.get("common_run_identity", {})
+        expected_common = {
+            "checkpoint_sha256": run_identity.get("checkpoint_sha256"),
+            "config_sha256": run_identity.get("config_sha256"),
+            "coherence_config_sha256": run_identity.get(
+                "coherence_config_sha256"
+            ),
+            "model_ifos": run_identity.get("model_ifos"),
+            "q_values": run_identity.get("q_values"),
+            "target_sample_rate": run_identity.get(
+                "target_sample_rate"
+            ),
+            "context_duration": run_identity.get("context_duration"),
+            "chirp_threshold": run_identity.get("chirp_threshold"),
+            "minimum_bins": run_identity.get("minimum_bins"),
+            "code_commit": run_identity.get("code_commit"),
+        }
+        calibration_background = Path(
+            str(expanded_merge.get("background_manifest_path", ""))
+        ).resolve()
+        if (
+            authorization.get("status")
+            != "authorized_validation_candidate_continuous_background_plan"
+            or authorization.get("passed") is not True
+            or authorization.get("scientific_claim_allowed") is not False
+            or authorization.get("candidate_scores_inspected") is not False
+            or int(authorization.get("test_rows_read", -1)) != 0
+            or authorization.get("test_evaluation") is not None
+            or authorized_endpoint.get("sha256")
+            != file_sha256(endpoint_path)
+            or Path(
+                str(authorized_endpoint.get("path", ""))
+            ).resolve()
+            != endpoint_path
+            or not parent_path.is_file()
+            or authorization.get("parent_plan", {}).get("sha256")
+            != file_sha256(parent_path)
+            or not np.isclose(
+                float(
+                    authorization.get(
+                        "authorization_identity",
+                        {},
+                    ).get("target_far_per_year", -1)
+                ),
+                expected_target_far_per_year,
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or expanded_merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or expanded_merge.get("scientific_claim_allowed") is not False
+            or expanded_merge.get("complete_parent_plan") is not True
+            or int(
+                expanded_merge.get("split_counts", {}).get("test", -1)
+            )
+            != 0
+            or common.get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            or any(
+                common.get(field) != expected
+                for field, expected in expected_common.items()
+            )
+            or common.get("timing_calibration_report_sha256")
+            != pipeline.get("timing_calibration_report_sha256")
+            or not calibration_background.is_file()
+            or expanded_merge.get("background_manifest_sha256")
+            != file_sha256(calibration_background)
+        ):
+            raise ValueError(
+                "expanded candidate background lineage failed replay"
+            )
+        expanded_lineage = {
+            "background_plan_authorization": {
+                "path": str(authorization_path),
+                "sha256": file_sha256(authorization_path),
+                "authorization_id": authorization["authorization_id"],
+            },
+            "expanded_background_merge": {
+                "path": str(merge_path),
+                "sha256": file_sha256(merge_path),
+            },
+            "parent_plan": {
+                "path": str(parent_path),
+                "sha256": file_sha256(parent_path),
+            },
+        }
+
+    slide_path = Path(
+        str(calibration.get("validation_time_slide_report_path", ""))
+    ).resolve()
+    ranking_path = Path(
+        str(calibration.get("validation_injection_ranking_report_path", ""))
+    ).resolve()
+    if expanded_merge is not None:
+        slide_report = json.loads(
+            slide_path.read_text(encoding="utf-8")
+        )
+        expanded_candidate = expanded_merge.get(
+            "candidate_manifests",
+            {},
+        ).get("val", {})
+        if (
+            slide_report.get("candidate_manifest_sha256")
+            != expanded_candidate.get("sha256")
+            or Path(
+                str(expanded_candidate.get("path", ""))
+            ).resolve()
+            != Path(
+                str(slide_report.get("candidate_manifest_path", ""))
+            ).resolve()
+        ):
+            raise ValueError(
+                "expanded threshold candidates differ from the merged bank"
+            )
+    background_blocks = {
+        str(value) for value in calibration.get("validation_background_gps_blocks", [])
+    }
+    injection_blocks = {
+        str(value) for value in calibration.get("validation_injection_gps_blocks", [])
+    }
+    overlap = sorted(background_blocks & injection_blocks)
+    dependence = calibration.get("background_dependence_audit")
+    injection_bootstrap = calibration.get("validation_injection_diagnostic", {}).get(
+        "bootstrap_independence", {}
+    )
+    dependence_background = (
+        Path(str(dependence.get("background_manifest", {}).get("path", ""))).resolve()
+        if isinstance(dependence, dict)
+        else None
+    )
+    schedule_kind = calibration.get("slide_schedule_audit", {}).get(
+        "schedule_kind"
+    )
+    valid_selection_data = {
+        "gps_block_permutation": (
+            "validation_candidate_block_permutations_only"
+        ),
+        "variable_detector_set_block_permutation": (
+            "validation_variable_detector_set_block_permutations_only"
+        ),
+    }
+    if (
+        calibration.get("status") != "frozen_validation_candidate_search_calibration"
+        or calibration.get("scientific_claim_allowed") is not False
+        or calibration.get("test_evaluation") is not None
+        or calibration.get("selection_data")
+        != valid_selection_data.get(schedule_kind)
+        or calibration.get("publication_calibration_eligible") is not True
+        or calibration.get("target_far_has_at_least_one_expected_background_count")
+        is not True
+        or not np.isclose(
+            float(calibration.get("target_far_per_year", -1)),
+            expected_target_far_per_year,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or int(calibration.get("bootstrap_replicates", -1))
+        < minimum_bootstrap_replicates
+        or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+        or schedule_kind not in _PHYSICAL_BLOCK_SCHEDULE_KINDS
+        or not isinstance(dependence, dict)
+        or dependence.get("status")
+        not in {
+            "candidate_background_dependence_audit_v1",
+            "detector_set_candidate_background_dependence_audit_v1",
+        }
+        or dependence.get("passed") is not True
+        or dependence.get("split") != "val"
+        or _dependence_bootstrap_replicates(dependence)
+        < minimum_bootstrap_replicates
+        or dependence_background != calibration_background
+        or dependence.get("background_manifest", {}).get("sha256")
+        != file_sha256(calibration_background)
+        or dependence.get("time_slide_report", {}).get("path") != str(slide_path)
+        or dependence.get("time_slide_report", {}).get("sha256")
+        != file_sha256(slide_path)
+        or injection_bootstrap.get("status")
+        != "injection_bootstrap_independence_audit_v1"
+        or injection_bootstrap.get("passed") is not True
+        or injection_bootstrap.get("method")
+        != "gps_block_then_paired_injection_hierarchical_bootstrap_v1"
+        or int(injection_bootstrap.get("physical_groups", -1)) < 25
+        or not np.isclose(
+            float(dependence.get("threshold", float("nan"))),
+            float(calibration.get("calibration", {}).get("threshold", float("inf"))),
+            rtol=0.0,
+            atol=0.0,
+        )
+        or not background_blocks
+        or not injection_blocks
+        or overlap
+        or not slide_path.is_file()
+        or calibration.get("validation_time_slide_report_sha256")
+        != file_sha256(slide_path)
+        or not ranking_path.is_file()
+        or calibration.get("validation_injection_ranking_report_sha256")
+        != file_sha256(ranking_path)
+        or pipeline.get("injection_ranking_report_sha256")
+        != file_sha256(ranking_path)
+    ):
+        raise ValueError(
+            "continuous candidate calibration is not endpoint/model/purpose safe"
+        )
+
+    result = {
+        "status": "frozen_validation_candidate_search_calibration_endpoint_bound",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation threshold and endpoint are frozen; locked background and injections "
+            "remain unopened"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "target_far_per_year": float(calibration["target_far_per_year"]),
+        "bootstrap_replicates": int(calibration["bootstrap_replicates"]),
+        "publication_calibration_eligible": True,
+        "target_far_has_at_least_one_expected_background_count": True,
+        "slide_schedule_audit": calibration["slide_schedule_audit"],
+        "background_dependence_audit": dependence,
+        "validation_injection_diagnostic": calibration[
+            "validation_injection_diagnostic"
+        ],
+        "injection_bootstrap_independence": injection_bootstrap,
+        "validation_purpose_gps_block_overlap": 0,
+        "validation_background_unique_gps_blocks": len(background_blocks),
+        "validation_injection_unique_gps_blocks": len(injection_blocks),
+        "independent_validation_rows": int(endpoint["rows"]),
+        "independent_validation_endpoint": {
+            "path": str(endpoint_path),
+            "sha256": file_sha256(endpoint_path),
+        },
+        "candidate_pipeline": {
+            "path": str(pipeline_path),
+            "sha256": file_sha256(pipeline_path),
+        },
+        "calibration": {
+            "path": str(calibration_path),
+            "sha256": file_sha256(calibration_path),
+        },
+        "validation_time_slide": {
+            "path": str(slide_path),
+            "sha256": file_sha256(slide_path),
+        },
+        "validation_injection_ranking": {
+            "path": str(ranking_path),
+            "sha256": file_sha256(ranking_path),
+        },
+        "model_selection": {
+            "path": str(selection_path),
+            "sha256": file_sha256(selection_path),
+        },
+        "expanded_background_lineage": expanded_lineage,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def run_paired_raw_mask_candidate_calibration_comparison(
+    raw_calibration_report: str | Path,
+    mask_calibration_report: str | Path,
+    mask_validation_receipt: str | Path,
+    mask_timing_receipt: str | Path,
+    output: str | Path,
+    minimum_absolute_weighted_efficiency_gain: float = 0.05,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260720,
+    minimum_injection_gps_blocks: int = 25,
+    detector_set_ranking_successor: str | Path | None = None,
+) -> dict[str, Any]:
+    """Compare raw/mask validation rankings at independently frozen common-FAR thresholds."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("paired raw/mask calibration comparisons are immutable")
+    if not 0 <= minimum_absolute_weighted_efficiency_gain < 1:
+        raise ValueError("minimum raw/mask weighted-efficiency gain must be in [0, 1)")
+    if bootstrap_replicates <= 0 or minimum_injection_gps_blocks < 2:
+        raise ValueError("bootstrap_replicates must be positive")
+
+    validation_path = Path(mask_validation_receipt).resolve()
+    timing_path = Path(mask_timing_receipt).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    timing = json.loads(timing_path.read_text(encoding="utf-8"))
+    pipeline_identity = validation.get("artifacts", {}).get("pipeline_report", {})
+    pipeline_path = Path(str(pipeline_identity.get("path", ""))).resolve()
+    if (
+        validation.get("status") != "completed_validation_only_mask_deglitch_gate"
+        or validation.get("execution_passed") is not True
+        or validation.get("development_gates_passed") is not True
+        or validation.get("scientific_claim_allowed") is not False
+        or validation.get("locked_test_allowed") is not False
+        or validation.get("test_rows_read") != 0
+        or not pipeline_path.is_file()
+        or pipeline_identity.get("sha256") != file_sha256(pipeline_path)
+    ):
+        raise ValueError("paired raw/mask comparison requires a passing six-arm receipt")
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    six_arm = pipeline.get("comparison", {})
+    clean_gate = six_arm.get("gates", {}).get("clean_noninferiority", {})
+    contaminated_gate = six_arm.get("gates", {}).get(
+        "contaminated_material_gain", {}
+    )
+    if (
+        pipeline.get("status") != "validation_only_end_to_end_mask_search_pipeline"
+        or pipeline.get("development_gates_passed") is not True
+        or pipeline.get("test_rows_read") != 0
+        or pipeline.get("test_evaluation") is not None
+        or clean_gate.get("passed") is not True
+        or contaminated_gate.get("passed") is not True
+    ):
+        raise ValueError("six-arm pipeline does not prove clean non-inferiority and mask gain")
+    if (
+        timing.get("status") != "completed_validation_only_mask_timing_gate"
+        or timing.get("coherent_background_scale_allowed") is not True
+        or timing.get("raw_timing_gate_passed") is not True
+        or timing.get("mask_timing_gate_passed") is not True
+        or timing.get("test_rows_read") != 0
+        or timing.get("locked_test_allowed") is not False
+        or Path(str(timing.get("mask_validation_receipt_path", ""))).resolve()
+        != validation_path
+        or timing.get("mask_validation_receipt_sha256")
+        != file_sha256(validation_path)
+    ):
+        raise ValueError("paired raw/mask comparison requires a passing timing receipt")
+
+    ranking_successor = None
+    if detector_set_ranking_successor is not None:
+        successor_path = Path(detector_set_ranking_successor).resolve()
+        ranking_successor = json.loads(
+            successor_path.read_text(encoding="utf-8")
+        )
+        source_timing = ranking_successor.get(
+            "source_mask_timing_receipt",
+            {},
+        )
+        successor_status = ranking_successor.get("status")
+        if (
+            successor_status
+            not in {
+                "variable_detector_set_raw_mask_ranking_successor_v1",
+                (
+                    "numeric_variable_detector_set_raw_mask_"
+                    "ranking_successor_v1"
+                ),
+            }
+            or ranking_successor.get("scientific_claim_allowed") is not False
+            or int(ranking_successor.get("test_rows_read", -1)) != 0
+            or ranking_successor.get("test_evaluation") is not None
+            or Path(str(source_timing.get("path", ""))).resolve()
+            != timing_path
+            or source_timing.get("sha256") != file_sha256(timing_path)
+            or set(ranking_successor.get("arms", {})) != {"raw", "mask"}
+        ):
+            raise ValueError(
+                "variable-detector raw/mask ranking successor is invalid"
+            )
+
+    def load_arm(
+        arm: str, calibration_value: str | Path
+    ) -> tuple[Path, dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        calibration_path = Path(calibration_value).resolve()
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        ranking_path = Path(
+            str(calibration.get("validation_injection_ranking_report_path", ""))
+        ).resolve()
+        slide_path = Path(
+            str(calibration.get("validation_time_slide_report_path", ""))
+        ).resolve()
+        dependence = calibration.get("background_dependence_audit", {})
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("scientific_claim_allowed") is not False
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("publication_calibration_eligible") is not True
+            or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+            or dependence.get("status")
+            not in {
+                "candidate_background_dependence_audit_v1",
+                "detector_set_candidate_background_dependence_audit_v1",
+            }
+            or dependence.get("passed") is not True
+            or _dependence_bootstrap_replicates(dependence) < 10_000
+            or not str(calibration.get("selection_data", "")).startswith("validation_")
+            or not ranking_path.is_file()
+            or calibration.get("validation_injection_ranking_report_sha256")
+            != file_sha256(ranking_path)
+            or not slide_path.is_file()
+            or calibration.get("validation_time_slide_report_sha256")
+            != file_sha256(slide_path)
+        ):
+            raise ValueError(f"{arm} candidate calibration failed replay")
+        timing_ranking = timing.get(
+            "injection_ranking_reports",
+            {},
+        ).get(arm, {})
+        if ranking_successor is None:
+            if (
+                Path(str(timing_ranking.get("path", ""))).resolve()
+                != ranking_path
+                or timing_ranking.get("sha256")
+                != file_sha256(ranking_path)
+            ):
+                raise ValueError(
+                    f"{arm} calibration differs from the timing-gate rankings"
+                )
+            expected_status: str | tuple[str, ...] = (
+                "physical_network_injection_candidate_rankings"
+            )
+        else:
+            successor_arm = ranking_successor["arms"][arm]
+            variable_identity = successor_arm.get(
+                "variable_ranking_report",
+                {},
+            )
+            variable_report = json.loads(
+                ranking_path.read_text(encoding="utf-8")
+            )
+            candidate_identity = successor_arm.get(
+                "calibrated_candidate_manifest",
+                {},
+            )
+            trigger_identity = successor_arm.get(
+                "injection_trigger_manifest",
+                {},
+            )
+            numeric_successor = (
+                ranking_successor.get("status")
+                == (
+                    "numeric_variable_detector_set_raw_mask_"
+                    "ranking_successor_v1"
+                )
+            )
+            source_identity = successor_arm.get(
+                "source_ranking_report",
+                {},
+            )
+            timing_identity = (
+                successor_arm.get("timing_report", {})
+                if numeric_successor
+                else timing.get("timing_reports", {}).get(arm, {})
+            )
+            timing_report_path = Path(
+                str(timing_identity.get("path", ""))
+            ).resolve()
+            if (
+                (
+                    not numeric_successor
+                    and (
+                        Path(
+                            str(source_identity.get("path", ""))
+                        ).resolve()
+                        != Path(
+                            str(timing_ranking.get("path", ""))
+                        ).resolve()
+                        or source_identity.get("sha256")
+                        != timing_ranking.get("sha256")
+                    )
+                )
+                or Path(str(variable_identity.get("path", ""))).resolve()
+                != ranking_path
+                or variable_identity.get("sha256")
+                != file_sha256(ranking_path)
+                or variable_report.get("injection_trigger_manifest_sha256")
+                != trigger_identity.get("sha256")
+                or variable_report.get("candidate_manifest_sha256")
+                != candidate_identity.get("sha256")
+                or not timing_report_path.is_file()
+                or timing_identity.get("sha256")
+                != file_sha256(timing_report_path)
+                or variable_report.get("timing_calibration_report_sha256")
+                != timing_identity.get("sha256")
+            ):
+                raise ValueError(
+                    f"{arm} variable-detector ranking lineage differs"
+                )
+            expected_status = (
+                "physical_variable_detector_set_injection_candidate_rankings"
+            )
+        ranking, rows = _verified_candidate_search_artifact(
+            ranking_path,
+            expected_status,
+            "val",
+        )
+        slide = json.loads(slide_path.read_text(encoding="utf-8"))
+        if slide.get("status") not in {
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_block_permutation_background",
+        }:
+            raise ValueError(f"{arm} calibration uses an invalid block-background report")
+        return calibration_path, calibration, ranking, rows, slide
+
+    arms = {
+        "raw": load_arm("raw", raw_calibration_report),
+        "mask": load_arm("mask", mask_calibration_report),
+    }
+    raw_path, raw, raw_ranking, raw_rows, raw_slide = arms["raw"]
+    mask_path, mask, mask_ranking, mask_rows, mask_slide = arms["mask"]
+    if not np.isclose(
+        float(raw["target_far_per_year"]),
+        float(mask["target_far_per_year"]),
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("raw/mask candidate calibrations use different target FARs")
+    common_identity_fields = (
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "physical_delay_limit_seconds",
+        "reference_ifo",
+        "second_ifo",
+        "detector_set_policy",
+    )
+    if any(
+        raw.get("identity", {}).get(field) != mask.get("identity", {}).get(field)
+        for field in common_identity_fields
+    ):
+        raise ValueError("raw/mask candidate calibrations differ in their model/physics identity")
+    for field in (
+        "required_detector_subsets",
+        "pairwise_light_travel_time_seconds",
+    ):
+        if (
+            raw.get("identity", {})
+            .get("network_coherence_policy", {})
+            .get(field)
+            != mask.get("identity", {})
+            .get("network_coherence_policy", {})
+            .get(field)
+        ):
+            raise ValueError(
+                "raw/mask candidate calibrations differ in network physics"
+            )
+    common_background_fields = (
+        "background_manifest_sha256",
+        "background_pairing_method",
+        "equivalent_live_time_years",
+        "input_gps_blocks",
+        "reference_ifo",
+        "shifted_ifo",
+        "slide_schedule_sha256",
+        "slide_schedule_id",
+        "slide_count",
+        "required_detector_subsets",
+        "pairwise_light_travel_time_seconds",
+        "network_config_sha256",
+    )
+    if any(raw_slide.get(field) != mask_slide.get(field) for field in common_background_fields):
+        raise ValueError("raw/mask calibrations do not use identical physical background exposure")
+    raw_dependence = raw["background_dependence_audit"]
+    mask_dependence = mask["background_dependence_audit"]
+    if (
+        raw_dependence.get("background_manifest", {}).get("sha256")
+        != mask_dependence.get("background_manifest", {}).get("sha256")
+        or raw_dependence.get("schedule", {}).get("schedule_id")
+        != mask_dependence.get("schedule", {}).get("schedule_id")
+        or raw_dependence.get("unique_gps_blocks")
+        != mask_dependence.get("unique_gps_blocks")
+        or raw_dependence.get("unique_shifts")
+        != mask_dependence.get("unique_shifts")
+    ):
+        raise ValueError("raw/mask background dependence units differ")
+    raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
+    mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
+    if (
+        len(raw_by_id) != len(raw_rows)
+        or len(mask_by_id) != len(mask_rows)
+        or set(raw_by_id) != set(mask_by_id)
+    ):
+        raise ValueError("raw/mask calibration rankings do not share unique injection IDs")
+    joined = []
+    identity_fields = (
+        "waveform_id",
+        "source_family",
+        "stratum",
+        "gps_block",
+        "gps_time",
+        "vt_weight",
+        "vt_weight_unit",
+    )
+    for injection_id in sorted(raw_by_id):
+        raw_row = raw_by_id[injection_id]
+        mask_row = mask_by_id[injection_id]
+        if any(raw_row.get(field) != mask_row.get(field) for field in identity_fields):
+            raise ValueError(f"raw/mask physical injection identity differs: {injection_id}")
+        joined.append(
+            {
+                **raw_row,
+                "raw_score": float(raw_row["ranking_score"]),
+                "mask_score": float(mask_row["ranking_score"]),
+            }
+        )
+    raw_threshold = float(raw["calibration"]["threshold"])
+    mask_threshold = float(mask["calibration"]["threshold"])
+    paired = paired_vt_comparison(
+        joined,
+        raw_threshold,
+        mask_threshold,
+        "raw_score",
+        "mask_score",
+        bootstrap_replicates,
+        seed,
+        minimum_physical_groups=minimum_injection_gps_blocks,
+    )
+    total_vt = float(sum(float(row["vt_weight"]) for row in joined))
+    delta_vt = float(paired["delta_recovered_vt_b_minus_a"])
+    absolute_gain = delta_vt / total_vt
+    gain_gate = {
+        "minimum_absolute_weighted_efficiency_gain": (
+            minimum_absolute_weighted_efficiency_gain
+        ),
+        "observed_absolute_weighted_efficiency_gain": absolute_gain,
+        "paired_delta_recovered_vt_lower_95": float(paired["paired_bootstrap_95"][0]),
+        "passed": bool(
+            absolute_gain >= minimum_absolute_weighted_efficiency_gain
+            and float(paired["paired_bootstrap_95"][0]) > 0
+            and paired["bootstrap_independence"]["passed"]
+        ),
+    }
+    result = {
+        "status": "validation_only_paired_raw_mask_candidate_calibration_comparison",
+        "passed": gain_gate["passed"],
+        "scientific_claim_allowed": False,
+        "locked_test_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "protocol": (
+            "raw and mask thresholds independently frozen at one validation target FAR; "
+            "paired contaminated injections compared without threshold retuning"
+        ),
+        "target_far_per_year": float(raw["target_far_per_year"]),
+        "paired_injections": len(joined),
+        "total_vt_weight": total_vt,
+        "raw_validation_diagnostic": raw["validation_injection_diagnostic"],
+        "mask_validation_diagnostic": mask["validation_injection_diagnostic"],
+        "paired_vt": paired,
+        "six_arm_clean_noninferiority_gate": clean_gate,
+        "six_arm_contaminated_gain_gate": contaminated_gate,
+        "continuous_background_mask_gain_gate": gain_gate,
+        "background_dependence_audits": {
+            "raw": raw_dependence,
+            "mask": mask_dependence,
+        },
+        "mask_locked_test_arm_eligible": gain_gate["passed"],
+        "locked_test_prerequisites_satisfied": False,
+        "raw_calibration_report": {
+            "path": str(raw_path),
+            "sha256": file_sha256(raw_path),
+        },
+        "mask_calibration_report": {
+            "path": str(mask_path),
+            "sha256": file_sha256(mask_path),
+        },
+        "mask_validation_receipt": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "mask_timing_receipt": {
+            "path": str(timing_path),
+            "sha256": file_sha256(timing_path),
+        },
+        "detector_set_ranking_successor": (
+            {
+                "path": str(
+                    Path(detector_set_ranking_successor).resolve()
+                ),
+                "sha256": file_sha256(
+                    detector_set_ranking_successor
+                ),
+            }
+            if detector_set_ranking_successor is not None
+            else None
+        ),
+        "raw_timing_calibration_report_sha256": raw_ranking[
+            "timing_calibration_report_sha256"
+        ],
+        "mask_timing_calibration_report_sha256": mask_ranking[
+            "timing_calibration_report_sha256"
+        ],
+        "bootstrap_replicates": bootstrap_replicates,
+        "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
+        "seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def bind_raw_mask_background_to_authorized_validation_endpoint(
+    raw_mask_background_receipt: str | Path,
+    output: str | Path,
+    raw_calibration_report: str | Path | None = None,
+    mask_calibration_report: str | Path | None = None,
+    paired_comparison_report: str | Path | None = None,
+) -> dict[str, Any]:
+    """Bind a completed raw/mask run to its disjoint background authorization."""
+
+    output_path = Path(output)
+    if output_path.exists():
+        raise FileExistsError("authorized raw/mask endpoint bindings are immutable")
+    receipt_path = Path(raw_mask_background_receipt).resolve()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    def replay(identity: dict[str, Any], label: str) -> tuple[Path, dict[str, Any]]:
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or identity.get("sha256") != file_sha256(path):
+            raise ValueError(f"raw/mask {label} artifact replay failed")
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    if (
+        receipt.get("status")
+        != "completed_validation_only_raw_mask_continuous_background"
+        or receipt.get("scientific_claim_allowed") is not False
+        or receipt.get("locked_test_allowed") is not False
+        or receipt.get("locked_test_open_allowed") is not False
+        or receipt.get("locked_test_prerequisites_satisfied") is not False
+        or receipt.get("validation_calibration_frozen") is not True
+        or receipt.get("continuous_background_search_claim_allowed") is not False
+        or int(receipt.get("test_rows_read", -1)) != 0
+    ):
+        raise ValueError("raw/mask continuous-background receipt has the wrong contract")
+    authorization_path, authorization = replay(
+        receipt.get("inputs", {}).get("background_plan_authorization", {}),
+        "background authorization",
+    )
+    parent_path, parent = replay(
+        receipt.get("inputs", {}).get("parent_plan", {}), "parent plan"
+    )
+    merge_path, merge = replay(receipt.get("merge_report", {}), "merge report")
+    arm_merges: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for arm in ("raw", "mask"):
+        identity = merge.get("arm_merges", {}).get(arm, {})
+        arm_path = Path(str(identity.get("report_path", ""))).resolve()
+        if (
+            not arm_path.is_file()
+            or identity.get("report_sha256") != file_sha256(arm_path)
+        ):
+            raise ValueError(f"raw/mask {arm} arm merge replay failed")
+        arm_merges[arm] = (
+            arm_path,
+            json.loads(arm_path.read_text(encoding="utf-8")),
+        )
+    def replay_optional(
+        override: str | Path | None, identity: dict[str, Any], label: str
+    ) -> tuple[Path, dict[str, Any]]:
+        if override is None:
+            return replay(identity, label)
+        path = Path(override).resolve()
+        if not path.is_file():
+            raise ValueError(f"raw/mask {label} override is absent")
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    raw_path, raw = replay_optional(
+        raw_calibration_report,
+        receipt.get("calibrations", {}).get("raw", {}),
+        "raw calibration",
+    )
+    mask_path, mask = replay_optional(
+        mask_calibration_report,
+        receipt.get("calibrations", {}).get("mask", {}),
+        "mask calibration",
+    )
+    comparison_path, comparison = replay_optional(
+        paired_comparison_report,
+        receipt.get("paired_validation_comparison", {}),
+        "paired comparison",
+    )
+    mask_validation_path, mask_validation = replay(
+        receipt.get("mask_validation_receipt", {}), "mask validation receipt"
+    )
+    mask_timing_path, mask_timing = replay(
+        receipt.get("mask_timing_receipt", {}), "mask timing receipt"
+    )
+    if (
+        authorization.get("status")
+        != "authorized_validation_candidate_continuous_background_plan"
+        or authorization.get("passed") is not True
+        or authorization.get("scientific_claim_allowed") is not False
+        or authorization.get("candidate_scores_inspected") is not False
+        or int(authorization.get("test_rows_read", -1)) != 0
+        or authorization.get("parent_plan", {}).get("sha256")
+        != file_sha256(parent_path)
+        or parent.get("candidate_scores_inspected") is not False
+        or parent.get("test_data_opened") is not False
+        or int(parent.get("selected_pairs", -1)) != 880
+        or merge.get("status")
+        != "verified_merged_streamed_raw_mask_candidate_background"
+        or merge.get("complete_parent_plan") is not True
+        or int(merge.get("test_rows_read", -1)) != 0
+        or any(
+            arm_merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or arm_merge.get("complete_parent_plan") is not True
+            or arm_merge.get("common_run_identity", {}).get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            for _, arm_merge in arm_merges.values()
+        )
+    ):
+        raise ValueError("raw/mask background is not bound to the authorized parent plan")
+    for arm, calibration in (("raw", raw), ("mask", mask)):
+        dependence = calibration.get("background_dependence_audit", {})
+        _, arm_merge = arm_merges[arm]
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("publication_calibration_eligible") is not True
+            or calibration.get("scientific_claim_allowed") is not False
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("slide_schedule_audit", {}).get("passed") is not True
+            or calibration.get("slide_schedule_audit", {}).get("schedule_kind")
+            not in _PHYSICAL_BLOCK_SCHEDULE_KINDS
+            or int(calibration.get("bootstrap_replicates", -1)) < 10_000
+            or dependence.get("status")
+            not in {
+                "candidate_background_dependence_audit_v1",
+                "detector_set_candidate_background_dependence_audit_v1",
+            }
+            or dependence.get("passed") is not True
+            or _dependence_bootstrap_replicates(dependence) < 10_000
+            or dependence.get("background_manifest", {}).get("sha256")
+            != arm_merge.get("background_manifest_sha256")
+            or not np.isclose(
+                float(calibration.get("target_far_per_year", -1)),
+                0.1,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        ):
+            raise ValueError(f"authorized raw/mask {arm} calibration failed replay")
+    if (
+        comparison.get("status")
+        != "validation_only_paired_raw_mask_candidate_calibration_comparison"
+        or comparison.get("passed") is not True
+        or comparison.get("mask_locked_test_arm_eligible") is not True
+        or comparison.get("scientific_claim_allowed") is not False
+        or comparison.get("locked_test_allowed") is not False
+        or int(comparison.get("test_rows_read", -1)) != 0
+        or comparison.get("paired_vt", {})
+        .get("bootstrap_independence", {})
+        .get("passed")
+        is not True
+        or comparison.get("raw_calibration_report", {}).get("sha256")
+        != file_sha256(raw_path)
+        or comparison.get("mask_calibration_report", {}).get("sha256")
+        != file_sha256(mask_path)
+        or mask_validation.get("status")
+        != "completed_validation_only_mask_deglitch_gate"
+        or mask_validation.get("development_gates_passed") is not True
+        or int(mask_validation.get("test_rows_read", -1)) != 0
+        or mask_timing.get("status") != "completed_validation_only_mask_timing_gate"
+        or mask_timing.get("coherent_background_scale_allowed") is not True
+        or int(mask_timing.get("test_rows_read", -1)) != 0
+    ):
+        raise ValueError("authorized raw/mask validation gain or timing gate failed")
+
+    result = {
+        "status": "bound_validation_raw_mask_continuous_background_evidence",
+        "passed": True,
+        "mask_locked_test_arm_eligible": True,
+        "validation_calibration_frozen": True,
+        "background_plan_authorization_id": authorization["authorization_id"],
+        "background_plan_purpose_disjoint": True,
+        "background_plan_capacity_authorized": True,
+        "locked_test_prerequisites_satisfied": False,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_background_code_commit": receipt.get("code_commit"),
+        "source_background_receipt": {
+            "path": str(receipt_path),
+            "sha256": file_sha256(receipt_path),
+        },
+        "background_plan_authorization": {
+            "path": str(authorization_path),
+            "sha256": file_sha256(authorization_path),
+        },
+        "parent_plan": {"path": str(parent_path), "sha256": file_sha256(parent_path)},
+        "merge_report": {"path": str(merge_path), "sha256": file_sha256(merge_path)},
+        "arm_merges": {
+            arm: {"path": str(path), "sha256": file_sha256(path)}
+            for arm, (path, _) in arm_merges.items()
+        },
+        "calibrations": {
+            "raw": {"path": str(raw_path), "sha256": file_sha256(raw_path)},
+            "mask": {"path": str(mask_path), "sha256": file_sha256(mask_path)},
+        },
+        "background_dependence_audits": {
+            "raw": raw["background_dependence_audit"],
+            "mask": mask["background_dependence_audit"],
+        },
+        "injection_bootstrap_independence": comparison["paired_vt"][
+            "bootstrap_independence"
+        ],
+        "paired_validation_comparison": {
+            "path": str(comparison_path),
+            "sha256": file_sha256(comparison_path),
+        },
+        "mask_validation_receipt": {
+            "path": str(mask_validation_path),
+            "sha256": file_sha256(mask_validation_path),
+        },
+        "mask_timing_receipt": {
+            "path": str(mask_timing_path),
+            "sha256": file_sha256(mask_timing_path),
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def run_frozen_candidate_search_evaluation(
     calibration_report: str | Path,
     test_time_slide_report: str | Path,
@@ -636,16 +2030,84 @@ def run_frozen_candidate_search_evaluation(
     minimum_test_injections: int,
     bootstrap_replicates: int = 10000,
     seed: int = 20260721,
+    locked_suite_plan: str | Path | None = None,
+    access_log: str | Path | None = None,
+    output_key: str | None = None,
+    test_background_manifest: str | Path | None = None,
 ) -> dict[str, Any]:
     """Apply a frozen candidate threshold once to disjoint locked-test artifacts."""
 
     output_path = Path(output)
     if output_path.exists():
         raise FileExistsError("frozen candidate search output already exists")
+    suite_values = (locked_suite_plan, access_log, output_key)
+    if any(value is not None for value in suite_values) and not all(
+        value is not None for value in suite_values
+    ):
+        raise ValueError("locked suite plan, access log and output key are all required")
+    locked_suite_access = None
+    locked_suite_inputs = None
+    if locked_suite_plan is not None:
+        from .evaluation_lock import (
+            validate_locked_evaluation_suite_access,
+            validate_locked_evaluation_suite_input,
+        )
+
+        if output_key not in {"raw_candidate_search", "mask_candidate_search"}:
+            raise ValueError("locked candidate output key must identify the raw or mask arm")
+        locked_suite_access = validate_locked_evaluation_suite_access(
+            locked_suite_plan,
+            access_log,
+            str(output_key),
+            output_path,
+        )
+        arm = str(output_key).removesuffix("_candidate_search")
+        locked_suite_inputs = {
+            "time_slide": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                f"{arm}_test_time_slide_report",
+                test_time_slide_report,
+            ),
+            "injection_ranking": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                f"{arm}_test_injection_ranking_report",
+                test_injection_ranking_report,
+            ),
+        }
+        if test_background_manifest is None:
+            raise ValueError("locked candidate evaluation requires a background manifest")
+        locked_suite_inputs["background_manifest"] = validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            f"{arm}_test_background_manifest",
+            test_background_manifest,
+        )
+        endpoints = locked_suite_access["endpoints"]
+        if (
+            not np.isclose(
+                minimum_test_live_time_years,
+                float(endpoints["minimum_test_live_time_years"]),
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or minimum_test_injections != int(endpoints["minimum_test_injections"])
+            or bootstrap_replicates != int(endpoints["bootstrap_replicates"])
+            or seed != int(endpoints["bootstrap_seed"])
+        ):
+            raise ValueError("locked candidate endpoint settings differ from the suite plan")
     if minimum_test_live_time_years <= 0 or minimum_test_injections <= 0:
         raise ValueError("locked candidate endpoint minima must be positive")
     with Path(calibration_report).open("r", encoding="utf-8") as handle:
         frozen = json.load(handle)
+    if locked_suite_access is not None:
+        calibration_identity = locked_suite_access["frozen_artifacts"].get(
+            f"{arm}_candidate_calibration", {}
+        )
+        if (
+            Path(str(calibration_identity.get("path", ""))).resolve()
+            != Path(calibration_report).resolve()
+            or calibration_identity.get("sha256") != file_sha256(calibration_report)
+        ):
+            raise ValueError("locked candidate calibration differs from the access receipt")
     if frozen.get("status") != "frozen_validation_candidate_search_calibration":
         raise ValueError("candidate search calibration artifact has the wrong status")
     if frozen.get("test_evaluation") is not None:
@@ -654,14 +2116,28 @@ def run_frozen_candidate_search_evaluation(
         raise ValueError(
             "candidate search calibration lacks a complete target-exposure frozen schedule"
         )
+    if locked_suite_access is not None and not np.isclose(
+        float(frozen["target_far_per_year"]),
+        float(locked_suite_access["endpoints"]["target_far_per_year"]),
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("frozen calibration target FAR differs from the locked suite plan")
     slide, background = _verified_candidate_search_artifact(
         test_time_slide_report,
-        "subwindow_clustered_time_slide_integration_only",
+        (
+            "subwindow_clustered_time_slide_integration_only",
+            "variable_detector_set_time_slide_background",
+            "variable_detector_set_block_permutation_background",
+        ),
         "test",
     )
     injections, injection_rows = _verified_candidate_search_artifact(
         test_injection_ranking_report,
-        "physical_network_injection_candidate_rankings",
+        (
+            "physical_network_injection_candidate_rankings",
+            "physical_variable_detector_set_injection_candidate_rankings",
+        ),
         "test",
     )
     identity = _candidate_search_identity(slide, injections)
@@ -696,8 +2172,28 @@ def run_frozen_candidate_search_evaluation(
             "locked candidate test overlaps validation physical groups: "
             f"background={background_overlap[:5]}, injection_blocks={injection_overlap[:5]}, "
             f"injection_ids={injection_id_overlap[:5]}, waveform_ids={waveform_id_overlap[:5]}"
-        )
+    )
     live_time_years = float(slide["equivalent_live_time_years"])
+    dependence_audit = None
+    test_schedule_kind = str(test_schedule_audit.get("schedule_kind"))
+    if test_schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS:
+        if test_background_manifest is None:
+            raise ValueError(
+                "locked block-permutation evaluation requires its background manifest"
+            )
+        dependence_audit = _audit_physical_candidate_background(
+            test_schedule_kind,
+            test_time_slide_report,
+            test_background_manifest,
+            float(frozen["calibration"]["threshold"]),
+            bootstrap_replicates,
+            seed,
+        )
+    minimum_bootstrap_groups = (
+        int(locked_suite_access["endpoints"]["minimum_injection_gps_blocks"])
+        if locked_suite_access is not None
+        else 2
+    )
     evaluation = evaluate_search(
         float(frozen["calibration"]["threshold"]),
         (float(row["ranking_score"]) for row in background),
@@ -705,6 +2201,7 @@ def run_frozen_candidate_search_evaluation(
         injection_rows,
         bootstrap_replicates,
         seed,
+        minimum_physical_groups=minimum_bootstrap_groups,
     )
     endpoint_gates = {
         "minimum_test_live_time": live_time_years >= minimum_test_live_time_years,
@@ -716,6 +2213,16 @@ def run_frozen_candidate_search_evaluation(
         "frozen_candidate_identity": True,
         "publication_timing_gate": bool(slide["publication_timing_gate_passed"]),
         "frozen_test_slide_schedule": bool(test_schedule_audit["passed"]),
+        "background_cluster_dependence_audit": bool(
+            dependence_audit is not None and dependence_audit["passed"]
+        )
+        if test_schedule_kind in _PHYSICAL_BLOCK_SCHEDULE_KINDS
+        else True,
+        "injection_bootstrap_independence": bool(
+            evaluation["injections"]["bootstrap_independence"]["passed"]
+        )
+        if locked_suite_access is not None
+        else True,
     }
     result = {
         "status": "locked_candidate_search_evaluation",
@@ -741,8 +2248,280 @@ def run_frozen_candidate_search_evaluation(
         "minimum_test_live_time_years": minimum_test_live_time_years,
         "minimum_test_injections": minimum_test_injections,
         "test_evaluation": evaluation,
+        "background_dependence_audit": dependence_audit,
         "bootstrap_replicates": bootstrap_replicates,
         "seed": seed,
+        "locked_suite_access": locked_suite_access,
+        "locked_suite_inputs": locked_suite_inputs,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def run_paired_locked_raw_mask_candidate_search_comparison(
+    raw_locked_report: str | Path,
+    mask_locked_report: str | Path,
+    validation_comparison_report: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+    bootstrap_replicates: int = 10000,
+    seed: int = 20260722,
+) -> dict[str, Any]:
+    """Compute the predeclared paired raw/mask locked-test VT endpoint once."""
+
+    from .evaluation_lock import validate_locked_evaluation_suite_access
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("paired locked raw/mask output already exists")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan,
+        access_log,
+        "paired_raw_mask_search",
+        output_path,
+    )
+    endpoints = suite_access["endpoints"]
+    if (
+        bootstrap_replicates != int(endpoints["bootstrap_replicates"])
+        or seed != int(endpoints["bootstrap_seed"])
+    ):
+        raise ValueError("paired locked bootstrap settings differ from the suite plan")
+
+    validation_path = Path(validation_comparison_report).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation_identity = suite_access["frozen_artifacts"].get(
+        "validation_raw_mask_comparison", {}
+    )
+    if (
+        Path(str(validation_identity.get("path", ""))).resolve() != validation_path
+        or validation_identity.get("sha256") != file_sha256(validation_path)
+    ):
+        raise ValueError("paired raw/mask validation gate differs from the access receipt")
+    gain_gate = validation.get("continuous_background_mask_gain_gate", {})
+    if (
+        validation.get("status")
+        != "validation_only_paired_raw_mask_candidate_calibration_comparison"
+        or validation.get("passed") is not True
+        or validation.get("mask_locked_test_arm_eligible") is not True
+        or validation.get("test_rows_read") != 0
+        or validation.get("test_evaluation") is not None
+        or gain_gate.get("passed") is not True
+    ):
+        raise ValueError("locked paired endpoint requires the passing frozen validation gate")
+
+    def load_arm(
+        report_value: str | Path, arm: str, output_key: str
+    ) -> tuple[
+        Path,
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
+        report_path = Path(report_value).resolve()
+        binding = validate_locked_evaluation_suite_access(
+            locked_suite_plan, access_log, output_key, report_path
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        binding_identity_fields = (
+            "plan_path",
+            "plan_sha256",
+            "access_log_path",
+            "access_log_sha256",
+            "output_key",
+            "output_path",
+            "code_commit",
+            "corpus_label",
+        )
+        if (
+            report.get("status") != "locked_candidate_search_evaluation"
+            or report.get("candidate_endpoint_gates_passed") is not True
+            or report.get("threshold_source")
+            != "frozen_validation_candidate_search_calibration"
+            or any(
+                report.get("locked_suite_access", {}).get(field)
+                != binding.get(field)
+                for field in binding_identity_fields
+            )
+        ):
+            raise ValueError(f"{arm} locked candidate report failed suite replay")
+        calibration_path = Path(str(report.get("calibration_report_path", ""))).resolve()
+        ranking_path = Path(
+            str(report.get("test_injection_ranking_report_path", ""))
+        ).resolve()
+        slide_path = Path(str(report.get("test_time_slide_report_path", ""))).resolve()
+        if (
+            not calibration_path.is_file()
+            or report.get("calibration_report_sha256") != file_sha256(calibration_path)
+            or not ranking_path.is_file()
+            or report.get("test_injection_ranking_report_sha256")
+            != file_sha256(ranking_path)
+            or not slide_path.is_file()
+            or report.get("test_time_slide_report_sha256") != file_sha256(slide_path)
+        ):
+            raise ValueError(f"{arm} locked candidate dependencies changed")
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        ranking, rows = _verified_candidate_search_artifact(
+            ranking_path, "physical_network_injection_candidate_rankings", "test"
+        )
+        slide, _ = _verified_candidate_search_artifact(
+            slide_path, "subwindow_clustered_time_slide_integration_only", "test"
+        )
+        if (
+            calibration.get("status")
+            != "frozen_validation_candidate_search_calibration"
+            or calibration.get("test_evaluation") is not None
+            or calibration.get("publication_calibration_eligible") is not True
+            or not np.isclose(
+                float(calibration["target_far_per_year"]),
+                float(endpoints["target_far_per_year"]),
+                rtol=0.0,
+                atol=1e-12,
+            )
+            or report.get("identity") != _candidate_search_identity(slide, ranking)
+        ):
+            raise ValueError(f"{arm} locked threshold or physical identity failed replay")
+        return report_path, report, calibration, rows, slide
+
+    raw = load_arm(raw_locked_report, "raw", "raw_candidate_search")
+    mask = load_arm(mask_locked_report, "mask", "mask_candidate_search")
+    raw_path, raw_report, raw_calibration, raw_rows, raw_slide = raw
+    mask_path, mask_report, mask_calibration, mask_rows, mask_slide = mask
+
+    expected_calibrations = {
+        "raw": (raw_calibration, validation.get("raw_calibration_report", {})),
+        "mask": (mask_calibration, validation.get("mask_calibration_report", {})),
+    }
+    for arm, (calibration, identity) in expected_calibrations.items():
+        report_calibration_path = Path(
+            raw_report["calibration_report_path"]
+            if arm == "raw"
+            else mask_report["calibration_report_path"]
+        ).resolve()
+        if (
+            Path(str(identity.get("path", ""))).resolve() != report_calibration_path
+            or identity.get("sha256") != file_sha256(report_calibration_path)
+            or calibration.get("test_evaluation") is not None
+        ):
+            raise ValueError(f"{arm} locked arm differs from the validation-frozen threshold")
+
+    common_identity_fields = (
+        "candidate_checkpoint_sha256",
+        "candidate_config_sha256",
+        "candidate_code_commit",
+        "physical_delay_limit_seconds",
+        "reference_ifo",
+        "second_ifo",
+    )
+    if any(
+        raw_report["identity"].get(field) != mask_report["identity"].get(field)
+        for field in common_identity_fields
+    ):
+        raise ValueError("raw/mask locked arms differ in model or physics identity")
+    common_exposure_fields = (
+        "background_manifest_sha256",
+        "background_pairing_method",
+        "equivalent_live_time_years",
+        "input_gps_blocks",
+        "reference_ifo",
+        "shifted_ifo",
+        "slide_schedule_sha256",
+        "slide_schedule_id",
+        "slide_count",
+    )
+    if any(raw_slide.get(field) != mask_slide.get(field) for field in common_exposure_fields):
+        raise ValueError("raw/mask locked arms do not share the same physical exposure")
+
+    raw_by_id = {str(row["injection_id"]): row for row in raw_rows}
+    mask_by_id = {str(row["injection_id"]): row for row in mask_rows}
+    if (
+        len(raw_by_id) != len(raw_rows)
+        or len(mask_by_id) != len(mask_rows)
+        or set(raw_by_id) != set(mask_by_id)
+    ):
+        raise ValueError("raw/mask locked arms do not share unique injection IDs")
+    identity_fields = (
+        "waveform_id",
+        "source_family",
+        "stratum",
+        "gps_block",
+        "gps_time",
+        "vt_weight",
+        "vt_weight_unit",
+    )
+    joined = []
+    for injection_id in sorted(raw_by_id):
+        raw_row = raw_by_id[injection_id]
+        mask_row = mask_by_id[injection_id]
+        if any(raw_row.get(field) != mask_row.get(field) for field in identity_fields):
+            raise ValueError(f"raw/mask locked injection identity differs: {injection_id}")
+        joined.append(
+            {
+                **raw_row,
+                "raw_score": float(raw_row["ranking_score"]),
+                "mask_score": float(mask_row["ranking_score"]),
+            }
+        )
+    if len(joined) < int(endpoints["minimum_test_injections"]):
+        raise ValueError("paired locked endpoint has too few injections")
+    if float(raw_slide["equivalent_live_time_years"]) < float(
+        endpoints["minimum_test_live_time_years"]
+    ):
+        raise ValueError("paired locked endpoint has insufficient background exposure")
+
+    paired = paired_vt_comparison(
+        joined,
+        float(raw_calibration["calibration"]["threshold"]),
+        float(mask_calibration["calibration"]["threshold"]),
+        "raw_score",
+        "mask_score",
+        bootstrap_replicates,
+        seed,
+        minimum_physical_groups=int(endpoints["minimum_injection_gps_blocks"]),
+    )
+    total_vt = float(sum(float(row.get("vt_weight", 1.0)) for row in joined))
+    absolute_gain = float(paired["delta_recovered_vt_b_minus_a"]) / total_vt
+    frozen_minimum_gain = float(
+        gain_gate["minimum_absolute_weighted_efficiency_gain"]
+    )
+    primary_endpoint = {
+        "metric": "paired_delta_recovered_vt_at_common_far",
+        "observed_absolute_weighted_efficiency_gain": absolute_gain,
+        "frozen_minimum_absolute_weighted_efficiency_gain": frozen_minimum_gain,
+        "paired_delta_recovered_vt_lower_95": float(paired["paired_bootstrap_95"][0]),
+        "significant_mask_advantage": bool(
+            absolute_gain >= frozen_minimum_gain
+            and float(paired["paired_bootstrap_95"][0]) > 0
+            and paired["bootstrap_independence"]["passed"]
+        ),
+    }
+    result = {
+        "status": "locked_paired_raw_mask_candidate_search_comparison",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "the paired locked endpoint must be combined with the full predeclared locked "
+            "OOD, PE, catalog and reproducibility evidence audit before a paper claim"
+        ),
+        "threshold_refits_on_test": 0,
+        "target_far_per_year": float(endpoints["target_far_per_year"]),
+        "paired_injections": len(joined),
+        "background_live_time_years": float(raw_slide["equivalent_live_time_years"]),
+        "total_vt_weight": total_vt,
+        "paired_vt": paired,
+        "primary_endpoint_result": primary_endpoint,
+        "raw_locked_report": {"path": str(raw_path), "sha256": file_sha256(raw_path)},
+        "mask_locked_report": {"path": str(mask_path), "sha256": file_sha256(mask_path)},
+        "validation_comparison_report": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "locked_suite_access": suite_access,
+        "bootstrap_replicates": bootstrap_replicates,
+        "seed": seed,
+        "locked_test_rows_read": len(raw_rows) + len(mask_rows),
         **execution_provenance(),
     }
     atomic_write_json(output_path, result)

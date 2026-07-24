@@ -9,6 +9,8 @@ import numpy as np
 from .candidates import (
     run_apply_candidate_timing_calibration,
     run_candidate_block_permutations,
+    run_detector_set_candidate_block_permutations,
+    run_detector_set_injection_candidate_rankings,
     run_candidate_extraction,
     run_candidate_time_slides,
     run_candidate_timing_calibration,
@@ -18,9 +20,12 @@ from .candidates import (
 from .coherence import _pair_limit
 from .exposure import (
     CANDIDATE_BLOCK_PERMUTATION_METHOD,
+    DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
     freeze_candidate_block_permutation_schedule,
+    freeze_detector_set_block_permutation_schedule,
 )
 from .injection_score import score_materialized_injections
+from .injection_bootstrap import hierarchical_injection_bootstrap
 from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 from .search import run_candidate_search_calibration
@@ -48,6 +53,449 @@ def select_candidate_timing_method(calibration: dict[str, Any]) -> tuple[str, fl
     return name, uncertainty
 
 
+def freeze_raw_mask_detector_set_ranking_successor(
+    mask_timing_receipt: str | Path,
+    raw_variable_ranking_report: str | Path,
+    mask_variable_ranking_report: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind raw/mask H1/L1/V1 rankings to their frozen timing artifacts."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "raw/mask detector-set ranking successors are immutable"
+        )
+    timing_path = Path(mask_timing_receipt).resolve()
+    timing = json.loads(timing_path.read_text(encoding="utf-8"))
+    config_path = Path(network_config).resolve()
+    config = load_yaml(config_path)
+    policy = config.get("network_coherence", {})
+    if (
+        timing.get("status")
+        != "completed_validation_only_mask_timing_gate"
+        or timing.get("coherent_background_scale_allowed") is not True
+        or timing.get("raw_timing_gate_passed") is not True
+        or timing.get("mask_timing_gate_passed") is not True
+        or int(timing.get("test_rows_read", -1)) != 0
+        or timing.get("locked_test_allowed") is not False
+        or policy.get("schema")
+        != "h1_l1_v1_pairwise_light_travel_v1"
+    ):
+        raise ValueError(
+            "raw/mask detector-set successor requires frozen timing/network gates"
+        )
+    variable_paths = {
+        "raw": Path(raw_variable_ranking_report).resolve(),
+        "mask": Path(mask_variable_ranking_report).resolve(),
+    }
+    arms = {}
+    for arm, variable_path in variable_paths.items():
+        timing_identity = timing.get("timing_reports", {}).get(arm, {})
+        timing_report_path = Path(
+            str(timing_identity.get("path", ""))
+        ).resolve()
+        source_identity = timing.get(
+            "injection_ranking_reports",
+            {},
+        ).get(arm, {})
+        source_path = Path(
+            str(source_identity.get("path", ""))
+        ).resolve()
+        candidate_report_path = Path(
+            str(
+                source_identity.get(
+                    "candidate_extraction_report_path",
+                    "",
+                )
+            )
+        ).resolve()
+        score_identity = timing.get(f"{arm}_score_report", {})
+        score_path = Path(str(score_identity.get("path", ""))).resolve()
+        if (
+            not timing_report_path.is_file()
+            or timing_identity.get("sha256")
+            != file_sha256(timing_report_path)
+            or not source_path.is_file()
+            or source_identity.get("sha256") != file_sha256(source_path)
+            or not candidate_report_path.is_file()
+            or source_identity.get("candidate_extraction_report_sha256")
+            != file_sha256(candidate_report_path)
+            or not score_path.is_file()
+            or score_identity.get("sha256") != file_sha256(score_path)
+            or not variable_path.is_file()
+        ):
+            raise ValueError(
+                f"{arm} raw/mask detector-set source replay failed"
+            )
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        score = json.loads(score_path.read_text(encoding="utf-8"))
+        variable = json.loads(variable_path.read_text(encoding="utf-8"))
+        trigger_path = Path(
+            str(score.get("triggers_path", ""))
+        ).resolve()
+        calibrated_path = (
+            candidate_report_path.parent.parent
+            / f"{arm}_injection_candidates_calibrated.jsonl"
+        ).resolve()
+        manifest_path = Path(
+            str(variable.get("manifest_path", ""))
+        ).resolve()
+        if (
+            source.get("status")
+            != "physical_network_injection_candidate_rankings"
+            or source.get("split") != "val"
+            or not trigger_path.is_file()
+            or source.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or not calibrated_path.is_file()
+            or source.get("candidate_manifest_sha256")
+            != file_sha256(calibrated_path)
+            or variable.get("status")
+            != "physical_variable_detector_set_injection_candidate_rankings"
+            or variable.get("split") != "val"
+            or variable.get("config_sha256") != file_sha256(config_path)
+            or variable.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or variable.get("candidate_manifest_sha256")
+            != file_sha256(calibrated_path)
+            or variable.get("timing_calibration_report_sha256")
+            != file_sha256(timing_report_path)
+            or variable.get("candidate_checkpoint_sha256")
+            != source.get("candidate_checkpoint_sha256")
+            or variable.get("candidate_config_sha256")
+            != source.get("candidate_config_sha256")
+            or variable.get("candidate_code_commit")
+            != source.get("candidate_code_commit")
+            or variable.get("timing_calibration_consistent") is not True
+            or variable.get("candidate_scoring_provenance_consistent")
+            is not True
+            or variable.get("required_detector_subsets")
+            != [
+                "+".join(str(value) for value in subset)
+                for subset in policy["detector_subsets"]
+            ]
+            or not manifest_path.is_file()
+            or variable.get("manifest_sha256")
+            != file_sha256(manifest_path)
+        ):
+            raise ValueError(
+                f"{arm} variable-detector ranking failed lineage replay"
+            )
+        arms[arm] = {
+            "source_ranking_report": {
+                "path": str(source_path),
+                "sha256": file_sha256(source_path),
+            },
+            "variable_ranking_report": {
+                "path": str(variable_path),
+                "sha256": file_sha256(variable_path),
+            },
+            "injection_trigger_manifest": {
+                "path": str(trigger_path),
+                "sha256": file_sha256(trigger_path),
+            },
+            "calibrated_candidate_manifest": {
+                "path": str(calibrated_path),
+                "sha256": file_sha256(calibrated_path),
+            },
+            "timing_report": {
+                "path": str(timing_report_path),
+                "sha256": file_sha256(timing_report_path),
+            },
+        }
+    result = {
+        "status": "variable_detector_set_raw_mask_ranking_successor_v1",
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_mask_timing_receipt": {
+            "path": str(timing_path),
+            "sha256": file_sha256(timing_path),
+        },
+        "network_config": {
+            "path": str(config_path),
+            "sha256": file_sha256(config_path),
+            "config_hash": canonical_hash(config, 64),
+        },
+        "arms": arms,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def freeze_numeric_raw_mask_detector_set_ranking_successor(
+    mask_validation_receipt: str | Path,
+    mask_timing_receipt: str | Path,
+    raw_variable_ranking_report: str | Path,
+    mask_variable_ranking_report: str | Path,
+    raw_timing_report: str | Path,
+    mask_timing_report: str | Path,
+    background_deglitch_report: str | Path,
+    injection_deglitch_report: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind a paired numeric-bank raw/mask variable-detector successor.
+
+    The independent six-arm and H1/L1 timing gates remain prerequisites, but
+    the four-subset injection rankings use their own paired numeric corpus and
+    independently calibrated raw/mask timing reports.
+    """
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "numeric raw/mask detector-set ranking successors are immutable"
+        )
+    validation_path = Path(mask_validation_receipt).resolve()
+    timing_gate_path = Path(mask_timing_receipt).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    timing_gate = json.loads(timing_gate_path.read_text(encoding="utf-8"))
+    pipeline_path = Path(
+        str(
+            validation.get("artifacts", {})
+            .get("pipeline_report", {})
+            .get("path", "")
+        )
+    ).resolve()
+    if (
+        validation.get("status")
+        != "completed_validation_only_mask_deglitch_gate"
+        or validation.get("execution_passed") is not True
+        or validation.get("development_gates_passed") is not True
+        or validation.get("scientific_claim_allowed") is not False
+        or validation.get("locked_test_allowed") is not False
+        or int(validation.get("test_rows_read", -1)) != 0
+        or not pipeline_path.is_file()
+        or validation.get("artifacts", {})
+        .get("pipeline_report", {})
+        .get("sha256")
+        != file_sha256(pipeline_path)
+        or timing_gate.get("status")
+        != "completed_validation_only_mask_timing_gate"
+        or timing_gate.get("coherent_background_scale_allowed") is not True
+        or timing_gate.get("raw_timing_gate_passed") is not True
+        or timing_gate.get("mask_timing_gate_passed") is not True
+        or int(timing_gate.get("test_rows_read", -1)) != 0
+        or Path(
+            str(timing_gate.get("mask_validation_receipt_path", ""))
+        ).resolve()
+        != validation_path
+        or timing_gate.get("mask_validation_receipt_sha256")
+        != file_sha256(validation_path)
+    ):
+        raise ValueError(
+            "numeric detector-set successor requires passing six-arm/timing gates"
+        )
+    pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    strength = float(pipeline["strength"])
+    config_path = Path(network_config).resolve()
+    config = load_yaml(config_path)
+    policy = config.get("network_coherence", {})
+    if (
+        pipeline.get("status")
+        != "validation_only_end_to_end_mask_search_pipeline"
+        or pipeline.get("development_gates_passed") is not True
+        or pipeline.get("test_evaluation") is not None
+        or policy.get("schema")
+        != "h1_l1_v1_pairwise_light_travel_v1"
+    ):
+        raise ValueError(
+            "numeric detector-set successor lacks a valid mask/network policy"
+        )
+
+    cleaning_paths = {
+        "background": Path(background_deglitch_report).resolve(),
+        "injection": Path(injection_deglitch_report).resolve(),
+    }
+    cleaning = {
+        name: json.loads(path.read_text(encoding="utf-8"))
+        for name, path in cleaning_paths.items()
+    }
+    if (
+        cleaning["background"].get("status")
+        != "learned_mask_background_analysis_overrides"
+        or cleaning["background"].get("scientific_claim_allowed") is not False
+        or cleaning["background"].get("required_split") != "val"
+        or int(
+            cleaning["background"].get(
+                "numeric_background_primary_windows", 0
+            )
+        )
+        != int(cleaning["background"].get("windows", -1))
+        or int(cleaning["background"].get("windows", 0)) <= 0
+        or not cleaning["background"].get(
+            "numeric_background_bank_identity_hash"
+        )
+        or cleaning["injection"].get("status")
+        != "learned_mask_signal_retention_diagnostic"
+        or cleaning["injection"].get("scientific_claim_allowed") is not False
+        or int(cleaning["injection"].get("injections", 0)) <= 0
+        or not np.isclose(
+            float(cleaning["background"].get("strength", -1)),
+            strength,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(cleaning["injection"].get("strength", -1)),
+            strength,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    ):
+        raise ValueError(
+            "numeric detector-set successor cleaning lineage failed replay"
+        )
+
+    required_subsets = [
+        "+".join(str(value) for value in subset)
+        for subset in policy["detector_subsets"]
+    ]
+    ranking_paths = {
+        "raw": Path(raw_variable_ranking_report).resolve(),
+        "mask": Path(mask_variable_ranking_report).resolve(),
+    }
+    timing_paths = {
+        "raw": Path(raw_timing_report).resolve(),
+        "mask": Path(mask_timing_report).resolve(),
+    }
+    arms: dict[str, Any] = {}
+    common_identity: dict[str, Any] | None = None
+    injection_ids: dict[str, set[str]] = {}
+    for arm in ("raw", "mask"):
+        ranking_path = ranking_paths[arm]
+        arm_timing_path = timing_paths[arm]
+        ranking = json.loads(ranking_path.read_text(encoding="utf-8"))
+        arm_timing = json.loads(arm_timing_path.read_text(encoding="utf-8"))
+        method, uncertainty = select_candidate_timing_method(arm_timing)
+        manifest_path = Path(str(ranking.get("manifest_path", ""))).resolve()
+        trigger_path = Path(
+            str(ranking.get("injection_trigger_manifest_path", ""))
+        ).resolve()
+        candidate_path = Path(
+            str(ranking.get("candidate_manifest_path", ""))
+        ).resolve()
+        if (
+            ranking.get("status")
+            != "physical_variable_detector_set_injection_candidate_rankings"
+            or ranking.get("split") != "val"
+            or ranking.get("config_sha256") != file_sha256(config_path)
+            or ranking.get("required_detector_subsets") != required_subsets
+            or ranking.get("timing_calibration_report_sha256")
+            != file_sha256(arm_timing_path)
+            or ranking.get("timing_calibration_consistent") is not True
+            or ranking.get("candidate_scoring_provenance_consistent")
+            is not True
+            or method != timing_gate.get("required_method")
+            or uncertainty
+            > float(
+                policy["maximum_empirical_timing_uncertainty_seconds"]
+            )
+            or not manifest_path.is_file()
+            or ranking.get("manifest_sha256") != file_sha256(manifest_path)
+            or not trigger_path.is_file()
+            or ranking.get("injection_trigger_manifest_sha256")
+            != file_sha256(trigger_path)
+            or not candidate_path.is_file()
+            or ranking.get("candidate_manifest_sha256")
+            != file_sha256(candidate_path)
+        ):
+            raise ValueError(
+                f"{arm} numeric variable-detector ranking failed lineage replay"
+            )
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        ids = {str(row["injection_id"]) for row in rows}
+        if not rows or len(ids) != len(rows):
+            raise ValueError(
+                f"{arm} numeric variable-detector rankings repeat injections"
+            )
+        injection_ids[arm] = ids
+        identity = {
+            key: ranking.get(key)
+            for key in (
+                "candidate_checkpoint_sha256",
+                "candidate_config_sha256",
+                "candidate_code_commit",
+                "required_detector_subsets",
+                "pairwise_light_travel_time_seconds",
+            )
+        }
+        if common_identity is None:
+            common_identity = identity
+        elif identity != common_identity:
+            raise ValueError(
+                "numeric raw/mask detector-set rankings differ in model/physics"
+            )
+        arms[arm] = {
+            "variable_ranking_report": {
+                "path": str(ranking_path),
+                "sha256": file_sha256(ranking_path),
+            },
+            "injection_trigger_manifest": {
+                "path": str(trigger_path),
+                "sha256": file_sha256(trigger_path),
+            },
+            "calibrated_candidate_manifest": {
+                "path": str(candidate_path),
+                "sha256": file_sha256(candidate_path),
+            },
+            "timing_report": {
+                "path": str(arm_timing_path),
+                "sha256": file_sha256(arm_timing_path),
+                "method": method,
+                "empirical_timing_uncertainty_seconds": uncertainty,
+            },
+        }
+    if injection_ids["raw"] != injection_ids["mask"]:
+        raise ValueError(
+            "numeric raw/mask detector-set rankings use different injections"
+        )
+    result = {
+        "status": (
+            "numeric_variable_detector_set_raw_mask_ranking_successor_v1"
+        ),
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "source_mask_validation_receipt": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "source_mask_timing_receipt": {
+            "path": str(timing_gate_path),
+            "sha256": file_sha256(timing_gate_path),
+        },
+        "network_config": {
+            "path": str(config_path),
+            "sha256": file_sha256(config_path),
+            "config_hash": canonical_hash(config, 64),
+        },
+        "cleaning": {
+            name: {
+                "path": str(path),
+                "sha256": file_sha256(path),
+            }
+            for name, path in cleaning_paths.items()
+        },
+        "numeric_background_bank_identity_hash": cleaning[
+            "background"
+        ]["numeric_background_bank_identity_hash"],
+        "deglitch_strength": strength,
+        "paired_injection_ids_hash": canonical_hash(
+            sorted(injection_ids["raw"]), 64
+        ),
+        "arms": arms,
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
 def validate_candidate_model_selection(
     selection_report_path: str | Path,
     checkpoint: str | Path,
@@ -61,6 +509,9 @@ def validate_candidate_model_selection(
         selection.get("status")
         != "completed_five_seed_source_safe_overlap_validation"
         or not selection.get("passed")
+        or selection.get("five_seed_stability", {}).get("status")
+        != "five_seed_reproducibility_gate_v1"
+        or selection.get("five_seed_stability", {}).get("passed") is not True
         or selection.get("test_data_opened") is not False
     ):
         raise ValueError("Candidate model selection is not a locked five-seed validation report")
@@ -106,6 +557,11 @@ def compare_candidate_validation_pipelines(
         "background_manifest_sha256",
         "injection_manifest_sha256",
         "coherence_config_sha256",
+        "network_config_sha256",
+        "detector_set_policy",
+        "detectors",
+        "detector_subsets",
+        "pairwise_light_travel_time_seconds",
         "reference_ifo",
         "second_ifo",
         "model_ifos",
@@ -147,6 +603,8 @@ def compare_candidate_validation_pipelines(
     }
     if resampling_methods != {None} and resampling_methods != {
         CANDIDATE_BLOCK_PERMUTATION_METHOD
+    } and resampling_methods != {
+        DETECTOR_SET_BLOCK_PERMUTATION_METHOD
     }:
         raise ValueError("Candidate pipelines use different background resampling methods")
 
@@ -212,19 +670,21 @@ def compare_candidate_validation_pipelines(
     delta = float(contributions.sum() / denominator)
     replicates = int(settings["bootstrap_replicates"])
     seed = int(settings["seed"])
-    if replicates <= 0:
+    minimum_injection_gps_blocks = int(
+        settings.get("minimum_injection_gps_blocks", 25)
+    )
+    if replicates <= 0 or minimum_injection_gps_blocks < 2:
         raise ValueError("Candidate promotion bootstrap count must be positive")
-    rng = np.random.default_rng(seed)
-    bootstrap = []
-    for _ in range(replicates):
-        indices = rng.integers(0, len(ids), size=len(ids))
-        sampled_weight = float(weights[indices].sum())
-        if sampled_weight > 0:
-            bootstrap.append(float(contributions[indices].sum() / sampled_weight))
-    interval = [
-        float(np.percentile(bootstrap, 2.5)),
-        float(np.percentile(bootstrap, 97.5)),
-    ]
+    bootstrap = hierarchical_injection_bootstrap(
+        [ranking_rows["baseline"][value] for value in ids],
+        contributions,
+        weights,
+        replicates,
+        seed,
+        require_physical_groups=True,
+        minimum_physical_groups=minimum_injection_gps_blocks,
+    )
+    interval = bootstrap["interval_95"]
     strata = {}
     maximum_regression = float(settings["maximum_stratum_efficiency_regression"])
     regressed = []
@@ -269,6 +729,9 @@ def compare_candidate_validation_pipelines(
         "minimum_weighted_efficiency_gain": delta
         >= float(settings["minimum_weighted_efficiency_gain"]),
         "paired_bootstrap_lower_bound_positive": interval[0] > 0,
+        "injection_bootstrap_independence": bootstrap["independence_audit"][
+            "passed"
+        ],
         "maximum_regressed_strata": len(regressed)
         <= int(settings["maximum_regressed_strata"]),
         "promoted_timing_limit": timing["promoted"]
@@ -291,6 +754,8 @@ def compare_candidate_validation_pipelines(
         "weighted_efficiency_delta_promoted_minus_baseline": delta,
         "paired_bootstrap_95": interval,
         "bootstrap_replicates": replicates,
+        "minimum_injection_gps_blocks": minimum_injection_gps_blocks,
+        "injection_bootstrap_independence": bootstrap["independence_audit"],
         "seed": seed,
         "timing_uncertainty_seconds": timing,
         "regressed_strata": regressed,
@@ -443,6 +908,7 @@ def recalibrate_candidate_validation_pipeline_with_block_permutations(
             calibration_path,
             int(identity["bootstrap_replicates"]),
             int(identity["seed"]),
+            background_manifest,
         )
     result = {
         **source,
@@ -473,6 +939,399 @@ def recalibrate_candidate_validation_pipeline_with_block_permutations(
             "calibration_path": str(calibration_path),
             "calibration_sha256": file_sha256(calibration_path),
             "zero_count_confidence": zero_count_confidence,
+            **execution_provenance(),
+        },
+    }
+    atomic_write_json(result_path, result)
+    return result
+
+
+def recalibrate_candidate_validation_pipeline_with_detector_sets(
+    pipeline_report_path: str | Path,
+    background_manifest: str | Path,
+    calibrated_background_candidate_manifest: str | Path,
+    injection_trigger_manifest: str | Path,
+    calibrated_injection_candidate_manifest: str | Path,
+    network_config: str | Path,
+    output_dir: str | Path,
+    zero_count_confidence: float = 0.90,
+    maximum_shifts: int | None = None,
+    exposure_safety_factor: float = 1.0,
+    expanded_background_merge_report: str | Path | None = None,
+    background_plan_authorization: str | Path | None = None,
+) -> dict[str, Any]:
+    """Promote a validation pipeline to the frozen H1/L1/V1 candidate policy."""
+
+    source_path = Path(pipeline_report_path).resolve()
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    if (
+        source.get("status")
+        != "validation_only_clustered_candidate_search_pipeline"
+        or source.get("scientific_claim_allowed") is not False
+        or source.get("test_evaluation") is not None
+    ):
+        raise ValueError(
+            "detector-set recalibration requires a validation-only pipeline"
+        )
+    identity = source.get("run_identity", {})
+    source_slides = source.get("time_slides", {})
+    source_rankings = source.get("injection_rankings", {})
+    expanded_mode = (
+        expanded_background_merge_report is not None
+        or background_plan_authorization is not None
+    )
+    if expanded_mode and (
+        expanded_background_merge_report is None
+        or background_plan_authorization is None
+    ):
+        raise ValueError(
+            "expanded detector-set recalibration requires merge and authorization"
+        )
+    inputs = {
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "background_candidate_manifest_sha256": file_sha256(
+            calibrated_background_candidate_manifest
+        ),
+        "injection_trigger_manifest_sha256": file_sha256(
+            injection_trigger_manifest
+        ),
+        "injection_candidate_manifest_sha256": file_sha256(
+            calibrated_injection_candidate_manifest
+        ),
+        "network_config_sha256": file_sha256(network_config),
+    }
+    if (
+        inputs["injection_trigger_manifest_sha256"]
+        != source_rankings.get("injection_trigger_manifest_sha256")
+        or inputs["injection_candidate_manifest_sha256"]
+        != source_rankings.get("candidate_manifest_sha256")
+    ):
+        raise ValueError(
+            "detector-set recalibration inputs differ from the source pipeline"
+        )
+    expanded_lineage = None
+    if expanded_mode:
+        merge_path = Path(expanded_background_merge_report).resolve()
+        authorization_path = Path(background_plan_authorization).resolve()
+        merge = json.loads(merge_path.read_text(encoding="utf-8"))
+        authorization = json.loads(
+            authorization_path.read_text(encoding="utf-8")
+        )
+        parent_path = Path(
+            str(authorization.get("parent_plan", {}).get("path", ""))
+        ).resolve()
+        endpoint_path = Path(
+            str(
+                authorization.get(
+                    "independent_validation_endpoint",
+                    {},
+                ).get("path", "")
+            )
+        ).resolve()
+        if (
+            authorization.get("status")
+            != "authorized_validation_candidate_continuous_background_plan"
+            or authorization.get("passed") is not True
+            or authorization.get("scientific_claim_allowed") is not False
+            or authorization.get("candidate_scores_inspected") is not False
+            or int(authorization.get("test_rows_read", -1)) != 0
+            or authorization.get("test_evaluation") is not None
+            or not parent_path.is_file()
+            or authorization.get("parent_plan", {}).get("sha256")
+            != file_sha256(parent_path)
+            or not endpoint_path.is_file()
+            or authorization.get(
+                "independent_validation_endpoint",
+                {},
+            ).get("sha256")
+            != file_sha256(endpoint_path)
+        ):
+            raise ValueError(
+                "expanded detector-set background is not authorized"
+            )
+        endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+        candidate_artifact = merge.get("candidate_manifests", {}).get(
+            "val",
+            {},
+        )
+        common = merge.get("common_run_identity", {})
+        expected_common = {
+            "checkpoint_sha256": identity.get("checkpoint_sha256"),
+            "config_sha256": identity.get("config_sha256"),
+            "coherence_config_sha256": identity.get(
+                "coherence_config_sha256"
+            ),
+            "model_ifos": identity.get("model_ifos"),
+            "q_values": identity.get("q_values"),
+            "target_sample_rate": identity.get("target_sample_rate"),
+            "context_duration": identity.get("context_duration"),
+            "chirp_threshold": identity.get("chirp_threshold"),
+            "minimum_bins": identity.get("minimum_bins"),
+            "code_commit": identity.get("code_commit"),
+        }
+        if (
+            merge.get("status")
+            != "verified_merged_streamed_candidate_background"
+            or merge.get("scientific_claim_allowed") is not False
+            or merge.get("complete_parent_plan") is not True
+            or int(merge.get("split_counts", {}).get("test", -1)) != 0
+            or common.get("parent_plan_sha256")
+            != file_sha256(parent_path)
+            or any(
+                common.get(field) != expected
+                for field, expected in expected_common.items()
+            )
+            or common.get("timing_calibration_report_sha256")
+            != source.get("timing_calibration_report_sha256")
+            or merge.get("background_manifest_sha256")
+            != inputs["background_manifest_sha256"]
+            or Path(
+                str(merge.get("background_manifest_path", ""))
+            ).resolve()
+            != Path(background_manifest).resolve()
+            or candidate_artifact.get("sha256")
+            != inputs["background_candidate_manifest_sha256"]
+            or Path(
+                str(candidate_artifact.get("path", ""))
+            ).resolve()
+            != Path(calibrated_background_candidate_manifest).resolve()
+            or endpoint.get("status")
+            != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+            or endpoint.get("passed") is not True
+            or endpoint.get("scientific_claim_allowed") is not False
+            or int(endpoint.get("test_rows_read", -1)) != 0
+            or endpoint.get("test_evaluation") is not None
+            or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        ):
+            raise ValueError(
+                "expanded detector-set merge/scorer/endpoint lineage differs"
+            )
+        authorization_identity = authorization.get(
+            "authorization_identity",
+            {},
+        )
+        target_far = float(
+            authorization_identity["target_far_per_year"]
+        )
+        zero_count_confidence = float(
+            authorization_identity["zero_count_confidence"]
+        )
+        expanded_lineage = {
+            "merge_report_path": str(merge_path),
+            "merge_report_sha256": file_sha256(merge_path),
+            "authorization_path": str(authorization_path),
+            "authorization_sha256": file_sha256(authorization_path),
+            "authorization_id": authorization["authorization_id"],
+            "parent_plan_path": str(parent_path),
+            "parent_plan_sha256": file_sha256(parent_path),
+            "independent_validation_endpoint_path": str(endpoint_path),
+            "independent_validation_endpoint_sha256": file_sha256(
+                endpoint_path
+            ),
+        }
+    else:
+        if (
+            inputs["background_manifest_sha256"]
+            != identity.get("background_manifest_sha256")
+            or inputs["background_candidate_manifest_sha256"]
+            != source_slides.get("candidate_manifest_sha256")
+        ):
+            raise ValueError(
+                "detector-set background differs from the source pipeline"
+            )
+        target_far = float(identity["target_far_per_year"])
+    timing_uncertainty = float(
+        source["empirical_timing_uncertainty_seconds"]
+    )
+    cluster_window = float(identity["cluster_window_seconds"])
+    bootstrap_replicates = int(identity["bootstrap_replicates"])
+    seed = int(identity["seed"])
+    if (
+        not 0 < zero_count_confidence < 1
+        or not np.isfinite(exposure_safety_factor)
+        or exposure_safety_factor < 1
+    ):
+        raise ValueError("detector-set recalibration settings are invalid")
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    result_path = (
+        output
+        / "candidate_validation_detector_set_block_pipeline_report.json"
+    )
+    successor_identity = {
+        "source_pipeline_report_sha256": file_sha256(source_path),
+        **inputs,
+        "zero_count_confidence": zero_count_confidence,
+        "maximum_shifts": maximum_shifts,
+        "exposure_safety_factor": exposure_safety_factor,
+        "expanded_background_lineage": expanded_lineage,
+    }
+    if result_path.is_file():
+        prior = json.loads(result_path.read_text(encoding="utf-8"))
+        if (
+            prior.get("detector_set_block_recalibration", {}).get(
+                "successor_identity"
+            )
+            != successor_identity
+        ):
+            raise ValueError(
+                "completed detector-set pipeline has another identity"
+            )
+        return prior
+
+    schedule_path = (
+        output / "detector_set_block_permutation_schedule.json"
+    )
+    if not schedule_path.is_file():
+        freeze_detector_set_block_permutation_schedule(
+            background_manifest,
+            network_config,
+            schedule_path,
+            "val",
+            target_far,
+            zero_count_confidence,
+            maximum_shifts,
+            exposure_safety_factor,
+        )
+    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    if (
+        schedule.get("background_manifest_sha256")
+        != inputs["background_manifest_sha256"]
+        or schedule.get("network_config_sha256")
+        != inputs["network_config_sha256"]
+        or not np.isclose(
+            float(schedule.get("target_far_per_year", -1)),
+            target_far,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(schedule.get("zero_count_confidence", -1)),
+            zero_count_confidence,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or not np.isclose(
+            float(schedule.get("exposure_safety_factor", -1)),
+            exposure_safety_factor,
+            rtol=0.0,
+            atol=1e-12,
+        )
+        or schedule.get("required_detector_subsets_covered") is not True
+    ):
+        raise ValueError(
+            "detector-set block schedule identity or subset coverage differs"
+        )
+
+    background_dir = output / "detector_set_block_background"
+    background = run_detector_set_candidate_block_permutations(
+        calibrated_background_candidate_manifest,
+        background_manifest,
+        schedule_path,
+        background_dir,
+        timing_uncertainty,
+        cluster_window,
+    )
+    background_report_path = (
+        background_dir
+        / "val_detector_set_block_permutation_report.json"
+    )
+    ranking_dir = output / "detector_set_injection_rankings"
+    rankings = run_detector_set_injection_candidate_rankings(
+        injection_trigger_manifest,
+        calibrated_injection_candidate_manifest,
+        network_config,
+        ranking_dir,
+        "val",
+        timing_uncertainty,
+    )
+    ranking_report_path = (
+        ranking_dir
+        / "val_variable_detector_set_injection_candidate_ranking_report.json"
+    )
+    calibration_path = output / "frozen_candidate_search_calibration.json"
+    if calibration_path.is_file():
+        frozen = json.loads(calibration_path.read_text(encoding="utf-8"))
+        if (
+            frozen.get("validation_time_slide_report_sha256")
+            != file_sha256(background_report_path)
+            or frozen.get("validation_injection_ranking_report_sha256")
+            != file_sha256(ranking_report_path)
+        ):
+            raise ValueError(
+                "existing detector-set calibration has another identity"
+            )
+    else:
+        frozen = run_candidate_search_calibration(
+            background_report_path,
+            ranking_report_path,
+            target_far,
+            calibration_path,
+            bootstrap_replicates,
+            seed,
+            background_manifest,
+        )
+
+    policy = load_yaml(network_config)["network_coherence"]
+    run_identity = {
+        **identity,
+        "background_manifest_sha256": inputs[
+            "background_manifest_sha256"
+        ],
+        "target_far_per_year": target_far,
+        "network_config_sha256": inputs["network_config_sha256"],
+        "detector_set_policy": policy["schema"],
+        "detectors": list(policy["detectors"]),
+        "detector_subsets": [
+            list(value) for value in policy["detector_subsets"]
+        ],
+        "pairwise_light_travel_time_seconds": dict(
+            policy["pairwise_light_travel_time_seconds"]
+        ),
+    }
+    result = {
+        **source,
+        "scientific_blocker": (
+            "variable-detector validation calibration is frozen; paired "
+            "five-seed promotion and one-time locked O4b evaluation remain"
+        ),
+        "run_identity": run_identity,
+        "time_slides": background,
+        "injection_rankings": rankings,
+        "frozen_search": frozen,
+        "time_slide_report_sha256": file_sha256(
+            background_report_path
+        ),
+        "injection_ranking_report_sha256": file_sha256(
+            ranking_report_path
+        ),
+        "frozen_calibration_report_sha256": file_sha256(
+            calibration_path
+        ),
+        "background_resampling_method": background[
+            "background_pairing_method"
+        ],
+        "detector_set_block_recalibration": {
+            "successor_identity": successor_identity,
+            "expanded_background_lineage": expanded_lineage,
+            "source_pipeline_report_path": str(source_path),
+            "schedule_path": str(schedule_path.resolve()),
+            "schedule_sha256": file_sha256(schedule_path),
+            "background_report_path": str(
+                background_report_path.resolve()
+            ),
+            "background_report_sha256": file_sha256(
+                background_report_path
+            ),
+            "injection_ranking_report_path": str(
+                ranking_report_path.resolve()
+            ),
+            "injection_ranking_report_sha256": file_sha256(
+                ranking_report_path
+            ),
+            "calibration_path": str(calibration_path.resolve()),
+            "calibration_sha256": file_sha256(calibration_path),
             **execution_provenance(),
         },
     }

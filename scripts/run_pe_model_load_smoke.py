@@ -88,22 +88,48 @@ def main() -> int:
             args.expected_model_init_sha256,
             "DINGO time-initialization model",
         )
-        from dingo.core.posterior_models.build_model import build_model_from_kwargs
+        dingo_version = importlib.metadata.version("dingo-gw")
+        if dingo_version == "0.5.8":
+            from dingo.core.models import PosteriorModel
 
-        model = build_model_from_kwargs(
-            filename=str(model_path), device=args.device, load_training_info=False
-        )
-        init_model = build_model_from_kwargs(
-            filename=str(init_path), device=args.device, load_training_info=False
-        )
+            model = PosteriorModel(
+                model_filename=str(model_path),
+                device=args.device,
+                load_training_info=False,
+            )
+            init_model = PosteriorModel(
+                model_filename=str(init_path),
+                device=args.device,
+                load_training_info=False,
+            )
+            model_network = model.model
+            init_network = init_model.model
+        elif dingo_version == "0.9.8":
+            from dingo.core.posterior_models.build_model import build_model_from_kwargs
+
+            model = build_model_from_kwargs(
+                filename=str(model_path), device=args.device, load_training_info=False
+            )
+            init_model = build_model_from_kwargs(
+                filename=str(init_path), device=args.device, load_training_info=False
+            )
+            model_network = model.network
+            init_network = init_model.network
+        else:
+            raise RuntimeError(
+                f"unsupported DINGO model-load API version: {dingo_version}"
+            )
         observations = {
             "model_class": f"{type(model).__module__}.{type(model).__name__}",
-            "model_parameter_count": _parameter_count(model.network),
+            "model_parameter_count": _parameter_count(model_network),
             "initialization_model_class": (
                 f"{type(init_model).__module__}.{type(init_model).__name__}"
             ),
-            "initialization_model_parameter_count": _parameter_count(
-                init_model.network
+            "initialization_model_parameter_count": _parameter_count(init_network),
+            "model_load_api": (
+                "dingo.core.models.PosteriorModel"
+                if dingo_version == "0.5.8"
+                else "dingo.core.posterior_models.build_model.build_model_from_kwargs"
             ),
         }
         artifacts["model_init"] = {"path": str(init_path), "sha256": init_sha}

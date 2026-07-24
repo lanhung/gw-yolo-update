@@ -9,8 +9,10 @@ import yaml
 
 from gwyolo.io import file_sha256
 from gwyolo.pe_backend import (
+    audit_joint_pe_model_compatibility,
     audit_pe_backend_lock,
     freeze_pe_backend_model_metadata,
+    run_joint_pe_model_compatibility_audit,
     run_pe_backend_lock_audit,
 )
 
@@ -117,14 +119,39 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 }
             )
         else:
+            native_prior = tmp_path / "dingo-native-prior.yaml"
+            native_prior.write_text("prior: native-dingo\n", encoding="utf-8")
+            projection = tmp_path / "dingo-prior-projection.json"
+            projection.write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "publication_ready": True,
+                        "canonical_prior_sha256": file_sha256(analysis_prior),
+                        "dingo_prior_config_sha256": file_sha256(native_prior),
+                        "dingo_training_config_sha256": file_sha256(
+                            artifacts["training_config"]
+                        ),
+                        "failures": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
             initialization_model = tmp_path / "dingo-initialization.pt"
             initialization_model.write_bytes(b"dingo-initialization")
-            artifacts["initialization_model"] = initialization_model
+            artifacts.update(
+                {
+                    "native_prior": native_prior,
+                    "prior_projection_report": projection,
+                    "initialization_model": initialization_model,
+                }
+            )
         metadata.write_text(
             yaml.safe_dump(
                 {
                     "schema_version": 1,
                     "backend": backend,
+                    "model_path": str(model),
                     "model_sha256": file_sha256(model),
                     "population": "BBH",
                     "source_input": {
@@ -209,6 +236,79 @@ def test_pe_backend_lock_accepts_two_isolated_pinned_backends(
     assert report["backends"]["DINGO"]["source"]["tag"] == "v0.9.8"
 
 
+def test_joint_pe_model_compatibility_rejects_official_native_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch)
+    dingo_metadata = Path(os.environ["TEST_DINGO_METADATA"])
+    amplfi_metadata = Path(os.environ["TEST_AMPLFI_METADATA"])
+    dingo = yaml.safe_load(dingo_metadata.read_text(encoding="utf-8"))
+    dingo_prior = Path(dingo["artifacts"]["native_prior"]["path"])
+    dingo_init = Path(dingo["artifacts"]["initialization_model"]["path"])
+    amplfi = yaml.safe_load(amplfi_metadata.read_text(encoding="utf-8"))
+    amplfi_prior = Path(amplfi["artifacts"]["native_prior"]["path"])
+
+    compatible = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        dingo_prior,
+        amplfi_prior,
+        dingo_init,
+    )
+    assert compatible["publication_ready"] is True
+    assert compatible["cross_backend_absolute_comparison_allowed"] is True
+
+    dingo["cross_backend_absolute_comparison_allowed"] = False
+    dingo["common_prior_equivalent"] = False
+    dingo_metadata.write_text(yaml.safe_dump(dingo), encoding="utf-8")
+    incompatible = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        dingo_prior,
+        amplfi_prior,
+        dingo_init,
+    )
+    assert incompatible["publication_ready"] is False
+    assert incompatible["cross_backend_absolute_comparison_allowed"] is False
+    assert any("forbids absolute" in value for value in incompatible["failures"])
+    assert any("not common-prior equivalent" in value for value in incompatible["failures"])
+    assert incompatible["within_backend_paired_robustness_remains_allowed"] is True
+    output = tmp_path / "incompatible-joint-models.json"
+    with pytest.raises(RuntimeError, match="joint PE models are incompatible"):
+        run_joint_pe_model_compatibility_audit(
+            dingo_metadata,
+            amplfi_metadata,
+            dingo_prior,
+            amplfi_prior,
+            dingo_init,
+            output,
+        )
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["status"] == "joint_pe_models_incompatible"
+    assert persisted["test_rows_read"] == 0
+
+
+def test_joint_pe_model_compatibility_rejects_native_waveform_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch)
+    dingo_metadata = Path(os.environ["TEST_DINGO_METADATA"])
+    amplfi_metadata = Path(os.environ["TEST_AMPLFI_METADATA"])
+    dingo = yaml.safe_load(dingo_metadata.read_text(encoding="utf-8"))
+    amplfi = yaml.safe_load(amplfi_metadata.read_text(encoding="utf-8"))
+    amplfi["native_model_waveform_approximant"] = "ml4gw.waveforms.IMRPhenomPv2"
+    amplfi_metadata.write_text(yaml.safe_dump(amplfi), encoding="utf-8")
+    report = audit_joint_pe_model_compatibility(
+        dingo_metadata,
+        amplfi_metadata,
+        Path(dingo["artifacts"]["native_prior"]["path"]),
+        Path(amplfi["artifacts"]["native_prior"]["path"]),
+        Path(dingo["artifacts"]["initialization_model"]["path"]),
+    )
+    assert report["publication_ready"] is False
+    assert "DINGO/AMPLFI native model waveform assumptions differ" in report["failures"]
+
+
 def test_pe_backend_lock_rejects_unresolved_model_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -269,6 +369,24 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
     output = tmp_path / "model-metadata.json"
     initialization_model = tmp_path / "initialization-model.pt"
     initialization_model.write_bytes(b"initialization-weights")
+    native_prior = tmp_path / "native-prior.yaml"
+    native_prior.write_text("prior: native-dingo\n", encoding="utf-8")
+    projection = tmp_path / "prior-projection.json"
+    projection.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "publication_ready": True,
+                "canonical_prior_sha256": file_sha256(artifacts["analysis_prior"]),
+                "dingo_prior_config_sha256": file_sha256(native_prior),
+                "dingo_training_config_sha256": file_sha256(
+                    artifacts["training_config"]
+                ),
+                "failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     report = freeze_pe_backend_model_metadata(
         backend="DINGO",
         model_path=model,
@@ -288,6 +406,8 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
         model_training_backend_version="0.5.8",
         native_inference_parameters=["chirp_mass", "mass_ratio"],
         reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
+        native_prior_path=native_prior,
+        prior_projection_report_path=projection,
         initialization_model_path=initialization_model,
     )
     assert report["model_sha256"] == file_sha256(model)
@@ -317,6 +437,8 @@ def test_pe_backend_model_freeze_requires_validation_selected_checkpoint(
             model_training_backend_version="0.5.8",
             native_inference_parameters=["chirp_mass", "mass_ratio"],
             reported_parameter_mapping=["chirp_mass=chirp_mass", "mass_ratio=mass_ratio"],
+            native_prior_path=native_prior,
+            prior_projection_report_path=projection,
             initialization_model_path=initialization_model,
         )
 
@@ -431,6 +553,33 @@ def test_amplfi_backend_lock_rejects_prior_projection_hash_drift(
     assert report["publication_ready"] is False
     assert any(
         "amplfi_prior_sha256 does not match" in failure
+        for failure in report["failures"]
+    )
+
+
+def test_dingo_backend_lock_rejects_prior_projection_hash_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _config(tmp_path, monkeypatch)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    metadata_path = Path(os.environ["TEST_DINGO_METADATA"])
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    projection_path = Path(metadata["artifacts"]["prior_projection_report"]["path"])
+    projection = json.loads(projection_path.read_text(encoding="utf-8"))
+    projection["dingo_prior_config_sha256"] = "0" * 64
+    projection_path.write_text(json.dumps(projection), encoding="utf-8")
+    metadata["artifacts"]["prior_projection_report"]["sha256"] = file_sha256(
+        projection_path
+    )
+    metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+    config["backends"]["DINGO"]["model_metadata_sha256"] = file_sha256(
+        metadata_path
+    )
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    report = audit_pe_backend_lock(path)
+    assert report["publication_ready"] is False
+    assert any(
+        "dingo_prior_config_sha256 does not match" in failure
         for failure in report["failures"]
     )
 

@@ -5,6 +5,7 @@ required_variables=(
   TASK_PYTHON
   TASK_CODE_DIR
   GWYOLO_CODE_COMMIT
+  INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   BACKGROUND_MANIFEST
   BASELINE_PIPELINE_REPORT
   PROMOTED_PIPELINE_REPORT
@@ -24,6 +25,7 @@ for variable in "${required_variables[@]}"; do
 done
 for input in \
   "$TASK_PYTHON" \
+  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$BACKGROUND_MANIFEST" \
   "$BASELINE_PIPELINE_REPORT" \
   "$PROMOTED_PIPELINE_REPORT" \
@@ -41,6 +43,55 @@ if [[ ! -d "$TASK_CODE_DIR/src/gwyolo" ]]; then
   echo "task code directory is invalid: $TASK_CODE_DIR" >&2
   exit 2
 fi
+
+"$TASK_PYTHON" - "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+  "$BACKGROUND_MANIFEST" "$BASELINE_PIPELINE_REPORT" \
+  "$PROMOTED_PIPELINE_REPORT" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+endpoint_path, background_path, baseline_path, promoted_path = sys.argv[1:]
+endpoint = json.loads(pathlib.Path(endpoint_path).read_text(encoding="utf-8"))
+pipelines = [
+    json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    for path in (baseline_path, promoted_path)
+]
+digest = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+components = endpoint.get("component_reports", {})
+expected_components = {
+    "purpose_partition",
+    "injection_plan",
+    "waveform_validation",
+    "materialization",
+    "snr_annotation",
+    "arrival_annotation",
+}
+background_hash = digest(background_path)
+injection_hash = endpoint.get("injection_arrival_manifest_sha256")
+if (
+    endpoint.get("status") != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+    or not endpoint.get("passed")
+    or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+    or set(components) != expected_components
+    or any(digest(item["path"]) != item["sha256"] for item in components.values())
+    or endpoint.get("candidate_calibration_background_manifest_sha256")
+    != background_hash
+    or any(
+        pipeline.get("status") != "validation_only_clustered_candidate_search_pipeline"
+        or pipeline.get("test_evaluation") is not None
+        or pipeline.get("run_identity", {}).get("background_manifest_sha256")
+        != background_hash
+        or pipeline.get("run_identity", {}).get("injection_manifest_sha256")
+        != injection_hash
+        for pipeline in pipelines
+    )
+    or len({pipeline.get("run_identity", {}).get("code_commit") for pipeline in pipelines})
+    != 1
+):
+    raise SystemExit("block comparison inputs do not match the frozen independent endpoint")
+PY
 
 mkdir -p "$OUTPUT_ROOT"
 for arm in baseline promoted; do

@@ -14,7 +14,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .io import atomic_write_json, atomic_write_text, canonical_hash, file_sha256
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+    load_yaml,
+)
 from .metrics import wilson_interval
 from .runtime import execution_provenance
 
@@ -177,6 +183,20 @@ def _rate(successes: int, total: int) -> dict[str, Any]:
     }
 
 
+def _network_source_ids(row: dict[str, Any]) -> set[str]:
+    sources = row.get("network_strain_sources")
+    if not isinstance(sources, dict):
+        return set()
+    identities = set()
+    for record in sources.values():
+        if not isinstance(record, dict):
+            continue
+        identity = record.get("hdf5_url") or record.get("detail_url")
+        if identity:
+            identities.add(str(identity))
+    return identities
+
+
 def evaluate_frozen_ood_threshold(
     calibration_rows: list[dict[str, Any]],
     evaluation_rows: list[dict[str, Any]],
@@ -305,6 +325,804 @@ def run_ood_abstention_evaluation(
     return result
 
 
+def bind_source_safe_detector_set_ood_validation(
+    source_receipt: str | Path,
+    corpus_audit: str | Path,
+    output: str | Path,
+) -> dict[str, Any]:
+    """Bind detector-set OOD evidence to its exact source-safe validation corpus."""
+
+    source_path = Path(source_receipt).resolve()
+    corpus_path = Path(corpus_audit).resolve()
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("source-safe OOD validation endpoints are immutable")
+    if not source_path.is_file() or not corpus_path.is_file():
+        raise FileNotFoundError("source-safe OOD binding inputs are absent")
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    artifacts = source.get("artifacts", {})
+    required_artifacts = {
+        "held_family_protocol",
+        "split_report",
+        "embedding_report",
+        "checkpoint",
+        "known_calibration_scores",
+        "heldout_evaluation_scores",
+        "gravityspy_corpus_audit",
+    }
+    if (
+        source.get("status") != "completed_source_safe_detector_set_ood_validation"
+        or source.get("passed") is not True
+        or source.get("scientific_claim_allowed") is not False
+        or source.get("test_rows_read") != 0
+        or source.get("test_evaluation") is not None
+        or not isinstance(artifacts, dict)
+        or required_artifacts - set(artifacts)
+    ):
+        raise ValueError("source detector-set OOD receipt is not validation-eligible")
+
+    resolved: dict[str, Path] = {}
+    for label in sorted(required_artifacts):
+        identity = artifacts[label]
+        if not isinstance(identity, dict):
+            raise ValueError(f"source OOD artifact identity is invalid: {label}")
+        path = Path(str(identity.get("path", ""))).resolve()
+        if not path.is_file() or identity.get("sha256") != file_sha256(path):
+            raise ValueError(f"source OOD artifact failed hash replay: {label}")
+        resolved[label] = path
+    if (
+        resolved["gravityspy_corpus_audit"] != corpus_path
+        or artifacts["gravityspy_corpus_audit"].get("sha256")
+        != file_sha256(corpus_path)
+    ):
+        raise ValueError("source OOD receipt is bound to a different corpus audit")
+
+    cross_split = corpus.get("split_audit", {}).get("cross_split_overlaps", {})
+    if (
+        corpus.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or corpus.get("passed") is not True
+        or not isinstance(cross_split, dict)
+        or not cross_split
+        or any(value for value in cross_split.values())
+        or not corpus.get("train_manifest_sha256")
+        or not corpus.get("validation_manifest_sha256")
+    ):
+        raise ValueError("OOD corpus audit is not source/GPS/glitch-disjoint")
+
+    protocol = json.loads(resolved["held_family_protocol"].read_text(encoding="utf-8"))
+    split = json.loads(resolved["split_report"].read_text(encoding="utf-8"))
+    embedding = json.loads(resolved["embedding_report"].read_text(encoding="utf-8"))
+    evaluation = embedding.get("ood_evaluation", {})
+    calibration = evaluation.get("calibration", {})
+    protocol_identity = protocol.get("identity", {})
+    protocol_overlaps = protocol.get("base_split_audit", {}).get(
+        "cross_split_overlaps", {}
+    )
+    split_overlaps = split.get("split_audit", {}).get("gps_block_overlaps", {})
+    split_base_overlaps = split.get("base_split_audit", {}).get(
+        "cross_split_overlaps", {}
+    )
+    if (
+        protocol.get("status") != "frozen_score_blind_held_glitch_family_protocol"
+        or protocol.get("model_scores_used_for_selection") is not False
+        or protocol.get("unknown_scores_opened_before_selection") is not False
+        or protocol_identity.get("train_manifest_sha256")
+        != corpus.get("train_manifest_sha256")
+        or protocol_identity.get("validation_manifest_sha256")
+        != corpus.get("validation_manifest_sha256")
+        or protocol.get("base_split_audit", {}).get("passed") is not True
+        or not isinstance(protocol_overlaps, dict)
+        or any(protocol_overlaps.values())
+        or split.get("status") != "frozen_leave_one_glitch_family_out_split"
+        or split.get("held_out_family")
+        != protocol.get("selected", {}).get("glitch_family")
+        or split.get("train_manifest_sha256") != corpus.get("train_manifest_sha256")
+        or split.get("validation_manifest_sha256")
+        != corpus.get("validation_manifest_sha256")
+        or split.get("split_audit", {}).get("passed") is not True
+        or split.get("base_split_audit", {}).get("passed") is not True
+        or not isinstance(split_overlaps, dict)
+        or not isinstance(split_base_overlaps, dict)
+        or any(split_overlaps.values())
+        or any(split_base_overlaps.values())
+        or embedding.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or embedding.get("architecture") != "detector_set"
+        or embedding.get("ood_score_method") != "logit_energy"
+        or embedding.get("device") != "cuda"
+        or embedding.get("test_evaluation") is not None
+        or embedding.get("scientific_claim_allowed") is not False
+        or embedding.get("ood_score_fit", {}).get(
+            "heldout_scores_used_for_method_or_fit_selection"
+        )
+        is not False
+        or evaluation.get("status")
+        != "frozen_known_only_ood_abstention_evaluation"
+        or calibration.get("selection_data") != "known_validation_only"
+        or calibration.get("unknown_scores_used_for_selection") is not False
+        or len(evaluation.get("observing_run_strata", {})) < 2
+        or not evaluation.get("unknown_false_acceptance")
+    ):
+        raise ValueError("detector-set OOD validation boundary failed replay")
+    split_manifest_artifacts: dict[str, Path] = {}
+    embedding_identity = embedding.get("run_identity", {})
+    for role in ("known_train", "known_calibration", "heldout_evaluation"):
+        identity = split.get("artifacts", {}).get(role, {})
+        path = Path(str(identity.get("path", ""))).resolve()
+        expected_hash = identity.get("sha256")
+        if (
+            not path.is_file()
+            or expected_hash != file_sha256(path)
+            or embedding_identity.get(f"{role}_manifest_sha256") != expected_hash
+        ):
+            raise ValueError(f"OOD split manifest failed embedding replay: {role}")
+        split_manifest_artifacts[f"{role}_manifest"] = path
+    embedded_artifacts = {
+        "checkpoint": ("checkpoint_path", "checkpoint_sha256"),
+        "known_calibration_scores": (
+            "known_calibration_scores_path",
+            "known_calibration_scores_sha256",
+        ),
+        "heldout_evaluation_scores": (
+            "heldout_evaluation_scores_path",
+            "heldout_evaluation_scores_sha256",
+        ),
+    }
+    for label, (path_field, hash_field) in embedded_artifacts.items():
+        if (
+            Path(str(embedding.get(path_field, ""))).resolve() != resolved[label]
+            or embedding.get(hash_field) != file_sha256(resolved[label])
+        ):
+            raise ValueError(f"embedding OOD artifact differs from source receipt: {label}")
+
+    bound_artifacts = {
+        "source_receipt": {
+            "path": str(source_path),
+            "sha256": file_sha256(source_path),
+        },
+        **{
+            label: {
+                "path": str(resolved[label]),
+                "sha256": file_sha256(resolved[label]),
+            }
+            for label in sorted(required_artifacts)
+        },
+        **{
+            label: {"path": str(path), "sha256": file_sha256(path)}
+            for label, path in sorted(split_manifest_artifacts.items())
+        },
+    }
+    result = {
+        "status": "bound_source_safe_detector_set_ood_validation",
+        "passed": True,
+        "validation_transfer_eligible": True,
+        "source_safe_corpus_gate": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation-only auxiliary attribution/abstention evidence; it cannot veto a "
+            "strain-coherent candidate and locked later-run transfer remains required"
+        ),
+        "architecture": embedding["architecture"],
+        "ood_score_method": embedding["ood_score_method"],
+        "ood_score_fit": embedding["ood_score_fit"],
+        "ood_evaluation": evaluation,
+        "auxiliary_policy": embedding["auxiliary_policy"],
+        "selected_held_family": protocol["selected"]["glitch_family"],
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "artifacts": bound_artifacts,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def run_frozen_glitch_ood_scoring(
+    config_path: str | Path,
+    validation_ood_report: str | Path,
+    evaluation_manifest: str | Path,
+    output_manifest: str | Path,
+    output_report: str | Path,
+    required_split: str = "test",
+    locked_suite_plan: str | Path | None = None,
+    access_log: str | Path | None = None,
+) -> dict[str, Any]:
+    """Score a new detector-set corpus with one validation-frozen OOD model."""
+
+    if torch is None:
+        raise RuntimeError("frozen glitch OOD scoring requires torch")
+    from .numeric import DetectorSetGlitchEmbeddingNet
+
+    manifest_output = Path(output_manifest).resolve()
+    report_output = Path(output_report).resolve()
+    if report_output.exists():
+        raise FileExistsError("frozen OOD score reports are immutable")
+    if manifest_output == report_output or not required_split:
+        raise ValueError("frozen OOD score output paths and split are invalid")
+    suite_values = (locked_suite_plan, access_log)
+    if any(value is not None for value in suite_values) and not all(
+        value is not None for value in suite_values
+    ):
+        raise ValueError("locked suite plan and access log must be supplied together")
+    locked_suite_access = None
+    locked_suite_inputs = None
+    if required_split == "test":
+        if locked_suite_plan is None:
+            raise ValueError("test OOD scoring requires the one-time locked suite receipt")
+        from .evaluation_lock import (
+            validate_locked_evaluation_suite_access,
+            validate_locked_evaluation_suite_input,
+        )
+
+        plan = json.loads(Path(locked_suite_plan).read_text(encoding="utf-8"))
+        locked_suite_access = validate_locked_evaluation_suite_access(
+            locked_suite_plan,
+            access_log,
+            "locked_ood_transfer",
+            plan.get("outputs", {}).get("locked_ood_transfer", ""),
+        )
+        locked_suite_inputs = {
+            "source_manifest": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_source_manifest",
+                evaluation_manifest,
+            ),
+            "score_manifest": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_score_manifest",
+                manifest_output,
+            ),
+            "score_report": validate_locked_evaluation_suite_input(
+                locked_suite_plan,
+                "locked_ood_score_report",
+                report_output,
+            ),
+        }
+    validation_path = Path(validation_ood_report).resolve()
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    if locked_suite_access is not None:
+        validation_identity = locked_suite_access["frozen_artifacts"].get(
+            "validation_ood_report", {}
+        )
+        if (
+            Path(str(validation_identity.get("path", ""))).resolve()
+            != validation_path
+            or validation_identity.get("sha256") != file_sha256(validation_path)
+        ):
+            raise ValueError("test OOD scorer validation model differs from the access receipt")
+    config_file = Path(config_path).resolve()
+    config = load_yaml(config_file)
+    settings = config.get("glitch_ood_embedding")
+    if not isinstance(settings, dict):
+        raise ValueError("frozen OOD scoring requires glitch_ood_embedding settings")
+    checkpoint_path = Path(str(validation.get("checkpoint_path", ""))).resolve()
+    if (
+        validation.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or validation.get("architecture") != "detector_set"
+        or validation.get("ood_score_method") != "logit_energy"
+        or validation.get("test_evaluation") is not None
+        or validation.get("run_identity", {}).get("config_hash")
+        != canonical_hash(config)
+        or validation.get("run_identity", {}).get("config_file_sha256")
+        != file_sha256(config_file)
+        or not checkpoint_path.is_file()
+        or validation.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+    ):
+        raise ValueError("frozen OOD scorer requires an exact detector-set validation model")
+    source_path = Path(evaluation_manifest).resolve()
+    with source_path.open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    required_fields = {
+        "glitch_id",
+        "gps_block",
+        "glitch_family",
+        "observing_run",
+        "is_unknown",
+        "available_ifos",
+        "split",
+        "aligned_network_context",
+        "path",
+        "sha256",
+        "detector_availability",
+        "ifo",
+    }
+    missing = [index for index, row in enumerate(rows) if required_fields - set(row)]
+    if not rows or missing:
+        raise ValueError(f"frozen OOD scoring rows are empty or incomplete: {missing[:10]}")
+    if any(str(row["split"]) != required_split for row in rows):
+        raise ValueError("frozen OOD scoring manifest mixes data outside the required split")
+    if len({str(row["glitch_id"]) for row in rows}) != len(rows):
+        raise ValueError("frozen OOD scoring requires unique glitch IDs")
+
+    model_ifos = tuple(str(value) for value in settings["model_ifos"])
+    q_values = tuple(float(value) for value in settings["q_values"])
+    labels = [str(value) for value in validation.get("labels", [])]
+    if len(labels) < 2:
+        raise ValueError("frozen OOD validation report has too few known labels")
+    label_to_index = {label: index for index, label in enumerate(labels)}
+    dataset = DetectorSetGlitchOODDataset(
+        rows,
+        model_ifos,
+        q_values,
+        label_to_index,
+        allow_unknown=True,
+        cache_in_memory=bool(settings.get("cache_in_memory", True)),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=int(settings["batch_size"]),
+        shuffle=False,
+        num_workers=0,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
+    selected = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if (
+        selected.get("run_identity") != validation.get("run_identity")
+        or selected.get("architecture") != "detector_set"
+        or [str(value) for value in selected.get("labels", [])] != labels
+        or tuple(str(value) for value in selected.get("model_ifos", ())) != model_ifos
+        or tuple(float(value) for value in selected.get("q_values", ())) != q_values
+    ):
+        raise ValueError("frozen OOD checkpoint metadata differs from its validation report")
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=len(model_ifos),
+        q_count=len(q_values),
+        class_count=len(labels),
+        base_channels=int(selected["base_channels"]),
+        embedding_dim=int(selected["embedding_dim"]),
+    ).to(device)
+    model.load_state_dict(selected["model"])
+    model.eval()
+    score_values = []
+    predicted_indices = []
+    confidences = []
+    with torch.no_grad():
+        for features, availability, _ in loader:
+            logits, _ = model(features.to(device), availability.to(device))
+            probabilities = torch.softmax(logits, dim=1)
+            score_values.extend((-torch.logsumexp(logits, dim=1)).cpu().tolist())
+            predicted_indices.extend(logits.argmax(dim=1).cpu().tolist())
+            confidences.extend(probabilities.max(dim=1).values.cpu().tolist())
+    if len(score_values) != len(rows):
+        raise AssertionError("frozen OOD scorer returned an incomplete batch")
+    scored_rows = [
+        {
+            **row,
+            "ood_score": float(score_values[index]),
+            "ood_score_method": "logit_energy",
+            "predicted_known_family": labels[int(predicted_indices[index])],
+            "known_classifier_confidence": float(confidences[index]),
+            "embedding_checkpoint_sha256": file_sha256(checkpoint_path),
+            "ood_validation_report_sha256": file_sha256(validation_path),
+            "ood_config_sha256": file_sha256(config_file),
+        }
+        for index, row in enumerate(rows)
+    ]
+    rendered_manifest = "".join(
+        json.dumps(row, sort_keys=True) + "\n" for row in scored_rows
+    )
+    if manifest_output.exists():
+        if manifest_output.read_text(encoding="utf-8") != rendered_manifest:
+            raise ValueError("existing frozen OOD score manifest differs from deterministic replay")
+    else:
+        atomic_write_text(manifest_output, rendered_manifest)
+    result = {
+        "status": "frozen_glitch_ood_scores_complete",
+        "scientific_claim_allowed": False,
+        "selection_data": "validation_model_only",
+        "test_scores_used_for_model_threshold_or_method_selection": False,
+        "required_split": required_split,
+        "rows": len(scored_rows),
+        "architecture": "detector_set",
+        "ood_score_method": "logit_energy",
+        "manifest_path": str(manifest_output),
+        "manifest_sha256": file_sha256(manifest_output),
+        "source_manifest_path": str(source_path),
+        "source_manifest_sha256": file_sha256(source_path),
+        "validation_ood_report_path": str(validation_path),
+        "validation_ood_report_sha256": file_sha256(validation_path),
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": file_sha256(checkpoint_path),
+        "config_path": str(config_file),
+        "config_sha256": file_sha256(config_file),
+        "device": str(device),
+        "locked_suite_access": locked_suite_access,
+        "locked_suite_inputs": locked_suite_inputs,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_output, result)
+    return result
+
+
+def run_locked_ood_transfer_evaluation(
+    validation_ood_report: str | Path,
+    locked_score_report: str | Path,
+    locked_score_manifest: str | Path,
+    locked_suite_plan: str | Path,
+    access_log: str | Path,
+    output: str | Path,
+    score_field: str = "ood_score",
+) -> dict[str, Any]:
+    """Apply one validation-frozen OOD threshold to a disjoint locked O4b set."""
+
+    from .evaluation_lock import (
+        validate_locked_evaluation_suite_access,
+        validate_locked_evaluation_suite_input,
+    )
+
+    output_path = Path(output).resolve()
+    if output_path.exists():
+        raise FileExistsError("locked OOD transfer outputs are immutable")
+    suite_access = validate_locked_evaluation_suite_access(
+        locked_suite_plan, access_log, "locked_ood_transfer", output_path
+    )
+    suite_inputs = {
+        "score_report": validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            "locked_ood_score_report",
+            locked_score_report,
+        ),
+        "score_manifest": validate_locked_evaluation_suite_input(
+            locked_suite_plan,
+            "locked_ood_score_manifest",
+            locked_score_manifest,
+        ),
+    }
+    validation_path = Path(validation_ood_report).resolve()
+    validation_identity = suite_access["frozen_artifacts"].get(
+        "validation_ood_report", {}
+    )
+    if (
+        Path(str(validation_identity.get("path", ""))).resolve() != validation_path
+        or validation_identity.get("sha256") != file_sha256(validation_path)
+    ):
+        raise ValueError("locked OOD validation report differs from the access receipt")
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    checkpoint_path = Path(str(validation.get("checkpoint_path", ""))).resolve()
+    calibration_path = Path(
+        str(validation.get("known_calibration_scores_path", ""))
+    ).resolve()
+    heldout_path = Path(
+        str(validation.get("heldout_evaluation_scores_path", ""))
+    ).resolve()
+    frozen_evaluation = validation.get("ood_evaluation", {})
+    frozen_calibration = frozen_evaluation.get("calibration", {})
+    if (
+        validation.get("status")
+        != "known_family_embedding_heldout_ood_validation"
+        or validation.get("architecture") != "detector_set"
+        or validation.get("ood_score_method") != "logit_energy"
+        or validation.get("test_evaluation") is not None
+        or validation.get("ood_score_fit", {}).get(
+            "heldout_scores_used_for_method_or_fit_selection"
+        )
+        is not False
+        or frozen_evaluation.get("status")
+        != "frozen_known_only_ood_abstention_evaluation"
+        or frozen_calibration.get("selection_data") != "known_validation_only"
+        or frozen_calibration.get("unknown_scores_used_for_selection") is not False
+        or not checkpoint_path.is_file()
+        or validation.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+        or not calibration_path.is_file()
+        or validation.get("known_calibration_scores_sha256")
+        != file_sha256(calibration_path)
+        or not heldout_path.is_file()
+        or validation.get("heldout_evaluation_scores_sha256")
+        != file_sha256(heldout_path)
+    ):
+        raise ValueError("locked OOD endpoint requires a replayable detector-set validation gate")
+
+    score_report_path = Path(locked_score_report).resolve()
+    score_report = json.loads(score_report_path.read_text(encoding="utf-8"))
+    locked_path = Path(locked_score_manifest).resolve()
+    source_path = Path(str(score_report.get("source_manifest_path", ""))).resolve()
+    suite_inputs["source_manifest"] = validate_locked_evaluation_suite_input(
+        locked_suite_plan,
+        "locked_ood_source_manifest",
+        source_path,
+    )
+    if (
+        score_report.get("status") != "frozen_glitch_ood_scores_complete"
+        or score_report.get("selection_data") != "validation_model_only"
+        or score_report.get("test_scores_used_for_model_threshold_or_method_selection")
+        is not False
+        or score_report.get("required_split") != "test"
+        or score_report.get("architecture") != "detector_set"
+        or score_report.get("ood_score_method") != "logit_energy"
+        or Path(str(score_report.get("manifest_path", ""))).resolve() != locked_path
+        or score_report.get("manifest_sha256") != file_sha256(locked_path)
+        or Path(str(score_report.get("validation_ood_report_path", ""))).resolve()
+        != validation_path
+        or score_report.get("validation_ood_report_sha256")
+        != file_sha256(validation_path)
+        or Path(str(score_report.get("checkpoint_path", ""))).resolve()
+        != checkpoint_path
+        or score_report.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+        or not source_path.is_file()
+        or score_report.get("source_manifest_sha256") != file_sha256(source_path)
+        or score_report.get("locked_suite_access") != suite_access
+        or score_report.get("locked_suite_inputs") != suite_inputs
+    ):
+        raise ValueError("locked OOD score report failed frozen-model replay")
+
+    def load(path: Path) -> list[dict[str, Any]]:
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows:
+            raise ValueError(f"OOD score manifest is empty: {path}")
+        return rows
+
+    calibration_rows = load(calibration_path)
+    heldout_rows = load(heldout_path)
+    locked_rows = load(locked_path)
+    if len(locked_rows) != int(score_report.get("rows", -1)):
+        raise ValueError("locked OOD score row count differs from its report")
+    if len(locked_rows) < int(suite_access["endpoints"]["minimum_locked_ood_rows"]):
+        raise ValueError("locked OOD transfer set is smaller than the predeclared minimum")
+    required = {
+        "glitch_id",
+        "gps_block",
+        "glitch_family",
+        "observing_run",
+        "is_unknown",
+        "available_ifos",
+        "embedding_checkpoint_sha256",
+        "ood_score_method",
+        score_field,
+    }
+    missing = [index for index, row in enumerate(locked_rows) if required - set(row)]
+    if missing:
+        raise ValueError(f"locked OOD rows lack required fields at {missing[:10]}")
+    if any(str(row.get("split")) != "test" for row in locked_rows):
+        raise ValueError("locked OOD transfer rows must use the test split")
+    scores = np.asarray([float(row[score_field]) for row in locked_rows])
+    if not np.isfinite(scores).all():
+        raise ValueError("locked OOD scores must be finite")
+    if any(
+        row["embedding_checkpoint_sha256"] != validation["checkpoint_sha256"]
+        or row["ood_score_method"] != validation["ood_score_method"]
+        for row in locked_rows
+    ):
+        raise ValueError("locked OOD rows differ from the validation-frozen model or score")
+    overlaps = {}
+    for label, rows in (
+        ("known_calibration", calibration_rows),
+        ("heldout_validation", heldout_rows),
+    ):
+        for field in ("glitch_id", "gps_block"):
+            overlaps[f"{label}_{field}"] = sorted(
+                {str(row[field]) for row in rows}
+                & {str(row[field]) for row in locked_rows}
+            )
+    if any(overlaps.values()):
+        raise ValueError(f"locked OOD transfer overlaps validation groups: {overlaps}")
+    known = [row for row in locked_rows if not bool(row["is_unknown"])]
+    unknown = [row for row in locked_rows if bool(row["is_unknown"])]
+    if not known or not unknown:
+        raise ValueError("locked OOD transfer requires known and unknown artifacts")
+    threshold = float(frozen_calibration["threshold"])
+    evaluated = [
+        {**row, "abstained": float(row[score_field]) >= threshold}
+        for row in locked_rows
+    ]
+    known_evaluated = [row for row in evaluated if not bool(row["is_unknown"])]
+    unknown_evaluated = [row for row in evaluated if bool(row["is_unknown"])]
+
+    def strata(field: str) -> dict[str, Any]:
+        output_rows = {}
+        for value in sorted({str(row[field]) for row in evaluated}):
+            selected = [row for row in evaluated if str(row[field]) == value]
+            selected_unknown = [row for row in selected if bool(row["is_unknown"])]
+            selected_known = [row for row in selected if not bool(row["is_unknown"])]
+            output_rows[value] = {
+                "rows": len(selected),
+                "unknown_false_acceptance": (
+                    _rate(
+                        sum(not row["abstained"] for row in selected_unknown),
+                        len(selected_unknown),
+                    )
+                    if selected_unknown
+                    else None
+                ),
+                "known_false_abstention": (
+                    _rate(
+                        sum(row["abstained"] for row in selected_known),
+                        len(selected_known),
+                    )
+                    if selected_known
+                    else None
+                ),
+            }
+        return output_rows
+
+    detector_rows = [
+        {**row, "detector_subset": "+".join(str(ifo) for ifo in row["available_ifos"])}
+        for row in evaluated
+    ]
+    evaluated = detector_rows
+    result = {
+        "status": "locked_detector_set_ood_transfer_evaluation",
+        "endpoint_complete": True,
+        "scientific_claim_allowed": False,
+        "threshold_refits_on_test": 0,
+        "threshold": threshold,
+        "threshold_source": "known_validation_only",
+        "score_field": score_field,
+        "evaluation_rows": len(evaluated),
+        "known_rows": len(known_evaluated),
+        "unknown_rows": len(unknown_evaluated),
+        "known_false_abstention": _rate(
+            sum(row["abstained"] for row in known_evaluated), len(known_evaluated)
+        ),
+        "unknown_true_abstention": _rate(
+            sum(row["abstained"] for row in unknown_evaluated), len(unknown_evaluated)
+        ),
+        "unknown_false_acceptance": _rate(
+            sum(not row["abstained"] for row in unknown_evaluated),
+            len(unknown_evaluated),
+        ),
+        "auroc_diagnostic": ood_auc(evaluated, score_field),
+        "glitch_family_strata": strata("glitch_family"),
+        "detector_subset_strata": strata("detector_subset"),
+        "observing_run_strata": strata("observing_run"),
+        "split_audit": {"passed": True, "cross_split_overlaps": overlaps},
+        "validation_ood_report": {
+            "path": str(validation_path),
+            "sha256": file_sha256(validation_path),
+        },
+        "locked_score_manifest": {
+            "path": str(locked_path),
+            "sha256": file_sha256(locked_path),
+        },
+        "checkpoint": {
+            "path": str(checkpoint_path),
+            "sha256": file_sha256(checkpoint_path),
+        },
+        "locked_suite_access": suite_access,
+        "locked_suite_inputs": suite_inputs,
+        "locked_score_report": {
+            "path": str(score_report_path),
+            "sha256": file_sha256(score_report_path),
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
+def freeze_ood_held_family_protocol(
+    train_manifest: str | Path,
+    validation_manifest: str | Path,
+    output: str | Path,
+    excluded_families: Iterable[str] = (),
+    minimum_train_rows: int = 20,
+    minimum_validation_rows: int = 20,
+    minimum_validation_gps_blocks: int = 5,
+) -> dict[str, Any]:
+    """Choose the next held family from labels/group counts before model scores exist."""
+
+    def load(path: str | Path) -> list[dict[str, Any]]:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    train = load(train_manifest)
+    validation = load(validation_manifest)
+    if not train or not validation:
+        raise ValueError("OOD held-family protocol requires non-empty train/validation")
+    if minimum_train_rows < 1 or minimum_validation_rows < 1:
+        raise ValueError("OOD held-family row minima must be positive")
+    if minimum_validation_gps_blocks < 1:
+        raise ValueError("OOD held-family GPS-block minimum must be positive")
+    if any(str(row.get("split")) != "train" for row in train):
+        raise ValueError("OOD held-family training input must be train-only")
+    if any(str(row.get("split")) != "val" for row in validation):
+        raise ValueError("OOD held-family validation input must be val-only")
+    required = {"glitch_id", "network_gps_block", "ml_label", "observing_run"}
+    if any(required - set(row) for row in train + validation):
+        raise ValueError("OOD held-family inputs lack physical group/family fields")
+    group_overlaps = {
+        field: sorted(
+            {str(row[field]) for row in train}
+            & {str(row[field]) for row in validation}
+        )
+        for field in ("glitch_id", "network_gps_block")
+    }
+    train_sources = set().union(*(_network_source_ids(row) for row in train))
+    validation_sources = set().union(
+        *(_network_source_ids(row) for row in validation)
+    )
+    if train_sources or validation_sources:
+        group_overlaps["network_source"] = sorted(train_sources & validation_sources)
+    if any(group_overlaps.values()):
+        raise ValueError(f"OOD held-family base split leakage: {group_overlaps}")
+    excluded = sorted({str(value) for value in excluded_families if str(value)})
+    train_counts = Counter(str(row["ml_label"]) for row in train)
+    validation_counts = Counter(str(row["ml_label"]) for row in validation)
+    validation_blocks = {
+        family: len(
+            {
+                str(row["network_gps_block"])
+                for row in validation
+                if str(row["ml_label"]) == family
+            }
+        )
+        for family in validation_counts
+    }
+    candidates = []
+    for family in sorted(set(train_counts) & set(validation_counts)):
+        eligible = (
+            family not in excluded
+            and train_counts[family] >= minimum_train_rows
+            and validation_counts[family] >= minimum_validation_rows
+            and validation_blocks[family] >= minimum_validation_gps_blocks
+        )
+        candidates.append(
+            {
+                "glitch_family": family,
+                "train_rows": train_counts[family],
+                "validation_rows": validation_counts[family],
+                "validation_gps_blocks": validation_blocks[family],
+                "eligible": eligible,
+            }
+        )
+    eligible = [row for row in candidates if row["eligible"]]
+    if not eligible:
+        raise ValueError("no unexamined glitch family satisfies the frozen OOD minima")
+    selected = min(
+        eligible,
+        key=lambda row: (
+            -int(row["validation_rows"]),
+            -int(row["validation_gps_blocks"]),
+            -int(row["train_rows"]),
+            str(row["glitch_family"]),
+        ),
+    )
+    identity = {
+        "method": "largest_validation_support_score_blind_v1",
+        "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
+        "train_manifest_sha256": file_sha256(train_manifest),
+        "validation_manifest_sha256": file_sha256(validation_manifest),
+        "excluded_families": excluded,
+        "minimum_train_rows": minimum_train_rows,
+        "minimum_validation_rows": minimum_validation_rows,
+        "minimum_validation_gps_blocks": minimum_validation_gps_blocks,
+        "selected_held_out_family": selected["glitch_family"],
+    }
+    result = {
+        "status": "frozen_score_blind_held_glitch_family_protocol",
+        "scientific_claim_allowed": False,
+        "protocol_id": canonical_hash(identity, 32),
+        "selection_method": identity["method"],
+        "selection_data": "family labels, row counts and GPS-block counts only",
+        "model_scores_used_for_selection": False,
+        "unknown_scores_opened_before_selection": False,
+        "identity": identity,
+        "base_split_audit": {
+            "passed": True,
+            "cross_split_overlaps": group_overlaps,
+        },
+        "candidates": candidates,
+        "selected": selected,
+        **execution_provenance(),
+    }
+    output_path = Path(output)
+    if output_path.is_file():
+        completed = json.loads(output_path.read_text(encoding="utf-8"))
+        if completed.get("identity") != identity:
+            raise ValueError("frozen OOD held-family output belongs to another protocol")
+        if completed.get("protocol_id") != result["protocol_id"]:
+            raise ValueError("frozen OOD held-family protocol identity is corrupted")
+        return completed
+    atomic_write_json(output_path, result)
+    return result
+
+
 def build_leave_one_family_out_split(
     train_manifest: str | Path,
     validation_manifest: str | Path,
@@ -328,6 +1146,21 @@ def build_leave_one_family_out_split(
     required = {"glitch_id", "network_gps_block", "ml_label", "observing_run"}
     if any(required - set(row) for row in train + validation):
         raise ValueError("Gravity Spy OOD split inputs lack group/family/run metadata")
+    base_overlaps = {
+        field: sorted(
+            {str(row[field]) for row in train}
+            & {str(row[field]) for row in validation}
+        )
+        for field in ("glitch_id", "network_gps_block")
+    }
+    train_sources = set().union(*(_network_source_ids(row) for row in train))
+    validation_sources = set().union(
+        *(_network_source_ids(row) for row in validation)
+    )
+    if train_sources or validation_sources:
+        base_overlaps["network_source"] = sorted(train_sources & validation_sources)
+    if any(base_overlaps.values()):
+        raise ValueError(f"Gravity Spy OOD base split leakage: {base_overlaps}")
     if held_out_family not in {str(row["ml_label"]) for row in train + validation}:
         raise ValueError("held-out glitch family is absent from input manifests")
     held_train_blocks = {
@@ -440,6 +1273,10 @@ def build_leave_one_family_out_split(
         "excluded_train_gps_blocks_with_held_family": len(held_train_blocks),
         "held_validation_gps_blocks": len(held_validation_blocks),
         "split_audit": {"passed": True, "gps_block_overlaps": overlaps},
+        "base_split_audit": {
+            "passed": True,
+            "cross_split_overlaps": base_overlaps,
+        },
         "artifacts": artifacts,
         "evaluation_unknown_rows": sum(row["is_unknown"] for row in outputs["heldout_evaluation"]),
         "evaluation_known_rows": sum(not row["is_unknown"] for row in outputs["heldout_evaluation"]),
@@ -498,6 +1335,93 @@ class GlitchOODDataset:
         return item
 
 
+class DetectorSetGlitchOODDataset:
+    """Aligned numeric H1/L1/V1 contexts with explicit detector availability."""
+
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        model_ifos: tuple[str, ...],
+        q_values: tuple[float, ...],
+        label_to_index: dict[str, int],
+        allow_unknown: bool = False,
+        cache_in_memory: bool = True,
+    ):
+        self.rows = rows
+        self.model_ifos = model_ifos
+        self.q_values = q_values
+        self.label_to_index = label_to_index
+        self.allow_unknown = allow_unknown
+        self.cache: list[tuple[np.ndarray, np.ndarray, np.int64] | None] | None = (
+            [None] * len(rows) if cache_in_memory else None
+        )
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(
+        self, index: int
+    ) -> tuple[np.ndarray, np.ndarray, np.int64]:
+        if self.cache is not None and self.cache[index] is not None:
+            return self.cache[index]  # type: ignore[return-value]
+        row = self.rows[index]
+        if row.get("aligned_network_context") is not True:
+            raise ValueError(
+                f"network OOD sample lacks aligned context: {row['glitch_id']}"
+            )
+        if file_sha256(row["path"]) != str(row["sha256"]):
+            raise ValueError(f"Gravity Spy OOD sample hash mismatch: {row['glitch_id']}")
+        with np.load(row["path"], allow_pickle=False) as arrays:
+            features = np.asarray(arrays["features"], dtype=np.float32)
+            availability = np.asarray(
+                arrays["detector_availability"], dtype=np.float32
+            )
+            ifos = tuple(str(value) for value in arrays["ifos"].tolist())
+            q_values = tuple(float(value) for value in arrays["q_values"].tolist())
+        expected_prefix = (len(self.model_ifos), len(self.q_values))
+        if features.ndim != 4 or features.shape[:2] != expected_prefix:
+            raise ValueError(
+                f"network Gravity Spy OOD tensor shape mismatch: {row['glitch_id']}"
+            )
+        if ifos != self.model_ifos or not np.allclose(
+            q_values, self.q_values, atol=1e-6
+        ):
+            raise ValueError("network OOD detector/Q metadata differs from configuration")
+        if availability.shape != (len(self.model_ifos),) or np.any(
+            (availability != 0) & (availability != 1)
+        ):
+            raise ValueError("network OOD detector availability must be binary [IFO]")
+        if availability.sum() < 1:
+            raise ValueError("network OOD sample has no available detector")
+        declared = np.asarray(row.get("detector_availability"), dtype=np.float32)
+        if declared.shape != availability.shape or not np.array_equal(
+            declared, availability
+        ):
+            raise ValueError("network OOD row/array detector availability differs")
+        available_ifos = tuple(
+            ifo for ifo, valid in zip(self.model_ifos, availability) if valid
+        )
+        if tuple(row.get("available_ifos", ())) != available_ifos:
+            raise ValueError("network OOD available IFO identities differ")
+        if str(row["ifo"]) not in available_ifos:
+            raise ValueError("network OOD event IFO is marked unavailable")
+        if not np.isfinite(features).all():
+            raise ValueError(f"network OOD tensor is non-finite: {row['glitch_id']}")
+        if np.any(features[availability == 0] != 0):
+            raise ValueError("unavailable network OOD detector planes must be zero")
+        label = str(row["glitch_family"])
+        if label not in self.label_to_index and not self.allow_unknown:
+            raise ValueError(f"unknown family entered known-only OOD data: {label}")
+        item = (
+            features,
+            availability,
+            np.int64(self.label_to_index.get(label, -1)),
+        )
+        if self.cache is not None:
+            self.cache[index] = item
+        return item
+
+
 def run_glitch_ood_embedding(
     config_path: str | Path,
     known_train_manifest: str | Path,
@@ -509,7 +1433,11 @@ def run_glitch_ood_embedding(
     """Train a known-family embedding and score held families without tuning on them."""
     if torch is None:
         raise RuntimeError("glitch OOD embedding training requires torch")
-    from .numeric import GlitchEmbeddingNet, _atomic_torch_save
+    from .numeric import (
+        DetectorSetGlitchEmbeddingNet,
+        GlitchEmbeddingNet,
+        _atomic_torch_save,
+    )
     from .io import load_yaml
 
     config = load_yaml(config_path)
@@ -583,29 +1511,31 @@ def run_glitch_ood_embedding(
         )
     model_ifos = tuple(str(item) for item in settings["model_ifos"])
     q_values = tuple(float(item) for item in settings["q_values"])
+    architecture = str(settings.get("architecture", "single_ifo"))
+    if architecture not in {"single_ifo", "detector_set"}:
+        raise ValueError(f"unsupported glitch OOD architecture: {architecture}")
+    dataset_class = (
+        DetectorSetGlitchOODDataset
+        if architecture == "detector_set"
+        else GlitchOODDataset
+    )
+
+    def dataset(rows: list[dict[str, Any]], allow_unknown: bool = False) -> Any:
+        common = {
+            "rows": rows,
+            "model_ifos": model_ifos,
+            "label_to_index": label_to_index,
+            "allow_unknown": allow_unknown,
+            "cache_in_memory": bool(settings.get("cache_in_memory", True)),
+        }
+        if architecture == "detector_set":
+            return dataset_class(q_values=q_values, **common)
+        return dataset_class(q_count=len(q_values), **common)
+
     datasets = {
-        "train": GlitchOODDataset(
-            train_rows,
-            model_ifos,
-            len(q_values),
-            label_to_index,
-            cache_in_memory=bool(settings.get("cache_in_memory", True)),
-        ),
-        "calibration": GlitchOODDataset(
-            calibration_rows,
-            model_ifos,
-            len(q_values),
-            label_to_index,
-            cache_in_memory=bool(settings.get("cache_in_memory", True)),
-        ),
-        "evaluation": GlitchOODDataset(
-            evaluation_rows,
-            model_ifos,
-            len(q_values),
-            label_to_index,
-            allow_unknown=True,
-            cache_in_memory=bool(settings.get("cache_in_memory", True)),
-        ),
+        "train": dataset(train_rows),
+        "calibration": dataset(calibration_rows),
+        "evaluation": dataset(evaluation_rows, allow_unknown=True),
     }
     generator = torch.Generator().manual_seed(seed)
     loaders = {
@@ -625,11 +1555,18 @@ def run_glitch_ood_embedding(
         torch.cuda.manual_seed_all(seed)
     torch.use_deterministic_algorithms(True, warn_only=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = GlitchEmbeddingNet(
-        len(q_values),
-        len(labels),
-        int(settings.get("base_channels", 24)),
-        int(settings.get("embedding_dim", 32)),
+    model_settings = {
+        "q_count": len(q_values),
+        "class_count": len(labels),
+        "base_channels": int(settings.get("base_channels", 24)),
+        "embedding_dim": int(settings.get("embedding_dim", 32)),
+    }
+    model = (
+        DetectorSetGlitchEmbeddingNet(
+            ifo_count=len(model_ifos), **model_settings
+        )
+        if architecture == "detector_set"
+        else GlitchEmbeddingNet(**model_settings)
     ).to(device)
     counts = Counter(str(row["glitch_family"]) for row in train_rows)
     class_weights = torch.as_tensor(
@@ -650,19 +1587,28 @@ def run_glitch_ood_embedding(
     if contrastive_weight < 0 or contrastive_temperature <= 0:
         raise ValueError("supervised contrastive configuration is invalid")
 
+    def forward_batch(batch: Any) -> tuple[Any, Any, Any]:
+        if architecture == "detector_set":
+            features, availability, targets = batch
+            logits, embeddings = model(
+                features.to(device), availability.to(device)
+            )
+        else:
+            features, targets = batch
+            logits, embeddings = model(features.to(device))
+        return logits, embeddings, targets.to(device)
+
     def epoch(loader: Any, training: bool) -> dict[str, float]:
         model.train(training)
         losses = []
         cross_entropy_losses = []
         contrastive_losses = []
         correct = total = 0
-        for features, targets in loader:
-            features = features.to(device)
-            targets = targets.to(device)
+        for batch in loader:
             if training:
                 optimizer.zero_grad(set_to_none=True)
             with torch.set_grad_enabled(training):
-                logits, embeddings = model(features)
+                logits, embeddings, targets = forward_batch(batch)
                 cross_entropy = torch_functional.cross_entropy(
                     logits, targets, weight=class_weights
                 )
@@ -716,6 +1662,7 @@ def run_glitch_ood_embedding(
                     "model_ifos": list(model_ifos),
                     "q_values": list(q_values),
                     "labels": labels,
+                    "architecture": architecture,
                     "base_channels": int(settings.get("base_channels", 24)),
                     "embedding_dim": int(settings.get("embedding_dim", 32)),
                     "run_identity": run_identity,
@@ -730,11 +1677,11 @@ def run_glitch_ood_embedding(
         logits = []
         targets = []
         with torch.no_grad():
-            for features, batch_targets in loader:
-                batch_logits, batch_embeddings = model(features.to(device))
+            for batch in loader:
+                batch_logits, batch_embeddings, batch_targets = forward_batch(batch)
                 embeddings.append(batch_embeddings.cpu().numpy())
                 logits.append(batch_logits.cpu().numpy())
-                targets.append(batch_targets.numpy())
+                targets.append(batch_targets.cpu().numpy())
         return np.concatenate(embeddings), np.concatenate(logits), np.concatenate(targets)
 
     train_embeddings, _, train_targets = embed(
@@ -825,6 +1772,43 @@ def run_glitch_ood_embedding(
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "labels": labels,
         "label_counts": dict(sorted(counts.items())),
+        "architecture": architecture,
+        "detector_context": {
+            "model_ifos": list(model_ifos),
+            "explicit_detector_identity": architecture == "detector_set",
+            "explicit_detector_availability": architecture == "detector_set",
+            "aligned_network_context_required": architecture == "detector_set",
+            "train_detector_subsets": dict(
+                sorted(
+                    Counter(
+                        "".join(row.get("available_ifos", ()))
+                        if architecture == "detector_set"
+                        else str(row["ifo"])
+                        for row in train_rows
+                    ).items()
+                )
+            ),
+            "calibration_detector_subsets": dict(
+                sorted(
+                    Counter(
+                        "".join(row.get("available_ifos", ()))
+                        if architecture == "detector_set"
+                        else str(row["ifo"])
+                        for row in calibration_rows
+                    ).items()
+                )
+            ),
+            "evaluation_detector_subsets": dict(
+                sorted(
+                    Counter(
+                        "".join(row.get("available_ifos", ()))
+                        if architecture == "detector_set"
+                        else str(row["ifo"])
+                        for row in evaluation_rows
+                    ).items()
+                )
+            ),
+        },
         "ood_score_method": score_method,
         "supervised_contrastive": {
             "weight": contrastive_weight,

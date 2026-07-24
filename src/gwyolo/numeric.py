@@ -118,6 +118,38 @@ if nn is not None:
             self.bottleneck = _ConvBlock(base_channels, base_channels * 2)
             self.shared_decoder = _ConvBlock(base_channels * 3, base_channels)
             self.shared_head = nn.Conv2d(base_channels, 2 * self.q_count, 1)
+            self.glitch_adapter_channels = 0
+            self.glitch_adapter = None
+            self.glitch_adapter_head = None
+
+        def enable_glitch_adapter(self, adapter_channels: int) -> dict[str, Any]:
+            """Attach a zero-residual glitch decoder without changing chirp logits."""
+
+            if adapter_channels <= 0:
+                raise ValueError("glitch adapter channels must be positive")
+            if self.glitch_adapter_channels:
+                if self.glitch_adapter_channels != adapter_channels:
+                    raise ValueError("glitch adapter is already enabled with another width")
+                return {
+                    "status": "existing_zero_residual_glitch_adapter",
+                    "adapter_channels": self.glitch_adapter_channels,
+                }
+            device = self.shared_head.weight.device
+            dtype = self.shared_head.weight.dtype
+            self.glitch_adapter = _ConvBlock(self.base_channels, adapter_channels).to(
+                device=device, dtype=dtype
+            )
+            self.glitch_adapter_head = nn.Conv2d(
+                adapter_channels, self.q_count, 1
+            ).to(device=device, dtype=dtype)
+            nn.init.zeros_(self.glitch_adapter_head.weight)
+            if self.glitch_adapter_head.bias is not None:
+                nn.init.zeros_(self.glitch_adapter_head.bias)
+            self.glitch_adapter_channels = int(adapter_channels)
+            return {
+                "status": "initialized_zero_residual_glitch_adapter",
+                "adapter_channels": self.glitch_adapter_channels,
+            }
 
         def forward(self, value: Any, detector_availability: Any) -> Any:
             if value.ndim != 4 or value.shape[1] != self.input_channels:
@@ -164,7 +196,25 @@ if nn is not None:
                     time_bins,
                 )
             )
-            logits = self.shared_head(decoded).reshape(
+            per_detector_logits = self.shared_head(decoded).reshape(
+                batch * self.ifo_count,
+                2,
+                self.q_count,
+                frequency,
+                time_bins,
+            )
+            if self.glitch_adapter is not None:
+                residual = self.glitch_adapter_head(
+                    self.glitch_adapter(decoded)
+                )
+                per_detector_logits = torch.stack(
+                    [
+                        per_detector_logits[:, 0],
+                        per_detector_logits[:, 1] + residual,
+                    ],
+                    dim=1,
+                )
+            logits = per_detector_logits.reshape(
                 batch,
                 self.ifo_count,
                 2,
@@ -210,6 +260,89 @@ if nn is not None:
             )
             embedding = torch_functional.normalize(
                 self.projection(pooled), p=2, dim=1
+            )
+            return self.classifier(embedding), embedding
+
+
+    class DetectorSetGlitchEmbeddingNet(nn.Module):
+        """Known-family/OOD encoder using aligned, explicitly identified IFO sets."""
+
+        def __init__(
+            self,
+            ifo_count: int,
+            q_count: int,
+            class_count: int,
+            base_channels: int = 24,
+            embedding_dim: int = 32,
+        ):
+            super().__init__()
+            if ifo_count < 2 or q_count < 1 or class_count < 2 or embedding_dim < 2:
+                raise ValueError("detector-set glitch embedding dimensions are invalid")
+            self.ifo_count = int(ifo_count)
+            self.q_count = int(q_count)
+            self.class_count = int(class_count)
+            self.embedding_dim = int(embedding_dim)
+            self.base_channels = int(base_channels)
+            self.shared_encoder = _ConvBlock(self.q_count, self.base_channels)
+            pooled_channels = 2 * self.base_channels
+            # Appending a fixed one-hot slot identity keeps H1/L1/V1 distinguishable while
+            # the shared strain encoder supports every declared detector subset.
+            self.network_channels = pooled_channels + self.ifo_count
+            self.attention_score = nn.Linear(self.network_channels, 1, bias=False)
+            self.projection = nn.Linear(self.network_channels, self.embedding_dim)
+            self.classifier = nn.Linear(self.embedding_dim, self.class_count)
+
+        def forward(
+            self, value: Any, detector_availability: Any
+        ) -> tuple[Any, Any]:
+            if value.ndim != 5 or tuple(value.shape[1:3]) != (
+                self.ifo_count,
+                self.q_count,
+            ):
+                raise ValueError(
+                    "detector-set glitch embedding input must have shape "
+                    "[batch, IFO, Q, F, T]"
+                )
+            if detector_availability.ndim != 2 or tuple(
+                detector_availability.shape
+            ) != (value.shape[0], self.ifo_count):
+                raise ValueError("detector availability must have shape [batch, IFO]")
+            availability = detector_availability.to(
+                device=value.device, dtype=value.dtype
+            )
+            if not torch.all((availability == 0) | (availability == 1)):
+                raise ValueError("detector availability must be binary")
+            if torch.any(availability.sum(dim=1) < 1):
+                raise ValueError("every OOD sample requires at least one available detector")
+            batch, _, _, frequency, time_bins = value.shape
+            encoded = self.shared_encoder(
+                value.reshape(
+                    batch * self.ifo_count,
+                    self.q_count,
+                    frequency,
+                    time_bins,
+                )
+            ).reshape(
+                batch,
+                self.ifo_count,
+                self.base_channels,
+                frequency,
+                time_bins,
+            )
+            pooled = torch.cat(
+                [encoded.mean(dim=(3, 4)), encoded.amax(dim=(3, 4))], dim=2
+            )
+            identity = torch.eye(
+                self.ifo_count, device=value.device, dtype=value.dtype
+            )[None].expand(batch, -1, -1)
+            identified = torch.cat([pooled, identity], dim=2)
+            attention_logits = self.attention_score(identified)[:, :, 0]
+            attention = torch.softmax(
+                attention_logits.masked_fill(availability == 0, -torch.inf), dim=1
+            )
+            fused = torch.sum(identified * attention[:, :, None], dim=1)
+            embedding = torch_functional.normalize(
+                self.projection(fused), p=2, dim=1
             )
             return self.classifier(embedding), embedding
 
@@ -714,6 +847,10 @@ else:
         def __init__(self, *_: Any, **__: Any):
             _require_torch()
 
+    class DetectorSetGlitchEmbeddingNet:  # type: ignore[no-redef]
+        def __init__(self, *_: Any, **__: Any):
+            _require_torch()
+
 
 def initialize_detector_set_from_early_fusion(
     model: Any,
@@ -802,6 +939,9 @@ def model_from_checkpoint(
         model = MultiIFOQNet(expected_channels, base_channels)
     elif architecture == "detector_set":
         model = DetectorSetQNet(len(model_ifos), len(q_values), base_channels)
+        adapter_channels = int(checkpoint.get("glitch_adapter_channels", 0))
+        if adapter_channels:
+            model.enable_glitch_adapter(adapter_channels)
     else:
         raise ValueError(f"unsupported checkpoint architecture: {architecture}")
     model.load_state_dict(checkpoint["model"])

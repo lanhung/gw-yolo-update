@@ -79,14 +79,36 @@ gwyolo trigger-score convert continuous DQ-safe windows into multi-IFO ranking t
 gwyolo candidate-extract retain every per-IFO temporal cluster from saved probability maps
 gwyolo candidate-time-slides form and cluster exact-time nonzero-shift network candidates
 gwyolo candidate-block-permutation-schedule-freeze plan score-blind fragmented-background exposure
+gwyolo candidate-block-permutation-capacity-forecast size the parent bank before scoring
+gwyolo candidate-block-permutation-capacity-extension-freeze bind the minimum reserve decision
+gwyolo gwosc-plan-extend append a score-blind reserve while preserving a frozen parent prefix
+gwyolo gwosc-plan-disjoint select a source-pair plan outside frozen development/evaluation plans
 gwyolo candidate-block-permutations execute frozen relative-slot GPS-block background pairings
+gwyolo gravityspy-ood-family-freeze freeze the next score-blind held-family protocol
+gwyolo gravityspy-mask-consensus-materialize build a validation-only blinded human gold bank
+gwyolo gravityspy-mask-segmentation-predict export champion probabilities for each gold task
+gwyolo gravityspy-mask-segmentation-evaluate score one hash-bound model on that gold bank
+gwyolo glitch-ood-train train single-IFO or aligned detector-set OOD embeddings
 gwyolo time-slide-background build split-safe nonzero time-slide background exposure
 gwyolo injection-plan create volume-weighted, split-safe CBC injection recipes for `<VT>`
 gwyolo injection-materialize project validated PyCBC/LAL waveforms into real detector strain
 gwyolo injection-score score full-context-whitened physical injections with the frozen model
 gwyolo pe-evaluate compare paired raw/cleaned AMPLFI/DINGO-compatible posteriors
+gwyolo dingo-common-prior-audit prove or reject DINGO/common-prior equivalence before PE
+gwyolo dingo-runtime-failure-adjudicate authorize only a hash-bound native-runtime retry
+gwyolo dingo-official-native-model-freeze bind the official DINGO native-prior comparison boundary
+gwyolo amplfi-background-capacity-audit measure group-safe physical noise duration before training
+gwyolo amplfi-background-source-evict release recoverable GWOSC sources after verified export
+gwyolo amplfi-training-stage-freeze resolve a predeclared fixed-update AMPLFI budget
+gwyolo pe-robustness-joint-evaluate join hash-matched DINGO/AMPLFI posterior batches
 gwyolo pipeline     run audit → split → train → test → catalog diagnostics
 ```
+
+Remote aligned-validation acquisition can use
+`scripts/run_gravityspy_validation_fallback.sh` as a conditional, score-blind fallback. It waits for
+an older acquisition process to exit, reuses its completed shard reports, materializes only missing
+shards under the exact current commit in a separate output root, and hash-verifies the combined
+validation manifest without opening test data.
 
 ## Scientific positioning
 

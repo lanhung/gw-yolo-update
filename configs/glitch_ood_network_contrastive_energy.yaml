@@ -1,0 +1,21 @@
+glitch_ood_embedding:
+  # This arm is frozen before held-family scores are generated. It replaces the
+  # failed single-IFO diagnostic with aligned detector-set context; it does not
+  # use unknown rows for checkpoint, score-method, or threshold selection.
+  architecture: detector_set
+  seed: 20260722
+  epochs: 40
+  batch_size: 64
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  base_channels: 24
+  embedding_dim: 32
+  cache_in_memory: true
+  maximum_known_abstention_rate: 0.05
+  supervised_contrastive_weight: 0.5
+  supervised_contrastive_temperature: 0.1
+  ood_score_method: logit_energy
+  mahalanobis_shrinkage: 0.1
+  mahalanobis_epsilon: 0.0001
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]

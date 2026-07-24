@@ -159,6 +159,7 @@ def plan_injection_recipes(
                     ),
                     "f_lower_hz": float(population[family].get("f_lower_hz", 20.0)),
                     "background_window_id": window["window_id"],
+                    "observing_run": window.get("observing_run"),
                     "gps_block": window["gps_block"],
                     "gps_time": float(
                         rng.uniform(float(window["gps_start"]) + 1, float(window["gps_end"]) - 1)
@@ -273,6 +274,160 @@ def run_injection_plan(
         "plan_hash": canonical_hash(report),
     }
     atomic_write_json(output / "injection_plan_report.json", result)
+    return result
+
+
+def freeze_independent_validation_endpoint(
+    purpose_partition_report: str | Path,
+    injection_plan_report: str | Path,
+    waveform_validation_report: str | Path,
+    materialization_report: str | Path,
+    snr_annotation_report: str | Path,
+    arrival_annotation_report: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze the hash chain for GPS- and purpose-disjoint validation inputs."""
+
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError("independent validation endpoint reports are immutable")
+    paths = {
+        "purpose_partition": Path(purpose_partition_report),
+        "injection_plan": Path(injection_plan_report),
+        "waveform_validation": Path(waveform_validation_report),
+        "materialization": Path(materialization_report),
+        "snr_annotation": Path(snr_annotation_report),
+        "arrival_annotation": Path(arrival_annotation_report),
+    }
+    reports = {}
+    for label, path in paths.items():
+        with path.open("r", encoding="utf-8") as handle:
+            reports[label] = json.load(handle)
+    purpose = reports["purpose_partition"]
+    if (
+        purpose.get("status") != "verified_validation_gps_purpose_partition"
+        or not purpose.get("passed")
+        or int(purpose.get("purpose_gps_block_overlap", -1)) != 0
+        or purpose.get("complete_source_gps_block_coverage") is not True
+    ):
+        raise ValueError("validation purpose partition did not pass")
+    purposes = purpose.get("purposes", {})
+    calibration = purposes.get("candidate_calibration", {})
+    injection = purposes.get("injection_validation", {})
+    for label, summary in (
+        ("candidate calibration", calibration),
+        ("injection validation", injection),
+    ):
+        manifest = Path(str(summary.get("manifest_path", "")))
+        report = Path(str(summary.get("report_path", "")))
+        if (
+            not manifest.is_file()
+            or not report.is_file()
+            or summary.get("manifest_sha256") != file_sha256(manifest)
+            or summary.get("report_sha256") != file_sha256(report)
+            or int(summary.get("unique_gps_blocks", 0)) <= 0
+        ):
+            raise ValueError(f"{label} purpose artifact is missing or hash-invalid")
+    plan = reports["injection_plan"]
+    recipes = Path(str(plan.get("manifest_path", "")))
+    if (
+        plan.get("status")
+        != "cosmological_injection_recipe_plan_requires_validated_waveform_backend"
+        or plan.get("counts_by_split") != {"val": int(plan.get("recipes", -1))}
+        or plan.get("requested_counts_by_split")
+        != {"train": 0, "val": int(plan.get("recipes", -1)), "test": 0}
+        or int(plan.get("unique_injection_ids", -1)) != int(plan.get("recipes", -2))
+        or int(plan.get("unique_waveform_ids", -1)) != int(plan.get("recipes", -2))
+        or plan.get("background_manifest_sha256") != injection.get("manifest_sha256")
+        or plan.get("background_report_sha256") != injection.get("report_sha256")
+        or not recipes.is_file()
+        or plan.get("manifest_sha256") != file_sha256(recipes)
+    ):
+        raise ValueError("validation injection plan is not bound to the injection purpose")
+    count = int(plan["recipes"])
+    waveform = reports["waveform_validation"]
+    if (
+        not waveform.get("passed")
+        or waveform.get("validation_scope") != "external_reference_waveform_equivalence"
+        or waveform.get("recipe_manifest_sha256") != file_sha256(recipes)
+        or int(waveform.get("selected_cases", 0)) <= 0
+        or any(not row.get("passed") for row in waveform.get("cases", []))
+    ):
+        raise ValueError("exact-recipe external waveform validation did not pass")
+    materialization = reports["materialization"]
+    materialized = Path(str(materialization.get("manifest_path", "")))
+    if (
+        materialization.get("status") != "materialized_externally_validated_backend"
+        or not materialization.get("waveform_materialization_validated")
+        or materialization.get("selected_split") != "val"
+        or int(materialization.get("selected_recipes", -1)) != count
+        or materialization.get("recipe_manifest_sha256") != file_sha256(recipes)
+        or materialization.get("background_manifest_sha256")
+        != injection.get("manifest_sha256")
+        or materialization.get("backend_validation_report_sha256")
+        != file_sha256(paths["waveform_validation"])
+        or not materialized.is_file()
+        or materialization.get("manifest_sha256") != file_sha256(materialized)
+    ):
+        raise ValueError("materialized validation injections break the frozen hash chain")
+    snr = reports["snr_annotation"]
+    snr_manifest = Path(str(snr.get("output_manifest_path", "")))
+    if (
+        snr.get("status") != "empirical_noise_optimal_snr_annotation"
+        or int(snr.get("rows", -1)) != count
+        or snr.get("split_counts") != {"val": count}
+        or snr.get("input_manifest_sha256") != file_sha256(materialized)
+        or not snr_manifest.is_file()
+        or snr.get("output_manifest_sha256") != file_sha256(snr_manifest)
+    ):
+        raise ValueError("validation SNR annotation breaks the frozen hash chain")
+    arrival = reports["arrival_annotation"]
+    arrival_manifest = Path(str(arrival.get("manifest_path", "")))
+    if (
+        arrival.get("status") != "verified_geometric_detector_arrival_annotation"
+        or int(arrival.get("rows", -1)) != count
+        or int(arrival.get("unique_injection_ids", -1)) != count
+        or arrival.get("splits") != {"val": count}
+        or arrival.get("input_manifest_sha256") != file_sha256(snr_manifest)
+        or not arrival_manifest.is_file()
+        or arrival.get("manifest_sha256") != file_sha256(arrival_manifest)
+    ):
+        raise ValueError("validation arrival annotation breaks the frozen hash chain")
+    result = {
+        "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "validation-only endpoint; requires validation-selected model and locked test evaluation"
+        ),
+        "passed": True,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "rows": count,
+        "purpose_gps_block_overlap": 0,
+        "candidate_calibration_unique_gps_blocks": int(
+            calibration["unique_gps_blocks"]
+        ),
+        "injection_validation_unique_gps_blocks": int(injection["unique_gps_blocks"]),
+        "candidate_calibration_background_manifest_path": str(
+            Path(calibration["manifest_path"]).resolve()
+        ),
+        "candidate_calibration_background_manifest_sha256": calibration[
+            "manifest_sha256"
+        ],
+        "candidate_calibration_background_report_path": str(
+            Path(calibration["report_path"]).resolve()
+        ),
+        "candidate_calibration_background_report_sha256": calibration["report_sha256"],
+        "injection_validation_background_manifest_sha256": injection["manifest_sha256"],
+        "injection_arrival_manifest_path": str(arrival_manifest.resolve()),
+        "injection_arrival_manifest_sha256": file_sha256(arrival_manifest),
+        "component_reports": {
+            label: {"path": str(path.resolve()), "sha256": file_sha256(path)}
+            for label, path in paths.items()
+        },
+        **execution_provenance(),
+    }
+    atomic_write_json(output, result)
     return result
 
 

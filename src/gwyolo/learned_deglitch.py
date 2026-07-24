@@ -9,7 +9,12 @@ import numpy as np
 
 from .deglitch import mask_deglitch
 from .gwosc import _fft_downsample, read_hdf5_segment
-from .io import atomic_write_json, atomic_write_text, file_sha256
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+)
 from .injection_score import apply_analysis_override
 from .runtime import execution_provenance
 from .waveforms import _atomic_save_npz, load_materialized_context
@@ -220,6 +225,7 @@ def run_learned_background_deglitch(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     verified_source_hashes: dict[str, str] = {}
+    numeric_background_banks: dict[str, str] = {}
     result_rows = []
     for row in background:
         scored = score_by_id[str(row["window_id"])]
@@ -236,28 +242,127 @@ def run_learned_background_deglitch(
         output_samples = int(round(float(row["duration"]) * target_sample_rate))
         raw = np.zeros((len(model_ifos), output_samples), dtype=np.float64)
         source_ifos = [str(value) for value in row["ifos"]]
-        for ifo in source_ifos:
-            if ifo not in model_ifos:
-                raise ValueError(f"Background source detector {ifo} is not configured")
-            source = row["source_files"][ifo]
-            source_path = str(source["path"])
-            observed_hash = verified_source_hashes.get(source_path)
-            if observed_hash is None:
-                observed_hash = file_sha256(source_path)
-                verified_source_hashes[source_path] = observed_hash
-            if observed_hash != str(source["sha256"]):
-                raise ValueError(f"Background source hash mismatch for {ifo}")
-            segment = read_hdf5_segment(source_path, center, context_duration)
-            values = _fft_downsample(
-                np.asarray(segment["strain"], dtype=np.float64),
-                int(segment["sample_rate"]),
-                target_sample_rate,
+        if any(ifo not in model_ifos for ifo in source_ifos):
+            raise ValueError("Background source detector is not configured")
+        bank = row.get("background_bank")
+        if bank is not None:
+            if (
+                not isinstance(bank, dict)
+                or not bank.get("path")
+                or not bank.get("sha256")
+            ):
+                raise ValueError(
+                    "Numeric background bank requires a path and SHA256"
+                )
+            bank_path = Path(str(bank["path"])).resolve()
+            bank_hash = str(bank["sha256"])
+            if (
+                not bank_path.is_file()
+                or file_sha256(bank_path) != bank_hash
+            ):
+                raise ValueError("Numeric background bank hash mismatch")
+            numeric_background_banks[str(bank_path)] = bank_hash
+            with np.load(bank_path, allow_pickle=False) as arrays:
+                required = {
+                    "noise",
+                    "ifos",
+                    "sample_rate",
+                    "context_gps_start",
+                    "analysis_gps_start",
+                    "analysis_start_index",
+                    "analysis_stop_index",
+                    "window_id",
+                }
+                missing = required - set(arrays.files)
+                if missing:
+                    raise ValueError(
+                        f"Numeric background bank lacks arrays: {sorted(missing)}"
+                    )
+                noise = np.asarray(arrays["noise"], dtype=np.float64)
+                bank_ifos = [
+                    str(value) for value in arrays["ifos"].tolist()
+                ]
+                bank_rate = int(arrays["sample_rate"])
+                context_start = float(arrays["context_gps_start"])
+                analysis_start = float(arrays["analysis_gps_start"])
+                stored_start = int(arrays["analysis_start_index"])
+                stored_stop = int(arrays["analysis_stop_index"])
+                stored_window_id = str(arrays["window_id"])
+            if (
+                noise.ndim != 2
+                or noise.shape[0] != len(bank_ifos)
+                or bank_ifos != source_ifos
+                or len(bank_ifos) != len(set(bank_ifos))
+                or bank_rate <= 0
+                or not np.isfinite(noise).all()
+                or stored_window_id != str(row["window_id"])
+                or stored_start < 0
+                or stored_stop <= stored_start
+                or stored_stop > noise.shape[1]
+                or stored_start
+                != int(round((analysis_start - context_start) * bank_rate))
+                or stored_stop - stored_start
+                != int(round(float(row["duration"]) * bank_rate))
+                or not np.isclose(
+                    analysis_start,
+                    float(row["gps_start"]),
+                    rtol=0.0,
+                    atol=1e-9,
+                )
+            ):
+                raise ValueError(
+                    "Numeric background bank tensor/GPS contract differs"
+                )
+            downsampled = [
+                _fft_downsample(values, bank_rate, target_sample_rate)
+                for values in noise
+            ]
+            crop_start = int(
+                round(
+                    (analysis_start - context_start)
+                    * target_sample_rate
+                )
             )
-            start = values.size // 2 - output_samples // 2
-            selected = values[start : start + output_samples]
-            if selected.shape != (output_samples,) or not np.isfinite(selected).all():
-                raise ValueError(f"Background analysis crop is invalid for {ifo}")
-            raw[model_ifos.index(ifo)] = selected
+            for ifo, values in zip(bank_ifos, downsampled):
+                selected = values[crop_start : crop_start + output_samples]
+                if (
+                    selected.shape != (output_samples,)
+                    or not np.isfinite(selected).all()
+                ):
+                    raise ValueError(
+                        f"Numeric background analysis crop is invalid for {ifo}"
+                    )
+                raw[model_ifos.index(ifo)] = selected
+        else:
+            for ifo in source_ifos:
+                source = row["source_files"][ifo]
+                source_path = str(source["path"])
+                observed_hash = verified_source_hashes.get(source_path)
+                if observed_hash is None:
+                    observed_hash = file_sha256(source_path)
+                    verified_source_hashes[source_path] = observed_hash
+                if observed_hash != str(source["sha256"]):
+                    raise ValueError(
+                        f"Background source hash mismatch for {ifo}"
+                    )
+                segment = read_hdf5_segment(
+                    source_path, center, context_duration
+                )
+                values = _fft_downsample(
+                    np.asarray(segment["strain"], dtype=np.float64),
+                    int(segment["sample_rate"]),
+                    target_sample_rate,
+                )
+                start = values.size // 2 - output_samples // 2
+                selected = values[start : start + output_samples]
+                if (
+                    selected.shape != (output_samples,)
+                    or not np.isfinite(selected).all()
+                ):
+                    raise ValueError(
+                        f"Background analysis crop is invalid for {ifo}"
+                    )
+                raw[model_ifos.index(ifo)] = selected
         cleaned, suppression = mask_deglitch(
             raw, target_sample_rate, chirp, glitch, strength
         )
@@ -306,6 +411,14 @@ def run_learned_background_deglitch(
         "required_split": required_split,
         "observed_splits": observed_splits,
         "windows": len(result_rows),
+        "numeric_background_primary_windows": sum(
+            row.get("background_bank") is not None for row in background
+        ),
+        "numeric_background_bank_identity_hash": (
+            canonical_hash(numeric_background_banks, 64)
+            if numeric_background_banks
+            else None
+        ),
         "unique_gps_blocks": len({str(row["gps_block"]) for row in result_rows}),
         "removed_tf_energy_fraction": {
             "mean": float(np.mean(removed)),

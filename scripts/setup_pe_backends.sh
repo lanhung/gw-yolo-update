@@ -19,6 +19,14 @@ if [[ "$DINGO_VENV" == "$AMPLFI_VENV" ]]; then
   exit 2
 fi
 
+PE_INSTALL_LOCK=${PE_INSTALL_LOCK:-/tmp/gwyolo-pe-backend-install.lock}
+mkdir -p "$(dirname "$PE_INSTALL_LOCK")"
+exec {pe_install_lock_fd}>"$PE_INSTALL_LOCK"
+if ! flock -n "$pe_install_lock_fd"; then
+  echo "another PE backend bootstrap owns the atomic installation lock" >&2
+  exit 3
+fi
+
 if ps -eo stat=,cmd= | awk '$1 !~ /^T/ && /[p]ip install|[c]onda install|[u]v pip/ {found=1} END {exit !found}'; then
   echo "an active package installation already exists; refusing concurrent mutation" >&2
   exit 3

@@ -6,14 +6,21 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from gwyolo.background_dependence import (
+    audit_detector_set_candidate_background_dependence,
+)
 from gwyolo.candidates import (
     _local_envelope_timing_refinement,
-    build_injection_candidate_rankings,
     build_candidate_time_slides,
+    build_detector_set_candidate_block_permutations,
+    build_detector_set_candidate_time_slides,
+    build_detector_set_injection_candidate_rankings,
+    build_injection_candidate_rankings,
     calibrate_candidate_timing_rows,
     candidate_proposal_coverage,
     extract_temporal_clusters,
     merge_candidate_time_slide_shards,
+    run_apply_candidate_timing_calibration,
     run_candidate_block_permutations,
     run_candidate_time_slides,
     select_candidate_proposal_threshold,
@@ -21,7 +28,9 @@ from gwyolo.candidates import (
 from gwyolo.exposure import (
     freeze_candidate_block_permutation_schedule,
     freeze_candidate_time_slide_schedule,
+    freeze_detector_set_block_permutation_schedule,
 )
+from gwyolo.io import file_sha256
 
 
 def test_temporal_clusters_preserve_multiple_candidates_and_refine_peak() -> None:
@@ -776,3 +785,454 @@ def test_injection_candidate_ranking_keeps_missed_injections_in_vt_denominator()
     assert rows[1]["ranking_score"] == 0.0
     assert rows[1]["candidate_pair_found"] is False
     assert report["candidate_pair_found"] == 1
+
+
+def test_detector_set_injection_ranking_supports_hlv_and_missing_ifos() -> None:
+    parents = [
+        {
+            "injection_id": "i0",
+            "waveform_id": "w0",
+            "split": "val",
+            "source_family": "BBH",
+            "gps_block": "g0",
+            "gps_time": 100.0,
+            "vt_weight": 2.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1", "L1", "V1"],
+            "detector_arrival_gps": {
+                "H1": 100.000,
+                "L1": 100.005,
+                "V1": 100.020,
+            },
+        },
+        {
+            "injection_id": "i1",
+            "waveform_id": "w1",
+            "split": "val",
+            "source_family": "NSBH",
+            "gps_block": "g1",
+            "gps_time": 101.0,
+            "vt_weight": 3.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1", "V1"],
+            "detector_arrival_gps": {
+                "H1": 101.000,
+                "V1": 101.020,
+            },
+        },
+        {
+            "injection_id": "i2",
+            "waveform_id": "w2",
+            "split": "val",
+            "source_family": "BNS",
+            "gps_block": "g2",
+            "gps_time": 102.0,
+            "vt_weight": 4.0,
+            "vt_weight_unit": "Mpc^3 yr",
+            "valid_ifos": ["H1"],
+            "detector_arrival_gps": {"H1": 102.000},
+        },
+    ]
+    scores = {
+        "i0": {"H1": 0.8, "L1": 0.7, "V1": 0.9},
+        "i1": {"H1": 0.6, "V1": 0.75},
+    }
+    peaks = {
+        "i0": {"H1": 100.001, "L1": 100.006, "V1": 100.021},
+        "i1": {"H1": 101.001, "V1": 101.021},
+    }
+    candidates = []
+    for injection_id, by_ifo in scores.items():
+        for ifo, chirp_score in by_ifo.items():
+            candidates.append(
+                {
+                    "candidate_id": f"{injection_id}-{ifo}",
+                    "injection_id": injection_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": peaks[injection_id][ifo],
+                    "chirp_score": chirp_score,
+                    "glitch_score_at_peak": 0.1,
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": 0.001,
+                    "timing_calibration_report_sha256": "a" * 64,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+    subsets = (
+        ("H1", "L1"),
+        ("H1", "V1"),
+        ("L1", "V1"),
+        ("H1", "L1", "V1"),
+    )
+    limits = {
+        "H1+L1": 0.010012846152267725,
+        "H1+V1": 0.027287979933397113,
+        "L1+V1": 0.02644834101635671,
+    }
+    rows, report = build_detector_set_injection_candidate_rankings(
+        parents,
+        candidates,
+        "val",
+        subsets,
+        limits,
+        empirical_timing_uncertainty_seconds=0.001,
+        truth_association_window_seconds=0.02,
+    )
+
+    assert [row["injection_id"] for row in rows] == ["i0", "i1"]
+    assert rows[0]["selected_detector_subset"] == "H1+L1+V1"
+    assert rows[0]["ranking_score"] == pytest.approx(0.8)
+    assert rows[1]["selected_detector_subset"] == "H1+V1"
+    assert rows[1]["ranking_score"] == pytest.approx(0.6)
+    assert report["excluded_missing_detector_or_arrival"] == 1
+    assert report["eligible_injections_by_detector_subset"] == {
+        "H1+L1": 1,
+        "H1+L1+V1": 1,
+        "H1+V1": 2,
+        "L1+V1": 1,
+    }
+    assert report["selected_networks_by_detector_subset"] == {
+        "H1+L1+V1": 1,
+        "H1+V1": 1,
+    }
+    with pytest.raises(ValueError, match="exactly cover"):
+        build_detector_set_injection_candidate_rankings(
+            parents,
+            candidates,
+            "val",
+            subsets,
+            {"H1+L1": limits["H1+L1"]},
+            0.001,
+            0.02,
+        )
+
+
+def test_detector_set_time_slides_use_independent_offsets_and_union_exposure() -> None:
+    windows = [
+        {
+            "window_id": f"w{index}",
+            "split": "test",
+            "gps_start": index * 10.0,
+            "gps_end": (index + 1) * 10.0,
+            "gps_block": f"g{index}",
+            "ifos": ifos,
+        }
+        for index, ifos in enumerate(
+            (
+                ["V1"],
+                ["H1"],
+                ["L1"],
+                ["H1", "L1", "V1"],
+            )
+        )
+    ]
+    candidates = []
+    for window_id, ifo, peak, score in (
+        ("w1", "H1", 10.001, 0.8),
+        ("w2", "L1", 20.006, 0.7),
+        ("w0", "V1", 0.021, 0.9),
+    ):
+        candidates.append(
+            {
+                "candidate_id": f"{window_id}-{ifo}",
+                "window_id": window_id,
+                "split": "test",
+                "ifo": ifo,
+                "gps_peak": peak,
+                "chirp_score": score,
+                "glitch_score_at_peak": 0.1,
+                "bin_width_seconds": 0.005,
+                "timing_resolution_seconds": 0.005,
+                "timing_empirically_calibrated": True,
+                "empirical_timing_uncertainty_seconds": 0.001,
+                "timing_calibration_report_sha256": "a" * 64,
+                "candidate_checkpoint_sha256": "b" * 64,
+                "candidate_config_sha256": "c" * 64,
+                "candidate_code_commit": "deadbee",
+            }
+        )
+    subsets = (
+        ("H1", "L1"),
+        ("H1", "V1"),
+        ("L1", "V1"),
+        ("H1", "L1", "V1"),
+    )
+    limits = {
+        "H1+L1": 0.010012846152267725,
+        "H1+V1": 0.027287979933397113,
+        "L1+V1": 0.02644834101635671,
+    }
+    rows, report = build_detector_set_candidate_time_slides(
+        candidates,
+        windows,
+        "test",
+        subsets,
+        limits,
+        0.001,
+        [{"H1": 0.0, "L1": 10.0, "V1": -10.0}],
+        0.1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["detector_subset"] == "H1+L1+V1"
+    assert rows[0]["source_window_ids"] == {
+        "H1": "w1",
+        "L1": "w2",
+        "V1": "w0",
+    }
+    assert rows[0]["ranking_score"] == pytest.approx(0.8)
+    assert report["eligible_windows_by_detector_subset"] == {
+        "H1+L1": 1,
+        "H1+L1+V1": 1,
+        "H1+V1": 1,
+        "L1+V1": 1,
+    }
+    assert report["slide_exposure"][0]["raw_coincidences"] == 4
+    assert report["slide_exposure"][0]["clustered_candidates"] == 1
+    assert report["equivalent_live_time_seconds"] == 10.0
+    assert report["live_time_counted_once_per_slide"] is True
+    assert report["publication_timing_gate_passed"] is True
+
+    with pytest.raises(ValueError, match="independently offset"):
+        build_detector_set_candidate_time_slides(
+            candidates,
+            windows,
+            "test",
+            subsets,
+            limits,
+            0.001,
+            [{"H1": 0.0, "L1": 10.0, "V1": 10.0}],
+            0.1,
+        )
+
+
+def test_detector_set_block_permutations_replay_all_hlv_subsets(
+    tmp_path: Path,
+) -> None:
+    windows = []
+    candidates = []
+    delays = {"H1": 0.001, "L1": 0.006, "V1": 0.021}
+    for block_index in range(5):
+        block_start = 1000.0 + block_index * 100.0
+        start = block_start + 0.25 + block_index * 0.01
+        block = f"O3b:{int(block_start)}:64"
+        window_id = f"w{block_index}"
+        windows.append(
+            {
+                "window_id": window_id,
+                "split": "val",
+                "gps_start": start,
+                "gps_end": start + 8.0,
+                "gps_block": block,
+                "ifos": ["H1", "L1", "V1"],
+            }
+        )
+        for ifo, delay in delays.items():
+            candidates.append(
+                {
+                    "candidate_id": f"c{block_index}-{ifo}",
+                    "window_id": window_id,
+                    "split": "val",
+                    "ifo": ifo,
+                    "gps_peak": start + delay,
+                    "chirp_score": 0.8,
+                    "glitch_score_at_peak": 0.1,
+                    "bin_width_seconds": 0.005,
+                    "timing_resolution_seconds": 0.005,
+                    "timing_empirically_calibrated": True,
+                    "empirical_timing_uncertainty_seconds": 0.001,
+                    "timing_calibration_report_sha256": "a" * 64,
+                    "candidate_checkpoint_sha256": "b" * 64,
+                    "candidate_config_sha256": "c" * 64,
+                    "candidate_code_commit": "deadbee",
+                }
+            )
+    background = tmp_path / "background.jsonl"
+    background.write_text(
+        "".join(json.dumps(row) + "\n" for row in windows),
+        encoding="utf-8",
+    )
+    schedule_path = tmp_path / "schedule.json"
+    schedule = freeze_detector_set_block_permutation_schedule(
+        background,
+        Path(__file__).parents[1]
+        / "configs"
+        / "network_coherence_h1_l1_v1.yaml",
+        schedule_path,
+        "val",
+        target_far_per_year=10_000_000.0,
+        maximum_shifts=1,
+    )
+    rows, report = build_detector_set_candidate_block_permutations(
+        candidates,
+        windows,
+        schedule,
+        0.001,
+        0.1,
+    )
+
+    assert schedule["selected_shift_count"] == 1
+    assert schedule["permutations"][0]["shift_by_ifo"] == {
+        "H1": 0,
+        "L1": 1,
+        "V1": -1,
+    }
+    assert schedule["required_detector_subsets_covered"] is True
+    assert (
+        schedule["relative_window_slot_policy"]
+        == "within_block_gps_order_v1"
+    )
+    assert len(rows) == 5
+    assert {row["detector_subset"] for row in rows} == {"H1+L1+V1"}
+    assert all(
+        len(set(row["source_gps_blocks"].values())) == 3
+        for row in rows
+    )
+    assert report["equivalent_live_time_seconds"] == 40.0
+    assert report["slide_exposure"][0]["raw_coincidences"] == 20
+    assert report["slide_exposure"][0]["clustered_candidates"] == 5
+    assert report["publication_timing_gate_passed"] is True
+
+    candidate_path = tmp_path / "block-candidates.jsonl"
+    candidate_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    report.update(
+        {
+            "manifest_path": str(candidate_path.resolve()),
+            "manifest_sha256": file_sha256(candidate_path),
+            "background_manifest_sha256": file_sha256(background),
+            "slide_schedule_path": str(schedule_path.resolve()),
+            "slide_schedule_sha256": file_sha256(schedule_path),
+            "slide_schedule_id": schedule["schedule_id"],
+            "slide_schedule_count": schedule["selected_shift_count"],
+        }
+    )
+    report_path = tmp_path / "block-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    audit = audit_detector_set_candidate_background_dependence(
+        report_path,
+        background,
+        threshold=0.75,
+        bootstrap_replicates=100,
+        seed=7,
+        minimum_gps_blocks=3,
+        minimum_shifts=1,
+        minimum_effective_gps_blocks=1,
+        minimum_effective_shifts=1,
+        maximum_exposure_fraction_per_gps_block=1,
+        maximum_exposure_fraction_per_shift=1,
+    )
+    assert audit["passed"] is True
+    assert audit["live_time_seconds"] == 40.0
+    assert audit["false_alarms"] == 5
+    assert np.isclose(audit["far_per_year"], 5 * 31_557_600 / 40)
+    assert audit["multiway_cluster_bootstrap"]["replicates"] == 100
+    assert audit["multiway_cluster_bootstrap"][
+        "maximum_source_blocks_per_cell"
+    ] == 3
+
+
+def test_calibration_stress_can_reuse_frozen_timing_only_with_narrow_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gwyolo.io import file_sha256
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "status": "frozen_validation_calibration_perturbation_plan",
+                "passed": True,
+                "test_rows_read": 0,
+                "scenario_ids": ["stress"],
+                "manifests": {"background": {"sha256": "background-manifest"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidates = tmp_path / "candidates.jsonl"
+    candidates.write_text(
+        json.dumps(
+            {
+                "candidate_id": "c1",
+                "timing_method": "strain",
+                "timing_resolution_seconds": 0.001,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    current_scoring = {
+        "available": True,
+        "checkpoint_sha256": "checkpoint",
+        "config_sha256": "config",
+        "code_commit": "candidate-commit",
+        "calibration_perturbation": {
+            "plan_sha256": file_sha256(plan_path),
+            "scenario_id": "stress",
+            "role": "background",
+            "manifest_sha256": "background-manifest",
+        },
+        "physical_time_domain_perturbation": True,
+        "fresh_time_frequency_transform": True,
+    }
+    (tmp_path / "candidate_extraction_report.json").write_text(
+        json.dumps(
+            {
+                "manifest_sha256": file_sha256(candidates),
+                "chirp_threshold": 0.3,
+                "minimum_bins": 1,
+                "source_scoring_provenance": current_scoring,
+            }
+        ),
+        encoding="utf-8",
+    )
+    timing = tmp_path / "timing.json"
+    timing.write_text(
+        json.dumps(
+            {
+                "status": "validation_only_candidate_timing_calibration",
+                "source_scoring_provenance": {
+                    "available": True,
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "code_commit": "reference-commit",
+                },
+                "methods": {
+                    "strain": {
+                        "calibration_gate_passed": True,
+                        "maximum_resolution_seconds": 0.002,
+                        "empirical_timing_uncertainty_seconds": 0.003,
+                        "uncertainty_quantile": 0.99,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    transfer = tmp_path / "transfer.json"
+    transfer.write_text(json.dumps({"passed": True}), encoding="utf-8")
+    monkeypatch.setattr(
+        "gwyolo.code_compatibility.validate_calibration_timing_transfer_compatibility",
+        lambda *args: {"passed": True},
+    )
+
+    result = run_apply_candidate_timing_calibration(
+        candidates,
+        timing,
+        tmp_path / "calibrated.jsonl",
+        calibration_perturbation_plan=plan_path,
+        calibration_timing_compatibility_report=transfer,
+    )
+
+    assert result["scoring_provenance_matches"] is True
+    assert result["uncalibrated_candidates"] == 0
+    assert result["calibration_perturbation_plan_sha256"] == file_sha256(plan_path)
+    assert result["calibration_timing_transfer_compatibility_report_sha256"] == file_sha256(
+        transfer
+    )

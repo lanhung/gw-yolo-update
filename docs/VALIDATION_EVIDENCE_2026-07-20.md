@@ -819,12 +819,12 @@ config, training manifest, common analysis prior, validation-selection report an
 conditioning config; conditioned rows must carry the same config hash. A substituted initialization
 network fails before sampling. This is a required provenance correction and not a DINGO result.
 
-The standardized checkpoint sidecar now closes the remaining AMPLFI prior-provenance gap. AMPLFI
-metadata cannot be frozen without both the native training-prior file and a passed semantic
-prior-projection report. The environment audit reloads that report and requires its canonical-prior,
-native-prior and training-configuration hashes to match the independently verified model artifacts.
-DINGO remains on the shared base contract because its native prior is embedded in the official model
-settings. This is an evidence-integrity gate only; it creates no posterior or performance claim.
+The standardized checkpoint sidecar now closes the native-prior provenance gap for both backends.
+Neither DINGO nor AMPLFI metadata can be frozen without the native training-prior settings and a
+passed semantic projection report. The environment audit reloads that report and requires its
+canonical-prior, native-prior and training-configuration hashes to match the independently verified
+model artifacts. This is an evidence-integrity gate only; it creates no posterior or performance
+claim.
 
 The same prior gate was executed remotely from commit `c3d8570`. All fourteen projection checks
 passed; the canonical prior, AMPLFI native prior and training-config hashes are respectively
@@ -839,6 +839,16 @@ projection report; requires the command-line native prior to match; and rechecks
 inside the passed projection. A changed runtime prior now fails before any posterior output or
 resume state is accepted. This is covered by a negative unit test and creates no new posterior.
 
+The DINGO boundary now applies the same rule. `dingo-common-prior-audit` parses both ordinary YAML
+and the text-prefixed model-settings output emitted by DINGO inspection. It compares all fourteen
+source/nuisance distributions, extra mass constraints, extra stochastic parameters, H1/L1, the
+20--1,024 Hz band and the 4,096 Hz/16 s window. The official O4a model fails this common-prior gate:
+its component-mass-weighted chirp/mass-ratio priors, 15--150 solar-mass chirp support, 100--10,000
+Mpc distance support, component-mass constraints and stochastic geocentric time are not the frozen
+common prior. Its batch adapter now requires the exact native settings at runtime and revalidates
+the projection before sampling. The official model therefore remains an engineering external
+reference unless a valid projection/reweighting proof or a common-domain training run is supplied.
+
 Checkpoint selection is now independently fail-closed as well. A Lightning checkpoint index binds
 trusted checkpoint bytes to epoch/global-step identities, while
 `pe-lightning-checkpoint-select` selects only from the validation CSV, refuses populated test
@@ -846,3 +856,35 @@ metrics and excludes `last.ckpt`. Both AMPLFI and DINGO runtime adapters require
 with `validation_selected_checkpoint` status and `publication_eligible=true`; the model sidecar
 freezer enforces the same gate. A short smoke run may therefore demonstrate environment and model
 loading but cannot be promoted into the PE paper table.
+
+## Independent endpoint and paired mask-background closure — 2026-07-22
+
+The physically independent O4a validation endpoint is now frozen at 3,000 injection rows. It binds
+45 candidate-calibration GPS blocks and 59 injection GPS blocks, reports zero purpose overlap and
+records `test_rows_read=0`. Its immutable report SHA256 is
+`7274d6ce800f9599f1341d03c8c31e937cc6a64dcb963b761d9cf83e39fc8c67`. This closes the endpoint
+construction gate but is not a FAR, `<VT>` or locked-test result.
+
+The mask path now extends beyond its six-arm ranking table. Raw and mask-conditioned contaminated
+validation injections receive separate empirical timing calibration, complete single-IFO candidate
+preservation and physical H1/L1 network rankings. The continuous-background executor processes the
+same stable-GPS window once through both arms, independently applies the matching timing
+calibration, merges only identical physical exposure and freezes thresholds from validation block
+permutations. Cross-commit reuse is fail-closed behind a normalized implementation audit, and all
+recoverable probability/override/source arrays have hash-bound eviction receipts to keep the
+800/880-pair run within bounded storage.
+
+The paired validation endpoint now has an explicit comparison rather than two unrelated calibration
+files. It requires one target FAR and one physical block-permutation exposure, independently frozen
+raw/mask thresholds, identical injection/waveform/GPS/`vt_weight` rows, the earlier clean
+non-inferiority gate and separate timing receipts. Its output retains the raw and mask recovered
+`<VT>`, paired delta, relative delta, strata and paired-bootstrap interval. This is still a
+validation promotion diagnostic; even a positive result sets
+`locked_test_prerequisites_satisfied=false` until the remaining OOD, background and access gates
+close.
+
+The new code passed the complete CPU test suite from an in-memory pytest base directory, the 21
+focused mask/streaming/compatibility regressions, full Ruff lint, every shell syntax check and
+`git diff --check`. No raw/mask continuous-background result exists yet: the executor is queued
+behind the expanded source-safe Gravity Spy corpus, five-seed selection and timing gate. O4b and the
+locked test remain unopened.

@@ -25,6 +25,9 @@ OUTPUT_DURATION=${OUTPUT_DURATION:-8}
 DOWNLOAD_WORKERS=${DOWNLOAD_WORKERS:-8}
 CHUNK_SAMPLES=${CHUNK_SAMPLES:-1048576}
 MINIMUM_FREE_KB=${MINIMUM_FREE_KB:-8388608}
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
+RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-60}
+MINIMUM_VALIDATION_ROWS_PER_FAMILY=${MINIMUM_VALIDATION_ROWS_PER_FAMILY:-5}
 
 for count in "$TRAIN_SHARD_COUNT" "$VAL_SHARD_COUNT"; do
   if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
@@ -32,6 +35,18 @@ for count in "$TRAIN_SHARD_COUNT" "$VAL_SHARD_COUNT"; do
     exit 2
   fi
 done
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "RETRY_DELAY_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+if ! [[ "$MINIMUM_VALIDATION_ROWS_PER_FAMILY" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MINIMUM_VALIDATION_ROWS_PER_FAMILY must be a positive integer" >&2
+  exit 2
+fi
 for input in \
   "$TASK_PYTHON" \
   "$TRAIN_SHARD_MANIFEST" \
@@ -45,6 +60,23 @@ for input in \
   fi
 done
 mkdir -p "$CACHE_ROOT" "$OUTPUT_ROOT"
+
+materialize_with_retry() {
+  local label=$1
+  shift
+  local attempt
+  for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+    printf '%s %s attempt=%s\n' "$(date -u +%FT%TZ)" "$label" "$attempt"
+    if "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-strain-materialize "$@"; then
+      return 0
+    fi
+    if (( attempt < MAX_ATTEMPTS )); then
+      sleep "$RETRY_DELAY_SECONDS"
+    fi
+  done
+  echo "$label exhausted bounded materialization retries" >&2
+  return 1
+}
 
 for split in train val; do
   if [[ "$split" == train ]]; then
@@ -65,7 +97,7 @@ for split in train val; do
       exit 1
     fi
     shard_output="$OUTPUT_ROOT/$split-shard-$shard"
-    "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-strain-materialize \
+    materialize_with_retry "$split-shard-$shard" \
       --manifest "$shard_manifest" \
       --shard "$shard" \
       --config "$CONFIG" \
@@ -100,6 +132,7 @@ done
   --report "$OUTPUT_ROOT/val-expanded-merged/gravityspy_network_numeric_merge_report.json" \
   --output-dir "$OUTPUT_ROOT/source-component-safe-resplit" \
   --validation-fraction 0.2 \
+  --minimum-validation-rows-per-family "$MINIMUM_VALIDATION_ROWS_PER_FAMILY" \
   --seed 20260720
 
 "$TASK_PYTHON" -m gwyolo.cli gravityspy-network-corpus-audit \

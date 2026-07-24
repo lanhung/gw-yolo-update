@@ -228,12 +228,39 @@ live time.
 `scripts/run_candidate_background_range.sh` is the stricter calibrated successor. It refuses to
 start unless the hash-bound paired validation comparison explicitly sets
 `scale_continuous_background=true`, reuses the promoted scorer commit and timing calibration, and
-requires a complete zero-based parent-plan range. It streams validation blocks only
+requires either a complete zero-based parent-plan range or a verified immutable-prefix extension.
+It streams validation blocks only
 (`test_fraction=0`), merges calibrated all-instance candidates, freezes and executes the score-blind
 GPS-block permutation schedule, and freezes the 0.1/year validation threshold. A restart reuses
 identity-matched shard and block-background reports; any scorer, schedule, input or timing drift is
 a hard failure. The wrapper exits nonzero if the full corpus still cannot reach the predeclared FAR
 exposure, preserving that negative result without opening locked test data.
+
+If the score-blind capacity forecast requires an extension, freeze it before candidate scoring and
+reuse the completed prefix rather than independently resampling or downloading it again:
+
+```bash
+python -m gwyolo.cli gwosc-plan-extend \
+  --base-plan gwosc-o4a-plan800.json --target-pairs 880 \
+  --output gwosc-o4a-plan880.json
+export PARENT_PLAN=gwosc-o4a-plan880.json
+export BASE_OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-full-800
+export CAPACITY_EXTENSION_DECISION=/artifacts/o4a-capacity-extension-decision.json
+export OUTPUT_ROOT=/artifacts/gwosc-o4a-candidate-extension-880
+export SHARD_START=200 SHARD_STOP_EXCLUSIVE=220 PAIRS_PER_SHARD=4
+bash scripts/run_candidate_background_range.sh
+```
+
+The extension merge re-hashes the root plan, verifies its exact prefix inside the extended plan,
+checks every shard's pair-ID hash against the authoritative 880-pair order and rejects parent hashes
+outside that two-level lineage. The scoring commit and all model/split/timing fields must remain
+identical across base and reserve shards.
+
+`candidate-block-permutation-capacity-extension-freeze` closes the planning loop before execution.
+It requires a failed base safety forecast, the exact recommended minimum prefix extension and a
+passing forecast for that byte-identical extended plan. Both forecasts must retain the same pilot,
+FAR, confidence and safety factor. Its immutable decision report is the machine-readable authority
+for launching the reserve range; it still cannot claim achieved exposure.
 
 ```bash
 export TASK_PYTHON=/path/to/python
@@ -283,6 +310,22 @@ freezes the shortest shift prefix reaching the target exposure, or truthfully re
 available permutations are insufficient. This is a standard background-resampling exposure, not
 additional independent zero-lag strain.
 
+Before committing the expensive full parent bank,
+`candidate-block-permutation-capacity-forecast` combines a DQ-verified pilot schedule, its exact
+background report and the proposed parent acquisition plan. It projects the maximum circular-shift
+capacity from observed validation blocks per source pair and seconds per block-shift, solves the
+quadratic block count required by the zero-count FAR exposure, and applies a predeclared safety
+factor (1.5 by default). It reads no candidates or scores and is explicitly a planning forecast,
+not achieved live time. A failed safety margin is nonzero by default but still writes an atomic
+report with the recommended minimum source-pair count; `--allow-insufficient` is only for retaining
+diagnostics and cannot make the later exact schedule pass.
+When the forecast recommends a larger bank, `gwosc-plan-extend` refreshes the public development
+inventory, verifies that every frozen base pair is still byte-for-byte identical, retains the base
+pair order as an exact prefix and chooses only the additional complement through deterministic
+strain-file-metadata stratification. Candidate scores are never inspected. The resulting lineage
+fields make the original acquisition reusable while preventing a nominally larger, independently
+resampled plan from being treated as a compatible extension.
+
 `candidate-block-permutations` re-hashes that immutable schedule and the background manifest,
 requires validation-calibrated candidate timing at <=10 ms resolution, applies the predeclared
 light-travel limit plus twice the empirical timing allowance to relative within-window peaks, and
@@ -331,6 +374,11 @@ python -m gwyolo.cli candidate-time-slide-range-schedule-freeze \
 For fragmented run-scale background:
 
 ```bash
+python -m gwyolo.cli candidate-block-permutation-capacity-forecast \
+  --pilot-schedule pilot-block-schedule.json \
+  --pilot-background-report pilot-background/background_plan_report.json \
+  --planned-parent-plan gwosc-o4a-parent-plan.json \
+  --safety-factor 1.5 --output block-capacity-forecast.json
 python -m gwyolo.cli candidate-block-permutation-schedule-freeze \
   --background-manifest val-background.jsonl --output val-block-schedule.json \
   --split val --reference-ifo H1 --shifted-ifo L1 --target-far-per-year 0.1
@@ -342,6 +390,18 @@ python -m gwyolo.cli candidate-block-permutations \
   --coincidence-window-seconds 0.012
 ```
 
+Publication-scale execution through `scripts/run_candidate_background_range.sh` additionally
+requires `INDEPENDENT_VALIDATION_ENDPOINT_REPORT`, `VALIDATION_PURPOSE_AUDIT` and
+`CAPACITY_FORECAST`. Before any shard is downloaded or scored, the runner replays the endpoint
+contract, binds both reports to the exact parent-plan SHA-256, requires zero pair/GPS overlap and
+checks that the planned source-pair count satisfies the declared FAR/confidence/safety forecast.
+The bounded shard range must cover that parent plan exactly. A plan made before the endpoint was
+partitioned may be retained as a diagnostic, but it cannot be used for publication calibration.
+The replay is emitted as an idempotent, immutable
+`publication_background_plan_authorization.json` by
+`candidate-background-plan-authorize`. Both baseline and raw/mask background runners require this
+same authorization contract, and the final raw/mask receipt carries its path and SHA-256.
+
 The provenance path is transitive rather than name-based. Candidate extraction verifies the adjacent
 score report and carries checkpoint/config/commit hashes. Timing application succeeds only when the
 validation calibration and target candidates came from that exact scoring identity. Time-slide and
@@ -349,7 +409,12 @@ injection-ranking reports require one common calibration, checkpoint, config and
 `candidate-search-calibrate` reads validation reports only, and
 `candidate-search-evaluate-frozen` has no threshold argument, rejects any validation/test GPS,
 injection or waveform overlap, refuses to overwrite an existing locked result, and reports FAR,
-IFAR and weighted `<VT>` with bootstrap uncertainty. An empty background-candidate list freezes a
+IFAR and weighted `<VT>` with bootstrap uncertainty. Block-permutation results additionally replay
+the physical background manifest and reconstruct every reference-block x shifted-block x offset
+exposure cell. FAR retains the standard equivalent-time-slide point estimate, while its dependence
+sensitivity uses a three-way pigeonhole cluster bootstrap; candidate rows are never treated as IID.
+For zero survivors the cluster bootstrap is explicitly non-informative and the report uses the
+predeclared Poisson upper limit. An empty background-candidate list freezes a
 threshold above probability support; it can never turn score-zero injection misses into detections.
 Calibration from an unscheduled or exposure-insufficient slide report remains available as explicit
 engineering output, but is marked `publication_calibration_eligible=false`. The locked command now
@@ -369,11 +434,13 @@ python -m gwyolo.cli candidate-timing-calibrate \
   --injection-triggers val-score/injection_triggers.jsonl --output timing-calibration.json
 python -m gwyolo.cli candidate-search-calibrate \
   --validation-time-slide-report val-slides/val_candidate_time_slide_report.json \
+  --validation-background-manifest val-background.jsonl \
   --validation-injection-ranking-report val-rank/val_injection_candidate_ranking_report.json \
   --target-far-per-year 1 --output frozen-candidate-threshold.json
 python -m gwyolo.cli candidate-search-evaluate-frozen \
   --calibration-report frozen-candidate-threshold.json \
   --test-time-slide-report test-slides/test_candidate_time_slide_report.json \
+  --test-background-manifest test-background.jsonl \
   --test-injection-ranking-report test-rank/test_injection_candidate_ranking_report.json \
   --minimum-test-live-time-years 10 --minimum-test-injections 20000 \
   --output locked-candidate-search.json
@@ -587,6 +654,57 @@ A successful five-row engineering pilot is not a sensitivity result. The paper g
 statistically useful, group-independent contaminated corpus, clean non-inferiority, at least five
 learned seeds, clustered continuous background/time slides and the one-time locked evaluation.
 
+`scripts/run_mask_deglitch_validation.sh` is the fail-closed publication-DAG entry point for this
+six-arm development gate. It accepts only a passing source-safe five-seed selection, replays the
+selected checkpoint and finetune-report hashes, verifies the frozen GPS/purpose-disjoint O4a
+endpoint, and independently replays the waveform/GPS/source overlap audit before constructing the
+paired clean and real-glitch-contaminated manifests. The evaluation checkout may be newer than the
+frozen model-selection checkout, so the receipt records both code commits separately; checkpoint,
+configuration, report and manifest SHA-256 identities still have to match exactly. The runner reads
+validation rows only, writes `test_rows_read: 0`, and never authorizes a locked-test or scientific
+claim. A passing receipt only enables scaling the mask-conditioned continuous-background arm.
+
+That first receipt is a ranking/morphology gate, not a coherence authorization.
+`mask-timing-validation` consumes the exact six-arm receipt and independently calibrates the local
+per-mask-cluster arrival estimator on waveform-matched contaminated raw and mask-conditioned
+validation injections. The two arms must contain identical injection, waveform, GPS, detector and
+arrival identities. Both must separately pass the precommitted 99th-percentile 10 ms empirical
+timing limit with at least 30 matches; otherwise `coherent_background_scale_allowed` remains false.
+This prevents mask cleaning from silently inheriting the raw-strain timing uncertainty. Each arm
+also preserves every single-IFO candidate, applies its own timing calibration and freezes one
+network ranking per physical validation injection under the declared H1/L1 10 ms light-travel-time
+limit plus empirical uncertainty. Only after candidate extraction, calibration and ranking all
+hash-replay successfully are the recoverable per-injection probability artifacts evicted; the
+timing receipt binds the eviction intent, removed hashes and byte count.
+
+`scripts/run_mask_conditioned_background_range.sh` is the corresponding storage-bounded continuous
+background executor. It refuses a partial parent plan, test rows, an unpromoted five-seed model or a
+failed six-arm/timing receipt. A calibration produced by an older immutable checkout may be reused
+only when `candidate-scoring-compatibility-audit` proves that all scientific scoring and candidate
+extraction implementation hashes are unchanged; the newer timing-application orchestration alone
+is normalized out of that comparison. Every stable-GPS validation shard is scored as a paired raw
+and mask-conditioned arm over the identical physical windows. Candidates and calibrated arrival
+times are retained, while probability arrays, reconstructed mask overrides and recoverable source
+HDF5 files are deleted only after their downstream reports and hashes exist.
+
+The paired merge independently replays the ordinary continuous-background merge for both arms and
+requires identical pair ranges, GPS blocks, detector availability, observing-run counts, live time
+and background-manifest hash. One common block-permutation schedule is then used to freeze separate
+raw and mask validation FAR thresholds. `candidate-search-raw-mask-compare` replays those two
+calibrations, the six-arm clean non-inferiority receipt and both injection-timing rankings. It then
+joins exact injection/waveform/GPS/weight identities and reports the paired recovered-`<VT>` delta,
+relative change, strata and paired-bootstrap interval without retuning either threshold. A positive
+validation arm requires both the predeclared absolute weighted-efficiency gain and a strictly
+positive lower 95% paired-`<VT>` bound. The final receipt remains
+`scientific_claim_allowed=false`, `locked_test_open_allowed=false` and
+`locked_test_prerequisites_satisfied=false`: it freezes development calibration but cannot by
+itself authorize O4b/GWTC-5 or support a search-sensitivity claim.
+
+If the raw/mask background range was started from an older immutable checkout,
+`scripts/run_raw_mask_candidate_comparison_queue.sh` waits for that checkout's final receipt,
+hash-replays both calibration identities, and runs only this read-only comparison from a newer
+immutable checkout. It neither rescans strain nor opens any locked evaluation rows.
+
 `gwyolo pe-evaluate` now provides the corresponding posterior-side contract. Its JSONL manifest
 contains one `raw` and one `cleaned` row for every `(backend, injection_id)` pair, with an NPZ
 posterior, the common truth dictionary, and measured end-to-end latency. The command rejects missing
@@ -651,10 +769,48 @@ backend comparison has run.
 
 `scripts/setup_pe_backends.sh` is the reproducible environment bootstrap. It requires explicit
 source, commit, tag, interpreter and output variables; refuses a shared DINGO/AMPLFI environment;
-refuses to run beside another active package installer; and writes sorted package plus CUDA runtime
-snapshots. Hermetic virtual environments are the default. A system-site-package overlay is available
+holds a nonblocking atomic installation lock before inspecting package-manager state; refuses to run
+beside another active package installer; and writes sorted package plus CUDA runtime snapshots.
+Hermetic virtual environments are the default. A system-site-package overlay is available
 only as an explicit engineering option and its full observed package-set hash must still be frozen
 before publication.
+
+Before AMPLFI export or training, `amplfi-background-capacity-audit` evaluates physical contiguous
+strain duration and unique GPS blocks rather than window or rendered-image counts. The committed
+publication policy requires at least 200,000 seconds across 50 training blocks and 50,000 seconds
+across 13 validation blocks, with H1/L1 availability and zero block overlap. Test metadata is
+counted only to prove exclusion; no test strain array is opened. An insufficient audit is retained
+as machine-readable negative evidence and exits nonzero.
+
+`gwosc-plan-disjoint` constructs the corresponding acquisition parent from public O4a strain-file
+metadata. It replays one or more frozen exclusion plans, requires every excluded source pair to be
+unchanged in the current GWOSC inventory, removes those pair IDs and file GPS starts, and then uses
+a seeded stratified selection from the complement. The intended AMPLFI training plan excludes the
+entire frozen 880-pair candidate/independent-validation parent before selecting 80 new H1/L1 pairs.
+It cannot query O4b, inspect candidate scores or open test strain.
+
+`scripts/run_amplfi_background_acquisition.sh` executes that plan in twenty four-pair shards. Each
+shard uses the stable GPS hash split with `test_fraction=0`, exports numeric 2,048 Hz H1/L1 HDF5
+background, verifies every output and source hash, writes an eviction intent, and only then removes
+the recoverable public source HDF5 copies. The final merge replays all shard-plan ranges and report
+hashes, rejects duplicate windows/files or cross-split GPS blocks, and must pass the frozen capacity
+policy before writing a training-background receipt.
+
+AMPLFI compute scaling is separately frozen by `amplfi-training-stage-freeze`. Stage 1 is exactly
+100 epochs, 200 batches per epoch and batch size 256: 20,000 optimizer updates and 5.12 million
+online waveform examples, with 10,000 validation waveforms per evaluation. The resolved YAML fixes
+one logger identity for resumable training. `scripts/run_amplfi_publication_stage1.sh` accepts only
+a passing 200k/50k-second background receipt, trains under pinned AMPLFI 0.6.0, selects a checkpoint
+from the complete validation trajectory, loads the real model/scaler on CUDA and freezes standardized
+metadata. The 800-epoch stage remains unpromoted until stage 1 supplies actual validation evidence.
+
+When the frozen base bank needs a source-disjoint capacity extension,
+`amplfi-training-bank-freeze` replays the base and extension merge/capacity receipts and every export
+hash, then creates one immutable train/validation directory view using symbolic links. No strain
+array is duplicated and no test export is admitted. The bank report, rather than an incidental
+machine directory, is the training-data identity used for checkpoint selection and model metadata.
+`scripts/run_amplfi_extension_stage1_successor.sh` performs this no-copy freeze before invoking the
+same publication-stage-1 training gate.
 
 Checkpoint readiness uses a standardized sidecar created by `pe-backend-model-freeze`. The command
 will only freeze a checkpoint when a separate selection report has status
@@ -662,10 +818,11 @@ will only freeze a checkpoint when a separate selection report has status
 `publication_eligible`, names the selection metric and contains the checkpoint's exact SHA-256. It
 also hashes the training
 configuration, training-data manifest, common analysis prior, selection report and backend-native
-conditioning configuration. For AMPLFI it additionally requires the exact native prior and the
-machine-readable `amplfi-common-prior-audit` report. The report must have passed and its canonical
-prior, native prior and training-configuration hashes must match the other frozen artifacts; copying
-a passed report from a different training run fails closed. The sidecar records the native and common analysis waveform
+conditioning configuration. Both backends additionally require their exact native prior settings
+and a machine-readable semantic projection report produced by `dingo-common-prior-audit` or
+`amplfi-common-prior-audit`. The report must have passed and its canonical-prior, native-prior and
+training-configuration hashes must match the other frozen artifacts; copying a passed report from a
+different training run fails closed. The sidecar records the native and common analysis waveform
 approximants, common source contract and inference parameters. The environment audit reloads and
 verifies every referenced artifact, then requires DINGO and AMPLFI to use the same analysis prior,
 analysis waveform and explicitly mapped common parameter set. Native output spaces may differ, but
@@ -697,6 +854,12 @@ python -m gwyolo.cli pe-lightning-checkpoint-select \
 ```
 
 ```bash
+python -m gwyolo.cli dingo-common-prior-audit \
+  --canonical-prior configs/pe_common_bbh_analysis_prior.yaml \
+  --dingo-prior-config artifacts/pe/dingo/model_settings.txt \
+  --training-config artifacts/pe/dingo/model_settings.txt \
+  --output artifacts/pe/dingo/prior_projection.json
+
 python -m gwyolo.cli pe-backend-model-freeze \
   --backend DINGO \
   --model artifacts/pe/dingo/model.pt \
@@ -704,6 +867,8 @@ python -m gwyolo.cli pe-backend-model-freeze \
   --training-config artifacts/pe/dingo/train.yaml \
   --training-data-manifest artifacts/pe/dingo/train.jsonl \
   --analysis-prior artifacts/pe/common/analysis_prior.yaml \
+  --native-prior artifacts/pe/dingo/model_settings.txt \
+  --prior-projection-report artifacts/pe/dingo/prior_projection.json \
   --selection-report artifacts/pe/dingo/selection.json \
   --native-conditioning-config artifacts/pe/dingo/conditioning.yaml \
   --source-sample-rate-hz 4096 \
@@ -825,9 +990,10 @@ model and time-initialization model hashes, loads upstream `EventDataset`, `GWSa
 latency. Backend import or model compatibility failures are explicit and non-zero; no synthetic
 posterior fallback exists. A resumed batch revalidates every posterior and native-result hash.
 The standardized metadata requires the time-initialization network as a DINGO-specific artifact;
-the batch executor also reopens every training-config, training-manifest, analysis-prior,
-selection-report and conditioning-config artifact, requires native rows to use that conditioning
-hash, and refuses a runtime initialization network whose bytes differ from metadata.
+the batch executor also reopens every training-config, training-manifest, analysis-prior, native
+prior, projection-report, selection-report and conditioning-config artifact. It requires native rows
+to use the frozen conditioning and common-prior hashes, requires `--native-prior` to match metadata,
+and refuses a runtime initialization network whose bytes differ from metadata.
 
 Real AMPLFI sampling follows the same fail-closed contract through `amplfi-common-batch` and
 `scripts/run_amplfi_common_event.py`. The pinned interpreter reconstructs the exact v0.6 NSF and
@@ -841,6 +1007,15 @@ retained, together with model-load, preprocessing, sampling and end-to-end laten
 `MultiModalPsd` scales its ASD argument in place, so the runner supplies a fresh clone to every
 embedding call; otherwise the sampling context would be multiplied again during log-probability
 evaluation and subsequent sample chunks.
+
+Both batch adapters compute the required 90% sky-area field directly from the retained RA/Dec
+posterior samples. The dependency-free primary implementation uses a frozen 360 by 180 grid in
+right ascension and `sin(dec)`, so all 64,800 pixels have equal solid angle. It reports the greedy
+credible-pixel count, pixel area, sample count and exact method alongside `sky_area_90_deg2`; that
+estimator record must match across conditions and backends. This fixed-grid statistic is an
+identical paired robustness metric, not a BAYESTAR or adaptive-HEALPix sky map. A future
+waveform-systematics table may add a common `ligo.skymap` estimator as a separately frozen stratum,
+but cannot replace one backend's estimator after posterior results are opened.
 
 The batch boundary independently reopens and hashes the metadata-bound canonical prior, native
 prior and semantic projection report before launching any subprocess. The runtime `--native-prior`
@@ -863,19 +1038,117 @@ The AMPLFI runner is now unit-tested at the orchestration, hash, resume, archite
 contract boundaries. A real checkpoint-load smoke remains mandatory; a fake subprocess used by the
 CPU orchestration test is not posterior evidence and cannot enable a scientific claim.
 
+After both batch reports exist, there are two non-interchangeable publication paths.
+`pe-robustness-joint-evaluate` is the absolute comparison path: it verifies both batch-report and
+manifest hashes, requires identical injection/condition sets and enforces common prior, analysis
+and native-model waveform, detector, hardware, sky-area and latency-scope gates.
+`scripts/run_joint_paired_pe_validation.sh` wires the validation-only native-input smoke to this
+strict gate and remains fail-closed until genuinely matched validation-selected model sidecars are
+present.
+Before either GPU batch starts, `pe-joint-model-compatibility-audit` replays both standardized
+metadata sidecars, their canonical and native priors, the DINGO initialization model and the frozen
+H1/L1 source contract. It requires the same canonical-prior hash, analysis and native-model
+waveform assumptions, common
+parameter set and source-input definition. An official-native sidecar that records
+`common_prior_equivalent=false` or `cross_backend_absolute_comparison_allowed=false` therefore
+writes an incompatible JSON audit and exits before posterior inference; its within-backend paired
+robustness path remains valid and separate.
+
+The second path is `pe-robustness-portfolio-evaluate`. It reopens both strict within-backend
+manifests and posterior files, recomputes the paired bootstrap statistics, and requires identical
+injection/condition keys, common source-input hashes and truth across backends. Each backend must
+hold one model, native prior, waveform and detector identity fixed across all three conditions.
+Different native priors or waveforms are allowed only because no absolute backend subtraction or
+ranking is emitted. The report records
+`comparison_scope=matched_event_within_backend_deltas_only` and
+`absolute_cross_backend_comparison_allowed=false`. The same frozen promotion thresholds for sample
+size, coverage, normalized bias, posterior width, sky area, ESS rate and latency apply to both
+backends. `scripts/run_paired_pe_portfolio_validation.sh` produces the validation receipt; a
+three-event smoke remains below the 100-event gate and cannot unlock O4b.
+The subsequent `pe-robustness-promote` command applies the pre-result thresholds in
+`configs/pe_robustness_promotion.yaml`. Bias deltas are normalized by each event's clean-posterior
+credible width, while coverage non-inferiority uses paired bootstrap differences. Both backends must
+pass sample-size, coverage, bias, width, sky-area, effective-sample-rate and latency gates before
+`promote_to_locked_test` can become true; the validation decision itself never enables a paper claim.
+
 `scripts/run_paired_pe_smoke.sh` closes the preceding validation-data gap without touching a locked
 test corpus. After a detector-set overlap run writes its validation-selected checkpoint, the script
 builds paired clean and real-glitch-contaminated overrides, scores every contaminated instance with
 saved numeric chirp/glitch probabilities, applies the frozen mask policy, selects a bounded BBH
 subset before posterior results exist, and materializes both DINGO and AMPLFI native inputs. Each
 stage is resumable by its atomic report and all machine paths are explicit environment variables.
-The smoke defaults to three validation injections and remains ineligible for a scientific claim.
+`GWYOLO_MODEL_CONFIG` must be the exact selected overlap configuration: the script re-hashes it
+against `config_file_sha256` in the model report before scoring, so a family-balanced champion cannot
+silently be evaluated under the uniform-arm provenance. The smoke defaults to three validation
+injections and remains ineligible for a scientific claim.
+
+`scripts/run_promoted_paired_pe_smoke.sh` is the five-seed handoff. It resolves the selected
+checkpoint back to exactly one hash-listed finetune report, chooses the matching uniform or
+family-balanced configuration, and re-hashes the selected checkpoint, configuration and the
+historical training-overlap, validation-overlap, and clean-validation manifests that actually
+selected that model. Those three model-selection inputs are deliberately distinct from the
+subsequent paired-PE evaluation inputs.
+
+`scripts/run_independent_pe_overlap.sh` materializes the paired-PE validation overlap from the
+frozen GPS- and purpose-disjoint injection endpoint and the source-safe Gravity Spy validation
+manifest. It replays all six endpoint-component hashes, requires zero train/validation overlap in
+injection, waveform, glitch and GPS identities, and uses every detector-compatible validation
+glitch exactly once. A Gravity Spy H1/L1/V1 context is not paired with an H1/L1-only injection by
+zero filling; incompatible detector subsets are excluded explicitly and counted. The default gate
+requires at least 100 valid overlaps. Its immutable receipt binds the endpoint, injection arrivals,
+glitch corpus audit, materialization configuration, overlap report and joint train/validation audit.
+
+The promoted smoke requires that independent receipt and the frozen endpoint in addition to the
+model-selection inputs. It verifies that the evaluation overlap and injection manifests are the
+exact receipt-bound files and that the joint audit contains no leakage before invoking the generic
+paired-input pipeline. The resulting smoke summary records all five selection/evaluation source
+receipts and hashes. It rejects a non-validation summary, an ambiguous checkpoint report, a reused
+model-selection injection manifest or an unbound independent overlap rather than guessing a
+champion path.
 
 Before an event is admitted, `scripts/run_pe_model_load_smoke.py` verifies checkpoint/config hashes
 inside the pinned interpreter and loads both DINGO GNPE networks or the AMPLFI Lightning model,
 architecture and fitted scaler. It records backend version, parameter counts, GPU runtime and load
 latency and refuses to overwrite its report. This distinguishes a real 5.9 GB DINGO or trained
 AMPLFI checkpoint from a source-import smoke, while still withholding all posterior claims.
+
+`scripts/run_dingo_official_model_load.sh` is the official-source handoff for that smoke. It replays
+the complete acquisition report against the four-entry source configuration, including exact role,
+filename, size, published MD5 and local SHA-256. It then verifies the pinned `dingo-gw` runtime and
+loads both the posterior and GNPE time-initialization networks on the requested device. An immutable
+receipt binds the acquisition, source configuration, backend load report, model hashes, parameter
+counts and runtime environment. A failed load freezes a separate receipt plus the complete attempt
+log. `dingo-runtime-failure-adjudicate` then replays every source/model/log hash and evaluates the
+frozen `configs/dingo_runtime_compatibility_policy.yaml`: an explicit serialization/API signature
+is required, while CUDA, memory, storage, checksum, path, permission and network failures override
+and reject fallback. `scripts/run_dingo_native_fallback.sh` accepts only a passing adjudication,
+verifies an exact DINGO 0.5.8 runtime, and reloads the identical posterior and time-model hashes.
+Neither compatibility path reads test rows or becomes PE evidence; no model substitution is
+allowed.
+
+The official release has a separate, deliberately narrower evaluation path. The
+`dingo-official-native-model-freeze` command replays the source acquisition and passing dual-model
+load receipt, parses the published settings, and binds the 10-million-waveform, epoch-225,
+SEOBNRv5PHM H1/L1 model to its 16-second, 4,096 Hz native contract. The load receipt's DINGO
+version must equal the published training version; loading a 0.5.8 model under 0.9.8 is rejected
+because DINGO itself reports a backward-incompatible window-factor change. The separate
+`setup_dingo_native_overlay.sh` installs exact tag/commit v0.5.8 in an isolated package overlay,
+hashes both the read-only dependency base and overlay package inventories, and requires CUDA before
+any native model-load retry. The native model freeze additionally requires that overlay receipt and
+a passing synthetic EventDataset-to-GNPE smoke summary. It replays the smoke inference report,
+posterior and native-result hashes, both official model hashes, exact 0.5.8 loader API and the
+declared SciPy Tukey-symbol compatibility alias. Those receipts become required artifacts of every
+official-native batch identity, so an outer queue-file check alone cannot authorize inference. The
+synthetic event remains runtime evidence only and reads zero validation or test rows. The metadata
+explicitly records
+`common_prior_equivalent=false` and `cross_backend_absolute_comparison_allowed=false`.
+`scripts/run_dingo_official_native_paired_smoke.sh` can therefore measure only the validation-set
+clean/contaminated/mask-conditioned change within this one backend. It cannot enter
+`pe-robustness-joint-evaluate`, cannot establish an absolute DINGO-versus-AMPLFI ranking, and does
+not relax the common-prior paper gate. Its `pe-robustness-evaluate --within-backend-only` stage
+still enforces every publication provenance and input-lineage check on the three conditions; it
+only disables the requirement that a second backend be present. The resulting report records
+`comparison_scope=strict_within_backend_paired` and keeps both cross-backend gates false.
 
 Official external weights are acquired through `pe-model-sources-acquire`, not an unrecorded browser
 download. `configs/pe_official_model_sources.yaml` freezes the Zenodo record, exact filenames, byte
@@ -890,8 +1163,19 @@ python -m gwyolo.cli pe-model-sources-acquire \
   --output-dir artifacts/pe/official_models/dingo-o4a \
   --report artifacts/pe/official_models/dingo-o4a-acquisition.json \
   --minimum-free-bytes 16106127360 \
+  --transfer-attempts 1000 \
+  --retry-delay-seconds 5 \
+  --maximum-stalled-attempts 5 \
   --download
 ```
+
+Large Zenodo objects retain their `.part` file across transient DNS, connection, TLS, partial-body,
+timeout, empty-reply and HTTP/2 failures. Each outer attempt invokes curl's own bounded HTTP retry,
+then resumes at the exact current byte offset. Permanent curl failures remain fail-fast, a partial
+larger than the frozen source size is rejected, and five consecutive attempts without byte progress
+stop the run rather than spin forever. A complete partial is checksum-verified and atomically
+promoted without another network request. The report records initial partial bytes, attempts and
+new bytes before the published MD5 and local SHA-256 become model identity.
 
 AMPLFI is absent from this source manifest until a real reusable checkpoint is identified or a
 validation-selected common-domain model is trained. A 20 MB paper-figure archive is not silently
@@ -922,6 +1206,14 @@ backend-neutral prior; `configs/amplfi_common_bbh_training_prior.yaml` is its na
 projection. `amplfi-common-prior-audit` checks all fourteen intrinsic, extrinsic and nuisance
 distributions, their bounds, H1/L1 identity and the native 2,048 Hz/3-second contract. This is a
 semantic gate in addition to file hashes.
+
+`scripts/run_amplfi_within_backend_paired_smoke.sh` consumes the same validation-only paired-input
+receipt independently of DINGO. It replays the AMPLFI native manifest, validation-selected model
+sidecar and native prior, runs the three posterior conditions, then invokes the strict
+`--within-backend-only` evaluator with at least 10,000 paired-bootstrap replicates. Its receipt
+retains coverage, bias, width, fixed-grid sky area, effective-sample rate and latency evidence while
+setting `cross_backend_absolute_comparison_allowed=false`. This lets an AMPLFI downstream-robustness
+result complete even when no scientifically matched DINGO model exists.
 
 The source-safe one-seed overlap-sampling decision is frozen in
 `configs/physical_overlap_sampling_promotion.yaml`. `physical-overlap-sampling-promote` accepts
@@ -966,6 +1258,28 @@ default) of the incoming checkpoint; among eligible epochs, validation glitch Io
 Threshold calibration happens only after checkpoint selection on Gravity Spy validation. These are
 metadata-derived weak masks, so the command always withholds a segmentation claim until an
 independent human pixel-mask audit and mixture/search experiment exist.
+
+## Detector-set OOD abstention
+
+The original `glitch-ood-train` baseline consumed only the event detector even when the numeric
+sample contained aligned H1/L1/V1 context. `architecture: detector_set` now requires the aligned
+network tensor, verifies its fixed detector order and Q values, matches the row and array validity
+masks, and rejects nonzero unavailable planes. A shared per-IFO encoder pools the declared detector
+set with masked attention. Fixed H1/L1/V1 one-hot identities enter the fusion, so an unavailable
+detector cannot be confused with a valid zero tensor and detector identity is not discarded.
+
+`gravityspy-ood-family-freeze` selects the next held family using only family labels, row counts and
+independent GPS-block counts. Previously opened families must be listed with `--exclude-family`.
+The command rejects train/validation overlap in glitch, GPS block and, when available, official
+network strain source. It records that no model or unknown score existed at selection time. The
+result then feeds the existing group-safe `gravityspy-ood-split`; checkpoint selection and the
+abstention threshold still use known-family validation rows only. The held-family scores remain an
+evaluation, never a tuning set.
+
+The precommitted detector-set arm is
+`configs/glitch_ood_network_contrastive_energy.yaml`. It uses supervised contrastive training and
+logit energy because those choices predate the new held-family result. A positive OOD result remains
+auxiliary attribution/abstention evidence and may not silently veto a strain-coherent candidate.
 
 ## Oracle mask-deglitch upper bound
 

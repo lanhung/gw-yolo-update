@@ -1,0 +1,30 @@
+schema_version: 1
+expected_base_config_sha256: 734ef1e15b12419ce1f38462e65d3d0acf432cc01f9e47400c64a339667beccd
+
+stages:
+  engineering_smoke:
+    publication_candidate: false
+    max_epochs: 5
+    batches_per_epoch: 50
+    batch_size: 128
+    min_valid_duration: 50000
+    num_fit_params: 10000
+    num_val_waveforms: 1024
+
+  publication_stage_1:
+    publication_candidate: true
+    max_epochs: 100
+    batches_per_epoch: 200
+    batch_size: 256
+    min_valid_duration: 50000
+    num_fit_params: 100000
+    num_val_waveforms: 10000
+
+  publication_stage_2:
+    publication_candidate: true
+    max_epochs: 800
+    batches_per_epoch: 800
+    batch_size: 512
+    min_valid_duration: 50000
+    num_fit_params: 100000
+    num_val_waveforms: 10000

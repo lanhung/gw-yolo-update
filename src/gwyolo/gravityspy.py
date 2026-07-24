@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import shlex
@@ -590,11 +591,14 @@ def resplit_gravityspy_network_numeric_corpus(
     output_dir: str | Path,
     validation_fraction: float = 0.2,
     seed: int = 20260720,
+    minimum_validation_rows_per_family: int = 1,
 ) -> dict[str, Any]:
     """Freeze a score-blind source-component-safe train/validation split."""
 
     if not 0 < validation_fraction < 0.5:
         raise ValueError("Network Gravity Spy validation fraction must be in (0, 0.5)")
+    if minimum_validation_rows_per_family <= 0:
+        raise ValueError("Network Gravity Spy family support must be positive")
     paths = [Path(path) for path in report_paths]
     if len(paths) < 2:
         raise ValueError("Network Gravity Spy resplit requires at least two merged reports")
@@ -634,8 +638,21 @@ def resplit_gravityspy_network_numeric_corpus(
         )
     components = _gravityspy_network_source_components(rows, seed)
     total_counts = Counter(str(row["ml_label"]) for row in rows)
+    under_capacity = {
+        label: count
+        for label, count in total_counts.items()
+        if count <= minimum_validation_rows_per_family
+    }
+    if under_capacity:
+        raise ValueError(
+            "Network Gravity Spy families cannot retain train rows after the validation floor: "
+            f"{dict(sorted(under_capacity.items()))}"
+        )
     target_counts = {
-        label: max(1, round(count * validation_fraction))
+        label: max(
+            minimum_validation_rows_per_family,
+            round(count * validation_fraction),
+        )
         for label, count in total_counts.items()
     }
     target_rows = max(1, round(len(rows) * validation_fraction))
@@ -688,31 +705,35 @@ def resplit_gravityspy_network_numeric_corpus(
         validation_counts = best[3]
         validation_rows = best[4]
 
-    # Cover every family in validation whenever source-component grouping permits it.
+    # Meet the frozen family floor while retaining at least one train row per family.
     for label in sorted(total_counts):
-        if validation_counts[label] > 0:
-            continue
-        candidates = []
-        for index, counts in enumerate(component_counts):
-            if index in selected or counts[label] == 0:
-                continue
-            if any(
-                total_counts[name] - validation_counts[name] - count <= 0
-                for name, count in counts.items()
-            ):
-                continue
-            candidate_counts = validation_counts + counts
-            candidate_rows = validation_rows + len(component_rows[index])
-            candidates.append(
-                (
-                    cost(candidate_counts, candidate_rows),
-                    str(components[index]["tie_break"]),
-                    index,
-                    candidate_counts,
-                    candidate_rows,
+        while validation_counts[label] < minimum_validation_rows_per_family:
+            candidates = []
+            for index, counts in enumerate(component_counts):
+                if index in selected or counts[label] == 0:
+                    continue
+                if any(
+                    total_counts[name] - validation_counts[name] - count <= 0
+                    for name, count in counts.items()
+                ):
+                    continue
+                candidate_counts = validation_counts + counts
+                candidate_rows = validation_rows + len(component_rows[index])
+                candidates.append(
+                    (
+                        cost(candidate_counts, candidate_rows),
+                        str(components[index]["tie_break"]),
+                        index,
+                        candidate_counts,
+                        candidate_rows,
+                    )
                 )
-            )
-        if candidates:
+            if not candidates:
+                raise ValueError(
+                    "Network Gravity Spy source components cannot satisfy the validation "
+                    f"floor for {label}: {validation_counts[label]}/"
+                    f"{minimum_validation_rows_per_family}"
+                )
             best = min(candidates, key=lambda item: (item[0], item[1]))
             selected.add(best[2])
             validation_counts = best[3]
@@ -751,6 +772,7 @@ def resplit_gravityspy_network_numeric_corpus(
             "split_strategy": "source_component_balanced_v1",
             "seed": seed,
             "validation_fraction": validation_fraction,
+            "minimum_validation_rows_per_family": minimum_validation_rows_per_family,
             "source_reports": sources,
             "source_reports_hash": canonical_hash(sources, 64),
             "manifest_path": str(manifest),
@@ -804,7 +826,11 @@ def resplit_gravityspy_network_numeric_corpus(
     }
     if any(overlaps.values()):
         raise ValueError(f"Network Gravity Spy resplit leakage: {overlaps}")
-    missing_validation = sorted(set(total_counts) - set(validation_counts))
+    missing_validation = sorted(
+        label
+        for label in total_counts
+        if validation_counts[label] < minimum_validation_rows_per_family
+    )
     result = {
         "status": "frozen_source_component_safe_gravityspy_network_resplit",
         "passed": not missing_validation,
@@ -815,6 +841,7 @@ def resplit_gravityspy_network_numeric_corpus(
         "split_strategy": "source_component_balanced_v1",
         "seed": seed,
         "validation_fraction": validation_fraction,
+        "minimum_validation_rows_per_family": minimum_validation_rows_per_family,
         "rows": len(rows),
         "source_components": len(components),
         "selected_validation_components": len(selected),
@@ -842,6 +869,8 @@ def select_gravityspy_network_source_components(
     maximum_source_files: int,
     seed: int = 20260720,
     existing_manifest_path: str | Path | None = None,
+    target_labels: Iterable[str] = (),
+    exclusion_manifest_paths: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Select new aligned source components against label deficits and GPS diversity."""
 
@@ -851,6 +880,13 @@ def select_gravityspy_network_source_components(
         rows = [json.loads(line) for line in handle if line.strip()]
     if not rows:
         raise ValueError("Network source selection requires a non-empty plan")
+    requested_labels = tuple(dict.fromkeys(str(label) for label in target_labels))
+    if requested_labels:
+        available_labels = {str(row["ml_label"]) for row in rows}
+        missing_labels = sorted(set(requested_labels) - available_labels)
+        if missing_labels:
+            raise ValueError(f"Network source selection labels are absent: {missing_labels}")
+        rows = [row for row in rows if str(row["ml_label"]) in requested_labels]
     splits = {str(row["split"]) for row in rows}
     if len(splits) != 1:
         raise ValueError("Network source selection cannot mix data splits")
@@ -868,15 +904,27 @@ def select_gravityspy_network_source_components(
         if any(str(row.get("split")) != split for row in existing_rows):
             raise ValueError("Existing network Gravity Spy rows belong to another split")
         existing_hash = file_sha256(existing_path)
-    existing_ids = {str(row["glitch_id"]) for row in existing_rows}
-    existing_blocks = {str(row["network_gps_block"]) for row in existing_rows}
+    exclusion_rows = list(existing_rows)
+    exclusion_evidence = []
+    for raw_path in exclusion_manifest_paths:
+        path = Path(raw_path)
+        with path.open("r", encoding="utf-8") as handle:
+            values = [json.loads(line) for line in handle if line.strip()]
+        if not values:
+            raise ValueError("Network source exclusion manifest cannot be empty")
+        exclusion_rows.extend(values)
+        exclusion_evidence.append(
+            {"path": str(path.resolve()), "sha256": file_sha256(path), "rows": len(values)}
+        )
+    existing_ids = {str(row["glitch_id"]) for row in exclusion_rows}
+    existing_blocks = {str(row["network_gps_block"]) for row in exclusion_rows}
     existing_sources = {
         str(source["hdf5_url"])
-        for row in existing_rows
+        for row in exclusion_rows
         for source in row.get("network_strain_sources", {}).values()
     }
     existing_counts = Counter(str(row["ml_label"]) for row in existing_rows)
-    labels = sorted({str(row["ml_label"]) for row in rows} | set(existing_counts))
+    labels = sorted(requested_labels or {str(row["ml_label"]) for row in rows})
     deficits = {label: max(0, per_label - existing_counts[label]) for label in labels}
     candidate_rows = [
         row
@@ -974,6 +1022,7 @@ def select_gravityspy_network_source_components(
         "scientific_claim_allowed": False,
         "split": split,
         "seed": seed,
+        "target_labels": labels,
         "per_label_target": per_label,
         "maximum_source_files": maximum_source_files,
         "target_met": not underfilled,
@@ -984,7 +1033,9 @@ def select_gravityspy_network_source_components(
         if existing_manifest_path is not None
         else None,
         "existing_manifest_sha256": existing_hash,
+        "exclusion_manifests": exclusion_evidence,
         "existing_rows": len(existing_rows),
+        "exclusion_rows_before_identity_deduplication": len(exclusion_rows),
         "existing_label_counts": dict(sorted(existing_counts.items())),
         "excluded_existing_glitch_ids": len(existing_ids),
         "excluded_existing_gps_blocks": len(existing_blocks),
@@ -1022,6 +1073,100 @@ def select_gravityspy_network_source_components(
     return report
 
 
+def _import_verified_network_sources(
+    inventory_paths: Iterable[str | Path],
+    run_identity: dict[str, Any],
+    source_inventory: dict[str, dict[str, Any]],
+    cache: Path,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Import byte-verified source files from an equivalent interrupted run."""
+
+    imported: dict[str, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
+    identity_fields = (
+        "source_manifest_sha256",
+        "config_hash",
+        "output_duration",
+        "download_workers",
+        "chunk_samples",
+        "shard",
+    )
+    for inventory_path in inventory_paths:
+        path = Path(inventory_path)
+        if not path.is_file():
+            raise ValueError(f"Verified source inventory is absent: {path}")
+        inventory = json.loads(path.read_text(encoding="utf-8"))
+        source_identity = inventory.get("run_identity")
+        if not isinstance(source_identity, dict) or any(
+            source_identity.get(field) != run_identity.get(field)
+            for field in identity_fields
+        ):
+            raise ValueError(f"Verified source inventory run identity differs: {path}")
+        sources = inventory.get("verified_sources")
+        if not isinstance(sources, dict) or not sources:
+            raise ValueError(f"Verified source inventory has no sources: {path}")
+        imported_urls = []
+        for url, verification in sorted(sources.items()):
+            source = source_inventory.get(str(url))
+            if source is None:
+                raise ValueError(
+                    f"Verified source inventory contains an out-of-shard URL: {url}"
+                )
+            if (
+                not isinstance(verification, dict)
+                or verification.get("passed") is not True
+                or verification.get("failures") not in ([], None)
+            ):
+                raise ValueError(f"Imported source was not fully verified: {url}")
+            filename = Path(str(url).split("?", 1)[0]).name
+            expected_path = (
+                cache
+                / str(source["observing_run"])
+                / str(source["detector"])
+                / filename
+            )
+            recorded_path = Path(str(verification.get("path", "")))
+            if recorded_path.resolve() != expected_path.resolve():
+                raise ValueError(f"Imported source path is outside the exact cache slot: {url}")
+            if str(verification.get("detail_url")) != str(source["detail_url"]):
+                raise ValueError(f"Imported source detail URL differs: {url}")
+            expected = verification.get("expected")
+            observed = verification.get("observed")
+            if not isinstance(expected, dict) or not isinstance(observed, dict):
+                raise ValueError(f"Imported source lacks full HDF5 statistics: {url}")
+            try:
+                expected_bytes = int(expected["filesize_bytes"])
+                recorded_bytes = int(verification["bytes"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Imported source lacks a valid byte count: {url}") from exc
+            if expected_bytes != recorded_bytes:
+                raise ValueError(f"Imported source byte counts disagree: {url}")
+            if not expected_path.is_file() or expected_path.stat().st_size != recorded_bytes:
+                raise ValueError(f"Imported source cache file is absent or truncated: {url}")
+            if file_sha256(expected_path) != str(verification.get("sha256")):
+                raise ValueError(f"Imported source cache hash mismatch: {url}")
+            if not isinstance(verification.get("observed_bitsums"), dict) or int(
+                verification.get("strain_samples", 0)
+            ) <= 0:
+                raise ValueError(f"Imported source lacks full dataset verification: {url}")
+            existing = imported.get(str(url))
+            if existing is not None and canonical_hash(existing) != canonical_hash(
+                verification
+            ):
+                raise ValueError(f"Conflicting imported source verification: {url}")
+            imported[str(url)] = verification
+            imported_urls.append(str(url))
+        evidence.append(
+            {
+                "path": str(path),
+                "sha256": file_sha256(path),
+                "source_code_commit": source_identity.get("code_commit"),
+                "imported_urls": imported_urls,
+            }
+        )
+    return imported, evidence
+
+
 def materialize_gravityspy_network_strain(
     manifest_path: str | Path,
     config_path: str | Path,
@@ -1031,6 +1176,7 @@ def materialize_gravityspy_network_strain(
     download_workers: int = 8,
     chunk_samples: int = 1_048_576,
     shard: int | None = None,
+    verified_source_inventories: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Verify and transform aligned real H1/L1/V1 contexts around catalog glitches."""
 
@@ -1095,6 +1241,7 @@ def materialize_gravityspy_network_strain(
     completed: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     verified_sources: dict[str, dict[str, Any]] = {}
+    imported_source_inventories: list[dict[str, Any]] = []
     if state_path.is_file():
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state.get("run_identity") != run_identity:
@@ -1114,6 +1261,9 @@ def materialize_gravityspy_network_strain(
             completed = list(partial.get("records", []))
             rejected = list(partial.get("rejected", []))
             verified_sources = dict(partial.get("verified_sources", {}))
+            imported_source_inventories = list(
+                partial.get("imported_verified_source_inventories", [])
+            )
     completed_ids = set()
     for record in completed:
         glitch_id = str(record["glitch_id"])
@@ -1131,14 +1281,54 @@ def materialize_gravityspy_network_strain(
             if url in source_inventory and source_inventory[url] != source:
                 raise ValueError("A network source URL has inconsistent metadata")
             source_inventory[url] = source
+    imported_sources, imported_evidence = _import_verified_network_sources(
+        verified_source_inventories, run_identity, source_inventory, cache
+    )
+    for url, verification in imported_sources.items():
+        existing = verified_sources.get(url)
+        if existing is not None and canonical_hash(existing) != canonical_hash(verification):
+            raise ValueError(f"Imported source conflicts with current partial state: {url}")
+        verified_sources[url] = verification
+    evidence_by_hash = {
+        str(item["sha256"]): item for item in imported_source_inventories
+    }
+    evidence_by_hash.update(
+        {str(item["sha256"]): item for item in imported_evidence}
+    )
+    imported_source_inventories = [
+        evidence_by_hash[key] for key in sorted(evidence_by_hash)
+    ]
+    if imported_evidence:
+        atomic_write_json(
+            partial_path,
+            {
+                "run_identity": run_identity,
+                "verified_sources": verified_sources,
+                "imported_verified_source_inventories": imported_source_inventories,
+                "records": completed,
+                "rejected": rejected,
+            },
+        )
     for url, source in sorted(source_inventory.items()):
         filename = Path(url.split("?", 1)[0]).name
-        download = download_resumable(
-            url,
-            cache / str(source["observing_run"]) / str(source["detector"]) / filename,
-            workers=download_workers,
-        )
         verification = verified_sources.get(url)
+        cache_path = (
+            cache / str(source["observing_run"]) / str(source["detector"]) / filename
+        )
+        if verification is not None and Path(str(verification["path"])).resolve() != (
+            cache_path.resolve()
+        ):
+            raise ValueError(f"Verified network source uses another cache slot: {url}")
+        if verification is not None and cache_path.is_file():
+            if cache_path.stat().st_size != int(verification["bytes"]):
+                raise ValueError(f"Cached network source size changed: {url}")
+            if file_sha256(cache_path) != str(verification["sha256"]):
+                raise ValueError(f"Cached network source changed after verification: {url}")
+            download = {"path": str(cache_path), "downloaded": False}
+        else:
+            download = download_resumable(
+                url, cache_path, workers=download_workers
+            )
         if verification is None:
             verification = verify_hdf5_against_detail(
                 download["path"], _api_json(str(source["detail_url"])), chunk_samples
@@ -1151,6 +1341,7 @@ def materialize_gravityspy_network_strain(
                 {
                     "run_identity": run_identity,
                     "verified_sources": verified_sources,
+                    "imported_verified_source_inventories": imported_source_inventories,
                     "records": completed,
                     "rejected": rejected,
                 },
@@ -1252,6 +1443,7 @@ def materialize_gravityspy_network_strain(
                 {
                     "run_identity": run_identity,
                     "verified_sources": verified_sources,
+                    "imported_verified_source_inventories": imported_source_inventories,
                     "records": completed,
                     "rejected": rejected,
                 },
@@ -1304,10 +1496,16 @@ def materialize_gravityspy_network_strain(
             **row,
             "planned_available_ifos": list(row["available_ifos"]),
             "planned_detector_availability": planned_availability.tolist(),
+            "planned_network_strain_sources": dict(row["network_strain_sources"]),
             "available_ifos": [
                 ifo for ifo, value in zip(model_ifos, availability) if value
             ],
             "detector_availability": availability.tolist(),
+            "network_strain_sources": {
+                ifo: source
+                for ifo, source in row["network_strain_sources"].items()
+                if ifo in usable_ifos
+            },
             "single_ifo_numeric_path": row.get("path"),
             "single_ifo_numeric_sha256": row.get("sha256"),
             "path": str(sample_path),
@@ -1324,6 +1522,7 @@ def materialize_gravityspy_network_strain(
             {
                 "run_identity": run_identity,
                 "verified_sources": verified_sources,
+                "imported_verified_source_inventories": imported_source_inventories,
                 "records": completed,
                 "rejected": rejected,
             },
@@ -1370,6 +1569,7 @@ def materialize_gravityspy_network_strain(
             {str(row["network_gps_block"]) for row in completed}
         ),
         "verified_files": len(verified_sources),
+        "imported_verified_source_inventories": imported_source_inventories,
         "detector_subset_counts": dict(
             sorted(
                 Counter("".join(row["available_ifos"]) for row in completed).items()
@@ -2292,10 +2492,42 @@ def merge_gravityspy_network_numeric_manifests(
             ):
                 raise ValueError("Network Gravity Spy row lacks a companion detector")
             sources = row["network_strain_sources"]
-            if not isinstance(sources, dict) or set(sources) != set(available_ifos):
+            if not isinstance(sources, dict):
                 raise ValueError(
                     "Network Gravity Spy source inventory differs from detector availability"
                 )
+            source_ifos = set(sources)
+            available_ifo_set = set(available_ifos)
+            if source_ifos != available_ifo_set:
+                planned_available_ifos = {
+                    str(value) for value in row.get("planned_available_ifos", [])
+                }
+                data_quality = row.get("data_quality")
+                extra_ifos = source_ifos - available_ifo_set
+                legacy_runtime_downgrade = (
+                    available_ifo_set.issubset(source_ifos)
+                    and planned_available_ifos == source_ifos
+                    and isinstance(data_quality, dict)
+                    and all(
+                        isinstance(data_quality.get(ifo), dict)
+                        and not bool(data_quality[ifo].get("usable"))
+                        and bool(data_quality[ifo].get("reason"))
+                        for ifo in extra_ifos
+                    )
+                )
+                if not legacy_runtime_downgrade:
+                    raise ValueError(
+                        "Network Gravity Spy source inventory differs from detector availability"
+                    )
+                row = {
+                    **row,
+                    "planned_network_strain_sources": dict(sources),
+                    "network_strain_sources": {
+                        ifo: sources[ifo] for ifo in available_ifos
+                    },
+                    "runtime_source_inventory_normalized": True,
+                }
+                sources = row["network_strain_sources"]
             if any(not source.get("hdf5_url") for source in sources.values()):
                 raise ValueError("Network Gravity Spy source lacks its HDF5 URL")
             if str(row["ifo"]) not in set(available_ifos):
@@ -2364,11 +2596,467 @@ def merge_gravityspy_network_numeric_manifests(
                 for source in row.get("network_strain_sources", {}).values()
             }
         ),
+        "runtime_source_inventory_normalized_rows": sum(
+            bool(row.get("runtime_source_inventory_normalized")) for row in rows
+        ),
+        "planned_unique_source_files": len(
+            {
+                str(source["hdf5_url"])
+                for row in rows
+                for source in row.get(
+                    "planned_network_strain_sources",
+                    row.get("network_strain_sources", {}),
+                ).values()
+            }
+        ),
         "human_pixel_masks": sum(bool(row.get("human_pixel_mask")) for row in rows),
         "weak_masks": sum(not bool(row.get("human_pixel_mask")) for row in rows),
         **_execution_provenance(),
     }
     atomic_write_json(output / "gravityspy_network_numeric_merge_report.json", result)
+    return result
+
+
+def audit_gravityspy_network_materialization_progress(
+    planned_manifest_path: str | Path,
+    report_paths: Iterable[str | Path],
+    expected_split: str,
+    expected_shards: int,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Audit only immutable completed shards without promoting a partial corpus."""
+
+    if expected_split not in {"train", "val", "test"} or expected_shards <= 0:
+        raise ValueError("network materialization progress settings are invalid")
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("network materialization progress snapshots are immutable")
+    planned_path = Path(planned_manifest_path)
+    with planned_path.open("r", encoding="utf-8") as handle:
+        planned_rows = [json.loads(line) for line in handle if line.strip()]
+    if not planned_rows:
+        raise ValueError("network materialization plan cannot be empty")
+    if any(str(row.get("split")) != expected_split for row in planned_rows):
+        raise ValueError("network materialization plan mixes frozen splits")
+    planned_ids = [str(row.get("glitch_id", "")) for row in planned_rows]
+    if any(not value for value in planned_ids) or len(set(planned_ids)) != len(planned_ids):
+        raise ValueError("network materialization plan repeats or omits glitch IDs")
+    planned_by_shard: dict[int, list[dict[str, Any]]] = {}
+    source_shards: dict[str, set[int]] = {}
+    for row in planned_rows:
+        shard = int(row.get("network_strain_shard", row.get("shard", -1)))
+        if not 0 <= shard < expected_shards:
+            raise ValueError("network materialization plan shard is outside its range")
+        planned_by_shard.setdefault(shard, []).append(row)
+        sources = row.get("network_strain_sources")
+        if not isinstance(sources, dict) or len(sources) < 2:
+            raise ValueError("network materialization plan lacks aligned source inventory")
+        for source in sources.values():
+            url = str(source.get("hdf5_url", "")) if isinstance(source, dict) else ""
+            if not url:
+                raise ValueError("network materialization plan source lacks an HDF5 URL")
+            source_shards.setdefault(url, set()).add(shard)
+    if set(planned_by_shard) != set(range(expected_shards)):
+        raise ValueError("network materialization plan does not cover every declared shard")
+    cross_shard_sources = {
+        url: sorted(shards) for url, shards in source_shards.items() if len(shards) > 1
+    }
+    if cross_shard_sources:
+        raise ValueError(
+            f"network materialization plan repeats source files across shards: "
+            f"{dict(list(cross_shard_sources.items())[:5])}"
+        )
+
+    completed_shards: set[int] = set()
+    completed_rows: list[dict[str, Any]] = []
+    completed_ids: set[str] = set()
+    report_identities = []
+    requested_rows = usable_rows = rejected_rows = runtime_downgrades = 0
+    rejection_reasons: Counter[str] = Counter()
+    detector_subsets: Counter[str] = Counter()
+    verified_files = 0
+    plan_sha = file_sha256(planned_path)
+    for raw_path in report_paths:
+        path = Path(raw_path)
+        report = json.loads(path.read_text(encoding="utf-8"))
+        shard = int(report.get("shard", -1))
+        if (
+            report.get("status")
+            != "verified_gravityspy_aligned_network_numeric_weak_masks"
+            or shard not in planned_by_shard
+            or shard in completed_shards
+            or report.get("run_identity", {}).get("source_manifest_sha256") != plan_sha
+        ):
+            raise ValueError(f"network materialization progress report is invalid: {path}")
+        requested = int(report.get("requested_rows", -1))
+        usable = int(report.get("rows", -1))
+        rejected = int(report.get("rejected_rows", -1))
+        if (
+            requested != len(planned_by_shard[shard])
+            or min(usable, rejected) < 0
+            or usable + rejected != requested
+        ):
+            raise ValueError("network materialization progress row accounting differs")
+        manifest = Path(str(report.get("manifest_path", "")))
+        if not manifest.is_file() or report.get("manifest_sha256") != file_sha256(manifest):
+            raise ValueError("network materialization progress manifest failed replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        planned_shard_ids = {str(row["glitch_id"]) for row in planned_by_shard[shard]}
+        observed_ids = [str(row.get("glitch_id", "")) for row in rows]
+        if (
+            len(rows) != usable
+            or len(set(observed_ids)) != len(observed_ids)
+            or not set(observed_ids).issubset(planned_shard_ids)
+            or completed_ids & set(observed_ids)
+            or any(str(row.get("split")) != expected_split for row in rows)
+        ):
+            raise ValueError("network materialization progress rows failed shard replay")
+        for row in rows:
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError("network materialization progress sample hash mismatch")
+        subset_counts = {
+            str(key): int(value)
+            for key, value in report.get("detector_subset_counts", {}).items()
+        }
+        if sum(subset_counts.values()) != usable:
+            raise ValueError("network materialization detector subsets do not sum to rows")
+        completed_shards.add(shard)
+        completed_rows.extend(rows)
+        completed_ids.update(observed_ids)
+        requested_rows += requested
+        usable_rows += usable
+        rejected_rows += rejected
+        runtime_downgrades += int(report.get("runtime_detector_downgraded_rows", 0))
+        rejection_reasons.update(
+            {
+                str(key): int(value)
+                for key, value in report.get("rejection_reason_counts", {}).items()
+            }
+        )
+        detector_subsets.update(subset_counts)
+        verified_files += int(report.get("verified_files", 0))
+        report_identities.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "shard": shard,
+                "requested_rows": requested,
+                "usable_rows": usable,
+                "rejected_rows": rejected,
+            }
+        )
+
+    report_identities.sort(key=lambda row: int(row["shard"]))
+    completed_rows.sort(key=lambda row: str(row["glitch_id"]))
+    planned_total = len(planned_rows)
+    pending_rows = planned_total - requested_rows
+    result = {
+        "status": (
+            "completed_gravityspy_network_materialization_progress"
+            if len(completed_shards) == expected_shards
+            else "in_progress_gravityspy_network_materialization"
+        ),
+        "corpus_complete": len(completed_shards) == expected_shards,
+        "scientific_claim_allowed": False,
+        "network_coherence_claim_allowed": False,
+        "partial_corpus_may_select_model": False,
+        "split": expected_split,
+        "planned_manifest": {
+            "path": str(planned_path.resolve()),
+            "sha256": plan_sha,
+        },
+        "expected_shards": expected_shards,
+        "completed_shards": sorted(completed_shards),
+        "pending_shards": sorted(set(range(expected_shards)) - completed_shards),
+        "shard_completion_fraction": len(completed_shards) / expected_shards,
+        "planned_physical_rows": planned_total,
+        "accounted_physical_rows": requested_rows,
+        "pending_physical_rows": pending_rows,
+        "row_completion_fraction": requested_rows / planned_total,
+        "usable_aligned_numeric_rows": usable_rows,
+        "explicit_rejected_rows": rejected_rows,
+        "usable_yield_among_accounted": (
+            usable_rows / requested_rows if requested_rows else None
+        ),
+        "usable_fraction_of_plan": usable_rows / planned_total,
+        "unique_usable_glitches": len(completed_ids),
+        "unique_usable_network_gps_blocks": len(
+            {str(row["network_gps_block"]) for row in completed_rows}
+        ),
+        "detector_subset_counts": dict(sorted(detector_subsets.items())),
+        "observing_run_counts": dict(
+            sorted(Counter(str(row["observing_run"]) for row in completed_rows).items())
+        ),
+        "glitch_family_counts": dict(
+            sorted(Counter(str(row["ml_label"]) for row in completed_rows).items())
+        ),
+        "runtime_detector_downgraded_rows": runtime_downgrades,
+        "rejection_reason_counts": dict(sorted(rejection_reasons.items())),
+        "verified_source_file_references": verified_files,
+        "planned_unique_source_files": len(source_shards),
+        "planned_cross_shard_source_overlap": 0,
+        "completed_reports": report_identities,
+        "warning": (
+            "This snapshot counts only immutable completed shards. It is not a merged training "
+            "corpus and may not be used for model or threshold selection."
+        ),
+        **_execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def forecast_gravityspy_network_family_capacity(
+    materialized_report_paths: Iterable[str | Path],
+    planned_manifest_paths: Iterable[str | Path],
+    promotion_config_path: str | Path,
+    output_path: str | Path,
+    validation_fraction: float = 0.2,
+    minimum_train_rows_per_family: int = 1,
+    seed: int = 20260720,
+    require_ready: bool = False,
+) -> dict[str, Any]:
+    """Forecast family support without treating unmaterialized rows as evidence."""
+
+    if not 0 < validation_fraction < 0.5:
+        raise ValueError("family-capacity validation fraction must be in (0, 0.5)")
+    if minimum_train_rows_per_family <= 0:
+        raise ValueError("family-capacity training support must be positive")
+    target = Path(output_path)
+    if target.exists():
+        raise FileExistsError("family-capacity forecasts are immutable")
+    promotion_path = Path(promotion_config_path)
+    promotion = load_yaml(promotion_path)
+    settings = promotion.get("overlap_sampling_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("family-capacity forecast needs overlap promotion settings")
+    minimum_validation = int(settings.get("minimum_validation_rows_per_family", 0))
+    if minimum_validation <= 0:
+        raise ValueError("family-capacity validation support must be positive")
+
+    accepted_statuses = {
+        "verified_gravityspy_aligned_network_numeric_weak_masks",
+        "verified_merged_gravityspy_aligned_network_numeric_split",
+        "verified_resplit_gravityspy_aligned_network_numeric_split",
+    }
+    materialized_rows: list[dict[str, Any]] = []
+    materialized_ids: set[str] = set()
+    completed_plan_shards: dict[str, set[int]] = defaultdict(set)
+    report_evidence = []
+    for raw_path in materialized_report_paths:
+        path = Path(raw_path)
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("status") not in accepted_statuses:
+            raise ValueError(f"family-capacity materialization is incomplete: {path}")
+        manifest = Path(str(report.get("manifest_path", "")))
+        if not manifest.is_file() or file_sha256(manifest) != str(
+            report.get("manifest_sha256", "")
+        ):
+            raise ValueError("family-capacity materialized manifest failed replay")
+        with manifest.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if len(rows) != int(report.get("rows", -1)):
+            raise ValueError("family-capacity materialized row count differs")
+        for row in rows:
+            glitch_id = str(row.get("glitch_id", ""))
+            if not glitch_id or glitch_id in materialized_ids:
+                raise ValueError("family-capacity materialized glitches repeat or are empty")
+            if not row.get("ml_label") or not row.get("network_gps_block"):
+                raise ValueError("family-capacity materialized row lacks group identity")
+            if file_sha256(row["path"]) != str(row["sha256"]):
+                raise ValueError("family-capacity materialized sample hash mismatch")
+            materialized_ids.add(glitch_id)
+            materialized_rows.append(row)
+        run_identity = report.get("run_identity", {})
+        source_plan_sha = str(run_identity.get("source_manifest_sha256", ""))
+        shard = report.get("shard")
+        if source_plan_sha and shard is not None:
+            completed_plan_shards[source_plan_sha].add(int(shard))
+        report_evidence.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": file_sha256(path),
+                "manifest_path": str(manifest.resolve()),
+                "manifest_sha256": file_sha256(manifest),
+                "rows": len(rows),
+                "source_plan_sha256": source_plan_sha or None,
+                "completed_shard": int(shard) if shard is not None else None,
+            }
+        )
+    if not materialized_rows:
+        raise ValueError("family-capacity forecast needs materialized physical rows")
+
+    planned_rows: list[dict[str, Any]] = []
+    rejected_rows: list[dict[str, Any]] = []
+    planned_ids: set[str] = set()
+    plan_evidence = []
+    for raw_path in planned_manifest_paths:
+        path = Path(raw_path)
+        plan_sha = file_sha256(path)
+        with path.open("r", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        if not rows:
+            raise ValueError("family-capacity plan cannot be empty")
+        for row in rows:
+            glitch_id = str(row.get("glitch_id", ""))
+            if not glitch_id or glitch_id in planned_ids:
+                raise ValueError("family-capacity plans repeat or omit glitch IDs")
+            if not row.get("ml_label") or not row.get("network_gps_block"):
+                raise ValueError("family-capacity planned row lacks group identity")
+            planned_ids.add(glitch_id)
+            shard = row.get("network_strain_shard", row.get("shard"))
+            completed_shard = (
+                shard is not None and int(shard) in completed_plan_shards.get(plan_sha, set())
+            )
+            if glitch_id not in materialized_ids and completed_shard:
+                rejected_rows.append(row)
+            elif glitch_id not in materialized_ids:
+                planned_rows.append(row)
+        plan_evidence.append(
+            {
+                "path": str(path.resolve()),
+                "sha256": plan_sha,
+                "rows": len(rows),
+                "completed_shards": sorted(completed_plan_shards.get(plan_sha, set())),
+            }
+        )
+    if not plan_evidence:
+        raise ValueError("family-capacity forecast needs a frozen acquisition plan")
+
+    def component_label_counts(rows: list[dict[str, Any]]) -> tuple[list[Counter], int]:
+        components = _gravityspy_network_source_components(rows, seed)
+        return (
+            [
+                Counter(str(rows[index]["ml_label"]) for index in component["indices"])
+                for component in components
+            ],
+            len(components),
+        )
+
+    current_components, current_component_count = component_label_counts(
+        materialized_rows
+    )
+    ceiling_rows = materialized_rows + planned_rows
+    ceiling_components, ceiling_component_count = component_label_counts(ceiling_rows)
+    current_counts = Counter(str(row["ml_label"]) for row in materialized_rows)
+    pending_counts = Counter(str(row["ml_label"]) for row in planned_rows)
+    rejected_counts = Counter(str(row["ml_label"]) for row in rejected_rows)
+
+    def family_split_audit(
+        label: str, total: int, components: list[Counter]
+    ) -> dict[str, Any]:
+        component_counts = sorted(
+            (int(counts[label]) for counts in components if counts[label]), reverse=True
+        )
+        possible = {0}
+        for count in component_counts:
+            possible |= {value + count for value in tuple(possible)}
+        valid_validation_counts = sorted(
+            value
+            for value in possible
+            if value >= minimum_validation
+            and total - value >= minimum_train_rows_per_family
+        )
+        return {
+            "rows": total,
+            "source_components": len(component_counts),
+            "component_row_counts": component_counts,
+            "labelwise_group_safe_split_feasible": bool(valid_validation_counts),
+            "minimum_feasible_validation_rows": (
+                valid_validation_counts[0] if valid_validation_counts else None
+            ),
+            "maximum_feasible_validation_rows": (
+                valid_validation_counts[-1] if valid_validation_counts else None
+            ),
+        }
+
+    families = {}
+    current_shortfalls = []
+    impossible_under_plan = []
+    for label in sorted(
+        current_counts.keys() | pending_counts.keys() | rejected_counts.keys()
+    ):
+        current = family_split_audit(label, current_counts[label], current_components)
+        ceiling = family_split_audit(
+            label, current_counts[label] + pending_counts[label], ceiling_components
+        )
+        if not current["labelwise_group_safe_split_feasible"]:
+            current_shortfalls.append(label)
+        if not ceiling["labelwise_group_safe_split_feasible"]:
+            impossible_under_plan.append(label)
+        families[label] = {
+            "materialized_usable_rows": current_counts[label],
+            "unmaterialized_planned_rows": pending_counts[label],
+            "accounted_rejected_rows": rejected_counts[label],
+            "all_pending_usable_ceiling_rows": current_counts[label]
+            + pending_counts[label],
+            "nominal_total_rows_for_validation_target": math.ceil(
+                minimum_validation / validation_fraction
+            ),
+            "current": current,
+            "all_pending_usable_ceiling": ceiling,
+        }
+
+    acquisition_complete = not planned_rows
+    current_capacity_ready = not current_shortfalls
+    plan_capacity_possible = not impossible_under_plan
+    bounded_expansion_required = bool(impossible_under_plan) or (
+        acquisition_complete and not current_capacity_ready
+    )
+    result = {
+        "status": "score_blind_gravityspy_family_capacity_forecast",
+        "passed": acquisition_complete and current_capacity_ready,
+        "scientific_claim_allowed": False,
+        "model_selection_authorized": False,
+        "forecast_scope": (
+            "per-family necessary capacity under source/GPS connected components; the final "
+            "joint source-component-safe resplit remains authoritative"
+        ),
+        "validation_fraction": validation_fraction,
+        "minimum_train_rows_per_family": minimum_train_rows_per_family,
+        "minimum_validation_rows_per_family": minimum_validation,
+        "seed": seed,
+        "promotion_config": {
+            "path": str(promotion_path.resolve()),
+            "sha256": file_sha256(promotion_path),
+            "config_hash": canonical_hash(promotion),
+        },
+        "materialized_reports": report_evidence,
+        "planned_manifests": plan_evidence,
+        "materialized_usable_rows": len(materialized_rows),
+        "unmaterialized_planned_rows": len(planned_rows),
+        "accounted_rejected_rows": len(rejected_rows),
+        "materialized_source_components": current_component_count,
+        "all_pending_usable_ceiling_source_components": ceiling_component_count,
+        "families": families,
+        "families_with_current_shortfall": current_shortfalls,
+        "families_impossible_even_if_all_pending_rows_are_usable": impossible_under_plan,
+        "acquisition_plan_complete": acquisition_complete,
+        "current_capacity_ready": current_capacity_ready,
+        "plan_capacity_possible": plan_capacity_possible,
+        "bounded_expansion_required": bounded_expansion_required,
+        "next_action": (
+            "freeze and acquire additional source-disjoint family components"
+            if bounded_expansion_required
+            else (
+                "finish the frozen plan, then audit the exact joint resplit before training"
+                if not acquisition_complete
+                else "audit the exact joint source-component-safe resplit before training"
+            )
+        ),
+        "warning": (
+            "Planned rows are a score-blind upper bound, not physical samples. This report never "
+            "converts pending attempts into training evidence or authorizes model selection."
+        ),
+        **_execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    if require_ready and not result["passed"]:
+        raise ValueError(
+            "Gravity Spy family capacity is not ready: "
+            f"pending={len(planned_rows)}, shortfalls={current_shortfalls}"
+        )
     return result
 
 

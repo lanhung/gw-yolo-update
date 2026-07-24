@@ -57,6 +57,31 @@ The same waveform prior, detector set, PSD, calibration assumptions and injectio
 Published numbers from different populations are context only, never a head-to-head result. AMPLFI
 and DINGO remain PE systems; no detection-mAP comparison is permitted.
 
+### Distributed paired-PE evidence transport
+
+DINGO and AMPLFI may run on different assigned GPUs or machines, but their outputs may be combined
+only through the content-addressed validation bundle:
+
+```bash
+python -m gwyolo.cli pe-within-backend-bundle-export \
+  --summary /artifacts/backend/within_backend_paired_smoke_summary.json \
+  --output-dir /artifacts/backend-portable-bundle
+
+python -m gwyolo.cli pe-within-backend-bundle-import \
+  --bundle-receipt \
+    /transferred/backend-portable-bundle/within_backend_pe_evidence_bundle.json \
+  --output-dir /artifacts/backend-import
+```
+
+The export contains the original summary, batch report, robustness report and manifest plus every
+unique posterior, analysis input, base manifest, native-conditioning object, contamination
+manifest, mask, mask model and mask policy referenced by the validation rows. Objects are
+deduplicated by SHA-256. Import replays every byte count and hash, then creates an explicit local
+path projection; it never edits the original scientific reports. The projected summary can enter
+`run_paired_pe_portfolio_validation.sh`. That evaluator reopens every posterior and provenance
+file, requires the same injections and input hashes across backends and still forbids absolute
+DINGO-versus-AMPLFI ranking. Test-split rows are rejected by both export and import.
+
 ## 3. Venue-specific framing
 
 ### Physical Review D
@@ -104,8 +129,11 @@ This is the most realistic first target if the team releases a high-quality benc
 8. Before/after deglitch Q-maps and matched-filter recovery.
 9. Known versus held-out/O4 glitch OOD and abstention results.
 10. Posterior coverage/PP plots before and after mask cleaning, alongside AMPLFI/DINGO-compatible results.
-11. Latency and compute table.
-12. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
+11. Automatic-mask reproducibility and annotator-disagreement boundary: deterministic component
+    pseudo-labels are evaluated through functional search/PE outcomes, not presented as human
+    pixel ground truth.
+12. Latency and compute table.
+13. GWTC-4/O4a development and locked GWTC-5/O4b results with explicit selection criteria.
 
 ## 5. Required baselines
 
@@ -161,3 +189,38 @@ The current 414-image/300-group release cannot support the primary paper claim b
 - an explicit demonstration that adding data improves O4 transfer rather than only O3-like mAP.
 
 Offline augmentations are reported separately and never counted as independent physical samples.
+
+For the chirp-frozen residual adapter, scale promotion is explicitly conditional:
+
+1. The frozen one-seed adapter must pass the absolute validation gates without test access.
+2. Exactly four additional seeds run only after that pass; at least 4/5 seeds and all frozen
+   median stability gates must pass.
+3. Only then may 250/500/1,000/full physical-group scales run under both fixed-epoch and
+   fixed-optimizer-update controls.
+4. The scaling configs must preserve the one-seed adapter architecture, optimizer and sampling
+   policy. A family-balanced adapter is a separate predeclared ablation, not an implicit change
+   inside the data-volume curve.
+5. A larger hard endpoint is authorized only when both controls show the frozen material
+   improvement while preserving clean-chirp non-inferiority.
+6. Before training that next endpoint, an exact detector-compatible source-capacity audit must
+   show enough unique waveform, injection, glitch and GPS groups. The current 1,170-row H1+L1
+   corpus has no unused same-distribution capacity: its parent Gravity Spy train corpus has
+   2,449 glitches, but the remaining 1,279 require V1 while the current 10,000-waveform signal
+   bank is H1+L1-only.
+7. New O4a H1+L1 glitch/GPS groups are the preferred same-distribution expansion. A new
+   physically projected H1/L1/V1 signal bank may unlock the remaining Gravity Spy detector
+   subsets, but that is a detector-set robustness ablation and cannot be labeled a pure
+   sample-count increase.
+8. The detector-set arm uses `injection-detector-set-expand` with the frozen O4 reference-PSD
+   configuration. Every H1/L1/V1 component is regenerated in one PyCBC/LALSimulation projection;
+   the regenerated H1/L1 components must reproduce the existing materialized signal with
+   normalized overlap at least 0.999 and relative L2 error at most 0.01. H1/L1 use
+   `aLIGOAdVO4T1800545` and V1 uses `AdVO4T1800545` for training-only SNR stratification.
+9. A detector-expanded manifest is unusable unless its audit hash is replayed by the physical
+   capacity gate. Even after that gate, the arm is labeled a detector-set robustness ablation and
+   the signal bank alone does not make the full ablation ready. It requires detector-complete
+   empirical-noise clean training/validation and O4 transfer; it never authorizes H1+L1
+   same-distribution scaling.
+
+These gates prevent a training schedule or a more aggressive sampler from being mislabeled as
+evidence that physical sample count caused the gain.

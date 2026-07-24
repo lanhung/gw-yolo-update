@@ -1,0 +1,14 @@
+human_mask_publication_gate:
+  schema: human_mask_publication_gate_v1
+  protocol: frozen_before_human_consensus_segmentation_results
+  minimum_tasks: 90
+  minimum_unique_glitches: 90
+  minimum_labels: 15
+  minimum_well_supported_labels: 15
+  minimum_support_for_well_supported_label: 3
+  minimum_bootstrap_replicates: 10000
+  minimum_macro_iou_lower_95: 0.35
+  minimum_iou_ge_0_5_wilson_lower_95: 0.40
+  require_validation_only: true
+  require_three_blinded_independent_annotators: true
+  require_complete_prediction_coverage: true

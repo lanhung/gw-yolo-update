@@ -1,0 +1,13 @@
+locked_pe_retention:
+  schema: locked_pe_retention_v1
+  population: BBH
+  common_prior: pe_common_bbh_analysis_prior.yaml
+  required_ifos: [H1, L1]
+  conditions: [clean, contaminated, mask_conditioned]
+  minimum_paired_injections: 100
+  retention_pool_injections: 300
+  minimum_gps_blocks: 25
+  selection_seed: 20260721
+  selection_method: gps_block_first_then_hash_rank_v1
+  post_access_replacement_allowed: false
+  score_dependent_selection_allowed: false

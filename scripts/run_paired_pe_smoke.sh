@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Materialize a bounded validation-only clean/contaminated/mask-conditioned
-# posterior-input smoke after a detector-set overlap model has completed.
+# Materialize validation-only clean/contaminated/mask-conditioned posterior
+# inputs after a detector-set overlap model has completed. The historical
+# "smoke" filename/status is retained for backwards-compatible replay; the
+# report's evaluation_tier distinguishes bounded smoke from the predeclared
+# publication-validation batch.
 # Every machine path is supplied explicitly through the environment.
 
 required=(
@@ -12,6 +15,7 @@ required=(
   GWYOLO_OVERLAP_MANIFEST
   GWYOLO_INJECTION_MANIFEST
   GWYOLO_MODEL_REPORT
+  GWYOLO_MODEL_CONFIG
 )
 for variable in "${required[@]}"; do
   if [[ -z "${!variable:-}" ]]; then
@@ -33,7 +37,8 @@ export GWYOLO_CODE_COMMIT="${GWYOLO_CODE_COMMIT:-$(git rev-parse --short=7 HEAD)
 for path in \
   "$GWYOLO_OVERLAP_MANIFEST" \
   "$GWYOLO_INJECTION_MANIFEST" \
-  "$GWYOLO_MODEL_REPORT"; do
+  "$GWYOLO_MODEL_REPORT" \
+  "$GWYOLO_MODEL_CONFIG"; do
   if [[ ! -s "$path" ]]; then
     echo "required paired-PE source is absent: $path" >&2
     exit 3
@@ -48,6 +53,16 @@ checkpoint=$(
 )
 if [[ ! -s "$checkpoint" ]]; then
   echo "validation-selected overlap checkpoint is absent: $checkpoint" >&2
+  exit 4
+fi
+expected_config_sha256=$(
+  "$GWYOLO_PYTHON" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["config_file_sha256"])' \
+    "$GWYOLO_MODEL_REPORT"
+)
+observed_config_sha256=$(sha256sum "$GWYOLO_MODEL_CONFIG" | awk '{print $1}')
+if [[ "$observed_config_sha256" != "$expected_config_sha256" ]]; then
+  echo "selected overlap model/config hash mismatch" >&2
   exit 4
 fi
 
@@ -84,7 +99,7 @@ if [[ "$scores_complete" != true ]]; then
   "$GWYOLO_PYTHON" -m gwyolo.cli injection-score \
     --manifest "$contamination/contaminated_injection_val.jsonl" \
     --checkpoint "$checkpoint" \
-    --config configs/physical_overlap_finetune.yaml \
+    --config "$GWYOLO_MODEL_CONFIG" \
     --output-dir "$scores" \
     --model-ifos H1 L1 V1 \
     --q-values 4 8 16 \
@@ -117,7 +132,8 @@ if [[ ! -s "$common/common_pe_inputs_report.json" ]]; then
     --source-post-trigger-seconds 2 \
     --analysis-high-frequency-hz 1024 \
     --limit "${GWYOLO_PE_SMOKE_LIMIT:-3}" \
-    --selection-seed "${GWYOLO_PE_SELECTION_SEED:-20260721}"
+    --selection-seed "${GWYOLO_PE_SELECTION_SEED:-20260721}" \
+    --minimum-selected-gps-blocks "${GWYOLO_PE_MINIMUM_GPS_BLOCKS:-1}"
 fi
 
 if [[ ! -s "$dingo/native_conditioning_report.json" ]]; then
@@ -137,6 +153,7 @@ if [[ ! -s "$amplfi/native_conditioning_report.json" ]]; then
 fi
 
 "$GWYOLO_PYTHON" - <<'PY'
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -153,13 +170,84 @@ reports = {
 missing = [str(path) for path in reports.values() if not path.is_file()]
 if missing:
     raise FileNotFoundError(f"paired PE smoke reports are missing: {missing}")
+receipt_variables = {
+    "model_selection_train_overlap_manifest": (
+        "GWYOLO_MODEL_SELECTION_TRAIN_OVERLAP_MANIFEST"
+    ),
+    "model_selection_validation_overlap_manifest": (
+        "GWYOLO_MODEL_SELECTION_VALIDATION_OVERLAP_MANIFEST"
+    ),
+    "model_selection_clean_validation_manifest": (
+        "GWYOLO_MODEL_SELECTION_CLEAN_VALIDATION_MANIFEST"
+    ),
+    "independent_validation_endpoint": "GWYOLO_INDEPENDENT_VALIDATION_ENDPOINT_REPORT",
+    "independent_pe_overlap": "GWYOLO_INDEPENDENT_PE_OVERLAP_REPORT",
+    "independent_overlap_audit": "GWYOLO_INDEPENDENT_OVERLAP_AUDIT",
+}
+receipt_paths = {
+    label: os.environ.get(variable)
+    for label, variable in receipt_variables.items()
+}
+if any(receipt_paths.values()) and not all(receipt_paths.values()):
+    raise RuntimeError("promoted paired PE receipt environment is only partially populated")
+source_receipts = {}
+for label, value in receipt_paths.items():
+    if value is None:
+        continue
+    path = Path(value).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"paired PE source receipt is absent: {path}")
+    source_receipts[label] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+training_compatibility = os.environ.get(
+    "GWYOLO_MODEL_TRAINING_COMPATIBILITY_REPORT", "-"
+)
+if training_compatibility != "-":
+    path = Path(training_compatibility).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"paired PE training-compatibility receipt is absent: {path}"
+        )
+    source_receipts["model_training_compatibility"] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+loaded_reports = {
+    name: json.loads(path.read_text(encoding="utf-8"))
+    for name, path in reports.items()
+}
+paired_injections = int(loaded_reports["common_sources"]["paired_injections"])
+minimum_publication_validation_injections = 100
+evaluation_tier = (
+    "publication_validation"
+    if paired_injections >= minimum_publication_validation_injections
+    else "bounded_smoke"
+)
+if evaluation_tier == "publication_validation":
+    blocker = (
+        "validation-only paired inputs meet the predeclared event-count floor, but "
+        "backend posteriors, 10000-replicate paired uncertainty, promotion, and locked "
+        "test evaluation remain required"
+    )
+else:
+    blocker = (
+        "bounded validation smoke is below the predeclared 100-injection publication "
+        "floor; backend posteriors, promotion, and locked test evaluation remain required"
+    )
 summary = {
     "status": "paired_pe_native_inputs_smoke_complete",
     "scientific_claim_allowed": False,
-    "reports": {
-        name: json.loads(path.read_text(encoding="utf-8"))
-        for name, path in reports.items()
-    },
+    "scientific_blocker": blocker,
+    "evaluation_tier": evaluation_tier,
+    "paired_injections": paired_injections,
+    "minimum_publication_validation_injections": (
+        minimum_publication_validation_injections
+    ),
+    "test_rows_read": 0 if source_receipts else None,
+    "source_receipts": source_receipts,
+    "reports": loaded_reports,
 }
 target = root / "paired_pe_smoke_summary.json"
 temporary = target.with_suffix(".json.part")

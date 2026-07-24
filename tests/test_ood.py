@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gwyolo.ood import (
+    DetectorSetGlitchOODDataset,
     build_leave_one_family_out_split,
     calibrate_known_only_abstention,
     class_conditional_mahalanobis_scores,
     evaluate_frozen_ood_threshold,
     fit_class_conditional_mahalanobis,
+    freeze_ood_held_family_protocol,
     ood_auc,
+    run_frozen_glitch_ood_scoring,
+    run_locked_ood_transfer_evaluation,
     supervised_contrastive_loss,
 )
 
@@ -123,6 +129,165 @@ def test_frozen_ood_evaluation_reports_false_acceptance_and_leakage() -> None:
         evaluate_frozen_ood_threshold(calibration, leaked, 0.25)
 
 
+def test_locked_ood_transfer_reuses_validation_threshold_by_hand(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    from gwyolo.io import file_sha256
+
+    endpoints = {"minimum_locked_ood_rows": 4}
+
+    validation = tmp_path / "validation.json"
+
+    def binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(output_path.resolve()),
+            "endpoints": endpoints,
+            "frozen_artifacts": {
+                "validation_ood_report": {
+                    "path": str(validation.resolve()),
+                    "sha256": file_sha256(validation),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access", binding
+    )
+    def input_binding(_plan, input_key, input_path):
+        return {
+            "input_key": input_key,
+            "input_path": str(Path(input_path).resolve()),
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        input_binding,
+    )
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calibration = tmp_path / "calibration.jsonl"
+    calibration.write_text(
+        "".join(
+            json.dumps(_row(f"c{i}", f"cb{i}", "Known", score, False, "val"))
+            + "\n"
+            for i, score in enumerate((0.1, 0.2, 0.3, 0.4))
+        ),
+        encoding="utf-8",
+    )
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text(
+        json.dumps(_row("v0", "vb0", "Held", 0.8, True, "val")) + "\n",
+        encoding="utf-8",
+    )
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "known_family_embedding_heldout_ood_validation",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "test_evaluation": None,
+                "ood_score_fit": {
+                    "heldout_scores_used_for_method_or_fit_selection": False
+                },
+                "ood_evaluation": {
+                    "status": "frozen_known_only_ood_abstention_evaluation",
+                    "calibration": {
+                        "threshold": 0.4,
+                        "selection_data": "known_validation_only",
+                        "unknown_scores_used_for_selection": False,
+                    },
+                },
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "known_calibration_scores_path": str(calibration),
+                "known_calibration_scores_sha256": file_sha256(calibration),
+                "heldout_evaluation_scores_path": str(heldout),
+                "heldout_evaluation_scores_sha256": file_sha256(heldout),
+            }
+        ),
+        encoding="utf-8",
+    )
+    locked_rows = [
+        _row("t0", "tb0", "Known", 0.1, False, "test"),
+        _row("t1", "tb1", "Known", 0.5, False, "test"),
+        _row("u0", "ub0", "New", 0.8, True, "test"),
+        _row("u1", "ub1", "New", 0.2, True, "test"),
+    ]
+    for row, ifos in zip(
+        locked_rows,
+        (("H1", "L1"), ("H1", "V1"), ("H1", "L1", "V1"), ("L1", "V1")),
+    ):
+        row.update(
+            {
+                "observing_run": "O4b",
+                "available_ifos": list(ifos),
+                "embedding_checkpoint_sha256": file_sha256(checkpoint),
+                "ood_score_method": "logit_energy",
+            }
+        )
+    locked = tmp_path / "locked.jsonl"
+    locked.write_text(
+        "".join(json.dumps(row) + "\n" for row in locked_rows), encoding="utf-8"
+    )
+    source = tmp_path / "locked-source.jsonl"
+    source.write_text(locked.read_text(encoding="utf-8"), encoding="utf-8")
+    score_report = tmp_path / "locked-score-report.json"
+    result_path = tmp_path / "result.json"
+    score_suite_inputs = {
+        "source_manifest": input_binding(
+            None, "locked_ood_source_manifest", source
+        ),
+        "score_manifest": input_binding(
+            None, "locked_ood_score_manifest", locked
+        ),
+        "score_report": input_binding(
+            None, "locked_ood_score_report", score_report
+        ),
+    }
+    score_report.write_text(
+        json.dumps(
+            {
+                "status": "frozen_glitch_ood_scores_complete",
+                "selection_data": "validation_model_only",
+                "test_scores_used_for_model_threshold_or_method_selection": False,
+                "required_split": "test",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "rows": 4,
+                "manifest_path": str(locked),
+                "manifest_sha256": file_sha256(locked),
+                "validation_ood_report_path": str(validation),
+                "validation_ood_report_sha256": file_sha256(validation),
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+                "source_manifest_path": str(source),
+                "source_manifest_sha256": file_sha256(source),
+                "locked_suite_access": binding(
+                    None, None, "locked_ood_transfer", result_path
+                ),
+                "locked_suite_inputs": score_suite_inputs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = run_locked_ood_transfer_evaluation(
+        validation,
+        score_report,
+        locked,
+        tmp_path / "plan.json",
+        tmp_path / "access.json",
+        result_path,
+    )
+    assert result["threshold"] == 0.4
+    assert result["threshold_refits_on_test"] == 0
+    assert result["known_false_abstention"]["rate"] == 0.5
+    assert result["unknown_false_acceptance"]["rate"] == 0.5
+    assert len(result["detector_subset_strata"]) == 4
+
+
 def test_leave_one_family_out_split_excludes_whole_gps_blocks(tmp_path) -> None:
     import json
 
@@ -157,3 +322,235 @@ def test_leave_one_family_out_split_excludes_whole_gps_blocks(tmp_path) -> None:
     assert any(row["is_unknown"] for row in evaluation)
     assert any(not row["is_unknown"] for row in evaluation)
     assert result["split_audit"]["passed"] is True
+
+
+def test_detector_set_ood_dataset_requires_matching_explicit_availability(
+    tmp_path,
+) -> None:
+    import numpy as np
+
+    from gwyolo.io import file_sha256
+
+    sample = tmp_path / "network.npz"
+    np.savez_compressed(
+        sample,
+        features=np.zeros((3, 2, 5, 4), dtype=np.float32),
+        detector_availability=np.asarray([1, 0, 1], dtype=np.uint8),
+        ifos=np.asarray(["H1", "L1", "V1"]),
+        q_values=np.asarray([4.0, 8.0], dtype=np.float32),
+    )
+    row = {
+        "glitch_id": "g0",
+        "path": str(sample),
+        "sha256": file_sha256(sample),
+        "aligned_network_context": True,
+        "detector_availability": [1, 0, 1],
+        "available_ifos": ["H1", "V1"],
+        "ifo": "H1",
+        "glitch_family": "Known",
+    }
+    dataset = DetectorSetGlitchOODDataset(
+        [row], ("H1", "L1", "V1"), (4.0, 8.0), {"Known": 0}
+    )
+    features, availability, target = dataset[0]
+    assert features.shape == (3, 2, 5, 4)
+    assert availability.tolist() == [1.0, 0.0, 1.0]
+    assert target == 0
+    dataset.rows[0] = {**row, "detector_availability": [1, 1, 0]}
+    dataset.cache = [None]
+    with pytest.raises(ValueError, match="row/array detector availability differs"):
+        dataset[0]
+
+
+def test_frozen_detector_set_ood_scorer_replays_checkpoint_without_selection(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    np = pytest.importorskip("numpy")
+    torch = pytest.importorskip("torch")
+
+    from gwyolo.io import canonical_hash, file_sha256, load_yaml
+    from gwyolo.numeric import DetectorSetGlitchEmbeddingNet
+
+    config = tmp_path / "ood.yaml"
+    config.write_text(
+        """glitch_ood_embedding:
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8]
+  batch_size: 2
+  cache_in_memory: true
+""",
+        encoding="utf-8",
+    )
+    parsed = load_yaml(config)
+    run_identity = {
+        "config_hash": canonical_hash(parsed),
+        "config_file_sha256": file_sha256(config),
+    }
+    labels = ["KnownA", "KnownB"]
+    model = DetectorSetGlitchEmbeddingNet(
+        ifo_count=3,
+        q_count=2,
+        class_count=2,
+        base_channels=4,
+        embedding_dim=4,
+    )
+    checkpoint = tmp_path / "ood.pt"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "run_identity": run_identity,
+            "architecture": "detector_set",
+            "labels": labels,
+            "model_ifos": ["H1", "L1", "V1"],
+            "q_values": [4.0, 8.0],
+            "base_channels": 4,
+            "embedding_dim": 4,
+        },
+        checkpoint,
+    )
+    validation = tmp_path / "validation.json"
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "known_family_embedding_heldout_ood_validation",
+                "architecture": "detector_set",
+                "ood_score_method": "logit_energy",
+                "test_evaluation": None,
+                "run_identity": run_identity,
+                "labels": labels,
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": file_sha256(checkpoint),
+            }
+        ),
+        encoding="utf-8",
+    )
+    final_ood_output = tmp_path / "locked-ood-final.json"
+    suite_plan = tmp_path / "suite-plan.json"
+    suite_plan.write_text(
+        json.dumps({"outputs": {"locked_ood_transfer": str(final_ood_output)}}),
+        encoding="utf-8",
+    )
+
+    def access_binding(_plan, _access, output_key, output_path):
+        return {
+            "output_key": output_key,
+            "output_path": str(Path(output_path).resolve()),
+            "frozen_artifacts": {
+                "validation_ood_report": {
+                    "path": str(validation.resolve()),
+                    "sha256": file_sha256(validation),
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_access",
+        access_binding,
+    )
+    monkeypatch.setattr(
+        "gwyolo.evaluation_lock.validate_locked_evaluation_suite_input",
+        lambda _plan, input_key, input_path: {
+            "input_key": input_key,
+            "input_path": str(Path(input_path).resolve()),
+        },
+    )
+    availability = np.asarray([1, 1, 0], dtype=np.uint8)
+    rows = []
+    for index, (family, unknown) in enumerate((("KnownA", False), ("New", True))):
+        sample = tmp_path / f"sample-{index}.npz"
+        features = np.zeros((3, 2, 8, 8), dtype=np.float32)
+        features[:2] = index + 1
+        np.savez_compressed(
+            sample,
+            features=features,
+            detector_availability=availability,
+            ifos=np.asarray(["H1", "L1", "V1"]),
+            q_values=np.asarray([4.0, 8.0], dtype=np.float32),
+        )
+        rows.append(
+            {
+                "split": "test",
+                "glitch_id": f"g{index}",
+                "gps_block": f"b{index}",
+                "glitch_family": family,
+                "observing_run": "O4b",
+                "is_unknown": unknown,
+                "aligned_network_context": True,
+                "path": str(sample),
+                "sha256": file_sha256(sample),
+                "detector_availability": availability.tolist(),
+                "available_ifos": ["H1", "L1"],
+                "ifo": "H1",
+            }
+        )
+    source = tmp_path / "locked-source.jsonl"
+    source.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    report = run_frozen_glitch_ood_scoring(
+        config,
+        validation,
+        source,
+        tmp_path / "scores.jsonl",
+        tmp_path / "score-report.json",
+        locked_suite_plan=suite_plan,
+        access_log=tmp_path / "access.json",
+    )
+    assert report["status"] == "frozen_glitch_ood_scores_complete"
+    assert report["test_scores_used_for_model_threshold_or_method_selection"] is False
+    scored = [
+        json.loads(line)
+        for line in (tmp_path / "scores.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(scored) == 2
+    assert all(row["ood_score_method"] == "logit_energy" for row in scored)
+    assert all(row["embedding_checkpoint_sha256"] == file_sha256(checkpoint) for row in scored)
+
+
+def test_held_family_freeze_is_score_blind_and_excludes_opened_families(
+    tmp_path,
+) -> None:
+    import json
+
+    def rows(split: str, family: str, count: int, block_prefix: str) -> list[dict]:
+        return [
+            {
+                "glitch_id": f"{split}-{family}-{index}",
+                "network_gps_block": f"{block_prefix}-{index // 2}",
+                "ml_label": family,
+                "observing_run": "O3b",
+                "split": split,
+                # This deliberately adversarial field must not enter selection.
+                "ood_score": 1_000.0 if family == "Smaller" else -1_000.0,
+            }
+            for index in range(count)
+        ]
+
+    train = rows("train", "Opened", 8, "to")
+    train += rows("train", "Larger", 9, "tl")
+    train += rows("train", "Smaller", 10, "ts")
+    validation = rows("val", "Opened", 8, "vo")
+    validation += rows("val", "Larger", 7, "vl")
+    validation += rows("val", "Smaller", 6, "vs")
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "val.jsonl"
+    train_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in train), encoding="utf-8"
+    )
+    validation_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in validation), encoding="utf-8"
+    )
+    result = freeze_ood_held_family_protocol(
+        train_path,
+        validation_path,
+        tmp_path / "protocol.json",
+        excluded_families=["Opened"],
+        minimum_train_rows=5,
+        minimum_validation_rows=5,
+        minimum_validation_gps_blocks=3,
+    )
+    assert result["selected"]["glitch_family"] == "Larger"
+    assert result["model_scores_used_for_selection"] is False
+    assert result["identity"]["excluded_families"] == ["Opened"]

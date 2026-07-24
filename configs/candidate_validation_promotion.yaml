@@ -5,4 +5,5 @@ candidate_validation_promotion:
   maximum_promoted_timing_uncertainty_seconds: 0.01
   maximum_timing_uncertainty_regression_seconds: 0.002
   bootstrap_replicates: 10000
+  minimum_injection_gps_blocks: 25
   seed: 20260720

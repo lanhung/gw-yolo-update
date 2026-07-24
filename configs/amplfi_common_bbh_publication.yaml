@@ -3,7 +3,9 @@ trainer:
   accelerator: gpu
   devices: 1
   strategy: auto
-  deterministic: true
+  # Zuko's CUDA cumsum has no strict deterministic kernel in Torch 2.5.1.
+  # Keep seeded execution and surface every fallback instead of aborting the run.
+  deterministic: warn
   benchmark: false
   max_epochs: 800
   check_val_every_n_epoch: 1

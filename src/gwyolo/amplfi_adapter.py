@@ -7,8 +7,21 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
-from .io import atomic_write_json, atomic_write_text, file_sha256, load_yaml
+from .io import (
+    atomic_write_json,
+    atomic_write_text,
+    canonical_hash,
+    file_sha256,
+    load_yaml,
+)
+from .pe import (
+    PAIRED_PE_LATENCY_SCOPE_V1,
+    posterior_sky_area_equal_solid_angle,
+    sky_area_estimator_identity,
+    validate_paired_pe_latency,
+)
 from .runtime import execution_provenance
 
 
@@ -238,6 +251,591 @@ def run_amplfi_group_safe_background_export(
     return report
 
 
+def audit_amplfi_background_capacity(
+    manifest_path: str | Path,
+    policy_path: str | Path,
+) -> dict[str, Any]:
+    """Audit group-safe train/validation noise capacity without opening strain arrays."""
+
+    policy = load_yaml(policy_path)
+    if policy.get("schema_version") != 1:
+        raise ValueError("AMPLFI background capacity policy schema_version must be 1")
+    required_ifos = tuple(str(value) for value in policy.get("required_ifos", []))
+    if not required_ifos:
+        raise ValueError("AMPLFI background capacity policy requires detector identities")
+    minimum_segment = int(policy.get("minimum_contiguous_segment_seconds", 0))
+    minimum_duration = policy.get("minimum_duration_seconds", {})
+    minimum_blocks = policy.get("minimum_gps_blocks", {})
+    if (
+        minimum_segment <= 0
+        or not isinstance(minimum_duration, dict)
+        or not isinstance(minimum_blocks, dict)
+        or any(int(minimum_duration.get(split, 0)) <= 0 for split in ("train", "val"))
+        or any(int(minimum_blocks.get(split, 0)) <= 0 for split in ("train", "val"))
+    ):
+        raise ValueError("AMPLFI background capacity thresholds must be positive")
+    with Path(manifest_path).open("r", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    if not rows:
+        raise ValueError("AMPLFI background capacity manifest is empty")
+
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    block_splits: dict[str, set[str]] = defaultdict(set)
+    rows_by_split: dict[str, int] = defaultdict(int)
+    excluded_detector_rows = 0
+    for row in rows:
+        split = str(row.get("split"))
+        if split not in {"train", "val", "test"}:
+            raise ValueError(f"unsupported AMPLFI background split: {split}")
+        block = str(row.get("gps_block"))
+        _parse_block(block)
+        block_splits[block].add(split)
+        rows_by_split[split] += 1
+        if tuple(row.get("ifos", [])) != required_ifos:
+            excluded_detector_rows += 1
+            continue
+        pair_id = str(row.get("pair_id", ""))
+        if not pair_id:
+            raise ValueError("AMPLFI background capacity row lacks pair_id")
+        if split in {"train", "val"}:
+            groups[(split, block, pair_id)].append(row)
+    leaked = sorted(block for block, splits in block_splits.items() if len(splits) > 1)
+    if leaked:
+        raise ValueError(f"GPS blocks cross AMPLFI capacity splits: {leaked[:5]}")
+
+    durations: dict[str, float] = defaultdict(float)
+    eligible_runs: dict[str, int] = defaultdict(int)
+    blocks: dict[str, set[str]] = defaultdict(set)
+    pairs: dict[str, set[str]] = defaultdict(set)
+    for (split, block, pair_id), group_rows in sorted(groups.items()):
+        for start, end in _contiguous_runs(group_rows):
+            duration = end - start
+            if duration < minimum_segment:
+                continue
+            durations[split] += duration
+            eligible_runs[split] += 1
+            blocks[split].add(block)
+            pairs[split].add(pair_id)
+    checks = {}
+    for split in ("train", "val"):
+        checks[split] = {
+            "duration_seconds": durations.get(split, 0.0),
+            "minimum_duration_seconds": int(minimum_duration[split]),
+            "duration_passed": durations.get(split, 0.0) >= int(minimum_duration[split]),
+            "gps_blocks": len(blocks[split]),
+            "minimum_gps_blocks": int(minimum_blocks[split]),
+            "gps_blocks_passed": len(blocks[split]) >= int(minimum_blocks[split]),
+            "source_pairs": len(pairs[split]),
+            "eligible_contiguous_runs": eligible_runs.get(split, 0),
+        }
+    passed = all(
+        value["duration_passed"] and value["gps_blocks_passed"]
+        for value in checks.values()
+    )
+    return {
+        "status": (
+            "amplfi_background_capacity_ready"
+            if passed
+            else "amplfi_background_capacity_insufficient"
+        ),
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": "capacity audit is not AMPLFI training or posterior evidence",
+        "strain_arrays_read": 0,
+        "test_strain_rows_read": 0,
+        "test_metadata_rows_excluded": rows_by_split.get("test", 0),
+        "manifest_path": str(Path(manifest_path).resolve()),
+        "manifest_sha256": file_sha256(manifest_path),
+        "policy_path": str(Path(policy_path).resolve()),
+        "policy_sha256": file_sha256(policy_path),
+        "required_ifos": list(required_ifos),
+        "minimum_contiguous_segment_seconds": minimum_segment,
+        "input_rows_by_split": {
+            split: rows_by_split.get(split, 0) for split in ("train", "val", "test")
+        },
+        "excluded_detector_rows": excluded_detector_rows,
+        "cross_split_gps_block_overlap": 0,
+        "checks": checks,
+        **execution_provenance(),
+    }
+
+
+def run_amplfi_background_capacity_audit(
+    manifest_path: str | Path,
+    policy_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    report = audit_amplfi_background_capacity(manifest_path, policy_path)
+    atomic_write_json(output_path, report)
+    if not report["passed"]:
+        raise RuntimeError(f"AMPLFI background capacity is insufficient; inspect {output_path}")
+    return report
+
+
+def merge_amplfi_streamed_background_extension(
+    base_merge_report_path: str | Path,
+    extension_plan_path: str | Path,
+    shard_directories: list[str | Path],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Merge a source-disjoint streamed extension with a verified base bank."""
+
+    base_path = Path(base_merge_report_path).resolve()
+    plan_path = Path(extension_plan_path).resolve()
+    base = json.loads(base_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    roots = [Path(value).resolve() for value in shard_directories]
+    if (
+        base.get("status") != "verified_streamed_amplfi_background_bank"
+        or base.get("passed") is not True
+        or base.get("recoverable") is not True
+        or int(base.get("test_strain_rows_read", -1)) != 0
+        or int(base.get("test_rows_exported", -1)) != 0
+        or plan.get("status") != "development_acquisition_plan"
+        or plan.get("selection_rule") != "stratified_exclusion_complement_v1"
+        or plan.get("candidate_scores_inspected") is not False
+        or plan.get("test_data_opened") is not False
+        or plan.get("locked_evaluation_data") is not False
+        or tuple(plan.get("detectors", [])) != ("H1", "L1")
+        or str(plan.get("run")) != "O4a"
+        or not roots
+        or len(roots) != len(set(roots))
+    ):
+        raise ValueError("AMPLFI extension inputs are not score-blind streamed development data")
+    base_manifest = Path(str(base.get("background_manifest_path", ""))).resolve()
+    if base.get("background_manifest_sha256") != file_sha256(base_manifest):
+        raise ValueError("AMPLFI base streamed manifest changed")
+    parent_hash = str(base.get("parent_plan_sha256", ""))
+    exclusion_hashes = {
+        str(row.get("sha256", "")) for row in plan.get("exclusion_plans", [])
+    }
+    if not parent_hash or parent_hash not in exclusion_hashes:
+        raise ValueError("AMPLFI extension plan does not exclude its streamed base plan")
+
+    rows = [
+        json.loads(line)
+        for line in base_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not rows:
+        raise ValueError("AMPLFI base streamed manifest is empty")
+    base_pair_ids = {str(row.get("pair_id", "")) for row in rows}
+    base_blocks = {str(row.get("gps_block", "")) for row in rows}
+    if "" in base_pair_ids or "" in base_blocks:
+        raise ValueError("AMPLFI base rows lack physical group identities")
+    selected_plan_ids = {str(row["pair_id"]) for row in plan["pairs"]}
+    selected_plan_gps = {
+        str(row["pair_id"]): int(row["gps_start"]) for row in plan["pairs"]
+    }
+    extension_pair_ids: set[str] = set()
+    extension_blocks: set[str] = set()
+    shard_records = []
+    exported_files: dict[str, str] = {}
+    for root in roots:
+        paths = {
+            "plan": root / "acquisition_plan.json",
+            "batch": root / "download/batch_download_report.json",
+            "background": root / "background/background_plan_report.json",
+            "export": root / "amplfi_export_report.json",
+            "eviction": root / "source_eviction_report.json",
+        }
+        if any(not path.is_file() for path in paths.values()):
+            raise ValueError(f"AMPLFI extension shard is incomplete: {root}")
+        values = {
+            key: json.loads(path.read_text(encoding="utf-8"))
+            for key, path in paths.items()
+        }
+        shard = values["plan"]
+        batch = values["batch"]
+        background = values["background"]
+        export = values["export"]
+        eviction = values["eviction"]
+        background_manifest = Path(str(background.get("manifest_path", ""))).resolve()
+        shard_ids = {str(row["pair_id"]) for row in shard.get("pairs", [])}
+        if (
+            shard.get("status") != "development_acquisition_plan"
+            or shard.get("locked_evaluation_data") is not False
+            or shard.get("parent_plan_sha256") != file_sha256(plan_path)
+            or not shard_ids
+            or not shard_ids <= selected_plan_ids
+            or batch.get("status") != "verified_development_strain_batch"
+            or batch.get("passed") is not True
+            or batch.get("plan_sha256") != file_sha256(paths["plan"])
+            or background.get("status")
+            != "verified_multi_segment_development_background"
+            or background.get("passed") is not True
+            or background.get("split_strategy") != "hash_threshold_v1"
+            or int(background.get("splits", {}).get("test", {}).get("windows", -1))
+            != 0
+            or background.get("source_batch_report_sha256s")
+            != [file_sha256(paths["batch"])]
+            or background.get("manifest_sha256")
+            != file_sha256(background_manifest)
+            or export.get("status") != "group_safe_amplfi_background"
+            or export.get("manifest_sha256") != background["manifest_sha256"]
+            or int(export.get("split_file_counts", {}).get("test", -1)) != 0
+            or eviction.get("status")
+            != "verified_exported_amplfi_source_eviction"
+            or eviction.get("recoverable") is not True
+            or eviction.get("amplfi_export_report_sha256")
+            != file_sha256(paths["export"])
+        ):
+            raise ValueError(f"AMPLFI extension shard failed identity replay: {root}")
+        if extension_pair_ids & shard_ids:
+            raise ValueError("AMPLFI extension repeats a source pair across shards")
+        extension_pair_ids.update(shard_ids)
+        shard_rows = [
+            json.loads(line)
+            for line in background_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        for row in shard_rows:
+            pair_id = str(row.get("pair_id", ""))
+            block = str(row.get("gps_block", ""))
+            if (
+                row.get("split") not in {"train", "val"}
+                or pair_id not in shard_ids
+                or not block
+                or not (
+                    selected_plan_gps[pair_id]
+                    <= int(row["gps_start"])
+                    < selected_plan_gps[pair_id] + 4096
+                )
+            ):
+                raise ValueError("AMPLFI extension background row is foreign or test data")
+            extension_blocks.add(block)
+        for item in export.get("files", []):
+            artifact = Path(str(item.get("path", ""))).resolve()
+            expected = str(item.get("sha256", ""))
+            if file_sha256(artifact) != expected:
+                raise ValueError(f"AMPLFI extension export changed: {artifact}")
+            prior = exported_files.setdefault(str(artifact), expected)
+            if prior != expected:
+                raise ValueError("AMPLFI extension export paths conflict")
+        rows.extend(shard_rows)
+        shard_records.append(
+            {
+                key: {
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                }
+                for key, path in paths.items()
+            }
+        )
+    if (
+        extension_pair_ids & base_pair_ids
+        or extension_blocks & base_blocks
+        or not extension_pair_ids
+    ):
+        raise ValueError("AMPLFI extension is not physically disjoint from the base")
+
+    window_ids = [str(row.get("window_id", "")) for row in rows]
+    block_splits: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        block_splits[str(row["gps_block"])].add(str(row["split"]))
+    if (
+        any(not value for value in window_ids)
+        or len(window_ids) != len(set(window_ids))
+        or any(len(splits) != 1 for splits in block_splits.values())
+    ):
+        raise ValueError("AMPLFI extended manifest repeats windows or crosses splits")
+    rows.sort(
+        key=lambda row: (
+            str(row["split"]),
+            int(row["gps_start"]),
+            str(row["window_id"]),
+        )
+    )
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "amplfi_background_train_val.jsonl"
+    report_path = output / "amplfi_background_stream_extension_merge.json"
+    atomic_write_text(
+        manifest,
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+    )
+    result = {
+        "status": "verified_extended_streamed_amplfi_background_bank",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_strain_rows_read": 0,
+        "test_rows_exported": 0,
+        "base_merge_report_path": str(base_path),
+        "base_merge_report_sha256": file_sha256(base_path),
+        "base_parent_plan_sha256": parent_hash,
+        "extension_plan_path": str(plan_path),
+        "extension_plan_sha256": file_sha256(plan_path),
+        "extension_shards": shard_records,
+        "extension_source_pairs": len(extension_pair_ids),
+        "extension_pair_ids_hash": canonical_hash(
+            sorted(extension_pair_ids), 64
+        ),
+        "extension_gps_blocks": len(extension_blocks),
+        "extension_exported_files": len(exported_files),
+        "background_windows": len(rows),
+        "unique_gps_blocks": len(block_splits),
+        "cross_split_gps_block_overlap": 0,
+        "background_manifest_path": str(manifest),
+        "background_manifest_sha256": file_sha256(manifest),
+        **execution_provenance(),
+    }
+    atomic_write_json(report_path, result)
+    return result
+
+
+def freeze_amplfi_training_bank(
+    background_receipt_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Freeze one hash-bound AMPLFI bank view without copying strain arrays."""
+
+    receipt_path = Path(background_receipt_path).resolve()
+    output = Path(output_dir).resolve()
+    if output.exists():
+        raise FileExistsError(f"AMPLFI training bank output already exists: {output}")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    status_to_merge = {
+        "verified_capacity_ready_amplfi_training_background": (
+            "verified_streamed_amplfi_background_bank"
+        ),
+        "verified_capacity_ready_amplfi_background_extension": (
+            "verified_extended_streamed_amplfi_background_bank"
+        ),
+    }
+    receipt_status = str(receipt.get("status", ""))
+    expected_merge_status = status_to_merge.get(receipt_status)
+    merge_path = Path(str(receipt.get("stream_merge_report_path", ""))).resolve()
+    capacity_path = Path(str(receipt.get("capacity_report_path", ""))).resolve()
+    if (
+        expected_merge_status is None
+        or receipt.get("passed") is not True
+        or receipt.get("scientific_claim_allowed") is not False
+        or int(receipt.get("test_rows_read", -1)) != 0
+        or not merge_path.is_file()
+        or receipt.get("stream_merge_report_sha256") != file_sha256(merge_path)
+        or not capacity_path.is_file()
+        or receipt.get("capacity_report_sha256") != file_sha256(capacity_path)
+    ):
+        raise ValueError("AMPLFI background receipt failed training-bank replay")
+    merge = json.loads(merge_path.read_text(encoding="utf-8"))
+    capacity = json.loads(capacity_path.read_text(encoding="utf-8"))
+    if (
+        merge.get("status") != expected_merge_status
+        or merge.get("passed") is not True
+        or int(merge.get("test_strain_rows_read", -1)) != 0
+        or int(merge.get("test_rows_exported", -1)) != 0
+        or capacity.get("status") != "amplfi_background_capacity_ready"
+        or capacity.get("passed") is not True
+        or int(capacity.get("test_strain_rows_read", -1)) != 0
+        or capacity.get("manifest_sha256")
+        != merge.get("background_manifest_sha256")
+    ):
+        raise ValueError("AMPLFI merge/capacity reports failed training-bank replay")
+
+    shard_records: list[dict[str, Any]]
+    source_reports: list[dict[str, str]] = []
+    if expected_merge_status == "verified_streamed_amplfi_background_bank":
+        shard_records = list(merge.get("shards", []))
+    else:
+        base_path = Path(str(merge.get("base_merge_report_path", ""))).resolve()
+        if (
+            not base_path.is_file()
+            or merge.get("base_merge_report_sha256") != file_sha256(base_path)
+        ):
+            raise ValueError("AMPLFI extension base merge report changed")
+        base = json.loads(base_path.read_text(encoding="utf-8"))
+        if (
+            base.get("status") != "verified_streamed_amplfi_background_bank"
+            or base.get("passed") is not True
+            or int(base.get("test_rows_exported", -1)) != 0
+        ):
+            raise ValueError("AMPLFI extension base merge is not publication-safe")
+        shard_records = list(base.get("shards", [])) + list(
+            merge.get("extension_shards", [])
+        )
+    if not shard_records:
+        raise ValueError("AMPLFI training bank has no hash-bound shards")
+
+    files: list[dict[str, Any]] = []
+    source_paths: set[str] = set()
+    target_names: set[tuple[str, str]] = set()
+    for shard in shard_records:
+        identity = shard.get("export", {})
+        report_path = Path(str(identity.get("path", ""))).resolve()
+        if (
+            not report_path.is_file()
+            or identity.get("sha256") != file_sha256(report_path)
+        ):
+            raise ValueError("AMPLFI training-bank export report changed")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("status") != "group_safe_amplfi_background"
+            or int(report.get("split_file_counts", {}).get("test", -1)) != 0
+        ):
+            raise ValueError("AMPLFI training-bank export contains a test split")
+        source_reports.append(
+            {"path": str(report_path), "sha256": file_sha256(report_path)}
+        )
+        for item in report.get("files", []):
+            split = str(item.get("split", ""))
+            if split not in {"train", "val"}:
+                raise ValueError("AMPLFI training-bank file has a non-training split")
+            source = Path(str(item.get("path", ""))).resolve()
+            expected_hash = str(item.get("sha256", ""))
+            if (
+                not source.is_file()
+                or file_sha256(source) != expected_hash
+                or str(source) in source_paths
+            ):
+                raise ValueError("AMPLFI training-bank source file failed replay")
+            split_dir = "validation" if split == "val" else split
+            target_name = f"{expected_hash[:16]}-{source.name}"
+            if (split_dir, target_name) in target_names:
+                raise ValueError("AMPLFI training-bank target identity collided")
+            source_paths.add(str(source))
+            target_names.add((split_dir, target_name))
+            files.append(
+                {
+                    "source_path": str(source),
+                    "source_sha256": expected_hash,
+                    "split": split,
+                    "relative_path": f"{split_dir}/background/{target_name}",
+                    "size_bytes": source.stat().st_size,
+                }
+            )
+    if not files:
+        raise ValueError("AMPLFI training bank has no exported files")
+    file_counts = {
+        split: sum(item["split"] == split for item in files)
+        for split in ("train", "val")
+    }
+    if any(count <= 0 for count in file_counts.values()):
+        raise ValueError("AMPLFI training bank requires train and validation files")
+
+    temporary = output.with_name(output.name + ".part")
+    if temporary.exists():
+        raise FileExistsError(f"stale AMPLFI training bank temporary exists: {temporary}")
+    for item in files:
+        target = temporary / item["relative_path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(item["source_path"])
+    result = {
+        "status": "frozen_hash_bound_amplfi_training_bank",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "test_rows_read": 0,
+        "test_files_linked": 0,
+        "background_receipt_path": str(receipt_path),
+        "background_receipt_sha256": file_sha256(receipt_path),
+        "background_receipt_status": receipt_status,
+        "stream_merge_report_path": str(merge_path),
+        "stream_merge_report_sha256": file_sha256(merge_path),
+        "background_manifest_path": merge["background_manifest_path"],
+        "background_manifest_sha256": merge["background_manifest_sha256"],
+        "bank_root": str(output),
+        "link_mode": "absolute_symbolic_links_no_strain_copy",
+        "source_export_reports": source_reports,
+        "files": files,
+        "file_counts": file_counts,
+        "source_bytes": sum(int(item["size_bytes"]) for item in files),
+        **execution_provenance(),
+    }
+    atomic_write_json(temporary / "amplfi_training_bank_report.json", result)
+    temporary.replace(output)
+    return result
+
+
+def freeze_amplfi_training_stage_config(
+    base_config_path: str | Path,
+    stage_policy_path: str | Path,
+    stage: str,
+    output_config_path: str | Path,
+    output_report_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze one predeclared AMPLFI compute budget into a resolved config."""
+
+    base_path = Path(base_config_path).resolve()
+    policy_path = Path(stage_policy_path).resolve()
+    policy = load_yaml(policy_path)
+    config = load_yaml(base_path)
+    if policy.get("schema_version") != 1:
+        raise ValueError("AMPLFI stage policy schema_version must be 1")
+    if policy.get("expected_base_config_sha256") != file_sha256(base_path):
+        raise ValueError("AMPLFI stage policy does not bind the base training config")
+    stages = policy.get("stages")
+    if not isinstance(stages, dict) or stage not in stages:
+        raise ValueError(f"AMPLFI training stage is not predeclared: {stage}")
+    selected = stages[stage]
+    if not isinstance(selected, dict):
+        raise ValueError("AMPLFI training stage must be a mapping")
+    values = {
+        "trainer.max_epochs": int(selected.get("max_epochs", 0)),
+        "data.init_args.batches_per_epoch": int(selected.get("batches_per_epoch", 0)),
+        "data.init_args.batch_size": int(selected.get("batch_size", 0)),
+        "data.init_args.min_valid_duration": float(
+            selected.get("min_valid_duration", 0)
+        ),
+        "data.init_args.waveform_sampler.init_args.num_fit_params": int(
+            selected.get("num_fit_params", 0)
+        ),
+        "data.init_args.waveform_sampler.init_args.num_val_waveforms": int(
+            selected.get("num_val_waveforms", 0)
+        ),
+    }
+    if any(value <= 0 for value in values.values()):
+        raise ValueError("AMPLFI training stage budgets must be positive")
+    for dotted, value in values.items():
+        target: dict[str, Any] = config
+        fields = dotted.split(".")
+        for field in fields[:-1]:
+            child = target.get(field)
+            if not isinstance(child, dict):
+                raise ValueError(f"AMPLFI base config lacks stage field: {dotted}")
+            target = child
+        target[fields[-1]] = value
+    logger_args = (
+        config.get("trainer", {}).get("logger", {}).get("init_args", {})
+    )
+    if not isinstance(logger_args, dict):
+        raise ValueError("AMPLFI base config lacks CSV logger init_args")
+    logger_args["version"] = f"gwyolo_{stage}"
+    max_epochs = int(values["trainer.max_epochs"])
+    batches = int(values["data.init_args.batches_per_epoch"])
+    batch_size = int(values["data.init_args.batch_size"])
+    resolved = Path(output_config_path).resolve()
+    report_target = Path(output_report_path).resolve()
+    if resolved.exists() or report_target.exists():
+        raise FileExistsError("AMPLFI resolved stage config/report are immutable")
+    atomic_write_text(resolved, yaml.safe_dump(config, sort_keys=False))
+    report = {
+        "status": "frozen_amplfi_training_stage_config",
+        "stage": stage,
+        "publication_candidate": bool(selected.get("publication_candidate", False)),
+        "base_config_path": str(base_path),
+        "base_config_sha256": file_sha256(base_path),
+        "stage_policy_path": str(policy_path),
+        "stage_policy_sha256": file_sha256(policy_path),
+        "resolved_config_path": str(resolved),
+        "resolved_config_sha256": file_sha256(resolved),
+        "overrides": values,
+        "logger_version": logger_args["version"],
+        "compute_budget": {
+            "epochs": max_epochs,
+            "updates": max_epochs * batches,
+            "online_waveform_examples": max_epochs * batches * batch_size,
+            "validation_waveforms_per_evaluation": int(
+                values["data.init_args.waveform_sampler.init_args.num_val_waveforms"]
+            ),
+        },
+        "test_rows_read": 0,
+        "scientific_claim_allowed": False,
+        **execution_provenance(),
+    }
+    atomic_write_json(report_target, report)
+    return report
+
+
 def audit_amplfi_common_prior_projection(
     canonical_prior_path: str | Path,
     amplfi_prior_path: str | Path,
@@ -444,6 +1042,7 @@ def _validated_amplfi_report(
         artifact = Path(report[f"{prefix}_path"])
         if not artifact.is_file() or file_sha256(artifact) != report[f"{prefix}_sha256"]:
             raise ValueError(f"Existing AMPLFI {prefix} artifact hash mismatch")
+    validate_paired_pe_latency(report)
     return report
 
 
@@ -688,6 +1287,13 @@ def run_amplfi_common_batch(
                 training_identity["sha256"],
                 native_prior_sha,
             )
+        with np.load(report["posterior_path"], allow_pickle=False) as posterior:
+            if "ra" not in posterior.files or "dec" not in posterior.files:
+                raise ValueError("AMPLFI posterior lacks RA/Dec sky samples")
+            sky_area = posterior_sky_area_equal_solid_angle(
+                posterior["ra"], posterior["dec"]
+            )
+        latency_components = validate_paired_pe_latency(report)
         result_rows.append(
             {
                 **row,
@@ -696,6 +1302,12 @@ def run_amplfi_common_batch(
                 "posterior_sha256": report["posterior_sha256"],
                 "latency_seconds": report["latency_seconds"],
                 "effective_sample_size": report["effective_sample_size"],
+                "sky_area_90_deg2": sky_area["area_deg2"],
+                "sky_area_estimator": sky_area_estimator_identity(sky_area),
+                "sky_area_diagnostics": {
+                    field: sky_area[field]
+                    for field in ("sample_count", "occupied_pixels", "credible_pixels")
+                },
                 "backend_version": report["backend_version"],
                 "backend_model_hash": report["model_sha256"],
                 "prior_hash": row["common_prior_sha256"],
@@ -709,11 +1321,9 @@ def run_amplfi_common_batch(
                     "hostname": report["environment"]["hostname"],
                     "gpu": report["environment"]["gpu"],
                 },
-                "latency_scope": (
-                    "verified-source-and-model-load-through-posterior-write_"
-                    "excludes-mask-generation"
-                ),
+                "latency_scope": PAIRED_PE_LATENCY_SCOPE_V1,
                 "backend_native_latency_scope": report["latency_scope"],
+                "backend_native_latency_components_seconds": latency_components,
             }
         )
         atomic_write_json(

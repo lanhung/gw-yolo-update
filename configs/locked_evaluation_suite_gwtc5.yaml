@@ -1,0 +1,103 @@
+locked_evaluation_suite:
+  schema: locked_suite_v2
+  corpus_label: GWTC-5.0_O4b_locked_suite_v2
+  required_split: test
+  observing_runs: [O4b]
+  catalog_release: GWTC-5.0
+  required_frozen_artifacts:
+    - config
+    - model
+    - threshold_calibration
+    - ood_policy
+    - raw_candidate_calibration
+    - mask_candidate_calibration
+    - validation_raw_mask_comparison
+    - validation_ood_report
+    - validation_pe_promotion
+    - catalog_metadata
+    - locked_execution_plan
+
+  # Paths are relative to the externally configured immutable output root. None
+  # may exist when the suite plan is frozen.
+  outputs:
+    raw_candidate_search: search/raw_locked_candidate_search.json
+    mask_candidate_search: search/mask_locked_candidate_search.json
+    paired_raw_mask_search: search/paired_raw_mask_locked_vt.json
+    locked_ood_transfer: robustness/locked_ood_transfer.json
+    dingo_batch: pe/dingo_locked_batch_report.json
+    amplfi_batch: pe/amplfi_locked_batch_report.json
+    paired_pe_portfolio: pe/locked_paired_pe_portfolio.json
+    catalog_diagnostic: catalog/gwtc5_frozen_threshold_diagnostic.json
+    suite_receipt: locked_suite_receipt.json
+
+  # Post-access intermediate artifacts are paths, not tuning freedoms. They are
+  # frozen before access and later replayed by every final endpoint.
+  inputs:
+    raw_test_time_slide_report: inputs/search/raw_test_time_slides.json
+    mask_test_time_slide_report: inputs/search/mask_test_time_slides.json
+    raw_test_background_manifest: inputs/search/raw_test_background.jsonl
+    mask_test_background_manifest: inputs/search/mask_test_background.jsonl
+    raw_test_injection_ranking_report: inputs/search/raw_test_injection_rankings.json
+    mask_test_injection_ranking_report: inputs/search/mask_test_injection_rankings.json
+    locked_ood_score_manifest: inputs/robustness/locked_ood_scores.jsonl
+    locked_ood_score_report: inputs/robustness/locked_ood_score_report.json
+    locked_ood_source_manifest: inputs/robustness/locked_ood_source.jsonl
+    dingo_locked_source_batch_report: inputs/pe/dingo_locked_source_batch.json
+    amplfi_locked_source_batch_report: inputs/pe/amplfi_locked_source_batch.json
+    catalog_source_manifest: inputs/catalog/gwtc5_source.jsonl
+    catalog_candidate_manifest: inputs/catalog/gwtc5_candidates.jsonl
+    catalog_candidate_report: inputs/catalog/gwtc5_candidate_report.json
+    catalog_prediction_manifest: inputs/catalog/gwtc5_predictions.jsonl
+    catalog_prediction_report: inputs/catalog/gwtc5_prediction_report.json
+
+  endpoints:
+    primary_search_metric: paired_delta_recovered_vt_at_common_far
+    threshold_policy: validation_frozen_no_test_retuning
+    target_far_per_year: 0.1
+    # 90% Poisson upper-limit support for zero surviving background counts at
+    # 0.1/year requires approximately 23.026 years of equivalent exposure.
+    minimum_test_live_time_years: 23.02585093
+    minimum_test_injections: 3000
+    minimum_injection_gps_blocks: 25
+    minimum_paired_pe_injections: 100
+    minimum_locked_ood_rows: 500
+    bootstrap_replicates: 10000
+    bootstrap_seed: 20260722
+    pe_credible_level: 0.9
+    uncertainty: gps_block_then_paired_injection_hierarchical_bootstrap_v1
+    background_dependence_uncertainty: physical_block_x_block_x_offset_pigeonhole_v1
+    minimum_background_gps_blocks: 25
+    minimum_background_shifts: 25
+    network_time_slides:
+      schema: independent_symmetric_detector_offsets_v1
+      detectors: [H1, L1, V1]
+      detector_subsets:
+        - [H1, L1]
+        - [H1, V1]
+        - [L1, V1]
+        - [H1, L1, V1]
+      pairwise_light_travel_time_seconds:
+        H1+L1: 0.010012846152267725
+        H1+V1: 0.027287979933397113
+        L1+V1: 0.02644834101635671
+      reference_ifo: H1
+      positive_shift_ifo: L1
+      negative_shift_ifo: V1
+      window_duration_seconds: 4096
+      maximum_slide_index: 512
+      predicted_live_time_safety_factor: 1.5
+      cluster_window_seconds: 0.1
+      maximum_empirical_timing_uncertainty_seconds: 0.01
+      selection_data: background_gps_and_detector_availability_only
+      candidate_scores_inspected: false
+    catalog_role: descriptive_secondary_endpoint_only
+    catalog_search_arm: mask_candidate_search
+    required_detector_subsets: [H1+L1, H1+V1, L1+V1, H1+L1+V1]
+    required_source_families: [BBH, BNS, NSBH]
+    required_stress_strata:
+      - glitch_overlap
+      - missing_detector
+      - calibration_perturbation
+      - waveform_systematics
+      - high_mass_unequal_mass
+      - high_spin_precessing

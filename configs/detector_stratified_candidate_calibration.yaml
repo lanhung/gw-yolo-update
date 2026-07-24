@@ -1,0 +1,26 @@
+detector_stratified_candidate_calibration:
+  # This validation-only threshold supports detector-subset and calibration
+  # robustness studies. It is deliberately not the final 0.1/year search
+  # operating point, which requires the much larger continuous background.
+  purpose: variable_detector_and_calibration_robustness_only
+  required_split: val
+  target_far_per_year: 1000.0
+  zero_count_confidence: 0.90
+  exposure_safety_factor: 1.5
+  bootstrap_replicates: 10000
+  seed: 20260720
+  required_detector_subsets:
+    - H1+L1
+    - H1+V1
+    - L1+V1
+    - H1+L1+V1
+  minimum_background_windows_per_detector_subset: 25
+  minimum_injections_per_detector_subset: 25
+  minimum_timing_matches: 30
+  maximum_timing_uncertainty_seconds: 0.01
+  chirp_threshold: 0.3
+  minimum_bins: 1
+  slide_count: 512
+  slide_step_seconds: 4.0
+  cluster_window_seconds: 0.1
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -332,14 +333,21 @@ def validate_waveform_backend(
     minimum_overlap: float = 0.999999,
     maximum_relative_error: float = 1e-3,
     maximum_epoch_error_seconds: float = 1e-9,
+    selection_mode: str = "family",
+    include_alternatives: bool = False,
+    runtime_receipt_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Validate PyCBC parameter routing against the direct LALSimulation FD API."""
+    """Validate PyCBC parameter routing against the matching direct LALSimulation API."""
     if sample_rate <= 0 or reference_duration <= 0 or per_family <= 0:
         raise ValueError("sample rate, reference duration and per-family count must be positive")
+    if selection_mode not in {"family", "family_approximant"}:
+        raise ValueError("waveform validation selection mode is invalid")
+    if include_alternatives and selection_mode != "family_approximant":
+        raise ValueError("alternative waveform validation requires family_approximant mode")
     try:
         import lal
         import lalsimulation
-        from pycbc.waveform import get_fd_waveform
+        from pycbc.waveform import get_fd_waveform, get_td_waveform
     except ImportError as exc:
         raise RuntimeError("Waveform validation requires PyCBC and LALSuite") from exc
 
@@ -350,31 +358,70 @@ def validate_waveform_backend(
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(str(row["source_family"]), []).append(row)
-    selected = []
-    for family in sorted(grouped):
-        selected.extend(
-            sorted(grouped[family], key=lambda row: str(row["injection_id"]))[:per_family]
-        )
+    selected: list[tuple[dict[str, Any], str, str]] = []
+    if selection_mode == "family":
+        for family in sorted(grouped):
+            selected.extend(
+                (row, str(row["waveform_approximant"]), "primary")
+                for row in sorted(
+                    grouped[family], key=lambda row: str(row["injection_id"])
+                )[:per_family]
+            )
+    else:
+        strata: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            family = str(row["source_family"])
+            primary = str(row["waveform_approximant"])
+            strata.setdefault((family, "primary", primary), []).append(row)
+            alternative = row.get("alternative_waveform_approximant")
+            if include_alternatives and alternative:
+                strata.setdefault((family, "alternative", str(alternative)), []).append(row)
+        for (_family, role, approximant), candidates in sorted(strata.items()):
+            selected.extend(
+                (row, approximant, role)
+                for row in sorted(candidates, key=lambda row: str(row["injection_id"]))[
+                    :per_family
+                ]
+            )
     delta_f = 1.0 / reference_duration
     f_max = sample_rate / 2.0
     cases = []
-    for recipe in selected:
-        approximant = str(recipe["waveform_approximant"])
-        pycbc_plus, pycbc_cross = get_fd_waveform(
-            approximant=approximant,
-            mass1=float(recipe["mass_1_detector_msun"]),
-            mass2=float(recipe["mass_2_detector_msun"]),
-            spin1z=float(recipe["spin_1z"]),
-            spin2z=float(recipe["spin_2z"]),
-            lambda1=float(recipe.get("lambda_1", 0.0)),
-            lambda2=float(recipe.get("lambda_2", 0.0)),
-            inclination=float(recipe["inclination"]),
-            coa_phase=float(recipe["coalescence_phase"]),
-            distance=float(recipe["luminosity_distance_mpc"]),
-            delta_f=delta_f,
-            f_lower=float(recipe["f_lower_hz"]),
-            f_final=f_max,
+    for recipe, approximant, waveform_role in selected:
+        approximant_enum = int(lalsimulation.GetApproximantFromString(approximant))
+        roundtrip_approximant = str(
+            lalsimulation.GetStringFromApproximant(approximant_enum)
         )
+        if roundtrip_approximant != approximant:
+            raise ValueError(
+                "LALSimulation approximant did not round-trip: "
+                f"{approximant!r} -> {approximant_enum} -> {roundtrip_approximant!r}"
+            )
+        fd_implemented = bool(
+            lalsimulation.SimInspiralImplementedFDApproximants(approximant_enum)
+        )
+        td_implemented = bool(
+            lalsimulation.SimInspiralImplementedTDApproximants(approximant_enum)
+        )
+        if not (fd_implemented or td_implemented):
+            raise ValueError(f"LALSimulation cannot generate approximant {approximant!r}")
+
+        waveform_arguments = {
+            "approximant": approximant,
+            "mass1": float(recipe["mass_1_detector_msun"]),
+            "mass2": float(recipe["mass_2_detector_msun"]),
+            "spin1x": float(recipe.get("spin_1x", 0.0)),
+            "spin1y": float(recipe.get("spin_1y", 0.0)),
+            "spin1z": float(recipe["spin_1z"]),
+            "spin2x": float(recipe.get("spin_2x", 0.0)),
+            "spin2y": float(recipe.get("spin_2y", 0.0)),
+            "spin2z": float(recipe["spin_2z"]),
+            "lambda1": float(recipe.get("lambda_1", 0.0)),
+            "lambda2": float(recipe.get("lambda_2", 0.0)),
+            "inclination": float(recipe["inclination"]),
+            "coa_phase": float(recipe["coalescence_phase"]),
+            "distance": float(recipe["luminosity_distance_mpc"]),
+            "f_lower": float(recipe["f_lower_hz"]),
+        }
         parameters = lal.CreateDict()
         lalsimulation.SimInspiralWaveformParamsInsertTidalLambda1(
             parameters, float(recipe.get("lambda_1", 0.0))
@@ -382,14 +429,14 @@ def validate_waveform_backend(
         lalsimulation.SimInspiralWaveformParamsInsertTidalLambda2(
             parameters, float(recipe.get("lambda_2", 0.0))
         )
-        reference_plus, reference_cross = lalsimulation.SimInspiralChooseFDWaveform(
+        lal_arguments = (
             float(recipe["mass_1_detector_msun"]) * lal.MSUN_SI,
             float(recipe["mass_2_detector_msun"]) * lal.MSUN_SI,
-            0.0,
-            0.0,
+            float(recipe.get("spin_1x", 0.0)),
+            float(recipe.get("spin_1y", 0.0)),
             float(recipe["spin_1z"]),
-            0.0,
-            0.0,
+            float(recipe.get("spin_2x", 0.0)),
+            float(recipe.get("spin_2y", 0.0)),
             float(recipe["spin_2z"]),
             float(recipe["luminosity_distance_mpc"]) * 1e6 * lal.PC_SI,
             float(recipe["inclination"]),
@@ -397,13 +444,42 @@ def validate_waveform_backend(
             0.0,
             0.0,
             0.0,
-            delta_f,
-            float(recipe["f_lower_hz"]),
-            f_max,
-            0.0,
-            parameters,
-            lalsimulation.GetApproximantFromString(approximant),
         )
+        if fd_implemented:
+            waveform_domain = "frequency"
+            pycbc_plus, pycbc_cross = get_fd_waveform(
+                **waveform_arguments,
+                delta_f=delta_f,
+                f_final=f_max,
+            )
+            reference_plus, reference_cross = (
+                lalsimulation.SimInspiralChooseFDWaveform(
+                    *lal_arguments,
+                    delta_f,
+                    float(recipe["f_lower_hz"]),
+                    f_max,
+                    0.0,
+                    parameters,
+                    approximant_enum,
+                )
+            )
+        else:
+            waveform_domain = "time"
+            delta_t = 1.0 / sample_rate
+            pycbc_plus, pycbc_cross = get_td_waveform(
+                **waveform_arguments,
+                delta_t=delta_t,
+            )
+            reference_plus, reference_cross = (
+                lalsimulation.SimInspiralChooseTDWaveform(
+                    *lal_arguments,
+                    delta_t,
+                    float(recipe["f_lower_hz"]),
+                    0.0,
+                    parameters,
+                    approximant_enum,
+                )
+            )
         polarizations = {
             "plus": waveform_equivalence_metrics(
                 pycbc_plus.numpy(),
@@ -431,16 +507,66 @@ def validate_waveform_backend(
                 "injection_id": recipe["injection_id"],
                 "source_family": recipe["source_family"],
                 "approximant": approximant,
+                "approximant_enum": approximant_enum,
+                "approximant_roundtrip": roundtrip_approximant,
+                "waveform_role": waveform_role,
+                "waveform_domain": waveform_domain,
                 "polarizations": polarizations,
                 "passed": passed,
             }
         )
     passed = bool(cases) and all(case["passed"] for case in cases)
+    runtime_provenance: dict[str, Any] = {"runtime_receipt_bound": False}
+    if runtime_receipt_path is not None:
+        runtime_receipt_file = Path(runtime_receipt_path).resolve()
+        if not runtime_receipt_file.is_file():
+            raise FileNotFoundError("Waveform runtime receipt is absent")
+        runtime_receipt = json.loads(runtime_receipt_file.read_text(encoding="utf-8"))
+        runtime_requirements = Path(
+            str(runtime_receipt.get("requirements_path", ""))
+        ).resolve()
+        frozen_packages = runtime_receipt.get("pip_freeze")
+        frozen_text = (
+            "\n".join(map(str, frozen_packages)) + "\n"
+            if isinstance(frozen_packages, list)
+            else ""
+        )
+        selected_approximants = {value for _, value, _ in selected}
+        if (
+            runtime_receipt.get("status") != "verified_isolated_waveform_runtime"
+            or runtime_receipt.get("passed") is not True
+            or Path(str(runtime_receipt.get("python_executable", ""))).resolve()
+            != Path(sys.executable).resolve()
+            or runtime_receipt.get("pycbc_version") != version("pycbc")
+            or runtime_receipt.get("lalsuite_version") != version("lalsuite")
+            or not runtime_requirements.is_file()
+            or runtime_receipt.get("requirements_sha256")
+            != file_sha256(runtime_requirements)
+            or not frozen_text
+            or runtime_receipt.get("pip_freeze_sha256")
+            != hashlib.sha256(frozen_text.encode()).hexdigest()
+            or not selected_approximants
+            <= set(runtime_receipt.get("approximants", {}))
+            or (
+                os.environ.get("GWYOLO_CODE_COMMIT")
+                and runtime_receipt.get("code_commit")
+                != os.environ["GWYOLO_CODE_COMMIT"]
+            )
+        ):
+            raise ValueError("Waveform runtime receipt does not bind this execution")
+        runtime_provenance = {
+            "runtime_receipt_bound": True,
+            "runtime_receipt_path": str(runtime_receipt_file),
+            "runtime_receipt_sha256": file_sha256(runtime_receipt_file),
+            "requirements_path": str(runtime_requirements),
+            "requirements_sha256": runtime_receipt["requirements_sha256"],
+            "pip_freeze_sha256": runtime_receipt["pip_freeze_sha256"],
+        }
     report = {
         "passed": passed,
         "validation_scope": "external_reference_waveform_equivalence",
-        "wrapper_backend": "pycbc_get_fd_waveform",
-        "reference_backend": "direct_lalsimulation_SimInspiralChooseFDWaveform",
+        "wrapper_backend": "pycbc_get_fd_or_td_waveform",
+        "reference_backend": "direct_lalsimulation_matching_domain_api",
         "limitation": (
             "This validates parameter routing, complex strain, amplitude and epoch against the "
             "direct LALSimulation API; detector projection and astrophysical population validity "
@@ -449,9 +575,19 @@ def validate_waveform_backend(
         "recipe_manifest_path": str(recipe_manifest),
         "recipe_manifest_sha256": file_sha256(recipe_manifest),
         "families": sorted(grouped),
-        "approximants": sorted({str(row["waveform_approximant"]) for row in selected}),
+        "approximants": sorted({approximant for _, approximant, _ in selected}),
         "selected_cases": len(cases),
         "per_family": per_family,
+        "selection_mode": selection_mode,
+        "include_alternatives": include_alternatives,
+        "case_strata": dict(
+            sorted(
+                Counter(
+                    f"{case['source_family']}:{case['waveform_role']}:{case['approximant']}"
+                    for case in cases
+                ).items()
+            )
+        ),
         "sample_rate": sample_rate,
         "reference_duration": reference_duration,
         "thresholds": {
@@ -460,12 +596,14 @@ def validate_waveform_backend(
             "maximum_epoch_error_seconds": maximum_epoch_error_seconds,
         },
         "versions": {"pycbc": version("pycbc"), "lalsuite": version("lalsuite")},
+        **runtime_provenance,
         "code_commit": os.environ.get("GWYOLO_CODE_COMMIT"),
         "exact_command": " ".join(shlex.quote(part) for part in sys.argv),
         "environment": {
             "hostname": platform.node(),
             "platform": platform.platform(),
             "python": platform.python_version(),
+            "python_executable": str(Path(sys.executable).resolve()),
             "numpy": np.__version__,
         },
         "cases": cases,
@@ -588,7 +726,11 @@ class PyCBCWaveformBackend:
             approximant=str(recipe["waveform_approximant"]),
             mass1=float(recipe["mass_1_detector_msun"]),
             mass2=float(recipe["mass_2_detector_msun"]),
+            spin1x=float(recipe.get("spin_1x", 0.0)),
+            spin1y=float(recipe.get("spin_1y", 0.0)),
             spin1z=float(recipe["spin_1z"]),
+            spin2x=float(recipe.get("spin_2x", 0.0)),
+            spin2y=float(recipe.get("spin_2y", 0.0)),
             spin2z=float(recipe["spin_2z"]),
             lambda1=float(recipe.get("lambda_1", 0.0)),
             lambda2=float(recipe.get("lambda_2", 0.0)),
@@ -690,10 +832,46 @@ def _read_background(
             raise ValueError("Background bank/window identity mismatch")
         if bank["sample_rate"] != target_sample_rate:
             raise ValueError("Background bank sample rate differs from requested materialization")
-        observed_duration = bank["noise"].shape[1] / target_sample_rate
-        if not np.isclose(observed_duration, context_duration, rtol=0.0, atol=1e-9):
-            raise ValueError("Background bank context duration differs from requested materialization")
-        return bank["ifos"], bank["noise"], bank["context_gps_start"]
+        requested_samples = int(round(context_duration * target_sample_rate))
+        if (
+            requested_samples <= 0
+            or not np.isclose(
+                requested_samples / target_sample_rate,
+                context_duration,
+                rtol=0.0,
+                atol=1e-9,
+            )
+        ):
+            raise ValueError(
+                "Requested materialization context is not sample-rate aligned"
+            )
+        observed_samples = int(bank["noise"].shape[1])
+        if observed_samples < requested_samples:
+            raise ValueError(
+                "Background bank context is shorter than requested materialization"
+            )
+        crop_start = 0
+        if observed_samples > requested_samples:
+            analysis_start = int(bank["analysis_start_index"])
+            analysis_stop = int(bank["analysis_stop_index"])
+            analysis_center = (analysis_start + analysis_stop) / 2.0
+            crop_start = int(round(analysis_center - requested_samples / 2.0))
+            crop_stop = crop_start + requested_samples
+            if (
+                crop_start < 0
+                or crop_stop > observed_samples
+                or crop_start > analysis_start
+                or crop_stop < analysis_stop
+            ):
+                raise ValueError(
+                    "Requested materialization context cannot contain the analysis window"
+                )
+        crop_stop = crop_start + requested_samples
+        return (
+            bank["ifos"],
+            bank["noise"][:, crop_start:crop_stop],
+            bank["context_gps_start"] + crop_start / target_sample_rate,
+        )
     analysis_start = float(row["gps_start"])
     analysis_duration = float(row["duration"])
     if context_duration < analysis_duration:
@@ -800,9 +978,16 @@ def load_materialized_context(
             raise ValueError("materialized signal/background bank window identity mismatch")
         if bank["sample_rate"] != source_rate or bank["ifos"] != ifos:
             raise ValueError("materialized signal/background bank detector contract mismatch")
-        if not np.isclose(bank["context_gps_start"], context_start, rtol=0.0, atol=1e-9):
+        raw_offset = (context_start - bank["context_gps_start"]) * source_rate
+        offset = int(round(raw_offset))
+        stop = offset + signal.shape[1]
+        if (
+            not np.isclose(raw_offset, offset, rtol=0.0, atol=1e-6)
+            or offset < 0
+            or stop > bank["noise"].shape[1]
+        ):
             raise ValueError("materialized signal/background bank context mismatch")
-        noise = bank["noise"]
+        noise = bank["noise"][:, offset:stop]
     elif stored_noise is None:
         verified = verified_background_hashes if verified_background_hashes is not None else {}
         context_duration = signal.shape[1] / source_rate
@@ -1229,6 +1414,9 @@ def materialize_recipe(
             for ifo in ifos
         },
         "background_bank": background.get("background_bank"),
+        "background_bank_context_policy": (
+            "analysis_center_crop_v1" if background.get("background_bank") else None
+        ),
     }
 
 
@@ -1282,6 +1470,7 @@ def run_injection_materialization(
         ),
         "sample_rate": sample_rate,
         "context_duration": context_duration,
+        "background_bank_context_policy": "analysis_center_crop_v1",
         "storage_mode": storage_mode,
         "signal_dtype": (
             "scaled_float16_with_float64_ifo_peak"
@@ -1365,6 +1554,9 @@ def run_injection_materialization(
         "selected_recipes": len(selected),
         "sample_rate": sample_rate,
         "context_duration": context_duration,
+        "background_bank_context_policy": run_identity[
+            "background_bank_context_policy"
+        ],
         "storage_mode": storage_mode,
         "signal_dtype": run_identity["signal_dtype"],
         "materialized_bytes": sum(

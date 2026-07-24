@@ -13,6 +13,7 @@ required_variables=(
   PRETRAINED_CHECKPOINT
   UNIFORM_CONFIG
   FAMILY_BALANCED_CONFIG
+  FIVE_SEED_STABILITY_CONFIG
   OUTPUT_ROOT
   GWYOLO_CODE_COMMIT
 )
@@ -33,7 +34,8 @@ for input in \
   "$CLEAN_VALIDATION_MANIFEST" \
   "$PRETRAINED_CHECKPOINT" \
   "$UNIFORM_CONFIG" \
-  "$FAMILY_BALANCED_CONFIG"; do
+  "$FAMILY_BALANCED_CONFIG" \
+  "$FIVE_SEED_STABILITY_CONFIG"; do
   if [[ ! -f "$input" ]]; then
     echo "required input is absent: $input" >&2
     exit 2
@@ -87,4 +89,5 @@ done
 "$TASK_PYTHON" -m gwyolo.cli physical-overlap-five-seed-summarize \
   --promotion-report "$PROMOTION_REPORT" \
   "${reports[@]}" \
+  --stability-config "$FIVE_SEED_STABILITY_CONFIG" \
   --output "$OUTPUT_ROOT/five_seed_overlap_summary.json"

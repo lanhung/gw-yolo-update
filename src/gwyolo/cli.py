@@ -9,22 +9,28 @@ from .config import load_config
 from .data import audit_and_split, scan_sources
 from .factory import run_data_factory
 from .gwosc import (
+    audit_gwosc_plan_against_validation_purposes,
     run_gwosc_batch_download,
     run_gwosc_event_exclusions,
     run_gwosc_pilot,
     run_gwosc_run_plan,
     run_gwosc_verification,
+    run_gwtc5_locked_availability_plan,
 )
 from .pipeline import run_pipeline
 from .prediction import predict_catalog
 from .provenance import create_recipe_subset
 from .search import (
+    bind_raw_mask_background_to_authorized_validation_endpoint,
+    bind_candidate_search_calibration_to_independent_endpoint,
     run_candidate_search_calibration,
     run_frozen_candidate_search_evaluation,
     run_frozen_search_evaluation,
     run_search_benchmark,
     run_search_calibration,
     run_search_comparison,
+    run_paired_raw_mask_candidate_calibration_comparison,
+    run_paired_locked_raw_mask_candidate_search_comparison,
     run_validation_injection_diagnostic,
 )
 from .scaling import run_curve_fit, run_scale_plan
@@ -65,6 +71,22 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.add_argument("--predictions", required=True)
     catalog.add_argument("--api-url", required=True)
     catalog.add_argument("--output", required=True)
+
+    locked_catalog = subparsers.add_parser("catalog-eval-locked")
+    locked_catalog.add_argument("--prediction-manifest", required=True)
+    locked_catalog.add_argument("--prediction-report", required=True)
+    locked_catalog.add_argument("--candidate-search-report", required=True)
+    locked_catalog.add_argument("--locked-suite-plan", required=True)
+    locked_catalog.add_argument("--access-log", required=True)
+    locked_catalog.add_argument("--output", required=True)
+
+    locked_catalog_predict = subparsers.add_parser("catalog-predict-locked")
+    locked_catalog_predict.add_argument("--candidate-manifest", required=True)
+    locked_catalog_predict.add_argument("--candidate-report", required=True)
+    locked_catalog_predict.add_argument("--locked-suite-plan", required=True)
+    locked_catalog_predict.add_argument("--access-log", required=True)
+    locked_catalog_predict.add_argument("--prediction-manifest", required=True)
+    locked_catalog_predict.add_argument("--prediction-report", required=True)
 
     search = subparsers.add_parser("search-eval")
     search.add_argument("--validation-background", required=True)
@@ -107,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_calibrate = subparsers.add_parser("candidate-search-calibrate")
     candidate_search_calibrate.add_argument("--validation-time-slide-report", required=True)
     candidate_search_calibrate.add_argument(
+        "--validation-background-manifest", required=True
+    )
+    candidate_search_calibrate.add_argument(
         "--validation-injection-ranking-report", required=True
     )
     candidate_search_calibrate.add_argument("--target-far-per-year", type=float, required=True)
@@ -114,9 +139,83 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_calibrate.add_argument("--bootstrap-replicates", type=int, default=2000)
     candidate_search_calibrate.add_argument("--seed", type=int, default=20260720)
 
+    candidate_search_bind = subparsers.add_parser(
+        "candidate-search-calibration-endpoint-bind"
+    )
+    candidate_search_bind.add_argument(
+        "--independent-validation-endpoint", required=True
+    )
+    candidate_search_bind.add_argument("--candidate-pipeline-report", required=True)
+    candidate_search_bind.add_argument("--calibration-report", required=True)
+    candidate_search_bind.add_argument("--output", required=True)
+    candidate_search_bind.add_argument(
+        "--expected-target-far-per-year", type=float, default=0.1
+    )
+    candidate_search_bind.add_argument(
+        "--minimum-bootstrap-replicates", type=int, default=10000
+    )
+    candidate_search_bind.add_argument(
+        "--background-plan-authorization"
+    )
+    candidate_search_bind.add_argument(
+        "--expanded-background-merge-report"
+    )
+
+    raw_mask_calibration = subparsers.add_parser(
+        "candidate-search-raw-mask-compare"
+    )
+    raw_mask_calibration.add_argument("--raw-calibration-report", required=True)
+    raw_mask_calibration.add_argument("--mask-calibration-report", required=True)
+    raw_mask_calibration.add_argument("--mask-validation-receipt", required=True)
+    raw_mask_calibration.add_argument("--mask-timing-receipt", required=True)
+    raw_mask_calibration.add_argument("--output", required=True)
+    raw_mask_calibration.add_argument(
+        "--minimum-absolute-weighted-efficiency-gain", type=float, default=0.05
+    )
+    raw_mask_calibration.add_argument("--bootstrap-replicates", type=int, default=10000)
+    raw_mask_calibration.add_argument("--seed", type=int, default=20260720)
+    raw_mask_calibration.add_argument(
+        "--minimum-injection-gps-blocks", type=int, default=25
+    )
+    raw_mask_calibration.add_argument(
+        "--detector-set-ranking-successor"
+    )
+
+    raw_mask_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-endpoint-bind"
+    )
+    raw_mask_endpoint_bind.add_argument("--raw-mask-background-receipt", required=True)
+    raw_mask_endpoint_bind.add_argument("--raw-calibration-report")
+    raw_mask_endpoint_bind.add_argument("--mask-calibration-report")
+    raw_mask_endpoint_bind.add_argument("--paired-comparison-report")
+    raw_mask_endpoint_bind.add_argument("--output", required=True)
+
+    raw_mask_human_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-human-endpoint-bind"
+    )
+    raw_mask_human_endpoint_bind.add_argument("--raw-mask-endpoint", required=True)
+    raw_mask_human_endpoint_bind.add_argument(
+        "--human-mask-segmentation-report", required=True
+    )
+    raw_mask_human_endpoint_bind.add_argument("--gate-config", required=True)
+    raw_mask_human_endpoint_bind.add_argument("--output", required=True)
+
+    raw_mask_automatic_endpoint_bind = subparsers.add_parser(
+        "candidate-search-raw-mask-automatic-endpoint-bind"
+    )
+    raw_mask_automatic_endpoint_bind.add_argument(
+        "--raw-mask-endpoint", required=True
+    )
+    raw_mask_automatic_endpoint_bind.add_argument(
+        "--automatic-mask-audit", required=True
+    )
+    raw_mask_automatic_endpoint_bind.add_argument("--gate-config", required=True)
+    raw_mask_automatic_endpoint_bind.add_argument("--output", required=True)
+
     candidate_search_frozen = subparsers.add_parser("candidate-search-evaluate-frozen")
     candidate_search_frozen.add_argument("--calibration-report", required=True)
     candidate_search_frozen.add_argument("--test-time-slide-report", required=True)
+    candidate_search_frozen.add_argument("--test-background-manifest", required=True)
     candidate_search_frozen.add_argument("--test-injection-ranking-report", required=True)
     candidate_search_frozen.add_argument(
         "--minimum-test-live-time-years", type=float, required=True
@@ -125,6 +224,23 @@ def build_parser() -> argparse.ArgumentParser:
     candidate_search_frozen.add_argument("--bootstrap-replicates", type=int, default=10000)
     candidate_search_frozen.add_argument("--seed", type=int, default=20260721)
     candidate_search_frozen.add_argument("--output", required=True)
+    candidate_search_frozen.add_argument("--locked-suite-plan")
+    candidate_search_frozen.add_argument("--access-log")
+    candidate_search_frozen.add_argument(
+        "--output-key", choices=("raw_candidate_search", "mask_candidate_search")
+    )
+
+    paired_locked_search = subparsers.add_parser(
+        "candidate-search-raw-mask-compare-locked"
+    )
+    paired_locked_search.add_argument("--raw-locked-report", required=True)
+    paired_locked_search.add_argument("--mask-locked-report", required=True)
+    paired_locked_search.add_argument("--validation-comparison-report", required=True)
+    paired_locked_search.add_argument("--locked-suite-plan", required=True)
+    paired_locked_search.add_argument("--access-log", required=True)
+    paired_locked_search.add_argument("--output", required=True)
+    paired_locked_search.add_argument("--bootstrap-replicates", type=int, default=10000)
+    paired_locked_search.add_argument("--seed", type=int, default=20260722)
 
     search_validation = subparsers.add_parser("search-validation-injections")
     search_validation.add_argument("--calibration-report", required=True)
@@ -236,6 +352,12 @@ def build_parser() -> argparse.ArgumentParser:
     mask_search_pipeline.add_argument("--target-sample-rate", type=int, default=1024)
     mask_search_pipeline.add_argument("--context-duration", type=float, default=64.0)
 
+    mask_timing = subparsers.add_parser("mask-timing-validation")
+    mask_timing.add_argument("--mask-validation-receipt", required=True)
+    mask_timing.add_argument("--pipeline-report", required=True)
+    mask_timing.add_argument("--config", required=True)
+    mask_timing.add_argument("--output", required=True)
+
     split_manifest = subparsers.add_parser("manifest-select-split")
     split_manifest.add_argument("--manifest", required=True)
     split_manifest.add_argument("--split", required=True, choices=["train", "val", "test"])
@@ -318,6 +440,40 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_run_plan.add_argument("--seed", type=int, default=20260719)
     gwosc_run_plan.add_argument("--output", required=True)
 
+    gwtc5_availability = subparsers.add_parser("gwtc5-locked-availability-plan")
+    gwtc5_availability.add_argument("--suite-config", required=True)
+    gwtc5_availability.add_argument("--access-log", required=True)
+    gwtc5_availability.add_argument("--output-dir", required=True)
+    gwtc5_availability.add_argument("--sample-rate-khz", type=int, default=4)
+
+    gwtc5_injections = subparsers.add_parser("gwtc5-locked-injection-plan")
+    gwtc5_injections.add_argument("--availability-manifest", required=True)
+    gwtc5_injections.add_argument("--availability-report", required=True)
+    gwtc5_injections.add_argument("--suite-config", required=True)
+    gwtc5_injections.add_argument("--population-config", required=True)
+    gwtc5_injections.add_argument("--access-log", required=True)
+    gwtc5_injections.add_argument("--output-dir", required=True)
+
+    gwosc_plan_extend = subparsers.add_parser("gwosc-plan-extend")
+    gwosc_plan_extend.add_argument("--base-plan", required=True)
+    gwosc_plan_extend.add_argument("--target-pairs", type=int, required=True)
+    gwosc_plan_extend.add_argument("--extension-seed", type=int)
+    gwosc_plan_extend.add_argument("--output", required=True)
+
+    gwosc_plan_disjoint = subparsers.add_parser("gwosc-plan-disjoint")
+    gwosc_plan_disjoint.add_argument("--run", required=True)
+    gwosc_plan_disjoint.add_argument("--detectors", nargs="+", default=["H1", "L1"])
+    gwosc_plan_disjoint.add_argument("--sample-rate-khz", type=int, default=4)
+    gwosc_plan_disjoint.add_argument("--exclude-plan", action="append", required=True)
+    gwosc_plan_disjoint.add_argument("--target-pairs", type=int, required=True)
+    gwosc_plan_disjoint.add_argument("--seed", type=int, default=20260727)
+    gwosc_plan_disjoint.add_argument("--output", required=True)
+
+    gwosc_plan_purpose_audit = subparsers.add_parser("gwosc-plan-purpose-audit")
+    gwosc_plan_purpose_audit.add_argument("--plan", required=True)
+    gwosc_plan_purpose_audit.add_argument("--purpose-partition-report", required=True)
+    gwosc_plan_purpose_audit.add_argument("--output", required=True)
+
     gwosc_plan_shard = subparsers.add_parser("gwosc-plan-shard")
     gwosc_plan_shard.add_argument("--plan", required=True)
     gwosc_plan_shard.add_argument("--shard-index", type=int, required=True)
@@ -331,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
     gwosc_batch.add_argument("--maximum-pairs", type=int)
     gwosc_batch.add_argument("--download-workers", type=int, default=8)
     gwosc_batch.add_argument("--chunk-samples", type=int, default=1_048_576)
+    gwosc_batch.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     gwosc_exclusions = subparsers.add_parser("gwosc-event-exclusions")
     gwosc_exclusions.add_argument("--run", required=True)
@@ -624,6 +783,9 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_materialize.add_argument("--download-workers", type=int, default=8)
     gravityspy_network_materialize.add_argument("--chunk-samples", type=int, default=1_048_576)
     gravityspy_network_materialize.add_argument("--shard", type=int)
+    gravityspy_network_materialize.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     gravityspy_network_recovery = subparsers.add_parser(
         "gravityspy-network-recovery-plan"
@@ -645,6 +807,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gravityspy_network_select.add_argument("--seed", type=int, default=20260720)
     gravityspy_network_select.add_argument("--existing-manifest")
+    gravityspy_network_select.add_argument("--target-label", action="append", default=[])
+    gravityspy_network_select.add_argument(
+        "--exclusion-manifest", action="append", default=[]
+    )
 
     gravityspy_network_shard = subparsers.add_parser("gravityspy-network-strain-shard")
     gravityspy_network_shard.add_argument("--manifest", required=True)
@@ -688,12 +854,156 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", choices=("train", "val", "test"), required=True
     )
 
+    gravityspy_network_progress = subparsers.add_parser(
+        "gravityspy-network-materialization-progress"
+    )
+    gravityspy_network_progress.add_argument("--planned-manifest", required=True)
+    gravityspy_network_progress.add_argument("--report", action="append", required=True)
+    gravityspy_network_progress.add_argument(
+        "--split", choices=("train", "val", "test"), required=True
+    )
+    gravityspy_network_progress.add_argument("--expected-shards", type=int, required=True)
+    gravityspy_network_progress.add_argument("--output", required=True)
+
+    gravityspy_network_family_capacity = subparsers.add_parser(
+        "gravityspy-network-family-capacity-forecast"
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--materialized-report", action="append", required=True
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--planned-manifest", action="append", required=True
+    )
+    gravityspy_network_family_capacity.add_argument("--promotion-config", required=True)
+    gravityspy_network_family_capacity.add_argument(
+        "--validation-fraction", type=float, default=0.2
+    )
+    gravityspy_network_family_capacity.add_argument(
+        "--minimum-train-rows-per-family", type=int, default=1
+    )
+    gravityspy_network_family_capacity.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_family_capacity.add_argument("--require-ready", action="store_true")
+    gravityspy_network_family_capacity.add_argument("--output", required=True)
+
     gravityspy_network_corpus_audit = subparsers.add_parser(
         "gravityspy-network-corpus-audit"
     )
     gravityspy_network_corpus_audit.add_argument("--train-report", required=True)
     gravityspy_network_corpus_audit.add_argument("--validation-report", required=True)
     gravityspy_network_corpus_audit.add_argument("--output", required=True)
+
+    detector_validation_background = subparsers.add_parser(
+        "detector-validation-background-export"
+    )
+    detector_validation_background.add_argument(
+        "--network-manifest", required=True
+    )
+    detector_validation_background.add_argument(
+        "--corpus-audit", required=True
+    )
+    detector_validation_background.add_argument("--output-dir", required=True)
+    detector_validation_background.add_argument(
+        "--analysis-duration-seconds", type=float, default=4.0
+    )
+    detector_validation_background.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_background.add_argument(
+        "--minimum-per-detector-subset", type=int, default=25
+    )
+    detector_validation_background.add_argument(
+        "--require-ready", action="store_true"
+    )
+    detector_validation_injections = subparsers.add_parser(
+        "detector-validation-injection-plan"
+    )
+    detector_validation_injections.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_validation_injections.add_argument(
+        "--background-report", required=True
+    )
+    detector_validation_injections.add_argument("--output-dir", required=True)
+    detector_validation_injections.add_argument(
+        "--injections-per-detector-subset", type=int, default=100
+    )
+    detector_validation_injections.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_injections.add_argument(
+        "--seed", type=int, default=20260723
+    )
+    detector_validation_acquisition = subparsers.add_parser(
+        "detector-validation-acquisition-plan"
+    )
+    detector_validation_acquisition.add_argument(
+        "--inventory-plan", required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--frozen-network-manifest", action="append", required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--exclude-plan", action="append", default=[]
+    )
+    detector_validation_acquisition.add_argument(
+        "--target-pairs", type=int, required=True
+    )
+    detector_validation_acquisition.add_argument(
+        "--seed", type=int, default=20260723
+    )
+    detector_validation_acquisition.add_argument("--output", required=True)
+    detector_validation_shard = subparsers.add_parser(
+        "detector-validation-shard-seal"
+    )
+    detector_validation_shard.add_argument("--parent-plan", required=True)
+    detector_validation_shard.add_argument("--shard-plan", required=True)
+    detector_validation_shard.add_argument("--batch-report", required=True)
+    detector_validation_shard.add_argument("--background-report", required=True)
+    detector_validation_shard.add_argument(
+        "--background-bank-report", required=True
+    )
+    detector_validation_shard.add_argument("--eviction-report", required=True)
+    detector_validation_shard.add_argument("--output", required=True)
+    detector_validation_evict = subparsers.add_parser(
+        "detector-validation-source-evict"
+    )
+    detector_validation_evict.add_argument("--batch-report", required=True)
+    detector_validation_evict.add_argument("--background-report", required=True)
+    detector_validation_evict.add_argument(
+        "--background-bank-report", required=True
+    )
+    detector_validation_evict.add_argument("--cache-root", required=True)
+    detector_validation_evict.add_argument("--output", required=True)
+    detector_validation_merge = subparsers.add_parser(
+        "detector-validation-background-merge"
+    )
+    detector_validation_merge.add_argument("--base-manifest", required=True)
+    detector_validation_merge.add_argument("--base-report", required=True)
+    detector_validation_merge.add_argument(
+        "--shard-receipt", action="append", required=True
+    )
+    detector_validation_merge.add_argument("--output-dir", required=True)
+    detector_validation_merge.add_argument(
+        "--required-detector-subset", action="append"
+    )
+    detector_validation_merge.add_argument(
+        "--minimum-per-detector-subset", type=int, default=25
+    )
+    detector_validation_merge.add_argument("--require-ready", action="store_true")
+    detector_validation_materialization = subparsers.add_parser(
+        "detector-validation-materialization-audit"
+    )
+    detector_validation_materialization.add_argument(
+        "--injection-plan", required=True
+    )
+    detector_validation_materialization.add_argument(
+        "--materialization-report", required=True
+    )
+    detector_validation_materialization.add_argument("--snr-report", required=True)
+    detector_validation_materialization.add_argument(
+        "--arrival-report", required=True
+    )
+    detector_validation_materialization.add_argument("--output", required=True)
 
     gravityspy_network_resplit = subparsers.add_parser(
         "gravityspy-network-corpus-resplit"
@@ -702,6 +1012,9 @@ def build_parser() -> argparse.ArgumentParser:
     gravityspy_network_resplit.add_argument("--output-dir", required=True)
     gravityspy_network_resplit.add_argument("--validation-fraction", type=float, default=0.2)
     gravityspy_network_resplit.add_argument("--seed", type=int, default=20260720)
+    gravityspy_network_resplit.add_argument(
+        "--minimum-validation-rows-per-family", type=int, default=1
+    )
 
     gravityspy_evict = subparsers.add_parser("gravityspy-strain-evict")
     gravityspy_evict.add_argument("--materialization-report", required=True)
@@ -721,6 +1034,47 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_audit = subparsers.add_parser("physical-overlap-audit")
     physical_overlap_audit.add_argument("--manifest", action="append", required=True)
     physical_overlap_audit.add_argument("--output", required=True)
+
+    physical_overlap_scaling = subparsers.add_parser(
+        "physical-overlap-scale-subsets"
+    )
+    physical_overlap_scaling.add_argument("--train-manifest", required=True)
+    physical_overlap_scaling.add_argument("--validation-manifest", required=True)
+    physical_overlap_scaling.add_argument("--gravityspy-corpus-audit", required=True)
+    physical_overlap_scaling.add_argument(
+        "--scale", action="append", required=True, type=int
+    )
+    physical_overlap_scaling.add_argument("--output-dir", required=True)
+    physical_overlap_scaling.add_argument("--seed", type=int, default=20260728)
+    physical_overlap_scaling.add_argument("--include-full", action="store_true")
+
+    overlap_expansion_capacity = subparsers.add_parser(
+        "physical-overlap-expansion-capacity"
+    )
+    overlap_expansion_capacity.add_argument("--hard-endpoint-report")
+    overlap_expansion_capacity.add_argument(
+        "--current-overlap-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument(
+        "--candidate-glitch-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument(
+        "--candidate-injection-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument("--candidate-injection-audit")
+    overlap_expansion_capacity.add_argument(
+        "--gravityspy-corpus-audit", required=True
+    )
+    overlap_expansion_capacity.add_argument("--output", required=True)
+    overlap_expansion_capacity.add_argument("--seed", type=int, default=20260728)
+
+    overlap_hard_subset = subparsers.add_parser(
+        "physical-overlap-scale-hard-subset-freeze"
+    )
+    overlap_hard_subset.add_argument("--validation-manifest", required=True)
+    overlap_hard_subset.add_argument("--gravityspy-corpus-audit", required=True)
+    overlap_hard_subset.add_argument("--config", required=True)
+    overlap_hard_subset.add_argument("--output-dir", required=True)
 
     physical_overlap_contamination = subparsers.add_parser(
         "physical-overlap-contamination"
@@ -759,7 +1113,80 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overlap_five_seed_summary.add_argument("--promotion-report", required=True)
     overlap_five_seed_summary.add_argument("--report", action="append", required=True)
+    overlap_five_seed_summary.add_argument("--stability-config", required=True)
     overlap_five_seed_summary.add_argument("--output", required=True)
+
+    overlap_single_arm_promotion = subparsers.add_parser(
+        "physical-overlap-single-arm-promote"
+    )
+    overlap_single_arm_promotion.add_argument("--report", required=True)
+    overlap_single_arm_promotion.add_argument("--config", required=True)
+    overlap_single_arm_promotion.add_argument(
+        "--arm", required=True, choices=["glitch_adapter"]
+    )
+    overlap_single_arm_promotion.add_argument("--output", required=True)
+
+    overlap_adapter_five_seed_gate = subparsers.add_parser(
+        "physical-overlap-adapter-five-seed-gate"
+    )
+    overlap_adapter_five_seed_gate.add_argument("--original-report", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--promotion-report", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--five-seed-summary", required=True)
+    overlap_adapter_five_seed_gate.add_argument("--output", required=True)
+
+    overlap_training_compatibility = subparsers.add_parser(
+        "physical-overlap-training-code-compatibility"
+    )
+    overlap_training_compatibility.add_argument("--repository", required=True)
+    overlap_training_compatibility.add_argument(
+        "--commit", action="append", required=True
+    )
+    overlap_training_compatibility.add_argument(
+        "--config-relative-path", required=True
+    )
+    overlap_training_compatibility.add_argument("--output", required=True)
+
+    overlap_five_seed_replay = subparsers.add_parser(
+        "physical-overlap-five-seed-stability-replay"
+    )
+    overlap_five_seed_replay.add_argument("--source-summary", required=True)
+    overlap_five_seed_replay.add_argument("--stability-config", required=True)
+    overlap_five_seed_replay.add_argument("--output", required=True)
+
+    overlap_scaling_summary = subparsers.add_parser(
+        "physical-overlap-scale-summarize"
+    )
+    overlap_scaling_summary.add_argument("--subset-report", required=True)
+    overlap_scaling_summary.add_argument("--report", action="append", required=True)
+    overlap_scaling_summary.add_argument("--output", required=True)
+    overlap_scaling_summary.add_argument("--minimum-seeds", type=int, default=5)
+    overlap_scaling_summary.add_argument(
+        "--minimum-material-glitch-iou-gain", type=float, default=0.01
+    )
+    overlap_scaling_summary.add_argument(
+        "--minimum-clean-chirp-iou-retention", type=float, default=0.95
+    )
+    overlap_scaling_summary.add_argument("--bootstrap-replicates", type=int, default=2000)
+    overlap_scaling_summary.add_argument("--bootstrap-seed", type=int, default=20260728)
+
+    overlap_hard_cell = subparsers.add_parser(
+        "physical-overlap-scale-hard-endpoint-cell"
+    )
+    overlap_hard_cell.add_argument("--config", required=True)
+    overlap_hard_cell.add_argument("--subset-report", required=True)
+    overlap_hard_cell.add_argument("--hard-subset-report", required=True)
+    overlap_hard_cell.add_argument("--finetune-report", required=True)
+    overlap_hard_cell.add_argument("--scale", required=True, type=int)
+    overlap_hard_cell.add_argument("--output", required=True)
+
+    overlap_hard_bind = subparsers.add_parser(
+        "physical-overlap-scale-hard-endpoint-bind"
+    )
+    overlap_hard_bind.add_argument("--scaling-summary", required=True)
+    overlap_hard_bind.add_argument("--hard-subset-report", required=True)
+    overlap_hard_bind.add_argument("--hard-endpoint-report", action="append", required=True)
+    overlap_hard_bind.add_argument("--next-scale", required=True, type=int)
+    overlap_hard_bind.add_argument("--output", required=True)
 
     mask_audit_plan = subparsers.add_parser("gravityspy-mask-audit-plan")
     mask_audit_plan.add_argument("--manifest", required=True)
@@ -771,6 +1198,54 @@ def build_parser() -> argparse.ArgumentParser:
     mask_audit_evaluate.add_argument("--tasks", required=True)
     mask_audit_evaluate.add_argument("--annotations", required=True)
     mask_audit_evaluate.add_argument("--output", required=True)
+
+    mask_consensus = subparsers.add_parser("gravityspy-mask-consensus-materialize")
+    mask_consensus.add_argument("--tasks", required=True)
+    mask_consensus.add_argument("--annotations", required=True)
+    mask_consensus.add_argument("--audit-report", required=True)
+    mask_consensus.add_argument("--output-dir", required=True)
+
+    mask_predict = subparsers.add_parser("gravityspy-mask-segmentation-predict")
+    mask_predict.add_argument("--gold-report", required=True)
+    mask_predict.add_argument("--selection-report", required=True)
+    mask_predict.add_argument("--config", required=True)
+    mask_predict.add_argument("--output-dir", required=True)
+
+    mask_segmentation = subparsers.add_parser("gravityspy-mask-segmentation-evaluate")
+    mask_segmentation.add_argument("--gold-report", required=True)
+    mask_segmentation.add_argument("--predictions", required=True)
+    mask_segmentation.add_argument("--output", required=True)
+    mask_segmentation.add_argument("--bootstrap-replicates", type=int, default=10000)
+    mask_segmentation.add_argument("--bootstrap-seed", type=int, default=20260720)
+
+    automatic_mask_audit = subparsers.add_parser(
+        "automatic-mask-policy-audit"
+    )
+    automatic_mask_audit.add_argument("--overlap-manifest", required=True)
+    automatic_mask_audit.add_argument("--overlap-config", required=True)
+    automatic_mask_audit.add_argument("--output", required=True)
+
+    mask_annotation_serve = subparsers.add_parser(
+        "gravityspy-mask-annotation-serve"
+    )
+    mask_annotation_serve.add_argument("--tasks", required=True)
+    mask_annotation_serve.add_argument("--annotator-id", required=True)
+    mask_annotation_serve.add_argument("--output-dir", required=True)
+    mask_annotation_serve.add_argument("--host", default="127.0.0.1")
+    mask_annotation_serve.add_argument("--port", type=int, default=8765)
+    mask_annotation_serve.add_argument(
+        "--protocol-version", default="gravityspy_human_mask_blind_v1"
+    )
+
+    mask_annotation_merge = subparsers.add_parser(
+        "gravityspy-mask-annotation-merge"
+    )
+    mask_annotation_merge.add_argument("--tasks", required=True)
+    mask_annotation_merge.add_argument(
+        "--annotation-manifest", action="append", required=True
+    )
+    mask_annotation_merge.add_argument("--minimum-annotators", type=int, default=3)
+    mask_annotation_merge.add_argument("--output", required=True)
 
     curve = subparsers.add_parser("fit-curve")
     curve.add_argument("--points", required=True)
@@ -814,6 +1289,20 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("balanced_rank_v1", "hash_threshold_v1"),
         default="balanced_rank_v1",
     )
+
+    background_disjoint = subparsers.add_parser("background-disjoint-subset")
+    background_disjoint.add_argument("--background-manifest", required=True)
+    background_disjoint.add_argument("--background-report", required=True)
+    background_disjoint.add_argument("--exclude-manifest", action="append", required=True)
+    background_disjoint.add_argument("--output-dir", required=True)
+    background_disjoint.add_argument("--split", choices=("train", "val"), default="val")
+
+    background_purpose = subparsers.add_parser("background-purpose-partition")
+    background_purpose.add_argument("--background-manifest", required=True)
+    background_purpose.add_argument("--background-report", required=True)
+    background_purpose.add_argument("--output-dir", required=True)
+    background_purpose.add_argument("--injection-fraction", type=float, default=0.5)
+    background_purpose.add_argument("--seed", type=int, default=20260725)
 
     deglitch = subparsers.add_parser("oracle-deglitch")
     deglitch.add_argument("--input", required=True)
@@ -859,6 +1348,37 @@ def build_parser() -> argparse.ArgumentParser:
     trigger.add_argument("--required-split", choices=["train", "val", "test"])
     trigger.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
     trigger.add_argument("--coherence-config")
+    trigger.add_argument("--calibration-plan")
+    trigger.add_argument("--calibration-scenario")
+
+    calibration_plan = subparsers.add_parser("calibration-perturbation-plan-freeze")
+    calibration_plan.add_argument("--background-manifest", required=True)
+    calibration_plan.add_argument("--injection-manifest", required=True)
+    calibration_plan.add_argument("--config", required=True)
+    calibration_plan.add_argument("--output", required=True)
+
+    calibration_scenario = subparsers.add_parser(
+        "calibration-perturbation-scenario-freeze"
+    )
+    calibration_scenario.add_argument("--plan", required=True)
+    calibration_scenario.add_argument("--background-score-report", required=True)
+    calibration_scenario.add_argument("--injection-score-report", required=True)
+    calibration_scenario.add_argument(
+        "--background-timing-application-report", required=True
+    )
+    calibration_scenario.add_argument(
+        "--injection-timing-application-report", required=True
+    )
+    calibration_scenario.add_argument("--background-search-report", required=True)
+    calibration_scenario.add_argument("--injection-ranking-report", required=True)
+    calibration_scenario.add_argument("--output", required=True)
+
+    calibration_evaluate = subparsers.add_parser("calibration-perturbation-evaluate")
+    calibration_evaluate.add_argument("--plan", required=True)
+    calibration_evaluate.add_argument("--baseline-calibration-report", required=True)
+    calibration_evaluate.add_argument("--scenario-receipt", action="append", required=True)
+    calibration_evaluate.add_argument("--config", required=True)
+    calibration_evaluate.add_argument("--output", required=True)
 
     candidates = subparsers.add_parser("candidate-extract")
     candidates.add_argument("--triggers", required=True)
@@ -881,7 +1401,28 @@ def build_parser() -> argparse.ArgumentParser:
     timing_apply = subparsers.add_parser("candidate-timing-apply")
     timing_apply.add_argument("--candidates", required=True)
     timing_apply.add_argument("--calibration-report", required=True)
+    timing_apply.add_argument("--scoring-compatibility-report")
+    timing_apply.add_argument("--calibration-perturbation-plan")
+    timing_apply.add_argument("--calibration-timing-compatibility-report")
     timing_apply.add_argument("--output", required=True)
+
+    scoring_compatibility = subparsers.add_parser(
+        "candidate-scoring-compatibility-audit"
+    )
+    scoring_compatibility.add_argument("--reference-code-dir", required=True)
+    scoring_compatibility.add_argument("--candidate-code-dir", required=True)
+    scoring_compatibility.add_argument("--reference-commit", required=True)
+    scoring_compatibility.add_argument("--candidate-commit", required=True)
+    scoring_compatibility.add_argument("--output", required=True)
+
+    calibration_timing_compatibility = subparsers.add_parser(
+        "calibration-timing-transfer-compatibility-audit"
+    )
+    calibration_timing_compatibility.add_argument("--reference-code-dir", required=True)
+    calibration_timing_compatibility.add_argument("--candidate-code-dir", required=True)
+    calibration_timing_compatibility.add_argument("--reference-commit", required=True)
+    calibration_timing_compatibility.add_argument("--candidate-commit", required=True)
+    calibration_timing_compatibility.add_argument("--output", required=True)
 
     injection_candidates = subparsers.add_parser("injection-candidate-extract")
     injection_candidates.add_argument("--injection-triggers", required=True)
@@ -913,6 +1454,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     injection_candidate_rank.add_argument(
         "--truth-association-window-seconds", type=float, default=0.25
+    )
+
+    detector_set_injection_rank = subparsers.add_parser(
+        "detector-set-injection-candidate-rank"
+    )
+    detector_set_injection_rank.add_argument(
+        "--injection-triggers", required=True
+    )
+    detector_set_injection_rank.add_argument("--candidates", required=True)
+    detector_set_injection_rank.add_argument("--config", required=True)
+    detector_set_injection_rank.add_argument("--output-dir", required=True)
+    detector_set_injection_rank.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    detector_set_injection_rank.add_argument(
+        "--empirical-timing-uncertainty-seconds",
+        type=float,
+        required=True,
     )
 
     candidate_slides = subparsers.add_parser("candidate-time-slides")
@@ -953,6 +1512,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_block_permutations.add_argument(
         "--empirical-timing-uncertainty-seconds", type=float, required=True
+    )
+
+    detector_set_block_permutations = subparsers.add_parser(
+        "detector-set-block-permutations"
+    )
+    detector_set_block_permutations.add_argument(
+        "--candidates", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--schedule", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--output-dir", required=True
+    )
+    detector_set_block_permutations.add_argument(
+        "--empirical-timing-uncertainty-seconds",
+        type=float,
+        required=True,
+    )
+    detector_set_block_permutations.add_argument(
+        "--cluster-window-seconds", type=float, default=0.1
     )
 
     candidate_slide_merge = subparsers.add_parser("candidate-time-slide-merge")
@@ -1023,6 +1606,78 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidate_block_schedule.add_argument("--maximum-shifts", type=int)
 
+    detector_set_block_schedule = subparsers.add_parser(
+        "detector-set-block-permutation-schedule-freeze"
+    )
+    detector_set_block_schedule.add_argument(
+        "--background-manifest", required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--network-config", required=True
+    )
+    detector_set_block_schedule.add_argument("--output", required=True)
+    detector_set_block_schedule.add_argument(
+        "--split", choices=("val", "test"), required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--target-far-per-year", type=float, required=True
+    )
+    detector_set_block_schedule.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+    detector_set_block_schedule.add_argument(
+        "--maximum-shifts", type=int
+    )
+    detector_set_block_schedule.add_argument(
+        "--exposure-safety-factor", type=float, default=1.0
+    )
+
+    candidate_block_capacity = subparsers.add_parser(
+        "candidate-block-permutation-capacity-forecast"
+    )
+    candidate_block_capacity.add_argument("--pilot-schedule", required=True)
+    candidate_block_capacity.add_argument("--pilot-background-report", required=True)
+    candidate_block_capacity.add_argument("--planned-parent-plan", required=True)
+    candidate_block_capacity.add_argument("--output", required=True)
+    candidate_block_capacity.add_argument("--safety-factor", type=float, default=1.5)
+    candidate_block_capacity.add_argument("--allow-insufficient", action="store_true")
+
+    candidate_background_authorize = subparsers.add_parser(
+        "candidate-background-plan-authorize"
+    )
+    candidate_background_authorize.add_argument(
+        "--independent-validation-endpoint", required=True
+    )
+    candidate_background_authorize.add_argument("--parent-plan", required=True)
+    candidate_background_authorize.add_argument(
+        "--validation-purpose-audit", required=True
+    )
+    candidate_background_authorize.add_argument("--capacity-forecast", required=True)
+    candidate_background_authorize.add_argument("--output", required=True)
+    candidate_background_authorize.add_argument(
+        "--shard-stop-exclusive", type=int, required=True
+    )
+    candidate_background_authorize.add_argument(
+        "--pairs-per-shard", type=int, default=4
+    )
+    candidate_background_authorize.add_argument(
+        "--target-far-per-year", type=float, default=0.1
+    )
+    candidate_background_authorize.add_argument(
+        "--zero-count-confidence", type=float, default=0.9
+    )
+    candidate_background_authorize.add_argument(
+        "--minimum-safety-factor", type=float, default=1.5
+    )
+
+    candidate_block_extension = subparsers.add_parser(
+        "candidate-block-permutation-capacity-extension-freeze"
+    )
+    candidate_block_extension.add_argument("--base-forecast", required=True)
+    candidate_block_extension.add_argument("--extended-plan", required=True)
+    candidate_block_extension.add_argument("--extended-forecast", required=True)
+    candidate_block_extension.add_argument("--output", required=True)
+
     candidate_pipeline = subparsers.add_parser("candidate-search-validation-pipeline")
     candidate_pipeline.add_argument("--background-manifest", required=True)
     candidate_pipeline.add_argument("--injection-manifest", required=True)
@@ -1079,6 +1734,97 @@ def build_parser() -> argparse.ArgumentParser:
         "--zero-count-confidence", type=float, default=0.90
     )
 
+    candidate_pipeline_detector_set = subparsers.add_parser(
+        "candidate-search-validation-detector-set-recalibrate"
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--pipeline-report", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--background-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--calibrated-background-candidate-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--injection-trigger-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--calibrated-injection-candidate-manifest", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--network-config", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--output-dir", required=True
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--zero-count-confidence", type=float, default=0.90
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--maximum-shifts", type=int
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--exposure-safety-factor", type=float, default=1.0
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--expanded-background-merge-report"
+    )
+    candidate_pipeline_detector_set.add_argument(
+        "--background-plan-authorization"
+    )
+
+    raw_mask_detector_ranking = subparsers.add_parser(
+        "raw-mask-detector-set-ranking-successor-freeze"
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--mask-timing-receipt", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--raw-variable-ranking-report", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--mask-variable-ranking-report", required=True
+    )
+    raw_mask_detector_ranking.add_argument(
+        "--network-config", required=True
+    )
+    raw_mask_detector_ranking.add_argument("--output", required=True)
+
+    numeric_raw_mask_detector_ranking = subparsers.add_parser(
+        "numeric-raw-mask-detector-set-ranking-successor-freeze"
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-validation-receipt", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-timing-receipt", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--raw-variable-ranking-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-variable-ranking-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--raw-timing-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--mask-timing-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--background-deglitch-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--injection-deglitch-report", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--network-config", required=True
+    )
+    numeric_raw_mask_detector_ranking.add_argument(
+        "--output", required=True
+    )
+
     exposure_plan = subparsers.add_parser("candidate-exposure-plan")
     exposure_plan.add_argument("--background-manifest", required=True)
     exposure_plan.add_argument("--output", required=True)
@@ -1105,6 +1851,13 @@ def build_parser() -> argparse.ArgumentParser:
     source_evict.add_argument("--cache-root", required=True)
     source_evict.add_argument("--output", required=True)
 
+    amplfi_source_evict = subparsers.add_parser("amplfi-background-source-evict")
+    amplfi_source_evict.add_argument("--batch-report", required=True)
+    amplfi_source_evict.add_argument("--background-report", required=True)
+    amplfi_source_evict.add_argument("--export-report", required=True)
+    amplfi_source_evict.add_argument("--cache-root", required=True)
+    amplfi_source_evict.add_argument("--output", required=True)
+
     stream_shard = subparsers.add_parser("background-stream-shard")
     stream_shard.add_argument("--parent-plan", required=True)
     stream_shard.add_argument("--event-exclusions", required=True)
@@ -1126,6 +1879,41 @@ def build_parser() -> argparse.ArgumentParser:
     stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
     stream_shard.add_argument("--minimum-bins", type=int, default=1)
     stream_shard.add_argument("--download-workers", type=int, default=8)
+    stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
+
+    mask_stream_shard = subparsers.add_parser(
+        "background-raw-mask-stream-shard"
+    )
+    mask_stream_shard.add_argument("--parent-plan", required=True)
+    mask_stream_shard.add_argument("--event-exclusions", required=True)
+    mask_stream_shard.add_argument("--mask-validation-receipt", required=True)
+    mask_stream_shard.add_argument("--mask-timing-receipt", required=True)
+    mask_stream_shard.add_argument("--scoring-compatibility-report")
+    mask_stream_shard.add_argument("--checkpoint", required=True)
+    mask_stream_shard.add_argument("--config", required=True)
+    mask_stream_shard.add_argument("--coherence-config", required=True)
+    mask_stream_shard.add_argument("--cache-root", required=True)
+    mask_stream_shard.add_argument("--output-dir", required=True)
+    mask_stream_shard.add_argument("--shard-index", type=int, required=True)
+    mask_stream_shard.add_argument("--pairs-per-shard", type=int, default=1)
+    mask_stream_shard.add_argument("--validation-fraction", type=float, default=0.2)
+    mask_stream_shard.add_argument("--seed", type=int, default=20260720)
+    mask_stream_shard.add_argument(
+        "--model-ifos", nargs="+", default=["H1", "L1", "V1"]
+    )
+    mask_stream_shard.add_argument(
+        "--q-values", nargs="+", type=float, default=[4, 8, 16]
+    )
+    mask_stream_shard.add_argument("--target-sample-rate", type=int, default=1024)
+    mask_stream_shard.add_argument("--context-duration", type=float, default=64.0)
+    mask_stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
+    mask_stream_shard.add_argument("--minimum-bins", type=int, default=1)
+    mask_stream_shard.add_argument("--download-workers", type=int, default=8)
+    mask_stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     morphology_stream_shard = subparsers.add_parser(
         "background-morphology-stream-shard"
@@ -1152,10 +1940,21 @@ def build_parser() -> argparse.ArgumentParser:
     morphology_stream_shard.add_argument("--chirp-threshold", type=float, default=0.3)
     morphology_stream_shard.add_argument("--minimum-bins", type=int, default=1)
     morphology_stream_shard.add_argument("--download-workers", type=int, default=8)
+    morphology_stream_shard.add_argument(
+        "--verified-source-inventory", action="append", default=[]
+    )
 
     stream_merge = subparsers.add_parser("background-stream-merge")
     stream_merge.add_argument("--shard-report", action="append", required=True)
+    stream_merge.add_argument("--parent-plan")
     stream_merge.add_argument("--output-dir", required=True)
+
+    mask_stream_merge = subparsers.add_parser(
+        "background-raw-mask-stream-merge"
+    )
+    mask_stream_merge.add_argument("--shard-report", action="append", required=True)
+    mask_stream_merge.add_argument("--parent-plan")
+    mask_stream_merge.add_argument("--output-dir", required=True)
 
     morphology_calibrate = subparsers.add_parser("background-morphology-calibrate")
     morphology_calibrate.add_argument("--merge-report", required=True)
@@ -1205,6 +2004,17 @@ def build_parser() -> argparse.ArgumentParser:
     injection_domain_audit.add_argument("--validation-manifest", required=True)
     injection_domain_audit.add_argument("--output", required=True)
 
+    independent_validation_freeze = subparsers.add_parser(
+        "independent-validation-endpoint-freeze"
+    )
+    independent_validation_freeze.add_argument("--purpose-partition-report", required=True)
+    independent_validation_freeze.add_argument("--injection-plan-report", required=True)
+    independent_validation_freeze.add_argument("--waveform-validation-report", required=True)
+    independent_validation_freeze.add_argument("--materialization-report", required=True)
+    independent_validation_freeze.add_argument("--snr-annotation-report", required=True)
+    independent_validation_freeze.add_argument("--arrival-annotation-report", required=True)
+    independent_validation_freeze.add_argument("--output", required=True)
+
     evaluation_freeze = subparsers.add_parser("evaluation-corpus-freeze")
     evaluation_freeze.add_argument("--manifest", required=True)
     evaluation_freeze.add_argument("--output", required=True)
@@ -1218,6 +2028,163 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="repeat to freeze physical group counts; defaults to injection/waveform/GPS/family",
     )
+
+    gwtc5_freeze = subparsers.add_parser("gwtc5-locked-corpus-freeze")
+    gwtc5_freeze.add_argument("--manifest", required=True)
+    gwtc5_freeze.add_argument("--inventory-report", required=True)
+    gwtc5_freeze.add_argument("--waveform-validation-report", required=True)
+    gwtc5_freeze.add_argument("--suite-config", required=True)
+    gwtc5_freeze.add_argument("--output", required=True)
+    gwtc5_freeze.add_argument("--access-log", required=True)
+
+    locked_suite_freeze = subparsers.add_parser("locked-evaluation-suite-freeze")
+    locked_suite_freeze.add_argument("--validation-evidence-report", required=True)
+    locked_suite_freeze.add_argument("--config", required=True)
+    locked_suite_freeze.add_argument("--output-root", required=True)
+    locked_suite_freeze.add_argument("--code-commit", required=True)
+    locked_suite_freeze.add_argument("--output", required=True)
+
+    locked_suite_finalize = subparsers.add_parser(
+        "locked-evaluation-suite-finalize"
+    )
+    locked_suite_finalize.add_argument("--plan", required=True)
+    locked_suite_finalize.add_argument("--access-log", required=True)
+    locked_suite_finalize.add_argument(
+        "--streaming-completion-audit", required=True
+    )
+    locked_suite_finalize.add_argument("--output", required=True)
+
+    locked_stream_freeze = subparsers.add_parser(
+        "locked-o4b-streaming-execution-freeze"
+    )
+    locked_stream_freeze.add_argument("--suite-plan", required=True)
+    locked_stream_freeze.add_argument("--corpus-freeze", required=True)
+    locked_stream_freeze.add_argument("--availability-manifest", required=True)
+    locked_stream_freeze.add_argument("--availability-report", required=True)
+    locked_stream_freeze.add_argument("--inventory-manifest", required=True)
+    locked_stream_freeze.add_argument("--inventory-report", required=True)
+    locked_stream_freeze.add_argument("--pe-retention-config", required=True)
+    locked_stream_freeze.add_argument("--validation-pe-promotion", required=True)
+    locked_stream_freeze.add_argument("--work-root", required=True)
+    locked_stream_freeze.add_argument("--shard-manifest", required=True)
+    locked_stream_freeze.add_argument("--output", required=True)
+    locked_stream_freeze.add_argument("--code-commit", required=True)
+    locked_stream_freeze.add_argument("--blocks-per-shard", type=int, default=1)
+    locked_stream_freeze.add_argument(
+        "--minimum-free-kb", type=int, default=8 * 1024 * 1024
+    )
+
+    locked_stream_audit = subparsers.add_parser(
+        "locked-o4b-streaming-completion-audit"
+    )
+    locked_stream_audit.add_argument("--execution-plan", required=True)
+    locked_stream_audit.add_argument("--access-log", required=True)
+    locked_stream_audit.add_argument("--receipt-manifest", required=True)
+    locked_stream_audit.add_argument("--output", required=True)
+    locked_stream_audit.add_argument("--code-commit", required=True)
+
+    locked_stream_download = subparsers.add_parser(
+        "locked-o4b-streaming-shard-download"
+    )
+    locked_stream_download.add_argument("--execution-plan", required=True)
+    locked_stream_download.add_argument("--access-log", required=True)
+    locked_stream_download.add_argument("--shard-index", type=int, required=True)
+    locked_stream_download.add_argument("--code-commit", required=True)
+    locked_stream_download.add_argument("--download-workers", type=int, default=4)
+    locked_stream_download.add_argument(
+        "--chunk-samples", type=int, default=1_048_576
+    )
+
+    locked_stream_prepare = subparsers.add_parser(
+        "locked-o4b-streaming-shard-prepare"
+    )
+    locked_stream_prepare.add_argument("--execution-plan", required=True)
+    locked_stream_prepare.add_argument("--access-log", required=True)
+    locked_stream_prepare.add_argument("--shard-index", type=int, required=True)
+    locked_stream_prepare.add_argument("--code-commit", required=True)
+    locked_stream_prepare.add_argument(
+        "--background-window-duration", type=int, default=8
+    )
+    locked_stream_prepare.add_argument("--background-stride", type=int, default=8)
+    locked_stream_prepare.add_argument(
+        "--background-block-duration", type=int, default=256
+    )
+    locked_stream_prepare.add_argument(
+        "--background-context-duration", type=int, default=64
+    )
+
+    locked_stream_shard_finalize = subparsers.add_parser(
+        "locked-o4b-streaming-shard-finalize"
+    )
+    locked_stream_shard_finalize.add_argument("--execution-plan", required=True)
+    locked_stream_shard_finalize.add_argument("--access-log", required=True)
+    locked_stream_shard_finalize.add_argument(
+        "--shard-index", type=int, required=True
+    )
+    locked_stream_shard_finalize.add_argument("--code-commit", required=True)
+
+    locked_stream_receipt_merge = subparsers.add_parser(
+        "locked-o4b-streaming-receipts-merge"
+    )
+    locked_stream_receipt_merge.add_argument("--execution-plan", required=True)
+    locked_stream_receipt_merge.add_argument("--access-log", required=True)
+    locked_stream_receipt_merge.add_argument("--code-commit", required=True)
+
+    locked_stream_post_dq = subparsers.add_parser(
+        "locked-o4b-post-dq-injection-weights"
+    )
+    locked_stream_post_dq.add_argument("--execution-plan", required=True)
+    locked_stream_post_dq.add_argument("--access-log", required=True)
+    locked_stream_post_dq.add_argument(
+        "--streaming-completion-audit", required=True
+    )
+    locked_stream_post_dq.add_argument("--code-commit", required=True)
+
+    locked_stream_publish = subparsers.add_parser(
+        "locked-o4b-streaming-shard-publish"
+    )
+    locked_stream_publish.add_argument("--execution-plan", required=True)
+    locked_stream_publish.add_argument("--access-log", required=True)
+    locked_stream_publish.add_argument("--shard-index", type=int, required=True)
+    locked_stream_publish.add_argument(
+        "--raw-background-candidates", required=True
+    )
+    locked_stream_publish.add_argument("--raw-injection-candidates", required=True)
+    locked_stream_publish.add_argument(
+        "--mask-background-candidates", required=True
+    )
+    locked_stream_publish.add_argument("--mask-injection-candidates", required=True)
+    locked_stream_publish.add_argument("--ood-source-manifest", required=True)
+    locked_stream_publish.add_argument(
+        "--injection-trigger-manifest", required=True
+    )
+    locked_stream_publish.add_argument("--pe-input-manifest", required=True)
+    locked_stream_publish.add_argument("--code-commit", required=True)
+
+    locked_stream_suite_merge = subparsers.add_parser(
+        "locked-o4b-streaming-suite-inputs-merge"
+    )
+    locked_stream_suite_merge.add_argument("--suite-plan", required=True)
+    locked_stream_suite_merge.add_argument("--execution-plan", required=True)
+    locked_stream_suite_merge.add_argument("--access-log", required=True)
+    locked_stream_suite_merge.add_argument(
+        "--streaming-completion-audit", required=True
+    )
+    locked_stream_suite_merge.add_argument(
+        "--post-dq-weight-report", required=True
+    )
+    locked_stream_suite_merge.add_argument("--code-commit", required=True)
+
+    locked_search_inputs = subparsers.add_parser(
+        "locked-o4b-search-inputs-reduce"
+    )
+    locked_search_inputs.add_argument("--suite-plan", required=True)
+    locked_search_inputs.add_argument("--execution-plan", required=True)
+    locked_search_inputs.add_argument("--access-log", required=True)
+    locked_search_inputs.add_argument(
+        "--suite-input-merge-report", required=True
+    )
+    locked_search_inputs.add_argument("--code-commit", required=True)
 
     evaluation_open = subparsers.add_parser("evaluation-corpus-open-once")
     evaluation_open.add_argument("--freeze-report", required=True)
@@ -1267,12 +2234,55 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--limit", type=int)
     materialize.add_argument("--backend-validation-report")
 
+    detector_set_expand = subparsers.add_parser("injection-detector-set-expand")
+    detector_set_expand.add_argument("--manifest", required=True)
+    detector_set_expand.add_argument("--config", required=True)
+    detector_set_expand.add_argument("--backend-validation-report", required=True)
+    detector_set_expand.add_argument("--output-dir", required=True)
+    detector_set_expand.add_argument(
+        "--split", choices=("train", "val"), default="train"
+    )
+    detector_set_expand.add_argument("--limit", type=int)
+
+    detector_set_readiness = subparsers.add_parser(
+        "injection-detector-set-readiness-audit"
+    )
+    detector_set_readiness.add_argument("--report", action="append", required=True)
+    detector_set_readiness.add_argument("--output", required=True)
+
+    detector_training_export = subparsers.add_parser(
+        "detector-set-training-bundle-export"
+    )
+    detector_training_export.add_argument("--overlap-receipt", required=True)
+    detector_training_export.add_argument("--clean-train-manifest", required=True)
+    detector_training_export.add_argument(
+        "--clean-validation-manifest", required=True
+    )
+    detector_training_export.add_argument("--pretrained-checkpoint", required=True)
+    detector_training_export.add_argument(
+        "--config", action="append", required=True
+    )
+    detector_training_export.add_argument("--output-dir", required=True)
+
+    detector_training_import = subparsers.add_parser(
+        "detector-set-training-bundle-import"
+    )
+    detector_training_import.add_argument("--bundle-receipt", required=True)
+    detector_training_import.add_argument("--output-dir", required=True)
+
     waveform_validate = subparsers.add_parser("waveform-validate")
     waveform_validate.add_argument("--recipes", required=True)
     waveform_validate.add_argument("--output", required=True)
     waveform_validate.add_argument("--sample-rate", type=int, default=2048)
     waveform_validate.add_argument("--reference-duration", type=float, default=128.0)
     waveform_validate.add_argument("--per-family", type=int, default=5)
+    waveform_validate.add_argument(
+        "--selection-mode",
+        choices=("family", "family_approximant"),
+        default="family",
+    )
+    waveform_validate.add_argument("--include-alternatives", action="store_true")
+    waveform_validate.add_argument("--runtime-receipt")
 
     snr_annotate = subparsers.add_parser("injection-snr-annotate")
     snr_annotate.add_argument("--manifest", required=True)
@@ -1298,6 +2308,8 @@ def build_parser() -> argparse.ArgumentParser:
     injection_score.add_argument("--required-split", choices=["train", "val", "test"])
     injection_score.add_argument("--enabled-ifos", nargs="+", choices=["H1", "L1", "V1"])
     injection_score.add_argument("--coherence-config")
+    injection_score.add_argument("--calibration-plan")
+    injection_score.add_argument("--calibration-scenario")
 
     pe = subparsers.add_parser("pe-evaluate")
     pe.add_argument("--manifest", required=True)
@@ -1316,6 +2328,94 @@ def build_parser() -> argparse.ArgumentParser:
     pe_robustness.add_argument(
         "--allow-incomplete-provenance", action="store_true"
     )
+    pe_robustness.add_argument(
+        "--within-backend-only",
+        action="store_true",
+        help=(
+            "validate one backend's publication provenance without permitting an "
+            "absolute DINGO/AMPLFI join"
+        ),
+    )
+
+    pe_joint = subparsers.add_parser("pe-robustness-joint-evaluate")
+    pe_joint.add_argument("--dingo-batch-report", required=True)
+    pe_joint.add_argument("--amplfi-batch-report", required=True)
+    pe_joint.add_argument("--manifest-output", required=True)
+    pe_joint.add_argument("--output", required=True)
+    pe_joint.add_argument("--credible-level", type=float, default=0.9)
+    pe_joint.add_argument("--bootstrap-replicates", type=int, default=2000)
+    pe_joint.add_argument("--bootstrap-seed", type=int, default=20260720)
+
+    pe_portfolio = subparsers.add_parser("pe-robustness-portfolio-evaluate")
+    pe_portfolio.add_argument("--dingo-batch-report", required=True)
+    pe_portfolio.add_argument("--dingo-robustness-report", required=True)
+    pe_portfolio.add_argument("--amplfi-batch-report", required=True)
+    pe_portfolio.add_argument("--amplfi-robustness-report", required=True)
+    pe_portfolio.add_argument("--manifest-output", required=True)
+    pe_portfolio.add_argument("--output", required=True)
+    pe_portfolio.add_argument("--credible-level", type=float, default=0.9)
+    pe_portfolio.add_argument("--bootstrap-replicates", type=int, default=10000)
+    pe_portfolio.add_argument("--bootstrap-seed", type=int, default=20260721)
+    pe_portfolio.add_argument(
+        "--required-split", choices=("val", "test"), default="val"
+    )
+
+    pe_bundle_export = subparsers.add_parser(
+        "pe-within-backend-bundle-export"
+    )
+    pe_bundle_export.add_argument("--summary", required=True)
+    pe_bundle_export.add_argument("--output-dir", required=True)
+
+    pe_bundle_import = subparsers.add_parser(
+        "pe-within-backend-bundle-import"
+    )
+    pe_bundle_import.add_argument("--bundle-receipt", required=True)
+    pe_bundle_import.add_argument("--output-dir", required=True)
+
+    pe_input_bundle_export = subparsers.add_parser(
+        "pe-input-bundle-export"
+    )
+    pe_input_bundle_export.add_argument("--summary", required=True)
+    pe_input_bundle_export.add_argument("--output-dir", required=True)
+
+    pe_input_bundle_import = subparsers.add_parser(
+        "pe-input-bundle-import"
+    )
+    pe_input_bundle_import.add_argument("--bundle-receipt", required=True)
+    pe_input_bundle_import.add_argument("--output-dir", required=True)
+
+    pe_promotion = subparsers.add_parser("pe-robustness-promote")
+    pe_promotion.add_argument("--joint-report", required=True)
+    pe_promotion.add_argument("--config", required=True)
+    pe_promotion.add_argument("--output", required=True)
+
+    pe_locked_backend = subparsers.add_parser("pe-backend-bind-locked")
+    pe_locked_backend.add_argument("--backend", choices=("DINGO", "AMPLFI"), required=True)
+    pe_locked_backend.add_argument("--batch-report", required=True)
+    pe_locked_backend.add_argument("--validation-promotion-report", required=True)
+    pe_locked_backend.add_argument("--locked-suite-plan", required=True)
+    pe_locked_backend.add_argument("--access-log", required=True)
+    pe_locked_backend.add_argument("--output", required=True)
+
+    pe_locked_joint = subparsers.add_parser(
+        "pe-robustness-joint-evaluate-locked"
+    )
+    pe_locked_joint.add_argument("--dingo-locked-report", required=True)
+    pe_locked_joint.add_argument("--amplfi-locked-report", required=True)
+    pe_locked_joint.add_argument("--validation-promotion-report", required=True)
+    pe_locked_joint.add_argument("--locked-suite-plan", required=True)
+    pe_locked_joint.add_argument("--access-log", required=True)
+    pe_locked_joint.add_argument("--output", required=True)
+
+    pe_locked_portfolio = subparsers.add_parser(
+        "pe-robustness-portfolio-evaluate-locked"
+    )
+    pe_locked_portfolio.add_argument("--dingo-locked-report", required=True)
+    pe_locked_portfolio.add_argument("--amplfi-locked-report", required=True)
+    pe_locked_portfolio.add_argument("--validation-promotion-report", required=True)
+    pe_locked_portfolio.add_argument("--locked-suite-plan", required=True)
+    pe_locked_portfolio.add_argument("--access-log", required=True)
+    pe_locked_portfolio.add_argument("--output", required=True)
 
     pe_inputs = subparsers.add_parser("pe-input-materialize")
     pe_inputs.add_argument("--clean-manifest", required=True)
@@ -1336,6 +2436,7 @@ def build_parser() -> argparse.ArgumentParser:
     pe_inputs.add_argument("--asd-guard-seconds", type=float, default=2.0)
     pe_inputs.add_argument("--limit", type=int)
     pe_inputs.add_argument("--selection-seed", type=int, default=20260721)
+    pe_inputs.add_argument("--minimum-selected-gps-blocks", type=int, default=1)
 
     pe_conditioning = subparsers.add_parser("pe-native-condition")
     pe_conditioning.add_argument("--source-manifest", required=True)
@@ -1346,6 +2447,7 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_batch = subparsers.add_parser("dingo-common-batch")
     dingo_batch.add_argument("--native-manifest", required=True)
     dingo_batch.add_argument("--model-metadata", required=True)
+    dingo_batch.add_argument("--native-prior", required=True)
     dingo_batch.add_argument("--model-init", required=True)
     dingo_batch.add_argument("--python-executable", required=True)
     dingo_batch.add_argument("--runner-script", default="scripts/run_dingo_common_event.py")
@@ -1356,6 +2458,22 @@ def build_parser() -> argparse.ArgumentParser:
     dingo_batch.add_argument("--num-gnpe-iterations", type=int, default=30)
     dingo_batch.add_argument("--device", default="cuda")
     dingo_batch.add_argument("--seed", type=int, default=20260721)
+    dingo_batch.add_argument(
+        "--comparison-mode",
+        choices=("common_prior", "official_native"),
+        default="common_prior",
+    )
+
+    dingo_official_metadata = subparsers.add_parser("dingo-official-native-model-freeze")
+    dingo_official_metadata.add_argument("--source-config", required=True)
+    dingo_official_metadata.add_argument("--acquisition-report", required=True)
+    dingo_official_metadata.add_argument("--model-load-receipt", required=True)
+    dingo_official_metadata.add_argument("--native-runtime-receipt", required=True)
+    dingo_official_metadata.add_argument(
+        "--native-event-smoke-summary", required=True
+    )
+    dingo_official_metadata.add_argument("--native-conditioning-config", required=True)
+    dingo_official_metadata.add_argument("--output", required=True)
 
     amplfi_batch = subparsers.add_parser("amplfi-common-batch")
     amplfi_batch.add_argument("--native-manifest", required=True)
@@ -1376,6 +2494,15 @@ def build_parser() -> argparse.ArgumentParser:
     pe_backend.add_argument("--config", required=True)
     pe_backend.add_argument("--output", required=True)
     pe_backend.add_argument("--allow-incomplete", action="store_true")
+
+    pe_joint_models = subparsers.add_parser("pe-joint-model-compatibility-audit")
+    pe_joint_models.add_argument("--dingo-model-metadata", required=True)
+    pe_joint_models.add_argument("--amplfi-model-metadata", required=True)
+    pe_joint_models.add_argument("--dingo-native-prior", required=True)
+    pe_joint_models.add_argument("--amplfi-native-prior", required=True)
+    pe_joint_models.add_argument("--dingo-model-init", required=True)
+    pe_joint_models.add_argument("--output", required=True)
+    pe_joint_models.add_argument("--allow-incompatible", action="store_true")
 
     pe_model = subparsers.add_parser("pe-backend-model-freeze")
     pe_model.add_argument("--backend", required=True, choices=["DINGO", "AMPLFI"])
@@ -1417,6 +2544,14 @@ def build_parser() -> argparse.ArgumentParser:
     pe_sources.add_argument("--report", required=True)
     pe_sources.add_argument("--download", action="store_true")
     pe_sources.add_argument("--minimum-free-bytes", type=int, default=0)
+    pe_sources.add_argument("--transfer-attempts", type=int, default=40)
+    pe_sources.add_argument("--retry-delay-seconds", type=float, default=5.0)
+    pe_sources.add_argument("--maximum-stalled-attempts", type=int, default=5)
+
+    dingo_failure = subparsers.add_parser("dingo-runtime-failure-adjudicate")
+    dingo_failure.add_argument("--failure-receipt", required=True)
+    dingo_failure.add_argument("--policy", required=True)
+    dingo_failure.add_argument("--output", required=True)
 
     amplfi_background = subparsers.add_parser("amplfi-background-export")
     amplfi_background.add_argument("--manifest", required=True)
@@ -1425,11 +2560,41 @@ def build_parser() -> argparse.ArgumentParser:
     amplfi_background.add_argument("--target-sample-rate", type=int, default=2048)
     amplfi_background.add_argument("--minimum-segment-seconds", type=int, default=16)
 
+    amplfi_capacity = subparsers.add_parser("amplfi-background-capacity-audit")
+    amplfi_capacity.add_argument("--manifest", required=True)
+    amplfi_capacity.add_argument("--policy", required=True)
+    amplfi_capacity.add_argument("--output", required=True)
+    amplfi_extension_merge = subparsers.add_parser(
+        "amplfi-background-extension-merge"
+    )
+    amplfi_extension_merge.add_argument("--base-merge-report", required=True)
+    amplfi_extension_merge.add_argument("--extension-plan", required=True)
+    amplfi_extension_merge.add_argument(
+        "--shard-dir", action="append", required=True
+    )
+    amplfi_extension_merge.add_argument("--output-dir", required=True)
+    amplfi_training_bank = subparsers.add_parser("amplfi-training-bank-freeze")
+    amplfi_training_bank.add_argument("--background-receipt", required=True)
+    amplfi_training_bank.add_argument("--output-dir", required=True)
+
+    amplfi_stage = subparsers.add_parser("amplfi-training-stage-freeze")
+    amplfi_stage.add_argument("--base-config", required=True)
+    amplfi_stage.add_argument("--stage-policy", required=True)
+    amplfi_stage.add_argument("--stage", required=True)
+    amplfi_stage.add_argument("--output-config", required=True)
+    amplfi_stage.add_argument("--output-report", required=True)
+
     amplfi_prior = subparsers.add_parser("amplfi-common-prior-audit")
     amplfi_prior.add_argument("--canonical-prior", required=True)
     amplfi_prior.add_argument("--amplfi-prior", required=True)
     amplfi_prior.add_argument("--training-config", required=True)
     amplfi_prior.add_argument("--output", required=True)
+
+    dingo_prior = subparsers.add_parser("dingo-common-prior-audit")
+    dingo_prior.add_argument("--canonical-prior", required=True)
+    dingo_prior.add_argument("--dingo-prior-config", required=True)
+    dingo_prior.add_argument("--training-config", required=True)
+    dingo_prior.add_argument("--output", required=True)
 
     ood = subparsers.add_parser("ood-abstention-evaluate")
     ood.add_argument("--calibration-manifest", required=True)
@@ -1438,12 +2603,45 @@ def build_parser() -> argparse.ArgumentParser:
     ood.add_argument("--maximum-known-abstention-rate", type=float, default=0.05)
     ood.add_argument("--score-field", default="ood_score")
 
+    locked_ood = subparsers.add_parser("ood-abstention-evaluate-locked")
+    locked_ood.add_argument("--validation-ood-report", required=True)
+    locked_ood.add_argument("--locked-score-report", required=True)
+    locked_ood.add_argument("--locked-score-manifest", required=True)
+    locked_ood.add_argument("--locked-suite-plan", required=True)
+    locked_ood.add_argument("--access-log", required=True)
+    locked_ood.add_argument("--output", required=True)
+    locked_ood.add_argument("--score-field", default="ood_score")
+
+    bind_ood = subparsers.add_parser("detector-set-ood-validation-bind")
+    bind_ood.add_argument("--source-receipt", required=True)
+    bind_ood.add_argument("--corpus-audit", required=True)
+    bind_ood.add_argument("--output", required=True)
+
+    frozen_ood_score = subparsers.add_parser("glitch-ood-score-frozen")
+    frozen_ood_score.add_argument("--config", required=True)
+    frozen_ood_score.add_argument("--validation-ood-report", required=True)
+    frozen_ood_score.add_argument("--evaluation-manifest", required=True)
+    frozen_ood_score.add_argument("--output-manifest", required=True)
+    frozen_ood_score.add_argument("--output-report", required=True)
+    frozen_ood_score.add_argument("--required-split", default="test")
+    frozen_ood_score.add_argument("--locked-suite-plan")
+    frozen_ood_score.add_argument("--access-log")
+
     ood_split = subparsers.add_parser("gravityspy-ood-split")
     ood_split.add_argument("--train-manifest", required=True)
     ood_split.add_argument("--validation-manifest", required=True)
     ood_split.add_argument("--held-out-family", required=True)
     ood_split.add_argument("--output-dir", required=True)
     ood_split.add_argument("--seed", type=int, default=20260720)
+
+    ood_family = subparsers.add_parser("gravityspy-ood-family-freeze")
+    ood_family.add_argument("--train-manifest", required=True)
+    ood_family.add_argument("--validation-manifest", required=True)
+    ood_family.add_argument("--output", required=True)
+    ood_family.add_argument("--exclude-family", action="append", default=[])
+    ood_family.add_argument("--minimum-train-rows", type=int, default=20)
+    ood_family.add_argument("--minimum-validation-rows", type=int, default=20)
+    ood_family.add_argument("--minimum-validation-gps-blocks", type=int, default=5)
 
     ood_train = subparsers.add_parser("glitch-ood-train")
     ood_train.add_argument("--config", required=True)
@@ -1452,6 +2650,29 @@ def build_parser() -> argparse.ArgumentParser:
     ood_train.add_argument("--heldout-evaluation-manifest", required=True)
     ood_train.add_argument("--output-dir", required=True)
     ood_train.add_argument("--seed", type=int)
+
+    publication = subparsers.add_parser("publication-evidence-audit")
+    publication.add_argument("--config", required=True)
+    publication.add_argument(
+        "--evidence",
+        action="append",
+        default=[],
+        metavar="REQUIREMENT_ID=REPORT.json",
+    )
+    publication.add_argument("--output", required=True)
+    publication.add_argument("--markdown")
+    publication.add_argument("--require-ready", action="store_true")
+
+    publication_registry = subparsers.add_parser("publication-result-registry")
+    publication_registry.add_argument(
+        "--ledger",
+        action="append",
+        required=True,
+        metavar="EVIDENCE_AUDIT.json",
+    )
+    publication_registry.add_argument("--output", required=True)
+    publication_registry.add_argument("--csv", required=True)
+    publication_registry.add_argument("--markdown", required=True)
     return parser
 
 
@@ -1492,6 +2713,32 @@ def main(argv: list[str] | None = None) -> int:
         _print(predict_catalog(args.checkpoint, args.source, args.output_dir, args.confidence))
     elif args.command == "catalog-eval":
         _print(evaluate_catalog_predictions(args.predictions, args.api_url, args.output))
+    elif args.command == "catalog-eval-locked":
+        from .catalog import run_locked_gwtc5_catalog_diagnostic
+
+        _print(
+            run_locked_gwtc5_catalog_diagnostic(
+                args.prediction_manifest,
+                args.prediction_report,
+                args.candidate_search_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
+    elif args.command == "catalog-predict-locked":
+        from .catalog import run_locked_catalog_prediction_manifest
+
+        _print(
+            run_locked_catalog_prediction_manifest(
+                args.candidate_manifest,
+                args.candidate_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.prediction_manifest,
+                args.prediction_report,
+            )
+        )
     elif args.command == "search-eval":
         _print(
             run_search_benchmark(
@@ -1541,6 +2788,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output_key,
             )
         )
     elif args.command == "candidate-search-calibrate":
@@ -1552,6 +2802,69 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.bootstrap_replicates,
                 args.seed,
+                args.validation_background_manifest,
+            )
+        )
+    elif args.command == "candidate-search-calibration-endpoint-bind":
+        _print(
+            bind_candidate_search_calibration_to_independent_endpoint(
+                args.independent_validation_endpoint,
+                args.candidate_pipeline_report,
+                args.calibration_report,
+                args.output,
+                args.expected_target_far_per_year,
+                args.minimum_bootstrap_replicates,
+                args.background_plan_authorization,
+                args.expanded_background_merge_report,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-compare":
+        _print(
+            run_paired_raw_mask_candidate_calibration_comparison(
+                args.raw_calibration_report,
+                args.mask_calibration_report,
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.output,
+                args.minimum_absolute_weighted_efficiency_gain,
+                args.bootstrap_replicates,
+                args.seed,
+                args.minimum_injection_gps_blocks,
+                args.detector_set_ranking_successor,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-endpoint-bind":
+        _print(
+            bind_raw_mask_background_to_authorized_validation_endpoint(
+                args.raw_mask_background_receipt,
+                args.output,
+                args.raw_calibration_report,
+                args.mask_calibration_report,
+                args.paired_comparison_report,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-human-endpoint-bind":
+        from .mask_audit import bind_raw_mask_human_consensus_publication_evidence
+
+        _print(
+            bind_raw_mask_human_consensus_publication_evidence(
+                args.raw_mask_endpoint,
+                args.human_mask_segmentation_report,
+                args.gate_config,
+                args.output,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-automatic-endpoint-bind":
+        from .automatic_mask import (
+            bind_raw_mask_automatic_publication_evidence,
+        )
+
+        _print(
+            bind_raw_mask_automatic_publication_evidence(
+                args.raw_mask_endpoint,
+                args.automatic_mask_audit,
+                args.gate_config,
+                args.output,
             )
         )
     elif args.command == "candidate-search-evaluate-frozen":
@@ -1563,6 +2876,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.minimum_test_live_time_years,
                 args.minimum_test_injections,
+                args.bootstrap_replicates,
+                args.seed,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output_key,
+                args.test_background_manifest,
+            )
+        )
+    elif args.command == "candidate-search-raw-mask-compare-locked":
+        _print(
+            run_paired_locked_raw_mask_candidate_search_comparison(
+                args.raw_locked_report,
+                args.mask_locked_report,
+                args.validation_comparison_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
                 args.bootstrap_replicates,
                 args.seed,
             )
@@ -1689,6 +3019,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.context_duration,
             )
         )
+    elif args.command == "mask-timing-validation":
+        from .mask_timing import run_mask_timing_validation
+
+        _print(
+            run_mask_timing_validation(
+                args.mask_validation_receipt,
+                args.pipeline_report,
+                args.config,
+                args.output,
+            )
+        )
     elif args.command == "manifest-select-split":
         from .manifests import select_jsonl_split
 
@@ -1789,6 +3130,28 @@ def main(argv: list[str] | None = None) -> int:
                 args.seed,
             )
         )
+    elif args.command == "gwtc5-locked-availability-plan":
+        _print(
+            run_gwtc5_locked_availability_plan(
+                args.suite_config,
+                args.access_log,
+                args.output_dir,
+                args.sample_rate_khz,
+            )
+        )
+    elif args.command == "gwtc5-locked-injection-plan":
+        from .locked_injections import run_gwtc5_locked_injection_inventory
+
+        _print(
+            run_gwtc5_locked_injection_inventory(
+                args.availability_manifest,
+                args.availability_report,
+                args.suite_config,
+                args.population_config,
+                args.access_log,
+                args.output_dir,
+            )
+        )
     elif args.command == "gwosc-plan-shard":
         from .gwosc import run_gwosc_plan_shard
 
@@ -1800,6 +3163,39 @@ def main(argv: list[str] | None = None) -> int:
                 args.pairs_per_shard,
             )
         )
+    elif args.command == "gwosc-plan-extend":
+        from .gwosc import extend_gwosc_run_plan
+
+        _print(
+            extend_gwosc_run_plan(
+                args.base_plan,
+                args.output,
+                args.target_pairs,
+                args.extension_seed,
+            )
+        )
+    elif args.command == "gwosc-plan-disjoint":
+        from .gwosc import run_disjoint_gwosc_run_plan
+
+        _print(
+            run_disjoint_gwosc_run_plan(
+                args.run,
+                args.detectors,
+                args.exclude_plan,
+                args.output,
+                target_pairs=args.target_pairs,
+                sample_rate_khz=args.sample_rate_khz,
+                seed=args.seed,
+            )
+        )
+    elif args.command == "gwosc-plan-purpose-audit":
+        _print(
+            audit_gwosc_plan_against_validation_purposes(
+                args.plan,
+                args.purpose_partition_report,
+                args.output,
+            )
+        )
     elif args.command == "gwosc-batch-download":
         _print(
             run_gwosc_batch_download(
@@ -1809,6 +3205,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.maximum_pairs,
                 args.download_workers,
                 args.chunk_samples,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "gwosc-event-exclusions":
@@ -2193,6 +3590,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.download_workers,
                 args.chunk_samples,
                 args.shard,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "gravityspy-network-strain-shard":
@@ -2224,6 +3622,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.maximum_source_files,
                 args.seed,
                 args.existing_manifest,
+                args.target_label,
+                args.exclusion_manifest,
             )
         )
     elif args.command == "gravityspy-strain-shard":
@@ -2277,6 +3677,33 @@ def main(argv: list[str] | None = None) -> int:
                 args.report, args.output_dir, args.split
             )
         )
+    elif args.command == "gravityspy-network-materialization-progress":
+        from .gravityspy import audit_gravityspy_network_materialization_progress
+
+        _print(
+            audit_gravityspy_network_materialization_progress(
+                args.planned_manifest,
+                args.report,
+                args.split,
+                args.expected_shards,
+                args.output,
+            )
+        )
+    elif args.command == "gravityspy-network-family-capacity-forecast":
+        from .gravityspy import forecast_gravityspy_network_family_capacity
+
+        _print(
+            forecast_gravityspy_network_family_capacity(
+                args.materialized_report,
+                args.planned_manifest,
+                args.promotion_config,
+                args.output,
+                args.validation_fraction,
+                args.minimum_train_rows_per_family,
+                args.seed,
+                args.require_ready,
+            )
+        )
     elif args.command == "gravityspy-network-corpus-audit":
         from .glitch_training import audit_gravityspy_network_numeric_corpus
 
@@ -2285,12 +3712,137 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_report, args.validation_report, args.output
             )
         )
+    elif args.command == "detector-validation-background-export":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            export_network_numeric_validation_background,
+        )
+
+        _print(
+            export_network_numeric_validation_background(
+                args.network_manifest,
+                args.corpus_audit,
+                args.output_dir,
+                args.analysis_duration_seconds,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.minimum_per_detector_subset,
+                args.require_ready,
+            )
+        )
+    elif args.command == "detector-validation-injection-plan":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            plan_detector_stratified_validation_injections,
+        )
+
+        _print(
+            plan_detector_stratified_validation_injections(
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                args.injections_per_detector_subset,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.seed,
+            )
+        )
+    elif args.command == "detector-validation-acquisition-plan":
+        from .detector_validation_data import (
+            freeze_source_disjoint_detector_acquisition_plan,
+        )
+
+        _print(
+            freeze_source_disjoint_detector_acquisition_plan(
+                args.inventory_plan,
+                args.frozen_network_manifest,
+                args.output,
+                args.target_pairs,
+                args.seed,
+                args.exclude_plan,
+            )
+        )
+    elif args.command == "detector-validation-shard-seal":
+        from .detector_validation_data import (
+            seal_streamed_detector_validation_shard,
+        )
+
+        _print(
+            seal_streamed_detector_validation_shard(
+                args.parent_plan,
+                args.shard_plan,
+                args.batch_report,
+                args.background_report,
+                args.background_bank_report,
+                args.eviction_report,
+                args.output,
+            )
+        )
+    elif args.command == "detector-validation-source-evict":
+        from .detector_validation_data import (
+            evict_streamed_detector_validation_sources,
+        )
+
+        _print(
+            evict_streamed_detector_validation_sources(
+                args.batch_report,
+                args.background_report,
+                args.background_bank_report,
+                args.cache_root,
+                args.output,
+            )
+        )
+    elif args.command == "detector-validation-background-merge":
+        from .detector_validation_data import (
+            DEFAULT_DETECTOR_SUBSETS,
+            merge_streamed_detector_validation_backgrounds,
+        )
+
+        _print(
+            merge_streamed_detector_validation_backgrounds(
+                args.base_manifest,
+                args.base_report,
+                args.shard_receipt,
+                args.output_dir,
+                (
+                    args.required_detector_subset
+                    if args.required_detector_subset is not None
+                    else DEFAULT_DETECTOR_SUBSETS
+                ),
+                args.minimum_per_detector_subset,
+                args.require_ready,
+            )
+        )
+    elif args.command == "detector-validation-materialization-audit":
+        from .detector_validation_data import (
+            audit_detector_stratified_physical_materialization,
+        )
+
+        _print(
+            audit_detector_stratified_physical_materialization(
+                args.injection_plan,
+                args.materialization_report,
+                args.snr_report,
+                args.arrival_report,
+                args.output,
+            )
+        )
     elif args.command == "gravityspy-network-corpus-resplit":
         from .gravityspy import resplit_gravityspy_network_numeric_corpus
 
         _print(
             resplit_gravityspy_network_numeric_corpus(
-                args.report, args.output_dir, args.validation_fraction, args.seed
+                args.report,
+                args.output_dir,
+                args.validation_fraction,
+                args.seed,
+                args.minimum_validation_rows_per_family,
             )
         )
     elif args.command == "gravityspy-strain-evict":
@@ -2320,6 +3872,46 @@ def main(argv: list[str] | None = None) -> int:
         from .overlaps import audit_physical_overlap_manifests
 
         _print(audit_physical_overlap_manifests(args.manifest, args.output))
+    elif args.command == "physical-overlap-scale-subsets":
+        from .overlaps import freeze_physical_overlap_scaling_subsets
+
+        _print(
+            freeze_physical_overlap_scaling_subsets(
+                args.train_manifest,
+                args.validation_manifest,
+                args.gravityspy_corpus_audit,
+                args.scale,
+                args.output_dir,
+                args.seed,
+                args.include_full,
+            )
+        )
+    elif args.command == "physical-overlap-expansion-capacity":
+        from .overlaps import audit_physical_overlap_expansion_capacity
+
+        _print(
+            audit_physical_overlap_expansion_capacity(
+                args.hard_endpoint_report,
+                args.current_overlap_manifest,
+                args.candidate_glitch_manifest,
+                args.candidate_injection_manifest,
+                args.gravityspy_corpus_audit,
+                args.output,
+                args.seed,
+                args.candidate_injection_audit,
+            )
+        )
+    elif args.command == "physical-overlap-scale-hard-subset-freeze":
+        from .overlaps import freeze_physical_overlap_scaling_hard_subset
+
+        _print(
+            freeze_physical_overlap_scaling_hard_subset(
+                args.validation_manifest,
+                args.gravityspy_corpus_audit,
+                args.config,
+                args.output_dir,
+            )
+        )
     elif args.command == "physical-overlap-sampling-promote":
         from .overlap_training import promote_overlap_sampling_arm
 
@@ -2339,7 +3931,97 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             summarize_overlap_five_seed_promotion(
-                args.promotion_report, args.report, args.output
+                args.promotion_report,
+                args.report,
+                args.stability_config,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-single-arm-promote":
+        from .overlap_training import promote_single_overlap_arm
+
+        _print(
+            promote_single_overlap_arm(
+                args.report,
+                args.config,
+                args.output,
+                args.arm,
+            )
+        )
+    elif args.command == "physical-overlap-adapter-five-seed-gate":
+        from .overlap_training import bind_glitch_adapter_five_seed_gate
+
+        _print(
+            bind_glitch_adapter_five_seed_gate(
+                args.original_report,
+                args.promotion_report,
+                args.five_seed_summary,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-training-code-compatibility":
+        from .training_compatibility import (
+            audit_overlap_training_code_compatibility,
+        )
+
+        _print(
+            audit_overlap_training_code_compatibility(
+                args.repository,
+                args.commit,
+                args.config_relative_path,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-five-seed-stability-replay":
+        from .overlap_training import replay_overlap_five_seed_stability
+
+        _print(
+            replay_overlap_five_seed_stability(
+                args.source_summary,
+                args.stability_config,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-scale-summarize":
+        from .overlap_training import summarize_physical_overlap_data_scaling
+
+        _print(
+            summarize_physical_overlap_data_scaling(
+                args.subset_report,
+                args.report,
+                args.output,
+                args.minimum_seeds,
+                args.minimum_material_glitch_iou_gain,
+                args.minimum_clean_chirp_iou_retention,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+            )
+        )
+    elif args.command == "physical-overlap-scale-hard-endpoint-cell":
+        from .overlap_training import (
+            run_physical_overlap_scaling_hard_endpoint_cell,
+        )
+
+        _print(
+            run_physical_overlap_scaling_hard_endpoint_cell(
+                args.config,
+                args.subset_report,
+                args.hard_subset_report,
+                args.finetune_report,
+                args.scale,
+                args.output,
+            )
+        )
+    elif args.command == "physical-overlap-scale-hard-endpoint-bind":
+        from .overlap_training import bind_physical_overlap_scaling_hard_endpoints
+
+        _print(
+            bind_physical_overlap_scaling_hard_endpoints(
+                args.scaling_summary,
+                args.hard_subset_report,
+                args.hard_endpoint_report,
+                args.output,
+                args.next_scale,
             )
         )
     elif args.command == "physical-overlap-contamination":
@@ -2381,6 +4063,72 @@ def main(argv: list[str] | None = None) -> int:
         from .mask_audit import evaluate_gravityspy_mask_audit
 
         _print(evaluate_gravityspy_mask_audit(args.tasks, args.annotations, args.output))
+    elif args.command == "gravityspy-mask-consensus-materialize":
+        from .mask_audit import materialize_gravityspy_mask_consensus
+
+        _print(
+            materialize_gravityspy_mask_consensus(
+                args.tasks,
+                args.annotations,
+                args.audit_report,
+                args.output_dir,
+            )
+        )
+    elif args.command == "gravityspy-mask-segmentation-predict":
+        from .mask_audit import predict_gravityspy_mask_segmentation
+
+        _print(
+            predict_gravityspy_mask_segmentation(
+                args.gold_report,
+                args.selection_report,
+                args.config,
+                args.output_dir,
+            )
+        )
+    elif args.command == "gravityspy-mask-segmentation-evaluate":
+        from .mask_audit import evaluate_gravityspy_mask_segmentation
+
+        _print(
+            evaluate_gravityspy_mask_segmentation(
+                args.gold_report,
+                args.predictions,
+                args.output,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+            )
+        )
+    elif args.command == "automatic-mask-policy-audit":
+        from .automatic_mask import audit_automatic_mask_policy
+
+        _print(
+            audit_automatic_mask_policy(
+                args.overlap_manifest,
+                args.overlap_config,
+                args.output,
+            )
+        )
+    elif args.command == "gravityspy-mask-annotation-serve":
+        from .human_annotation import serve_human_mask_annotation
+
+        serve_human_mask_annotation(
+            args.tasks,
+            args.annotator_id,
+            args.output_dir,
+            args.host,
+            args.port,
+            args.protocol_version,
+        )
+    elif args.command == "gravityspy-mask-annotation-merge":
+        from .human_annotation import merge_human_mask_annotation_manifests
+
+        _print(
+            merge_human_mask_annotation_manifests(
+                args.tasks,
+                args.annotation_manifest,
+                args.output,
+                args.minimum_annotators,
+            )
+        )
     elif args.command == "fit-curve":
         _print(run_curve_fit(args.points, args.output))
     elif args.command == "background-plan":
@@ -2424,6 +4172,30 @@ def main(argv: list[str] | None = None) -> int:
                 args.test_fraction,
                 args.seed,
                 args.split_strategy,
+            )
+        )
+    elif args.command == "background-disjoint-subset":
+        from .background import run_disjoint_background_subset
+
+        _print(
+            run_disjoint_background_subset(
+                args.background_manifest,
+                args.background_report,
+                args.exclude_manifest,
+                args.output_dir,
+                args.split,
+            )
+        )
+    elif args.command == "background-purpose-partition":
+        from .background import run_background_purpose_partition
+
+        _print(
+            run_background_purpose_partition(
+                args.background_manifest,
+                args.background_report,
+                args.output_dir,
+                args.injection_fraction,
+                args.seed,
             )
         )
     elif args.command == "oracle-deglitch":
@@ -2481,6 +4253,46 @@ def main(argv: list[str] | None = None) -> int:
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
                 coherence_config_path=args.coherence_config,
+                calibration_plan_path=args.calibration_plan,
+                calibration_scenario_id=args.calibration_scenario,
+            )
+        )
+    elif args.command == "calibration-perturbation-plan-freeze":
+        from .calibration import freeze_calibration_perturbation_plan
+
+        _print(
+            freeze_calibration_perturbation_plan(
+                args.background_manifest,
+                args.injection_manifest,
+                args.config,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-perturbation-scenario-freeze":
+        from .calibration import freeze_calibration_perturbation_scenario_result
+
+        _print(
+            freeze_calibration_perturbation_scenario_result(
+                args.plan,
+                args.background_score_report,
+                args.injection_score_report,
+                args.background_timing_application_report,
+                args.injection_timing_application_report,
+                args.background_search_report,
+                args.injection_ranking_report,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-perturbation-evaluate":
+        from .calibration import evaluate_calibration_perturbation_robustness
+
+        _print(
+            evaluate_calibration_perturbation_robustness(
+                args.plan,
+                args.baseline_calibration_report,
+                args.scenario_receipt,
+                args.config,
+                args.output,
             )
         )
     elif args.command == "candidate-extract":
@@ -2514,7 +4326,40 @@ def main(argv: list[str] | None = None) -> int:
 
         _print(
             run_apply_candidate_timing_calibration(
-                args.candidates, args.calibration_report, args.output
+                args.candidates,
+                args.calibration_report,
+                args.output,
+                args.scoring_compatibility_report,
+                args.calibration_perturbation_plan,
+                args.calibration_timing_compatibility_report,
+            )
+        )
+    elif args.command == "candidate-scoring-compatibility-audit":
+        from .code_compatibility import (
+            audit_candidate_scoring_implementation_compatibility,
+        )
+
+        _print(
+            audit_candidate_scoring_implementation_compatibility(
+                args.reference_code_dir,
+                args.candidate_code_dir,
+                args.reference_commit,
+                args.candidate_commit,
+                args.output,
+            )
+        )
+    elif args.command == "calibration-timing-transfer-compatibility-audit":
+        from .code_compatibility import (
+            audit_calibration_timing_transfer_compatibility,
+        )
+
+        _print(
+            audit_calibration_timing_transfer_compatibility(
+                args.reference_code_dir,
+                args.candidate_code_dir,
+                args.reference_commit,
+                args.candidate_commit,
+                args.output,
             )
         )
     elif args.command == "injection-candidate-extract":
@@ -2563,6 +4408,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.physical_delay_limit_seconds,
                 args.empirical_timing_uncertainty_seconds,
                 args.truth_association_window_seconds,
+            )
+        )
+    elif args.command == "detector-set-injection-candidate-rank":
+        from .candidates import (
+            run_detector_set_injection_candidate_rankings,
+        )
+
+        _print(
+            run_detector_set_injection_candidate_rankings(
+                args.injection_triggers,
+                args.candidates,
+                args.config,
+                args.output_dir,
+                args.split,
+                args.empirical_timing_uncertainty_seconds,
             )
         )
     elif args.command == "candidate-time-slides":
@@ -2621,6 +4481,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.empirical_timing_uncertainty_seconds,
             )
         )
+    elif args.command == "detector-set-block-permutations":
+        from .candidates import (
+            run_detector_set_candidate_block_permutations,
+        )
+
+        _print(
+            run_detector_set_candidate_block_permutations(
+                args.candidates,
+                args.background_manifest,
+                args.schedule,
+                args.output_dir,
+                args.empirical_timing_uncertainty_seconds,
+                args.cluster_window_seconds,
+            )
+        )
     elif args.command == "candidate-time-slide-range-schedule-freeze":
         from .exposure import freeze_candidate_time_slide_range_schedule
 
@@ -2653,6 +4528,67 @@ def main(argv: list[str] | None = None) -> int:
                 args.maximum_shifts,
             )
         )
+    elif (
+        args.command
+        == "detector-set-block-permutation-schedule-freeze"
+    ):
+        from .exposure import (
+            freeze_detector_set_block_permutation_schedule,
+        )
+
+        _print(
+            freeze_detector_set_block_permutation_schedule(
+                args.background_manifest,
+                args.network_config,
+                args.output,
+                args.split,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+                args.maximum_shifts,
+                args.exposure_safety_factor,
+            )
+        )
+    elif args.command == "candidate-block-permutation-capacity-forecast":
+        from .exposure import run_candidate_block_permutation_capacity_forecast
+
+        _print(
+            run_candidate_block_permutation_capacity_forecast(
+                args.pilot_schedule,
+                args.pilot_background_report,
+                args.planned_parent_plan,
+                args.output,
+                args.safety_factor,
+                args.allow_insufficient,
+            )
+        )
+    elif args.command == "candidate-background-plan-authorize":
+        from .exposure import authorize_candidate_background_plan
+
+        _print(
+            authorize_candidate_background_plan(
+                args.independent_validation_endpoint,
+                args.parent_plan,
+                args.validation_purpose_audit,
+                args.capacity_forecast,
+                args.output,
+                args.shard_stop_exclusive,
+                args.pairs_per_shard,
+                args.target_far_per_year,
+                args.zero_count_confidence,
+                args.minimum_safety_factor,
+            )
+        )
+    elif args.command == "candidate-block-permutation-capacity-extension-freeze":
+        from .exposure import freeze_candidate_block_capacity_extension_decision
+
+        _print(
+            freeze_candidate_block_capacity_extension_decision(
+                args.base_forecast,
+                args.extended_plan,
+                args.extended_forecast,
+                args.output,
+            )
+        )
     elif args.command == "candidate-search-validation-pipeline":
         from .candidate_pipeline import run_candidate_validation_pipeline
 
@@ -2683,6 +4619,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_far_per_year,
                 args.bootstrap_replicates,
                 args.seed,
+                args.model_selection_report,
             )
         )
     elif args.command == "candidate-search-validation-compare":
@@ -2709,6 +4646,67 @@ def main(argv: list[str] | None = None) -> int:
                 args.injection_ranking_report,
                 args.output_dir,
                 args.zero_count_confidence,
+            )
+        )
+    elif (
+        args.command
+        == "candidate-search-validation-detector-set-recalibrate"
+    ):
+        from .candidate_pipeline import (
+            recalibrate_candidate_validation_pipeline_with_detector_sets,
+        )
+
+        _print(
+            recalibrate_candidate_validation_pipeline_with_detector_sets(
+                args.pipeline_report,
+                args.background_manifest,
+                args.calibrated_background_candidate_manifest,
+                args.injection_trigger_manifest,
+                args.calibrated_injection_candidate_manifest,
+                args.network_config,
+                args.output_dir,
+                args.zero_count_confidence,
+                args.maximum_shifts,
+                args.exposure_safety_factor,
+            )
+        )
+    elif (
+        args.command
+        == "raw-mask-detector-set-ranking-successor-freeze"
+    ):
+        from .candidate_pipeline import (
+            freeze_raw_mask_detector_set_ranking_successor,
+        )
+
+        _print(
+            freeze_raw_mask_detector_set_ranking_successor(
+                args.mask_timing_receipt,
+                args.raw_variable_ranking_report,
+                args.mask_variable_ranking_report,
+                args.network_config,
+                args.output,
+            )
+        )
+    elif (
+        args.command
+        == "numeric-raw-mask-detector-set-ranking-successor-freeze"
+    ):
+        from .candidate_pipeline import (
+            freeze_numeric_raw_mask_detector_set_ranking_successor,
+        )
+
+        _print(
+            freeze_numeric_raw_mask_detector_set_ranking_successor(
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.raw_variable_ranking_report,
+                args.mask_variable_ranking_report,
+                args.raw_timing_report,
+                args.mask_timing_report,
+                args.background_deglitch_report,
+                args.injection_deglitch_report,
+                args.network_config,
+                args.output,
             )
         )
     elif args.command == "candidate-time-slide-merge":
@@ -2762,6 +4760,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
             )
         )
+    elif args.command == "amplfi-background-source-evict":
+        from .streaming import evict_amplfi_background_batch_sources
+
+        _print(
+            evict_amplfi_background_batch_sources(
+                args.batch_report,
+                args.background_report,
+                args.export_report,
+                args.cache_root,
+                args.output,
+            )
+        )
     elif args.command == "background-stream-shard":
         from .streaming import run_streamed_background_shard
 
@@ -2787,6 +4797,40 @@ def main(argv: list[str] | None = None) -> int:
                 args.chirp_threshold,
                 args.minimum_bins,
                 args.download_workers,
+                False,
+                args.verified_source_inventory,
+            )
+        )
+    elif args.command == "background-raw-mask-stream-shard":
+        from .streaming import run_streamed_background_shard
+
+        _print(
+            run_streamed_background_shard(
+                args.parent_plan,
+                args.event_exclusions,
+                None,
+                args.checkpoint,
+                args.config,
+                args.coherence_config,
+                args.cache_root,
+                args.output_dir,
+                args.shard_index,
+                args.pairs_per_shard,
+                args.validation_fraction,
+                0.0,
+                args.seed,
+                tuple(args.model_ifos),
+                tuple(args.q_values),
+                args.target_sample_rate,
+                args.context_duration,
+                args.chirp_threshold,
+                args.minimum_bins,
+                args.download_workers,
+                False,
+                args.verified_source_inventory,
+                args.mask_validation_receipt,
+                args.mask_timing_receipt,
+                args.scoring_compatibility_report,
             )
         )
     elif args.command == "background-morphology-stream-shard":
@@ -2812,12 +4856,25 @@ def main(argv: list[str] | None = None) -> int:
                 args.chirp_threshold,
                 args.minimum_bins,
                 args.download_workers,
+                args.verified_source_inventory,
             )
         )
     elif args.command == "background-stream-merge":
         from .streaming import merge_streamed_background_shards
 
-        _print(merge_streamed_background_shards(args.shard_report, args.output_dir))
+        _print(
+            merge_streamed_background_shards(
+                args.shard_report, args.output_dir, args.parent_plan
+            )
+        )
+    elif args.command == "background-raw-mask-stream-merge":
+        from .streaming import merge_raw_mask_streamed_background_shards
+
+        _print(
+            merge_raw_mask_streamed_background_shards(
+                args.shard_report, args.output_dir, args.parent_plan
+            )
+        )
     elif args.command == "background-morphology-calibrate":
         from .streaming import calibrate_streamed_morphology_candidate_rate
 
@@ -2894,6 +4951,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
             )
         )
+    elif args.command == "independent-validation-endpoint-freeze":
+        from .injections import freeze_independent_validation_endpoint
+
+        _print(
+            freeze_independent_validation_endpoint(
+                args.purpose_partition_report,
+                args.injection_plan_report,
+                args.waveform_validation_report,
+                args.materialization_report,
+                args.snr_annotation_report,
+                args.arrival_annotation_report,
+                args.output,
+            )
+        )
     elif args.command == "evaluation-corpus-freeze":
         from .evaluation_lock import freeze_evaluation_corpus
 
@@ -2913,6 +4984,180 @@ def main(argv: list[str] | None = None) -> int:
                     "gps_block",
                     "source_family",
                 ),
+            )
+        )
+    elif args.command == "gwtc5-locked-corpus-freeze":
+        from .evaluation_lock import freeze_gwtc5_locked_corpus_contract
+
+        _print(
+            freeze_gwtc5_locked_corpus_contract(
+                args.manifest,
+                args.inventory_report,
+                args.waveform_validation_report,
+                args.suite_config,
+                args.output,
+                args.access_log,
+            )
+        )
+    elif args.command == "locked-evaluation-suite-freeze":
+        from .evaluation_lock import freeze_locked_evaluation_suite_plan
+
+        _print(
+            freeze_locked_evaluation_suite_plan(
+                args.validation_evidence_report,
+                args.config,
+                args.output_root,
+                args.code_commit,
+                args.output,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-execution-freeze":
+        from .evaluation_lock import freeze_locked_o4b_streaming_execution_plan
+
+        _print(
+            freeze_locked_o4b_streaming_execution_plan(
+                args.suite_plan,
+                args.corpus_freeze,
+                args.availability_manifest,
+                args.availability_report,
+                args.inventory_manifest,
+                args.inventory_report,
+                args.pe_retention_config,
+                args.validation_pe_promotion,
+                args.work_root,
+                args.shard_manifest,
+                args.output,
+                args.code_commit,
+                args.blocks_per_shard,
+                args.minimum_free_kb,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-completion-audit":
+        from .evaluation_lock import audit_locked_o4b_streaming_completion
+
+        _print(
+            audit_locked_o4b_streaming_completion(
+                args.execution_plan,
+                args.access_log,
+                args.receipt_manifest,
+                args.output,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-download":
+        from .evaluation_lock import download_locked_o4b_streaming_shard_sources
+
+        _print(
+            download_locked_o4b_streaming_shard_sources(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+                args.download_workers,
+                args.chunk_samples,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-finalize":
+        from .evaluation_lock import finalize_locked_o4b_streaming_shard
+
+        _print(
+            finalize_locked_o4b_streaming_shard(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-prepare":
+        from .evaluation_lock import prepare_locked_o4b_streaming_shard_manifests
+
+        _print(
+            prepare_locked_o4b_streaming_shard_manifests(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.code_commit,
+                args.background_window_duration,
+                args.background_stride,
+                args.background_block_duration,
+                args.background_context_duration,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-receipts-merge":
+        from .evaluation_lock import merge_locked_o4b_streaming_shard_receipts
+
+        _print(
+            merge_locked_o4b_streaming_shard_receipts(
+                args.execution_plan,
+                args.access_log,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-post-dq-injection-weights":
+        from .evaluation_lock import reduce_locked_o4b_post_dq_injection_weights
+
+        _print(
+            reduce_locked_o4b_post_dq_injection_weights(
+                args.execution_plan,
+                args.access_log,
+                args.streaming_completion_audit,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-shard-publish":
+        from .locked_streaming import publish_locked_o4b_streaming_shard_artifacts
+
+        _print(
+            publish_locked_o4b_streaming_shard_artifacts(
+                args.execution_plan,
+                args.access_log,
+                args.shard_index,
+                args.raw_background_candidates,
+                args.raw_injection_candidates,
+                args.mask_background_candidates,
+                args.mask_injection_candidates,
+                args.ood_source_manifest,
+                args.injection_trigger_manifest,
+                args.pe_input_manifest,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-streaming-suite-inputs-merge":
+        from .locked_streaming import (
+            merge_locked_o4b_streaming_suite_input_sources,
+        )
+
+        _print(
+            merge_locked_o4b_streaming_suite_input_sources(
+                args.suite_plan,
+                args.execution_plan,
+                args.access_log,
+                args.streaming_completion_audit,
+                args.post_dq_weight_report,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-o4b-search-inputs-reduce":
+        from .locked_streaming import reduce_locked_o4b_search_inputs
+
+        _print(
+            reduce_locked_o4b_search_inputs(
+                args.suite_plan,
+                args.execution_plan,
+                args.access_log,
+                args.suite_input_merge_report,
+                args.code_commit,
+            )
+        )
+    elif args.command == "locked-evaluation-suite-finalize":
+        from .evaluation_lock import finalize_locked_evaluation_suite_receipt
+
+        _print(
+            finalize_locked_evaluation_suite_receipt(
+                args.plan,
+                args.access_log,
+                args.streaming_completion_audit,
+                args.output,
             )
         )
     elif args.command == "evaluation-corpus-open-once":
@@ -2955,6 +5200,62 @@ def main(argv: list[str] | None = None) -> int:
                 storage_mode=args.storage_mode,
             )
         )
+    elif args.command == "injection-detector-set-expand":
+        from .detector_expansion import (
+            expand_materialized_injection_detector_set,
+        )
+
+        _print(
+            expand_materialized_injection_detector_set(
+                args.manifest,
+                args.config,
+                args.backend_validation_report,
+                args.output_dir,
+                args.split,
+                args.limit,
+            )
+        )
+    elif args.command == "injection-detector-set-readiness-audit":
+        from .detector_expansion import (
+            audit_detector_set_expansion_readiness,
+        )
+
+        _print(
+            audit_detector_set_expansion_readiness(
+                args.report,
+                args.output,
+            )
+        )
+    elif args.command == "detector-set-training-bundle-export":
+        from .training_transfer import export_detector_set_training_bundle
+
+        configs = {}
+        for value in args.config:
+            label, separator, path = value.partition("=")
+            if not separator or not label or not path or label in configs:
+                raise ValueError(
+                    "--config must use a unique non-empty LABEL=PATH value"
+                )
+            configs[label] = path
+        _print(
+            export_detector_set_training_bundle(
+                args.overlap_receipt,
+                args.clean_train_manifest,
+                args.clean_validation_manifest,
+                args.pretrained_checkpoint,
+                configs,
+                args.output_dir,
+            )
+        )
+    elif args.command == "detector-set-training-bundle-import":
+        from .training_transfer import import_detector_set_training_bundle
+
+        _print(
+            import_detector_set_training_bundle(
+                args.bundle_receipt,
+                args.output_dir,
+            )
+        )
     elif args.command == "background-bank-materialize":
         from .waveforms import materialize_background_bank
 
@@ -2987,6 +5288,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.sample_rate,
                 args.reference_duration,
                 args.per_family,
+                selection_mode=args.selection_mode,
+                include_alternatives=args.include_alternatives,
+                runtime_receipt_path=args.runtime_receipt,
             )
         )
     elif args.command == "injection-snr-annotate":
@@ -3022,6 +5326,8 @@ def main(argv: list[str] | None = None) -> int:
                 required_split=args.required_split,
                 enabled_ifos=(tuple(args.enabled_ifos) if args.enabled_ifos else None),
                 coherence_config_path=args.coherence_config,
+                calibration_plan_path=args.calibration_plan,
+                calibration_scenario_id=args.calibration_scenario,
             )
         )
     elif args.command == "pe-evaluate":
@@ -3048,6 +5354,127 @@ def main(argv: list[str] | None = None) -> int:
                 args.bootstrap_replicates,
                 args.bootstrap_seed,
                 not args.allow_incomplete_provenance,
+                not args.within_backend_only,
+            )
+        )
+    elif args.command == "pe-robustness-joint-evaluate":
+        from .pe import run_joint_pe_robustness_evaluation
+
+        _print(
+            run_joint_pe_robustness_evaluation(
+                args.dingo_batch_report,
+                args.amplfi_batch_report,
+                args.manifest_output,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+            )
+        )
+    elif args.command == "pe-robustness-portfolio-evaluate":
+        from .pe import run_within_backend_pe_robustness_portfolio
+
+        _print(
+            run_within_backend_pe_robustness_portfolio(
+                args.dingo_batch_report,
+                args.dingo_robustness_report,
+                args.amplfi_batch_report,
+                args.amplfi_robustness_report,
+                args.manifest_output,
+                args.output,
+                args.credible_level,
+                args.bootstrap_replicates,
+                args.bootstrap_seed,
+                args.required_split,
+            )
+        )
+    elif args.command == "pe-within-backend-bundle-export":
+        from .pe_evidence_transfer import (
+            export_within_backend_pe_evidence_bundle,
+        )
+
+        _print(
+            export_within_backend_pe_evidence_bundle(
+                args.summary,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-within-backend-bundle-import":
+        from .pe_evidence_transfer import (
+            import_within_backend_pe_evidence_bundle,
+        )
+
+        _print(
+            import_within_backend_pe_evidence_bundle(
+                args.bundle_receipt,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-input-bundle-export":
+        from .pe_input_transfer import export_paired_pe_input_bundle
+
+        _print(
+            export_paired_pe_input_bundle(
+                args.summary,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-input-bundle-import":
+        from .pe_input_transfer import import_paired_pe_input_bundle
+
+        _print(
+            import_paired_pe_input_bundle(
+                args.bundle_receipt,
+                args.output_dir,
+            )
+        )
+    elif args.command == "pe-robustness-promote":
+        from .pe import promote_pe_robustness_validation
+
+        _print(
+            promote_pe_robustness_validation(
+                args.joint_report,
+                args.config,
+                args.output,
+            )
+        )
+    elif args.command == "pe-backend-bind-locked":
+        from .pe import bind_locked_pe_backend_batch
+
+        _print(
+            bind_locked_pe_backend_batch(
+                args.backend,
+                args.batch_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
+    elif args.command == "pe-robustness-joint-evaluate-locked":
+        from .pe import run_locked_joint_pe_robustness_evaluation
+
+        _print(
+            run_locked_joint_pe_robustness_evaluation(
+                args.dingo_locked_report,
+                args.amplfi_locked_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+            )
+        )
+    elif args.command == "pe-robustness-portfolio-evaluate-locked":
+        from .pe import run_locked_paired_pe_robustness_portfolio
+
+        _print(
+            run_locked_paired_pe_robustness_portfolio(
+                args.dingo_locked_report,
+                args.amplfi_locked_report,
+                args.validation_promotion_report,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
             )
         )
     elif args.command == "pe-input-materialize":
@@ -3073,6 +5500,7 @@ def main(argv: list[str] | None = None) -> int:
                 asd_guard_seconds=args.asd_guard_seconds,
                 limit=args.limit,
                 selection_seed=args.selection_seed,
+                minimum_selected_gps_blocks=args.minimum_selected_gps_blocks,
             )
         )
     elif args.command == "pe-backend-lock-audit":
@@ -3083,6 +5511,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 args.output,
                 args.allow_incomplete,
+            )
+        )
+    elif args.command == "pe-joint-model-compatibility-audit":
+        from .pe_backend import run_joint_pe_model_compatibility_audit
+
+        _print(
+            run_joint_pe_model_compatibility_audit(
+                args.dingo_model_metadata,
+                args.amplfi_model_metadata,
+                args.dingo_native_prior,
+                args.amplfi_native_prior,
+                args.dingo_model_init,
+                args.output,
+                args.allow_incompatible,
             )
         )
     elif args.command == "pe-native-condition":
@@ -3103,6 +5545,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dingo_common_batch(
                 args.native_manifest,
                 args.model_metadata,
+                args.native_prior,
                 args.model_init,
                 args.python_executable,
                 args.runner_script,
@@ -3113,6 +5556,21 @@ def main(argv: list[str] | None = None) -> int:
                 args.num_gnpe_iterations,
                 args.device,
                 args.seed,
+                args.comparison_mode,
+            )
+        )
+    elif args.command == "dingo-official-native-model-freeze":
+        from .dingo_adapter import freeze_official_dingo_native_model_metadata
+
+        _print(
+            freeze_official_dingo_native_model_metadata(
+                args.source_config,
+                args.acquisition_report,
+                args.model_load_receipt,
+                args.native_runtime_receipt,
+                args.native_event_smoke_summary,
+                args.native_conditioning_config,
+                args.output,
             )
         )
     elif args.command == "amplfi-common-batch":
@@ -3171,6 +5629,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 download=args.download,
                 minimum_free_bytes=args.minimum_free_bytes,
+                transfer_attempts=args.transfer_attempts,
+                retry_delay_seconds=args.retry_delay_seconds,
+                maximum_stalled_attempts=args.maximum_stalled_attempts,
             )
         )
     elif args.command == "pe-lightning-checkpoint-select":
@@ -3189,6 +5650,16 @@ def main(argv: list[str] | None = None) -> int:
                 minimum_validation_points=args.minimum_validation_points,
             )
         )
+    elif args.command == "dingo-runtime-failure-adjudicate":
+        from .pe_compatibility import run_dingo_runtime_failure_adjudication
+
+        _print(
+            run_dingo_runtime_failure_adjudication(
+                args.failure_receipt,
+                args.policy,
+                args.output,
+            )
+        )
     elif args.command == "amplfi-background-export":
         from .amplfi_adapter import run_amplfi_group_safe_background_export
 
@@ -3201,6 +5672,50 @@ def main(argv: list[str] | None = None) -> int:
                 minimum_segment_seconds=args.minimum_segment_seconds,
             )
         )
+    elif args.command == "amplfi-background-capacity-audit":
+        from .amplfi_adapter import run_amplfi_background_capacity_audit
+
+        _print(
+            run_amplfi_background_capacity_audit(
+                args.manifest,
+                args.policy,
+                args.output,
+            )
+        )
+    elif args.command == "amplfi-background-extension-merge":
+        from .amplfi_adapter import (
+            merge_amplfi_streamed_background_extension,
+        )
+
+        _print(
+            merge_amplfi_streamed_background_extension(
+                args.base_merge_report,
+                args.extension_plan,
+                args.shard_dir,
+                args.output_dir,
+            )
+        )
+    elif args.command == "amplfi-training-bank-freeze":
+        from .amplfi_adapter import freeze_amplfi_training_bank
+
+        _print(
+            freeze_amplfi_training_bank(
+                args.background_receipt,
+                args.output_dir,
+            )
+        )
+    elif args.command == "amplfi-training-stage-freeze":
+        from .amplfi_adapter import freeze_amplfi_training_stage_config
+
+        _print(
+            freeze_amplfi_training_stage_config(
+                args.base_config,
+                args.stage_policy,
+                args.stage,
+                args.output_config,
+                args.output_report,
+            )
+        )
     elif args.command == "amplfi-common-prior-audit":
         from .amplfi_adapter import run_amplfi_common_prior_audit
 
@@ -3208,6 +5723,17 @@ def main(argv: list[str] | None = None) -> int:
             run_amplfi_common_prior_audit(
                 args.canonical_prior,
                 args.amplfi_prior,
+                args.training_config,
+                args.output,
+            )
+        )
+    elif args.command == "dingo-common-prior-audit":
+        from .dingo_adapter import run_dingo_common_prior_audit
+
+        _print(
+            run_dingo_common_prior_audit(
+                args.canonical_prior,
+                args.dingo_prior_config,
                 args.training_config,
                 args.output,
             )
@@ -3224,6 +5750,45 @@ def main(argv: list[str] | None = None) -> int:
                 args.score_field,
             )
         )
+    elif args.command == "ood-abstention-evaluate-locked":
+        from .ood import run_locked_ood_transfer_evaluation
+
+        _print(
+            run_locked_ood_transfer_evaluation(
+                args.validation_ood_report,
+                args.locked_score_report,
+                args.locked_score_manifest,
+                args.locked_suite_plan,
+                args.access_log,
+                args.output,
+                args.score_field,
+            )
+        )
+    elif args.command == "detector-set-ood-validation-bind":
+        from .ood import bind_source_safe_detector_set_ood_validation
+
+        _print(
+            bind_source_safe_detector_set_ood_validation(
+                args.source_receipt,
+                args.corpus_audit,
+                args.output,
+            )
+        )
+    elif args.command == "glitch-ood-score-frozen":
+        from .ood import run_frozen_glitch_ood_scoring
+
+        _print(
+            run_frozen_glitch_ood_scoring(
+                args.config,
+                args.validation_ood_report,
+                args.evaluation_manifest,
+                args.output_manifest,
+                args.output_report,
+                args.required_split,
+                args.locked_suite_plan,
+                args.access_log,
+            )
+        )
     elif args.command == "gravityspy-ood-split":
         from .ood import build_leave_one_family_out_split
 
@@ -3234,6 +5799,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.held_out_family,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "gravityspy-ood-family-freeze":
+        from .ood import freeze_ood_held_family_protocol
+
+        _print(
+            freeze_ood_held_family_protocol(
+                args.train_manifest,
+                args.validation_manifest,
+                args.output,
+                args.exclude_family,
+                args.minimum_train_rows,
+                args.minimum_validation_rows,
+                args.minimum_validation_gps_blocks,
             )
         )
     elif args.command == "glitch-ood-train":
@@ -3247,6 +5826,29 @@ def main(argv: list[str] | None = None) -> int:
                 args.heldout_evaluation_manifest,
                 args.output_dir,
                 args.seed,
+            )
+        )
+    elif args.command == "publication-evidence-audit":
+        from .publication import run_publication_evidence_audit
+
+        _print(
+            run_publication_evidence_audit(
+                args.config,
+                args.evidence,
+                args.output,
+                args.markdown,
+                args.require_ready,
+            )
+        )
+    elif args.command == "publication-result-registry":
+        from .publication import run_publication_result_registry
+
+        _print(
+            run_publication_result_registry(
+                args.ledger,
+                args.output,
+                args.csv,
+                args.markdown,
             )
         )
     else:

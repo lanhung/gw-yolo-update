@@ -1,0 +1,27 @@
+schema_version: 1
+primary_runtime_version: 0.9.8
+fallback_runtime_version: 0.5.8
+
+# These signatures are evaluated only after source, acquisition, model and log
+# hashes have been replayed. Infrastructure failures always override a match.
+compatibility_allow_patterns:
+  - "ModuleNotFoundError: No module named ['\\\"]dingo\\."
+  - "AttributeError: (Can't|Cannot) get attribute"
+  - "TypeError: .*unexpected keyword argument"
+  - "Missing key\\(s\\) in state_dict"
+  - "Unexpected key\\(s\\) in state_dict"
+  - "pickle\\.UnpicklingError"
+
+infrastructure_deny_patterns:
+  - "CUDA.*(unavailable|not available)"
+  - "out of memory"
+  - "No space left on device"
+  - "disk quota exceeded"
+  - "SHA256 mismatch"
+  - "checksum.*(mismatch|failed)"
+  - "No such file or directory"
+  - "Permission denied"
+  - "Killed"
+  - "Segmentation fault"
+  - "ConnectionError"
+  - "network.*(unavailable|timeout|timed out)"

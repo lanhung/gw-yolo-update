@@ -263,6 +263,38 @@ eviction. A completed shard is immutable under its full run identity and can be 
 release without attempting to redownload a deleted source. Shards containing only training blocks
 are explicitly counted and safely released for this search-only corpus.
 
+For a model-independent injection/background corpus, use
+`scripts/run_background_acquisition_range.sh`. It starts at shard zero, retries each resumable
+`gwosc-batch-download`, rejects a missing or identity-mismatched batch report, and only then creates
+one global `hash_threshold_v1` background manifest from every verified shard. Development
+calibration runs force `test_fraction=0`; the validation blocks may be used for injection planning
+and threshold calibration but not relabelled as a test. A prior completed batch report can be passed
+as `VERIFIED_SOURCE_INVENTORY`: requested files are imported only after matching run, pair, GPS,
+IFO, detail URL and bounded cache slot, followed by an offline replay of byte hash, HDF5 statistics,
+sample count and DQ/injection bit sums. The inventory hash is part of the new run identity. This
+reuses public bytes, not an earlier split or scientific result.
+
+An expanded parent is not automatically an independent-GPS endpoint when it retains an earlier
+prefix. `background-disjoint-subset` hash-binds the source background and every declared prior
+train/validation manifest, removes all matching GPS blocks, and emits a one-split development
+background with recomputed live time. `run_independent_validation_injections.sh` requires at least
+the predeclared number of remaining GPS blocks before it plans validation-only recipes, reruns the
+external PyCBC/direct-LAL waveform comparison for that exact recipe hash, materializes 3,000
+signal-only scaled-float16 injections, annotates empirical SNR and adds geometric detector arrivals.
+It never creates or reads a test split. The resulting arm measures transfer to new detector noise;
+it must not be confounded with drawing another waveform population on reused GPS blocks.
+
+Within that new validation domain, threshold/FAR calibration and injection efficiency also receive
+disjoint noise groups. `background-purpose-partition` assigns whole validation GPS blocks by a
+frozen hash to `candidate_calibration` or `injection_validation`, writes a compatible background
+report for each purpose, and records complete coverage plus zero cross-purpose block overlap. The
+primary 3k endpoint requires at least 25 blocks per arm. A broader unpartitioned 3k run may be kept
+as engineering evidence, but it cannot be the paper's threshold-versus-efficiency validation pair.
+`independent-validation-endpoint-freeze` then replays the complete partition → recipe → external
+waveform comparison → materialization → SNR → arrival hash chain and emits one immutable receipt.
+The promoted candidate-search runner requires that receipt and exact candidate-calibration plus
+arrival manifests; passing paths from unrelated runs is rejected before GPU scoring.
+
 After any acquisition tranche, `background-stream-merge` verifies a single parent/split/model/
 timing identity, non-overlapping parent pair-index ranges, unique windows and candidates, and one
 split per GPS block across every shard. It writes globally ordered background plus val/test
@@ -591,10 +623,118 @@ known-event, context and category exclusions, leaving margin for the pre-registe
 target. Plan SHA256 is `d9043337438db689b581bade1922c1191ed52fde94ce056d460c4c9e74316d04`.
 It is a development acquisition plan, not measured live time or a search result. O4b remains locked.
 
-The weak-mask gate is executable rather than rhetorical. `gravityspy-mask-audit-plan` samples only
-the frozen numeric validation split, deterministically stratified by morphology. Each task requires
-an odd panel of at least three independent annotators blinded to the metadata-derived mask, so
-pixelwise majority consensus has no ties. `gravityspy-mask-audit-evaluate`
-hash-verifies NPZ masks and reports inter-annotator IoU, weak-versus-consensus IoU, per-label
-agreement and Wilson intervals. Only that narrow weak-mask agreement claim is enabled by a completed
-audit; segmentation, deglitch and search claims remain separate locked evaluations.
+The primary mask gate is deterministic and non-human. For each physical overlap, chirp support is
+recomputed from the isolated injected waveform component. Real-glitch support is a pseudo-mask
+recomputed from the isolated `raw_glitch_strain` using per-available-IFO whitening, a fresh numeric
+multi-Q transform and a frozen fraction of each plane's peak power. The original Gravity Spy
+duration/frequency/Q rectangle is retained only as a legacy diagnostic and is never used as human
+truth.
+
+`automatic-mask-policy-audit` re-hashes every validation overlap and exactly recomputes both masks
+from the isolated numeric components and frozen overlap configuration. It rejects duplicate
+waveforms, injections, glitches or mixture IDs, non-finite arrays, missing detector-availability
+masks, changed hashes, empty component masks and any row claiming a human pixel target. The report
+explicitly sets `automatic_glitch_masks_are_pseudo_labels=true`,
+`human_ground_truth_claimed=false` and `pixel_accuracy_claim_allowed=false`.
+
+The publication ledger requires
+`candidate-search-raw-mask-automatic-endpoint-bind`. The binder replays the deterministic mask
+audit and the complete validation-only raw/mask continuous-background endpoint. Consequently the
+paper claim is functional: fixed-FAR sensitivity, clean-signal non-inferiority, timing and paired PE
+robustness. It is not a claim that an inherently ambiguous real-glitch boundary has a unique pixel
+ground truth.
+
+`run_automatic_mask_publication_evidence.sh` performs the audit and binding without waiting for
+people or using a GPU. Human annotation commands remain available solely to reproduce the earlier
+diagnostic experiment; they are no longer part of model training, publication readiness or the
+O4b/GWTC-5 unlock path. Disagreeing historical annotations remain separate and are never merged
+into primary labels.
+
+## Group-safe chirp+glitch overlap scaling curve
+
+The aligned detector-set corpus now has its own scaling experiment; the earlier 2k/5k/10k clean
+waveform curve cannot answer whether real-glitch mixture diversity is limiting mask learning.
+`physical-overlap-scale-subsets` re-hashes every numeric overlap artifact and the source-component-
+safe Gravity Spy corpus audit, then assigns one stable rank using mixture, injection, waveform,
+glitch, injection-GPS and network-GPS identities. Declared prefixes are therefore strictly nested
+without ever splitting or duplicating an underlying physical group. The frozen validation manifest
+is not subsampled and test rows remain unopened.
+
+The initial declared train sizes are 250, 500 and 1,000 physical mixtures plus the complete endpoint.
+Every point runs the same five paired seeds under both controls:
+
+- `configs/physical_overlap_scale_fixed_epochs.yaml`: 20 epochs, allowing optimizer updates to grow
+  with physical data;
+- `configs/physical_overlap_scale_fixed_updates.yaml`: exactly 4,000 optimizer updates, with a
+  fail-closed epoch safety cap.
+
+`physical-overlap-scale-summarize` requires the same validation, clean train/validation and
+pretrained-checkpoint hashes in every cell. It reports per-scale means and sample standard
+deviations and paired-seed bootstrap intervals for adjacent glitch-IoU gains. More same-distribution
+data is promoted only if the most recent approximately doubled step improves glitch IoU by at least
+0.01 with a positive paired-bootstrap lower bound under both fixed-epoch and fixed-update controls,
+while mean clean-chirp IoU retention remains at least 0.95. An epoch-only gain is diagnosed as
+budget coupling or optimization limitation; failure under both controls redirects work toward new
+GPS/run/glitch-family coverage or representation. The curve remains validation-only and cannot
+replace continuous-background FAR/IFAR/`<VT>` evidence.
+
+`scripts/run_physical_overlap_data_scaling.sh` freezes the subsets and executes the complete
+two-control, five-seed matrix resumably. It is artifact-gated behind the completed source-safe
+overlap bank and must not open O4b/GWTC-5.
+
+The same-bank mask-IoU curve is now explicitly diagnostic and cannot by itself authorize a larger
+data scale or satisfy the publication ledger. Before reading any cell metric,
+`physical-overlap-scale-hard-subset-freeze` deterministically freezes a score-blind validation
+subset from metadata only. The four required strata are low network SNR, a missing detector, O3b
+transfer and rare glitch families; each requires at least 25 physical rows and 25 unique glitches.
+The manifest, source corpus audit, selection config and every numeric artifact are hashed, while
+candidate scores and model outputs remain unread.
+
+`physical-overlap-scale-hard-endpoint-cell` then evaluates every scale/control/seed checkpoint on
+that same subset using its already selected validation thresholds. Threshold refits are forbidden.
+It reports overall and per-stratum chirp/glitch IoU plus the original clean-chirp retention gate.
+`physical-overlap-scale-hard-endpoint-bind` requires exact coverage of the complete paired matrix,
+replays every checkpoint and report, and bootstraps the most recent approximately doubled step.
+The next bounded physical scale is authorized only when both fixed-epoch and fixed-update controls
+show at least 0.01 hard-subset glitch-IoU gain with a positive lower 95% bound and clean retention
+of at least 0.95 for every upper-scale seed.
+
+If same-bank IoU improves but the hard subset does not, the result is classified as domain-transfer
+limited and more same-distribution data is refused. Fixed-epoch-only hard-subset improvement is
+optimization-budget limited. Failure of both controls is classified as representation/label
+limited, while clean regression has its own non-inferiority failure. The complete cell reports are
+embedded in one immutable bundle so negative decisions cannot be dropped from the paper table.
+`scripts/run_physical_overlap_scaling_hard_endpoint.sh` is the fail-closed successor that performs
+the freeze, all cell evaluations and the final binding without opening test data.
+
+## Detector-subset scaling is a separate physical-data axis
+
+Rendered count, waveform count and detector-subset coverage must be reported separately. A model
+configured with H1/L1/V1 channels is not evidence that it learned V1 morphology or missing-detector
+behavior. The 2026-07-23 physical-count audit found:
+
+- the frozen 3,000-injection independent endpoint has 3,000 H1+L1 rows and zero H1+V1, L1+V1 or
+  H1+L1+V1 rows;
+- the source-safe validation glitch corpus has 210 H1+L1, 134 H1+V1, 4 L1+V1 and 219 H1+L1+V1
+  scenes;
+- the source-safe training glitch corpus has only 42 L1+V1 scenes.
+
+The four detector subsets are therefore promoted to an explicit data-scaling axis. Calibration
+robustness requires at least 25 independent physical injections in every exact subset before any
+GPU scoring begins. The 25-row value is an execution floor, not a claim of saturation. The planned
+curve is 25/50/100/200 physical injections per subset, grouped by injection/waveform ID, source GPS
+block and observing run. H1+L1, H1+V1, L1+V1 and H1+L1+V1 must be evaluated separately and as one
+mixture-weighted aggregate.
+
+New validation rows must use source blocks disjoint from training and from candidate-threshold
+background. Training rows may not be reassigned to validation. V1 must contain an antenna-projected
+physical waveform and real numeric strain; a zero-valued V1 plane with a changed validity flag does
+not count. At least 25 GPS blocks are required overall, and no exact detector subset may be carried
+by fewer than 25 independent injection IDs.
+
+The immediate acquisition deficit is at least 21 validation-only L1+V1 contexts, but production
+should target the 100-per-subset point to permit meaningful paired uncertainty and O3/O4 transfer
+strata. Scaling beyond 100 is authorized only if both fixed-epoch and fixed-update controls improve
+the predeclared hard subset, following the same promotion logic as the overlap curve. O4b/GWTC-5
+remains unavailable for this expansion; development data must come from O1--O3/O4a or validated
+simulation with frozen run-specific noise.

@@ -32,3 +32,13 @@ def test_model_load_smoke_rejects_hash_before_backend_import(tmp_path: Path) -> 
     assert completed.returncode != 0
     assert "SHA256 mismatch" in completed.stderr
     assert not (tmp_path / "report.json").exists()
+
+
+def test_model_load_smoke_supports_only_frozen_dingo_api_versions() -> None:
+    script = Path(__file__).parents[1] / "scripts/run_pe_model_load_smoke.py"
+    source = script.read_text(encoding="utf-8")
+    assert 'dingo_version == "0.5.8"' in source
+    assert "from dingo.core.models import PosteriorModel" in source
+    assert 'dingo_version == "0.9.8"' in source
+    assert "from dingo.core.posterior_models.build_model import" in source
+    assert "unsupported DINGO model-load API version" in source

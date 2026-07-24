@@ -36,6 +36,8 @@ def test_trigger_cli_routes_only_declared_arguments() -> None:
         required_split=None,
         enabled_ifos=None,
         coherence_config_path=None,
+        calibration_plan_path=None,
+        calibration_scenario_id=None,
     )
 
 
@@ -81,6 +83,293 @@ def test_physical_cli_forwards_storage_and_probability_flags() -> None:
     assert score.call_args.kwargs["required_split"] is None
     assert score.call_args.kwargs["enabled_ifos"] is None
     assert score.call_args.kwargs["coherence_config_path"] is None
+    assert score.call_args.kwargs["calibration_plan_path"] is None
+    assert score.call_args.kwargs["calibration_scenario_id"] is None
+
+
+def test_detector_set_expansion_cli_routes_frozen_inputs() -> None:
+    target = (
+        "gwyolo.detector_expansion.expand_materialized_injection_detector_set"
+    )
+    with patch(target, return_value={}) as expand:
+        assert (
+            main(
+                [
+                    "injection-detector-set-expand",
+                    "--manifest",
+                    "train.jsonl",
+                    "--config",
+                    "expansion.yaml",
+                    "--backend-validation-report",
+                    "waveform.json",
+                    "--output-dir",
+                    "expanded",
+                    "--split",
+                    "train",
+                    "--limit",
+                    "10",
+                ]
+            )
+            == 0
+        )
+    expand.assert_called_once_with(
+        "train.jsonl",
+        "expansion.yaml",
+        "waveform.json",
+        "expanded",
+        "train",
+        10,
+    )
+
+    target = "gwyolo.detector_expansion.audit_detector_set_expansion_readiness"
+    with patch(target, return_value={}) as audit:
+        assert (
+            main(
+                [
+                    "injection-detector-set-readiness-audit",
+                    "--report",
+                    "train.json",
+                    "--report",
+                    "val.json",
+                    "--output",
+                    "readiness.json",
+                ]
+            )
+            == 0
+        )
+    audit.assert_called_once_with(
+        ["train.json", "val.json"],
+        "readiness.json",
+    )
+
+
+def test_detector_training_bundle_cli_routes_portable_inputs() -> None:
+    target = "gwyolo.training_transfer.export_detector_set_training_bundle"
+    with patch(target, return_value={}) as export:
+        assert (
+            main(
+                [
+                    "detector-set-training-bundle-export",
+                    "--overlap-receipt",
+                    "overlap.json",
+                    "--clean-train-manifest",
+                    "clean-train.jsonl",
+                    "--clean-validation-manifest",
+                    "clean-val.jsonl",
+                    "--pretrained-checkpoint",
+                    "model.pt",
+                    "--config",
+                    "finetune=finetune.yaml",
+                    "--output-dir",
+                    "bundle",
+                ]
+            )
+            == 0
+        )
+    export.assert_called_once_with(
+        "overlap.json",
+        "clean-train.jsonl",
+        "clean-val.jsonl",
+        "model.pt",
+        {"finetune": "finetune.yaml"},
+        "bundle",
+    )
+
+    target = "gwyolo.training_transfer.import_detector_set_training_bundle"
+    with patch(target, return_value={}) as import_bundle:
+        assert (
+            main(
+                [
+                    "detector-set-training-bundle-import",
+                    "--bundle-receipt",
+                    "bundle.json",
+                    "--output-dir",
+                    "projected",
+                ]
+            )
+            == 0
+        )
+    import_bundle.assert_called_once_with("bundle.json", "projected")
+
+
+def test_locked_candidate_cli_forwards_suite_access_and_background() -> None:
+    target = "gwyolo.cli.run_frozen_candidate_search_evaluation"
+    with patch(target, return_value={}) as evaluate:
+        assert (
+            main(
+                [
+                    "candidate-search-evaluate-frozen",
+                    "--calibration-report",
+                    "calibration.json",
+                    "--test-time-slide-report",
+                    "slides.json",
+                    "--test-background-manifest",
+                    "background.jsonl",
+                    "--test-injection-ranking-report",
+                    "injections.json",
+                    "--minimum-test-live-time-years",
+                    "23.02585093",
+                    "--minimum-test-injections",
+                    "3000",
+                    "--bootstrap-replicates",
+                    "10000",
+                    "--seed",
+                    "20260722",
+                    "--locked-suite-plan",
+                    "suite.json",
+                    "--access-log",
+                    "access.json",
+                    "--output-key",
+                    "raw_candidate_search",
+                    "--output",
+                    "result.json",
+                ]
+            )
+            == 0
+        )
+    evaluate.assert_called_once_with(
+        "calibration.json",
+        "slides.json",
+        "injections.json",
+        "result.json",
+        23.02585093,
+        3000,
+        10000,
+        20260722,
+        "suite.json",
+        "access.json",
+        "raw_candidate_search",
+        "background.jsonl",
+    )
+
+
+def test_locked_streaming_publication_and_merge_cli_route_exact_inputs() -> None:
+    publish_target = (
+        "gwyolo.locked_streaming.publish_locked_o4b_streaming_shard_artifacts"
+    )
+    with patch(publish_target, return_value={}) as publish:
+        assert (
+            main(
+                [
+                    "locked-o4b-streaming-shard-publish",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--shard-index",
+                    "7",
+                    "--raw-background-candidates",
+                    "raw-bg.jsonl",
+                    "--raw-injection-candidates",
+                    "raw-inj.jsonl",
+                    "--mask-background-candidates",
+                    "mask-bg.jsonl",
+                    "--mask-injection-candidates",
+                    "mask-inj.jsonl",
+                    "--ood-source-manifest",
+                    "ood.jsonl",
+                    "--injection-trigger-manifest",
+                    "triggers.jsonl",
+                    "--pe-input-manifest",
+                    "pe.jsonl",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    publish.assert_called_once_with(
+        "execution.json",
+        "access.json",
+        7,
+        "raw-bg.jsonl",
+        "raw-inj.jsonl",
+        "mask-bg.jsonl",
+        "mask-inj.jsonl",
+        "ood.jsonl",
+        "triggers.jsonl",
+        "pe.jsonl",
+        "abc123",
+    )
+
+    merge_target = (
+        "gwyolo.locked_streaming.merge_locked_o4b_streaming_suite_input_sources"
+    )
+    with patch(merge_target, return_value={}) as merge:
+        assert (
+            main(
+                [
+                    "locked-o4b-streaming-suite-inputs-merge",
+                    "--suite-plan",
+                    "suite.json",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--streaming-completion-audit",
+                    "completion.json",
+                    "--post-dq-weight-report",
+                    "weights.json",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    merge.assert_called_once_with(
+        "suite.json",
+        "execution.json",
+        "access.json",
+        "completion.json",
+        "weights.json",
+        "abc123",
+    )
+
+
+def test_automatic_mask_cli_routes_exact_inputs() -> None:
+    audit_target = "gwyolo.automatic_mask.audit_automatic_mask_policy"
+    with patch(audit_target, return_value={}) as audit:
+        assert (
+            main(
+                [
+                    "automatic-mask-policy-audit",
+                    "--overlap-manifest",
+                    "validation.jsonl",
+                    "--overlap-config",
+                    "overlap.yaml",
+                    "--output",
+                    "audit.json",
+                ]
+            )
+            == 0
+        )
+    audit.assert_called_once_with(
+        "validation.jsonl", "overlap.yaml", "audit.json"
+    )
+
+    bind_target = (
+        "gwyolo.automatic_mask.bind_raw_mask_automatic_publication_evidence"
+    )
+    with patch(bind_target, return_value={}) as bind:
+        assert (
+            main(
+                [
+                    "candidate-search-raw-mask-automatic-endpoint-bind",
+                    "--raw-mask-endpoint",
+                    "raw-mask.json",
+                    "--automatic-mask-audit",
+                    "audit.json",
+                    "--gate-config",
+                    "gate.yaml",
+                    "--output",
+                    "endpoint.json",
+                ]
+            )
+            == 0
+        )
+    bind.assert_called_once_with(
+        "raw-mask.json", "audit.json", "gate.yaml", "endpoint.json"
+    )
 
 
 def test_detector_arrival_validation_stratification_cli_routes_inputs() -> None:
@@ -259,4 +548,106 @@ def test_candidate_pair_ranker_cli_routes_grouped_manifests() -> None:
         "selection.jsonl",
         "output",
         9,
+    )
+
+
+def test_detector_set_injection_ranking_cli_routes_exact_inputs() -> None:
+    target = "gwyolo.candidates.run_detector_set_injection_candidate_rankings"
+    with patch(target, return_value={}) as run:
+        assert (
+            main(
+                [
+                    "detector-set-injection-candidate-rank",
+                    "--injection-triggers",
+                    "triggers.jsonl",
+                    "--candidates",
+                    "candidates.jsonl",
+                    "--config",
+                    "network.yaml",
+                    "--output-dir",
+                    "rankings",
+                    "--split",
+                    "test",
+                    "--empirical-timing-uncertainty-seconds",
+                    "0.002",
+                ]
+            )
+            == 0
+        )
+    run.assert_called_once_with(
+        "triggers.jsonl",
+        "candidates.jsonl",
+        "network.yaml",
+        "rankings",
+        "test",
+        0.002,
+    )
+
+
+def test_detector_set_block_schedule_cli_routes_only_declared_inputs() -> None:
+    target = "gwyolo.exposure.freeze_detector_set_block_permutation_schedule"
+    with patch(target, return_value={}) as freeze:
+        assert (
+            main(
+                [
+                    "detector-set-block-permutation-schedule-freeze",
+                    "--background-manifest",
+                    "background.jsonl",
+                    "--network-config",
+                    "network.yaml",
+                    "--output",
+                    "schedule.json",
+                    "--split",
+                    "val",
+                    "--target-far-per-year",
+                    "1000",
+                    "--zero-count-confidence",
+                    "0.9",
+                    "--maximum-shifts",
+                    "17",
+                    "--exposure-safety-factor",
+                    "1.5",
+                ]
+            )
+            == 0
+        )
+    freeze.assert_called_once_with(
+        "background.jsonl",
+        "network.yaml",
+        "schedule.json",
+        "val",
+        1000.0,
+        0.9,
+        17,
+        1.5,
+    )
+
+
+def test_locked_search_input_reducer_cli_routes_frozen_inputs() -> None:
+    target = "gwyolo.locked_streaming.reduce_locked_o4b_search_inputs"
+    with patch(target, return_value={}) as reduce:
+        assert (
+            main(
+                [
+                    "locked-o4b-search-inputs-reduce",
+                    "--suite-plan",
+                    "suite.json",
+                    "--execution-plan",
+                    "execution.json",
+                    "--access-log",
+                    "access.json",
+                    "--suite-input-merge-report",
+                    "merge.json",
+                    "--code-commit",
+                    "abc123",
+                ]
+            )
+            == 0
+        )
+    reduce.assert_called_once_with(
+        "suite.json",
+        "execution.json",
+        "access.json",
+        "merge.json",
+        "abc123",
     )

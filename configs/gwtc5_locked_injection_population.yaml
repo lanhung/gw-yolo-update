@@ -1,0 +1,117 @@
+gwtc5_locked_injection_population:
+  schema: gwtc5_locked_injection_population_v1
+  seed: 20260722
+  availability_policy:
+    use_every_frozen_gps_block_once: true
+    use_exact_available_detector_set: true
+    minimum_planned_injections: 4000
+    minimum_usable_after_dq: 3000
+    coalescence_guard_seconds: 8.0
+
+  # Fractions describe the proposal distribution, not a fit to GWTC-5.
+  # The final <VT> evaluator must use analyzed post-DQ live time and the
+  # stored proposal density; this pre-access plan does not assign a measured
+  # live-time weight.
+  source_families:
+    BBH:
+      fraction: 0.50
+      minimum_rows: 2000
+      maximum_distance_mpc: 5000.0
+      f_lower_hz: 20.0
+      context_duration_seconds: 64.0
+      ordinary_approximant: IMRPhenomXAS
+      high_mass_approximant: IMRPhenomXHM
+      high_spin_approximant: IMRPhenomXPHM
+      ordinary_mass_1_msun: [10.0, 100.0]
+      ordinary_mass_ratio: [0.25, 1.0]
+      aligned_spin_z: [-0.95, 0.95]
+    BNS:
+      fraction: 0.25
+      minimum_rows: 1000
+      maximum_distance_mpc: 500.0
+      f_lower_hz: 20.0
+      context_duration_seconds: 256.0
+      ordinary_approximant: IMRPhenomXAS_NRTidalv3
+      mass_1_msun: [1.1, 2.2]
+      mass_2_msun: [1.0, 2.0]
+      aligned_spin_z: [-0.05, 0.05]
+    NSBH:
+      fraction: 0.25
+      minimum_rows: 1000
+      maximum_distance_mpc: 1500.0
+      f_lower_hz: 20.0
+      context_duration_seconds: 128.0
+      ordinary_approximant: IMRPhenomNSBH
+      black_hole_mass_msun: [5.0, 30.0]
+      neutron_star_mass_msun: [1.0, 2.2]
+      black_hole_aligned_spin_z: [-0.95, 0.95]
+      neutron_star_aligned_spin_z: [-0.05, 0.05]
+
+  detector_subset_minimum_rows:
+    H1+L1: 250
+    H1+V1: 250
+    L1+V1: 1000
+    H1+L1+V1: 2000
+
+  stress_protocols:
+    glitch_overlap:
+      target_fraction: 0.25
+      minimum_rows: 1000
+      selector_protocol: frozen_strain_only_excess_power_hash_assignment_v1
+      assignment_protocol: hash_injection_id_to_post_access_candidate_without_replacement_v1
+      unavailable_policy: retain_explicit_unavailable_without_replacement
+      auxiliary_veto_allowed: false
+    calibration_perturbation:
+      target_fraction: 0.25
+      minimum_rows: 1000
+      assignment_protocol: hash_rank_and_cycle_scenarios_v1
+      scenarios:
+        - {id: amplitude_plus_5pct, amplitude_scale: 1.05, phase_degrees: 0.0, timing_seconds: 0.0}
+        - {id: amplitude_minus_5pct, amplitude_scale: 0.95, phase_degrees: 0.0, timing_seconds: 0.0}
+        - {id: phase_plus_5deg, amplitude_scale: 1.0, phase_degrees: 5.0, timing_seconds: 0.0}
+        - {id: phase_minus_5deg, amplitude_scale: 1.0, phase_degrees: -5.0, timing_seconds: 0.0}
+        - {id: timing_plus_100us, amplitude_scale: 1.0, phase_degrees: 0.0, timing_seconds: 0.0001}
+        - {id: timing_minus_100us, amplitude_scale: 1.0, phase_degrees: 0.0, timing_seconds: -0.0001}
+    waveform_systematics:
+      target_fraction: 0.25
+      minimum_rows: 1000
+      assignment_protocol: hash_rank_primary_alternative_pair_v1
+      interpretation: within_phenom_generation_systematics_not_eob_cross_family_validation
+      alternative_by_primary:
+        # The official SEOBNRv5 ROM assets require 2.6+ GB of external data.
+        # They are not bundled in LALSuite and are excluded from the locked
+        # runtime rather than silently relying on an unbound LAL_DATA_PATH.
+        IMRPhenomXAS: IMRPhenomD
+        IMRPhenomXHM: IMRPhenomHM
+        # SEOBNRv5PHM is the native DINGO model label but is not a canonical
+        # LALSimulation approximant in the frozen runtime, while SEOBNRv4PHM
+        # fails the high-total-mass 20 Hz domain.  Use the preceding Phenom
+        # precessing higher-mode generation and report this honestly as a
+        # within-family waveform-systematics stratum.
+        IMRPhenomXPHM: IMRPhenomPv3HM
+        IMRPhenomXAS_NRTidalv3: IMRPhenomD_NRTidalv2
+        IMRPhenomNSBH: IMRPhenomD_NRTidalv2
+    high_mass_unequal_mass:
+      minimum_rows: 600
+      family: BBH
+      mass_1_msun: [50.0, 200.0]
+      mass_ratio: [0.10, 0.40]
+      predicate_mass_1_minimum_msun: 50.0
+      predicate_mass_ratio_maximum: 0.40
+    high_spin_precessing:
+      minimum_rows: 600
+      family: BBH
+      approximant: IMRPhenomXPHM
+      primary_spin_magnitude: [0.70, 0.99]
+      primary_tilt_radians: [1.0471975511965976, 2.0943951023931953]
+      minimum_in_plane_spin: 0.50
+      minimum_total_spin: 0.70
+    missing_detector:
+      minimum_rows: 1500
+      predicate: exact_available_ifo_count_below_three
+
+  proposal_weighting:
+    distance_measure: uniform_in_comoving_volume
+    source_frame_time_factor: one_over_one_plus_redshift
+    live_time_policy: compute_only_after_locked_post_dq_analysis
+    pre_access_vt_weight: null

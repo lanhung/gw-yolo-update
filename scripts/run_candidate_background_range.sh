@@ -9,7 +9,10 @@ required_variables=(
   SCORING_CODE_COMMIT
   PROMOTION_REPORT
   PROMOTED_PIPELINE_REPORT
+  INDEPENDENT_VALIDATION_ENDPOINT_REPORT
   PARENT_PLAN
+  VALIDATION_PURPOSE_AUDIT
+  CAPACITY_FORECAST
   EVENT_EXCLUSIONS
   COHERENCE_CONFIG
   TIMING_CALIBRATION_REPORT
@@ -26,6 +29,8 @@ for variable in "${required_variables[@]}"; do
 done
 
 SHARD_START=${SHARD_START:-0}
+BASE_OUTPUT_ROOT=${BASE_OUTPUT_ROOT:-}
+CAPACITY_EXTENSION_DECISION=${CAPACITY_EXTENSION_DECISION:-}
 PAIRS_PER_SHARD=${PAIRS_PER_SHARD:-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.2}
 TEST_FRACTION=${TEST_FRACTION:-0}
@@ -44,16 +49,39 @@ REFERENCE_IFO=${REFERENCE_IFO:-H1}
 SHIFTED_IFO=${SHIFTED_IFO:-L1}
 CHECKPOINT=${CHECKPOINT:-}
 CONFIG=${CONFIG:-}
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
+RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-120}
+VERIFIED_SOURCE_INVENTORY=${VERIFIED_SOURCE_INVENTORY:-}
 
 if ! [[ "$SHARD_START" =~ ^[0-9]+$ ]] \
   || ! [[ "$SHARD_STOP_EXCLUSIVE" =~ ^[1-9][0-9]*$ ]] \
   || ! [[ "$PAIRS_PER_SHARD" =~ ^[1-9][0-9]*$ ]] \
-  || (( SHARD_START != 0 || SHARD_STOP_EXCLUSIVE <= SHARD_START )); then
-  echo "publication candidate background requires a full zero-based shard range" >&2
+  || (( SHARD_STOP_EXCLUSIVE <= SHARD_START )); then
+  echo "publication candidate background requires a valid bounded shard range" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ -z "$BASE_OUTPUT_ROOT" ]]; then
+  echo "a nonzero extension range requires BASE_OUTPUT_ROOT" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ "$BASE_OUTPUT_ROOT" == "$OUTPUT_ROOT" ]]; then
+  echo "extension output must be separate from the immutable base output" >&2
+  exit 2
+fi
+if (( SHARD_START > 0 )) && [[ -z "$CAPACITY_EXTENSION_DECISION" ]]; then
+  echo "a nonzero extension range requires CAPACITY_EXTENSION_DECISION" >&2
   exit 2
 fi
 if [[ "$TEST_FRACTION" != "0" && "$TEST_FRACTION" != "0.0" ]]; then
   echo "validation-scale background must keep test_fraction=0" >&2
+  exit 2
+fi
+if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "RETRY_DELAY_SECONDS must be a non-negative integer" >&2
   exit 2
 fi
 
@@ -63,6 +91,14 @@ for code_dir in "$TASK_CODE_DIR" "$SCORING_CODE_DIR"; do
     exit 2
   fi
 done
+inventory_args=()
+if [[ -n "$VERIFIED_SOURCE_INVENTORY" ]]; then
+  if [[ ! -f "$VERIFIED_SOURCE_INVENTORY" ]]; then
+    echo "verified source inventory is absent: $VERIFIED_SOURCE_INVENTORY" >&2
+    exit 2
+  fi
+  inventory_args+=(--verified-source-inventory "$VERIFIED_SOURCE_INVENTORY")
+fi
 if [[ -z "$CHECKPOINT" || -z "$CONFIG" ]]; then
   for variable in FIVE_SEED_SUMMARY UNIFORM_CONFIG FAMILY_BALANCED_CONFIG; do
     if [[ -z "${!variable:-}" ]]; then
@@ -70,30 +106,30 @@ if [[ -z "$CHECKPOINT" || -z "$CONFIG" ]]; then
       exit 2
     fi
   done
-  readarray -t selection < <("$TASK_PYTHON" -c '
-import json, sys
-report = json.load(open(sys.argv[1], encoding="utf-8"))
-if report.get("status") != "completed_five_seed_source_safe_overlap_validation":
-    raise SystemExit("five-seed summary has the wrong status")
-print(report["promoted_arm"])
-print(report["selected_checkpoint_path"])
-' "$FIVE_SEED_SUMMARY")
-  arm=${selection[0]}
-  CHECKPOINT=${selection[1]}
-  if [[ "$arm" == uniform ]]; then
-    CONFIG=$UNIFORM_CONFIG
-  elif [[ "$arm" == family_balanced ]]; then
-    CONFIG=$FAMILY_BALANCED_CONFIG
-  else
-    echo "five-seed summary selected an unknown arm: $arm" >&2
+  adapter_config=${ADAPTER_CONFIG:-$TASK_CODE_DIR/configs/physical_overlap_finetune_glitch_adapter.yaml}
+  if ! selection_output=$(TASK_PYTHON="$TASK_PYTHON" bash \
+    "$TASK_CODE_DIR/scripts/resolve_promoted_overlap_model.sh" \
+    "$FIVE_SEED_SUMMARY" "$UNIFORM_CONFIG" "$FAMILY_BALANCED_CONFIG" \
+    "$adapter_config"); then
+    echo "failed to resolve checkpoint/config from five-seed summary" >&2
     exit 2
   fi
+  readarray -t selection <<<"$selection_output"
+  if (( ${#selection[@]} != 3 )); then
+    echo "five-seed summary did not return one arm, checkpoint and config" >&2
+    exit 2
+  fi
+  CHECKPOINT=${selection[1]}
+  CONFIG=${selection[2]}
 fi
 for input in \
   "$TASK_PYTHON" \
   "$PROMOTION_REPORT" \
   "$PROMOTED_PIPELINE_REPORT" \
+  "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
   "$PARENT_PLAN" \
+  "$VALIDATION_PURPOSE_AUDIT" \
+  "$CAPACITY_FORECAST" \
   "$EVENT_EXCLUSIONS" \
   "$CHECKPOINT" \
   "$CONFIG" \
@@ -105,6 +141,57 @@ for input in \
     exit 2
   fi
 done
+
+authorization="$OUTPUT_ROOT/publication_background_plan_authorization.json"
+(
+  cd "$TASK_CODE_DIR"
+  export PYTHONPATH=src GWYOLO_CODE_COMMIT
+  "$TASK_PYTHON" -m gwyolo.cli candidate-background-plan-authorize \
+    --independent-validation-endpoint "$INDEPENDENT_VALIDATION_ENDPOINT_REPORT" \
+    --parent-plan "$PARENT_PLAN" \
+    --validation-purpose-audit "$VALIDATION_PURPOSE_AUDIT" \
+    --capacity-forecast "$CAPACITY_FORECAST" \
+    --shard-stop-exclusive "$SHARD_STOP_EXCLUSIVE" \
+    --pairs-per-shard "$PAIRS_PER_SHARD" \
+    --target-far-per-year "$TARGET_FAR_PER_YEAR" \
+    --zero-count-confidence "$ZERO_COUNT_CONFIDENCE" \
+    --minimum-safety-factor 1.5 \
+    --output "$authorization"
+)
+
+if (( SHARD_START > 0 )); then
+  if [[ ! -f "$CAPACITY_EXTENSION_DECISION" ]]; then
+    echo "capacity extension decision is absent: $CAPACITY_EXTENSION_DECISION" >&2
+    exit 2
+  fi
+  "$TASK_PYTHON" - \
+    "$CAPACITY_EXTENSION_DECISION" "$PARENT_PLAN" \
+    "$SHARD_START" "$SHARD_STOP_EXCLUSIVE" "$PAIRS_PER_SHARD" <<'PY'
+import hashlib
+import json
+import math
+import pathlib
+import sys
+
+decision_path, plan_path, start, stop, per_shard = sys.argv[1:]
+decision = json.loads(pathlib.Path(decision_path).read_text(encoding="utf-8"))
+plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
+plan_hash = hashlib.sha256(pathlib.Path(plan_path).read_bytes()).hexdigest()
+base_pairs = int(start) * int(per_shard)
+extended_pairs = int(plan.get("selected_pairs", -1))
+if (
+    decision.get("status")
+    != "frozen_score_blind_background_capacity_extension_decision"
+    or decision.get("candidate_scores_inspected") is not False
+    or decision.get("test_data_opened") is not False
+    or decision.get("extended_plan_sha256") != plan_hash
+    or int(decision.get("base_source_pairs", -1)) != base_pairs
+    or int(decision.get("extended_source_pairs", -1)) != extended_pairs
+    or math.ceil(extended_pairs / int(per_shard)) != int(stop)
+):
+    raise SystemExit("capacity extension decision does not authorize this shard range")
+PY
+fi
 
 preflight=$(
   "$TASK_PYTHON" - \
@@ -233,6 +320,14 @@ read -r -a model_ifos <<<"$MODEL_IFOS"
 read -r -a q_values <<<"$Q_VALUES"
 mkdir -p "$CACHE_ROOT" "$OUTPUT_ROOT"
 reports=()
+for ((shard = 0; shard < SHARD_START; shard++)); do
+  report="$BASE_OUTPUT_ROOT/shard-$shard/streamed_background_shard_report.json"
+  if [[ ! -s "$report" ]]; then
+    echo "base streaming shard report is absent: $shard" >&2
+    exit 1
+  fi
+  reports+=(--shard-report "$report")
+done
 for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
   available_kb=$(df -Pk "$CACHE_ROOT" | awk 'NR == 2 {print $4}')
   if (( available_kb < MINIMUM_FREE_KB )); then
@@ -246,31 +341,47 @@ for ((shard = SHARD_START; shard < SHARD_STOP_EXCLUSIVE; shard++)); do
     sleep 30
   done
   shard_output="$OUTPUT_ROOT/shard-$shard"
-  (
-    cd "$SCORING_CODE_DIR"
-    export PYTHONPATH=src GWYOLO_CODE_COMMIT="$SCORING_CODE_COMMIT"
-    "$TASK_PYTHON" -m gwyolo.cli background-stream-shard \
-      --parent-plan "$PARENT_PLAN" \
-      --event-exclusions "$EVENT_EXCLUSIONS" \
-      --timing-calibration-report "$TIMING_CALIBRATION_REPORT" \
-      --checkpoint "$CHECKPOINT" \
-      --config "$CONFIG" \
-      --coherence-config "$COHERENCE_CONFIG" \
-      --cache-root "$CACHE_ROOT" \
-      --output-dir "$shard_output" \
-      --shard-index "$shard" \
-      --pairs-per-shard "$PAIRS_PER_SHARD" \
-      --validation-fraction "$VALIDATION_FRACTION" \
-      --test-fraction "$TEST_FRACTION" \
-      --seed "$BACKGROUND_SEED" \
-      --model-ifos "${model_ifos[@]}" \
-      --q-values "${q_values[@]}" \
-      --target-sample-rate "$TARGET_SAMPLE_RATE" \
-      --context-duration "$CONTEXT_DURATION" \
-      --chirp-threshold "$CHIRP_THRESHOLD" \
-      --minimum-bins "$MINIMUM_BINS" \
-      --download-workers "$DOWNLOAD_WORKERS"
-  )
+  completed=0
+  for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+    printf '%s background-shard=%s attempt=%s\n' \
+      "$(date -u +%FT%TZ)" "$shard" "$attempt"
+    if (
+      cd "$SCORING_CODE_DIR"
+      export PYTHONPATH=src GWYOLO_CODE_COMMIT="$SCORING_CODE_COMMIT"
+      "$TASK_PYTHON" -m gwyolo.cli background-stream-shard \
+        --parent-plan "$PARENT_PLAN" \
+        --event-exclusions "$EVENT_EXCLUSIONS" \
+        --timing-calibration-report "$TIMING_CALIBRATION_REPORT" \
+        --checkpoint "$CHECKPOINT" \
+        --config "$CONFIG" \
+        --coherence-config "$COHERENCE_CONFIG" \
+        --cache-root "$CACHE_ROOT" \
+        --output-dir "$shard_output" \
+        --shard-index "$shard" \
+        --pairs-per-shard "$PAIRS_PER_SHARD" \
+        --validation-fraction "$VALIDATION_FRACTION" \
+        --test-fraction "$TEST_FRACTION" \
+        --seed "$BACKGROUND_SEED" \
+        --model-ifos "${model_ifos[@]}" \
+        --q-values "${q_values[@]}" \
+        --target-sample-rate "$TARGET_SAMPLE_RATE" \
+        --context-duration "$CONTEXT_DURATION" \
+        --chirp-threshold "$CHIRP_THRESHOLD" \
+        --minimum-bins "$MINIMUM_BINS" \
+        --download-workers "$DOWNLOAD_WORKERS" \
+        "${inventory_args[@]}"
+    ); then
+      completed=1
+      break
+    fi
+    if (( attempt < MAX_ATTEMPTS )); then
+      sleep "$RETRY_DELAY_SECONDS"
+    fi
+  done
+  if (( completed != 1 )); then
+    echo "background shard $shard exhausted bounded retries" >&2
+    exit 1
+  fi
   report="$shard_output/streamed_background_shard_report.json"
   if [[ ! -s "$report" ]]; then
     echo "streaming shard completed without its immutable report: $shard" >&2
@@ -287,6 +398,7 @@ if [[ ! -s "$merge_report" ]]; then
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
     "$TASK_PYTHON" -m gwyolo.cli background-stream-merge \
       "${reports[@]}" \
+      --parent-plan "$PARENT_PLAN" \
       --output-dir "$merge_dir"
   )
 fi
@@ -298,19 +410,24 @@ block_dir="$OUTPUT_ROOT/val_candidate_block_background"
 block_report="$block_dir/val_candidate_time_slide_report.json"
 calibration="$OUTPUT_ROOT/frozen_validation_candidate_search_calibration.json"
 
-"$TASK_PYTHON" - "$merge_report" "$SHARD_STOP_EXCLUSIVE" <<'PY'
+"$TASK_PYTHON" - "$merge_report" "$SHARD_STOP_EXCLUSIVE" "$PARENT_PLAN" <<'PY'
+import hashlib
 import json
 import pathlib
 import sys
 
 report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+digest = hashlib.sha256(pathlib.Path(sys.argv[3]).read_bytes()).hexdigest()
 if (
     report.get("status") != "verified_merged_streamed_candidate_background"
     or not report.get("complete_parent_plan")
     or int(report.get("shard_count_merged", -1)) != int(sys.argv[2])
     or int(report.get("split_counts", {}).get("test", -1)) != 0
+    or report.get("common_run_identity", {}).get("parent_plan_sha256") != digest
 ):
-    raise SystemExit("merged validation background is incomplete or exposes test data")
+    raise SystemExit(
+        "merged validation background is incomplete, has another parent, or exposes test data"
+    )
 PY
 
 if [[ ! -s "$schedule" ]]; then
@@ -351,6 +468,7 @@ if [[ ! -s "$calibration" ]]; then
     export PYTHONPATH=src GWYOLO_CODE_COMMIT="$GWYOLO_CODE_COMMIT"
     "$TASK_PYTHON" -m gwyolo.cli candidate-search-calibrate \
       --validation-time-slide-report "$block_report" \
+      --validation-background-manifest "$background_manifest" \
       --validation-injection-ranking-report "$VALIDATION_INJECTION_RANKING_REPORT" \
       --target-far-per-year "$TARGET_FAR_PER_YEAR" \
       --output "$calibration" \

@@ -8,13 +8,17 @@ import pytest
 
 from gwyolo.background import SECONDS_PER_YEAR
 from gwyolo.exposure import (
+    authorize_candidate_background_plan,
     candidate_slide_schedule_identity,
+    forecast_candidate_block_permutation_capacity,
+    freeze_candidate_block_capacity_extension_decision,
     freeze_candidate_time_slide_schedule,
     freeze_candidate_time_slide_range_schedule,
     freeze_candidate_block_permutation_schedule,
     plan_candidate_background_exposure,
+    run_candidate_block_permutation_capacity_forecast,
 )
-from gwyolo.io import canonical_hash
+from gwyolo.io import canonical_hash, file_sha256
 
 
 def test_candidate_exposure_plan_counts_every_valid_noncyclic_pair_once() -> None:
@@ -79,6 +83,336 @@ def test_block_permutation_schedule_reaches_target_without_scores(tmp_path) -> N
     assert result["selection_data"] == (
         "background_gps_blocks_and_detector_availability_only"
     )
+
+
+def test_block_capacity_forecast_matches_hand_calculated_quadratic_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "background.jsonl"
+    rows = []
+    for block in range(3):
+        block_start = 1000 + block * 256
+        for slot in range(2):
+            rows.append(
+                {
+                    "window_id": f"w-{block}-{slot}",
+                    "split": "val",
+                    "gps_start": block_start + slot * 8,
+                    "gps_end": block_start + (slot + 1) * 8,
+                    "gps_block": f"gps:{block_start}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+    manifest.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    schedule_path = tmp_path / "schedule.json"
+    freeze_candidate_block_permutation_schedule(
+        manifest,
+        schedule_path,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    background = tmp_path / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "scientific_claim_allowed": False,
+                "source_pairs": 3,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def plan(path: Path, pairs: int) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "development_acquisition_plan",
+                    "locked_evaluation_data": False,
+                    "selected_pairs": pairs,
+                    "aligned_pairs_available": 10,
+                    "pairs": [{"pair_id": f"p-{index}"} for index in range(pairs)],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    small_plan = tmp_path / "small-plan.json"
+    plan(small_plan, 3)
+    failed = forecast_candidate_block_permutation_capacity(
+        schedule_path, background, small_plan, safety_factor=2
+    )
+    # The pilot has 3 blocks / 3 pairs and 96 s over 2 shifts, hence
+    # 16 s per block-shift. Three projected blocks yield 16*3*2 = 96 s.
+    assert failed["observed_blocks_per_source_pair"] == 1
+    assert failed["observed_seconds_per_block_shift"] == 16
+    assert failed["projected_maximum_equivalent_live_time_seconds"] == 96
+    assert failed["recommended_minimum_gps_blocks"] == 4
+    assert failed["recommended_minimum_source_pairs"] == 4
+    assert failed["planned_pairs_satisfy_safety_forecast"] is False
+    assert failed["target_far_per_year"] == 1_000_000
+    assert failed["zero_count_confidence"] == 0.90
+    assert failed["candidate_scores_inspected"] is False
+    output = tmp_path / "failed-capacity.json"
+    with pytest.raises(RuntimeError, match="capacity forecast failed"):
+        run_candidate_block_permutation_capacity_forecast(
+            schedule_path, background, small_plan, output, safety_factor=2
+        )
+    assert json.loads(output.read_text())["forecast_only"] is True
+
+    large_plan = tmp_path / "large-plan.json"
+    plan(large_plan, 5)
+    passed = forecast_candidate_block_permutation_capacity(
+        schedule_path, background, large_plan, safety_factor=2
+    )
+    assert passed["projected_maximum_equivalent_live_time_seconds"] == 320
+    assert passed["planned_pairs_satisfy_safety_forecast"] is True
+
+    duplicate_plan = tmp_path / "duplicate-plan.json"
+    plan(duplicate_plan, 3)
+    duplicate = json.loads(duplicate_plan.read_text())
+    duplicate["pairs"][2]["pair_id"] = duplicate["pairs"][1]["pair_id"]
+    duplicate_plan.write_text(json.dumps(duplicate), encoding="utf-8")
+    with pytest.raises(ValueError, match="pair IDs must be nonempty and unique"):
+        forecast_candidate_block_permutation_capacity(
+            schedule_path, background, duplicate_plan, safety_factor=2
+        )
+
+
+def test_candidate_background_authorization_replays_all_purpose_gates(
+    tmp_path: Path,
+) -> None:
+    purpose = tmp_path / "purpose.json"
+    purpose.write_text("{}\n", encoding="utf-8")
+    purpose_hash = file_sha256(purpose)
+    endpoint = tmp_path / "endpoint.json"
+    endpoint.write_text(
+        json.dumps(
+            {
+                "status": "frozen_gps_and_purpose_disjoint_validation_endpoint",
+                "passed": True,
+                "scientific_claim_allowed": False,
+                "rows": 3000,
+                "candidate_calibration_unique_gps_blocks": 25,
+                "injection_validation_unique_gps_blocks": 25,
+                "purpose_gps_block_overlap": 0,
+                "test_rows_read": 0,
+                "test_evaluation": None,
+                "component_reports": {
+                    "purpose_partition": {
+                        "path": str(purpose),
+                        "sha256": purpose_hash,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "run": "O4a",
+                "locked_evaluation_data": False,
+                "candidate_scores_inspected": False,
+                "test_data_opened": False,
+                "selected_pairs": 4,
+                "pairs": [{"pair_id": f"pair-{index}"} for index in range(4)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    audit = tmp_path / "purpose-audit.json"
+    audit_report = {
+        "status": "verified_gwosc_plan_validation_purpose_disjointness",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "overlap_pair_ids": [],
+        "overlap_gps_blocks": [],
+        "plan": {"sha256": file_sha256(plan)},
+        "purpose_partition": {"sha256": purpose_hash},
+        "roles": {
+            role: {
+                "gps_interval_overlap_count": 0,
+                "direct_pair_id_overlaps": [],
+            }
+            for role in ("candidate_calibration", "injection_validation")
+        },
+    }
+    audit.write_text(json.dumps(audit_report), encoding="utf-8")
+    forecast = tmp_path / "forecast.json"
+    forecast.write_text(
+        json.dumps(
+            {
+                "status": "score_blind_candidate_block_capacity_forecast",
+                "scientific_claim_allowed": False,
+                "forecast_only": True,
+                "candidate_scores_inspected": False,
+                "planned_pairs_satisfy_safety_forecast": True,
+                "recommendation_fits_available_pairs": True,
+                "planned_parent_plan_sha256": file_sha256(plan),
+                "planned_source_pairs": 4,
+                "recommended_minimum_source_pairs": 4,
+                "safety_factor": 1.5,
+                "target_far_per_year": 0.1,
+                "zero_count_confidence": 0.9,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "authorization.json"
+    report = authorize_candidate_background_plan(
+        endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
+    )
+    assert report["status"] == (
+        "authorized_validation_candidate_continuous_background_plan"
+    )
+    assert report["passed"] is True
+    assert report["test_rows_read"] == 0
+    assert len(report["authorization_id"]) == 64
+    assert report["authorization_identity"]["selected_pairs"] == 4
+    assert (
+        authorize_candidate_background_plan(
+            endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
+        )["authorization_id"]
+        == report["authorization_id"]
+    )
+
+    audit_report["overlap_gps_blocks"] = ["gps:1:256"]
+    audit.write_text(json.dumps(audit_report), encoding="utf-8")
+    with pytest.raises(ValueError, match="purpose audit"):
+        authorize_candidate_background_plan(
+            endpoint, plan, audit, forecast, output, shard_stop_exclusive=1
+        )
+
+
+def test_block_capacity_extension_decision_binds_failed_and_passing_forecasts(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "background.jsonl"
+    manifest.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "window_id": f"w-{block}-{slot}",
+                    "split": "val",
+                    "gps_start": 1000 + block * 256 + slot * 8,
+                    "gps_end": 1008 + block * 256 + slot * 8,
+                    "gps_block": f"gps:{1000 + block * 256}:256",
+                    "ifos": ["H1", "L1"],
+                }
+            )
+            + "\n"
+            for block in range(3)
+            for slot in range(2)
+        ),
+        encoding="utf-8",
+    )
+    schedule = tmp_path / "schedule.json"
+    freeze_candidate_block_permutation_schedule(
+        manifest,
+        schedule,
+        "val",
+        "H1",
+        "L1",
+        target_far_per_year=1_000_000,
+        maximum_shifts=2,
+    )
+    background = tmp_path / "background-report.json"
+    background.write_text(
+        json.dumps(
+            {
+                "status": "verified_multi_segment_development_background",
+                "scientific_claim_allowed": False,
+                "source_pairs": 3,
+                "manifest_path": str(manifest),
+                "manifest_sha256": file_sha256(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_plan = tmp_path / "base-plan.json"
+    base_pairs = [{"pair_id": f"p-{index}"} for index in range(3)]
+    base_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "selected_pairs": 3,
+                "aligned_pairs_available": 10,
+                "pairs": base_pairs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_forecast = tmp_path / "base-forecast.json"
+    run_candidate_block_permutation_capacity_forecast(
+        schedule,
+        background,
+        base_plan,
+        base_forecast,
+        safety_factor=2,
+        allow_insufficient=True,
+    )
+    extended_plan = tmp_path / "extended-plan.json"
+    extended_pairs = [*base_pairs, {"pair_id": "p-3"}]
+    extended_plan.write_text(
+        json.dumps(
+            {
+                "status": "development_acquisition_plan",
+                "locked_evaluation_data": False,
+                "selected_pairs": 4,
+                "aligned_pairs_available": 10,
+                "pairs": extended_pairs,
+                "selection_rule": "frozen_prefix_stratified_complement_v1",
+                "candidate_scores_inspected": False,
+                "base_parent_plan_sha256": file_sha256(base_plan),
+                "base_selected_pairs": 3,
+                "base_pair_ids_hash": canonical_hash(["p-0", "p-1", "p-2"], 64),
+                "extension_pairs": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    extended_forecast = tmp_path / "extended-forecast.json"
+    run_candidate_block_permutation_capacity_forecast(
+        schedule,
+        background,
+        extended_plan,
+        extended_forecast,
+        safety_factor=2,
+    )
+    decision_path = tmp_path / "decision.json"
+    decision = freeze_candidate_block_capacity_extension_decision(
+        base_forecast, extended_plan, extended_forecast, decision_path
+    )
+    assert decision["base_source_pairs"] == 3
+    assert decision["extended_source_pairs"] == 4
+    assert decision["extension_source_pairs"] == 1
+    assert decision["candidate_scores_inspected"] is False
+    assert decision["test_data_opened"] is False
+
+    tampered = json.loads(extended_forecast.read_text())
+    tampered["safety_factor"] = 3
+    tampered_path = tmp_path / "tampered-forecast.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ValueError, match="changed the frozen target"):
+        freeze_candidate_block_capacity_extension_decision(
+            base_forecast,
+            extended_plan,
+            tampered_path,
+            tmp_path / "tampered-decision.json",
+        )
 
 
 def test_candidate_exposure_plan_excludes_missing_shifted_detector() -> None:

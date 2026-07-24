@@ -5,8 +5,13 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
-from .background import SECONDS_PER_YEAR, _union_duration
-from .io import atomic_write_json, canonical_hash, file_sha256
+from .background import (
+    SECONDS_PER_YEAR,
+    _union_duration,
+    assign_relative_gps_block_slots,
+    parse_gps_block_identity,
+)
+from .io import atomic_write_json, canonical_hash, file_sha256, load_yaml
 from .runtime import execution_provenance
 
 
@@ -15,6 +20,12 @@ CANDIDATE_BLOCK_PERMUTATION_METHOD = (
 )
 CANDIDATE_BLOCK_SELECTION_DATA = (
     "background_gps_blocks_and_detector_availability_only"
+)
+DETECTOR_SET_BLOCK_PERMUTATION_METHOD = (
+    "independent_circular_gps_block_detector_set_permutation_v1"
+)
+DETECTOR_SET_BLOCK_SELECTION_DATA = (
+    "background_gps_blocks_detector_availability_and_network_policy_only"
 )
 
 
@@ -91,6 +102,33 @@ def candidate_block_schedule_identity(schedule: dict[str, Any]) -> dict[str, Any
             "shift_indices",
             "target_far_per_year",
             "zero_count_confidence",
+        )
+    }
+
+
+def detector_set_block_schedule_identity(
+    schedule: dict[str, Any],
+) -> dict[str, Any]:
+    """Return immutable fields covered by a variable-detector schedule ID."""
+
+    return {
+        field: schedule.get(field)
+        for field in (
+            "schema_version",
+            "method",
+            "background_manifest_sha256",
+            "network_config_sha256",
+            "split",
+            "detectors",
+            "detector_subsets",
+            "pairwise_light_travel_time_seconds",
+            "window_duration_seconds",
+            "relative_window_slot_policy",
+            "ordered_gps_blocks",
+            "permutations",
+            "target_far_per_year",
+            "zero_count_confidence",
+            "exposure_safety_factor",
         )
     }
 
@@ -484,11 +522,7 @@ def freeze_candidate_block_permutation_schedule(
     blocks: dict[str, dict[str, Any]] = {}
     for row in rows:
         block_id = str(row["gps_block"])
-        parts = block_id.split(":")
-        if len(parts) != 3 or parts[0] != "gps":
-            raise ValueError(f"unsupported GPS block identity: {block_id}")
-        block_start = float(parts[1])
-        block_duration = float(parts[2])
+        _, block_start, block_duration = parse_gps_block_identity(block_id)
         offset = (float(row["gps_start"]) - block_start) / window_duration
         slot = int(round(offset))
         if not math.isclose(offset, slot, rel_tol=0.0, abs_tol=1e-6):
@@ -596,6 +630,728 @@ def freeze_candidate_block_permutation_schedule(
             "validation-only schedule; execution and a separate locked test remain required"
             if reached
             else "available GPS-block permutations do not reach the frozen FAR exposure target"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def freeze_detector_set_block_permutation_schedule(
+    background_manifest: str | Path,
+    network_config: str | Path,
+    output: str | Path,
+    split: str,
+    target_far_per_year: float,
+    zero_count_confidence: float = 0.90,
+    maximum_shifts: int | None = None,
+    exposure_safety_factor: float = 1.0,
+) -> dict[str, Any]:
+    """Freeze independent circular H1/L1/V1 block permutations score-blindly."""
+
+    target = Path(output).resolve()
+    if target.exists():
+        raise FileExistsError(
+            "detector-set block-permutation schedules are immutable"
+        )
+    if (
+        target_far_per_year <= 0
+        or not 0 < zero_count_confidence < 1
+        or not math.isfinite(exposure_safety_factor)
+        or exposure_safety_factor < 1
+    ):
+        raise ValueError("detector-set block-permutation settings are invalid")
+    config = load_yaml(network_config)
+    policy = config.get("network_coherence")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema") != "h1_l1_v1_pairwise_light_travel_v1"
+        or policy.get("detectors") != ["H1", "L1", "V1"]
+    ):
+        raise ValueError("detector-set block schedule requires the H1/L1/V1 policy")
+    detectors = [str(value) for value in policy["detectors"]]
+    subsets = [
+        [str(value) for value in subset]
+        for subset in policy.get("detector_subsets", [])
+    ]
+    if (
+        not subsets
+        or len({frozenset(subset) for subset in subsets}) != len(subsets)
+        or any(
+            len(subset) < 2
+            or len(subset) != len(set(subset))
+            or not set(subset) <= set(detectors)
+            for subset in subsets
+        )
+    ):
+        raise ValueError("detector-set block schedule subsets are invalid")
+    pairwise_limits = {
+        str(key): float(value)
+        for key, value in policy.get(
+            "pairwise_light_travel_time_seconds",
+            {},
+        ).items()
+    }
+    required_pairs = {
+        "+".join(sorted((first, second)))
+        for subset in subsets
+        for first_index, first in enumerate(subset)
+        for second in subset[first_index + 1 :]
+    }
+    if set(pairwise_limits) != required_pairs or any(
+        not math.isfinite(value) or value <= 0
+        for value in pairwise_limits.values()
+    ):
+        raise ValueError("detector-set block schedule pair limits are incomplete")
+
+    with Path(background_manifest).open("r", encoding="utf-8") as handle:
+        rows = [
+            json.loads(line)
+            for line in handle
+            if line.strip()
+        ]
+    rows = [row for row in rows if str(row.get("split")) == split]
+    if not rows:
+        raise ValueError(f"no background windows for split {split}")
+    durations = {
+        float(row["gps_end"]) - float(row["gps_start"]) for row in rows
+    }
+    if len(durations) != 1:
+        raise ValueError(
+            "detector-set block permutation requires one window duration"
+        )
+    window_duration = next(iter(durations))
+    if not math.isfinite(window_duration) or window_duration <= 0:
+        raise ValueError("detector-set block window duration is invalid")
+    relative_slots, block_metadata = assign_relative_gps_block_slots(
+        rows,
+        window_duration,
+    )
+    blocks: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        block_id = str(row["gps_block"])
+        block_start = block_metadata[block_id]["gps_start"]
+        block_duration = block_metadata[block_id]["duration"]
+        slot = relative_slots[str(row["window_id"])]
+        record = blocks.setdefault(
+            block_id,
+            {
+                "gps_start": block_start,
+                "duration": block_duration,
+                "slots_by_ifo": {},
+            },
+        )
+        if (
+            record["gps_start"] != block_start
+            or record["duration"] != block_duration
+        ):
+            raise ValueError("GPS block metadata is inconsistent")
+        for ifo in _ifos(row):
+            if ifo not in detectors:
+                raise ValueError("background window uses an undeclared detector")
+            slots = record["slots_by_ifo"].setdefault(ifo, set())
+            if slot in slots:
+                raise ValueError(
+                    f"GPS block {block_id} repeats detector slot {ifo}:{slot}"
+                )
+            slots.add(slot)
+    ordered = sorted(
+        blocks,
+        key=lambda value: (blocks[value]["gps_start"], value),
+    )
+    block_count = len(ordered)
+    if block_count < 3:
+        raise ValueError(
+            "independent H1/L1/V1 permutations require at least three GPS blocks"
+        )
+    nondegenerate_shifts = [
+        shift
+        for shift in range(1, block_count)
+        if len({0, shift % block_count, (-shift) % block_count}) == 3
+    ]
+    if maximum_shifts is None:
+        maximum_shifts = len(nondegenerate_shifts)
+    if maximum_shifts < 1 or maximum_shifts > len(nondegenerate_shifts):
+        raise ValueError(
+            "maximum detector-set shifts exceeds the independent circular range"
+        )
+    required_seconds = (
+        -math.log(1.0 - zero_count_confidence)
+        / target_far_per_year
+        * SECONDS_PER_YEAR
+    )
+    safety_required_seconds = required_seconds * exposure_safety_factor
+    selected = []
+    total_seconds = 0.0
+    total_subset_windows: dict[str, int] = {
+        "+".join(subset): 0 for subset in subsets
+    }
+    for shift in nondegenerate_shifts[:maximum_shifts]:
+        shift_by_ifo = {"H1": 0, "L1": shift, "V1": -shift}
+        subset_windows = {"+".join(subset): 0 for subset in subsets}
+        eligible_windows = 0
+        eligible_blocks = 0
+        for base_index in range(block_count):
+            eligible_slots: set[int] = set()
+            for subset in subsets:
+                source_slot_sets = [
+                    blocks[
+                        ordered[
+                            (base_index + shift_by_ifo[ifo]) % block_count
+                        ]
+                    ]["slots_by_ifo"].get(ifo, set())
+                    for ifo in subset
+                ]
+                common = (
+                    set.intersection(*source_slot_sets)
+                    if source_slot_sets
+                    else set()
+                )
+                subset_windows["+".join(subset)] += len(common)
+                eligible_slots.update(common)
+            if eligible_slots:
+                eligible_blocks += 1
+                eligible_windows += len(eligible_slots)
+        live_seconds = eligible_windows * window_duration
+        if live_seconds <= 0:
+            continue
+        permutation = {
+            "permutation_index": shift,
+            "permutation_id": (
+                "network-block-permutation-"
+                + canonical_hash(
+                    {
+                        "background_manifest_sha256": file_sha256(
+                            background_manifest
+                        ),
+                        "shift_by_ifo": shift_by_ifo,
+                    },
+                    24,
+                )
+            ),
+            "shift_by_ifo": shift_by_ifo,
+            "eligible_blocks": eligible_blocks,
+            "eligible_windows": eligible_windows,
+            "eligible_windows_by_detector_subset": subset_windows,
+            "live_time_seconds": live_seconds,
+        }
+        selected.append(permutation)
+        total_seconds += live_seconds
+        for name, count in subset_windows.items():
+            total_subset_windows[name] += count
+        if total_seconds >= safety_required_seconds:
+            break
+    required_subset_names = {"+".join(subset) for subset in subsets}
+    reached = total_seconds >= safety_required_seconds
+    coverage = required_subset_names <= {
+        name for name, count in total_subset_windows.items() if count > 0
+    }
+    schedule_fields = {
+        "schema_version": 1,
+        "method": DETECTOR_SET_BLOCK_PERMUTATION_METHOD,
+        "background_manifest_sha256": file_sha256(background_manifest),
+        "network_config_sha256": file_sha256(network_config),
+        "split": split,
+        "detectors": detectors,
+        "detector_subsets": subsets,
+        "pairwise_light_travel_time_seconds": dict(
+            sorted(pairwise_limits.items())
+        ),
+        "window_duration_seconds": window_duration,
+        "relative_window_slot_policy": "within_block_gps_order_v1",
+        "ordered_gps_blocks": ordered,
+        "permutations": selected,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+        "exposure_safety_factor": exposure_safety_factor,
+    }
+    result = {
+        **schedule_fields,
+        "status": "frozen_detector_set_block_permutation_schedule",
+        "scientific_claim_allowed": False,
+        "selection_data": DETECTOR_SET_BLOCK_SELECTION_DATA,
+        "candidate_scores_inspected": False,
+        "schedule_id": canonical_hash(
+            detector_set_block_schedule_identity(schedule_fields),
+            32,
+        ),
+        "gps_blocks": block_count,
+        "available_independent_circular_shifts": len(
+            nondegenerate_shifts
+        ),
+        "maximum_shifts_scanned": maximum_shifts,
+        "selected_shift_count": len(selected),
+        "permutation_indices": [
+            row["permutation_index"] for row in selected
+        ],
+        "permutations_sha256": canonical_hash(selected, 64),
+        "selected_equivalent_live_time_seconds": total_seconds,
+        "selected_equivalent_live_time_years": (
+            total_seconds / SECONDS_PER_YEAR
+        ),
+        "required_equivalent_live_time_seconds": required_seconds,
+        "required_equivalent_live_time_years": (
+            required_seconds / SECONDS_PER_YEAR
+        ),
+        "safety_required_equivalent_live_time_seconds": (
+            safety_required_seconds
+        ),
+        "safety_required_equivalent_live_time_years": (
+            safety_required_seconds / SECONDS_PER_YEAR
+        ),
+        "eligible_windows_by_detector_subset": total_subset_windows,
+        "required_detector_subsets_covered": coverage,
+        "schedule_exposure_target_reached": reached,
+        "far_resolution_one_count_per_year": (
+            SECONDS_PER_YEAR / total_seconds if total_seconds > 0 else None
+        ),
+        "scientific_blocker": (
+            "validation-only schedule; execution, dependence audit and a "
+            "separate locked test remain required"
+            if reached and coverage
+            else "available independent block permutations do not reach the "
+            "frozen exposure or detector-subset target"
+        ),
+        **execution_provenance(),
+    }
+    atomic_write_json(target, result)
+    return result
+
+
+def forecast_candidate_block_permutation_capacity(
+    pilot_schedule_path: str | Path,
+    pilot_background_report_path: str | Path,
+    planned_parent_plan_path: str | Path,
+    safety_factor: float = 1.5,
+) -> dict[str, Any]:
+    """Forecast score-blind block-permutation capacity from a DQ-verified pilot."""
+
+    if not math.isfinite(safety_factor) or safety_factor < 1:
+        raise ValueError("candidate background capacity safety factor must be at least one")
+    with Path(pilot_schedule_path).open("r", encoding="utf-8") as handle:
+        schedule = json.load(handle)
+    with Path(pilot_background_report_path).open("r", encoding="utf-8") as handle:
+        background = json.load(handle)
+    with Path(planned_parent_plan_path).open("r", encoding="utf-8") as handle:
+        plan = json.load(handle)
+    if (
+        schedule.get("status") != "frozen_candidate_block_permutation_schedule"
+        or schedule.get("selection_data") != CANDIDATE_BLOCK_SELECTION_DATA
+        or schedule.get("candidate_scores_inspected") is not False
+        or schedule.get("split") != "val"
+    ):
+        raise ValueError("pilot block schedule is not a score-blind validation schedule")
+    if (
+        background.get("status") != "verified_multi_segment_development_background"
+        or background.get("scientific_claim_allowed") is not False
+    ):
+        raise ValueError("pilot background report is not a verified development background")
+    manifest = Path(str(background.get("manifest_path", ""))).resolve()
+    if (
+        not manifest.is_file()
+        or file_sha256(manifest) != background.get("manifest_sha256")
+        or schedule.get("background_manifest_sha256") != background.get("manifest_sha256")
+    ):
+        raise ValueError("pilot schedule and background manifest hashes differ")
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or not isinstance(plan.get("pairs"), list)
+        or int(plan.get("selected_pairs", -1)) != len(plan["pairs"])
+    ):
+        raise ValueError("planned parent acquisition is not a complete development plan")
+    pair_ids = [str(row.get("pair_id", "")) for row in plan["pairs"]]
+    if any(not pair_id for pair_id in pair_ids) or len(set(pair_ids)) != len(pair_ids):
+        raise ValueError("planned parent acquisition pair IDs must be nonempty and unique")
+    source_pairs = int(background.get("source_pairs", 0))
+    pilot_blocks = int(schedule.get("gps_blocks", 0))
+    selected_shifts = int(schedule.get("selected_shift_count", 0))
+    pilot_seconds = float(schedule.get("selected_equivalent_live_time_seconds", 0))
+    required_seconds = float(schedule.get("required_equivalent_live_time_seconds", 0))
+    if (
+        source_pairs <= 0
+        or pilot_blocks < 2
+        or selected_shifts <= 0
+        or pilot_seconds <= 0
+        or required_seconds <= 0
+    ):
+        raise ValueError("pilot schedule lacks positive pair, block, shift or exposure counts")
+
+    blocks_per_source_pair = pilot_blocks / source_pairs
+    seconds_per_block_shift = pilot_seconds / (pilot_blocks * selected_shifts)
+    planned_pairs = len(plan["pairs"])
+    projected_blocks = math.floor(blocks_per_source_pair * planned_pairs)
+    projected_shifts = max(0, projected_blocks - 1)
+    projected_seconds = (
+        seconds_per_block_shift * projected_blocks * projected_shifts
+    )
+    safety_required_seconds = required_seconds * safety_factor
+    block_discriminant = 1 + 4 * safety_required_seconds / seconds_per_block_shift
+    recommended_blocks = math.ceil((1 + math.sqrt(block_discriminant)) / 2)
+    recommended_pairs = math.ceil(recommended_blocks / blocks_per_source_pair)
+    aligned_available = int(plan.get("aligned_pairs_available", planned_pairs))
+    safe = projected_seconds >= safety_required_seconds
+    feasible = recommended_pairs <= aligned_available
+    if safe:
+        blocker = (
+            "forecast passed; exact post-DQ schedule and locked test are still required"
+        )
+    elif feasible:
+        blocker = "planned acquisition lacks the predeclared forecast safety margin"
+    else:
+        blocker = (
+            "available aligned source pairs cannot meet the predeclared forecast "
+            "safety margin"
+        )
+    return {
+        "status": "score_blind_candidate_block_capacity_forecast",
+        "scientific_claim_allowed": False,
+        "forecast_only": True,
+        "candidate_scores_inspected": False,
+        "selection_data": CANDIDATE_BLOCK_SELECTION_DATA,
+        "projection_assumption": (
+            "linear validation-block yield per selected source pair and constant "
+            "pilot-average seconds per block-shift"
+        ),
+        "pilot_schedule_path": str(Path(pilot_schedule_path).resolve()),
+        "pilot_schedule_sha256": file_sha256(pilot_schedule_path),
+        "pilot_background_report_path": str(
+            Path(pilot_background_report_path).resolve()
+        ),
+        "pilot_background_report_sha256": file_sha256(
+            pilot_background_report_path
+        ),
+        "planned_parent_plan_path": str(Path(planned_parent_plan_path).resolve()),
+        "planned_parent_plan_sha256": file_sha256(planned_parent_plan_path),
+        "safety_factor": safety_factor,
+        "target_far_per_year": float(schedule["target_far_per_year"]),
+        "zero_count_confidence": float(schedule["zero_count_confidence"]),
+        "pilot_source_pairs": source_pairs,
+        "pilot_gps_blocks": pilot_blocks,
+        "pilot_selected_shifts": selected_shifts,
+        "pilot_equivalent_live_time_seconds": pilot_seconds,
+        "observed_blocks_per_source_pair": blocks_per_source_pair,
+        "observed_seconds_per_block_shift": seconds_per_block_shift,
+        "planned_source_pairs": planned_pairs,
+        "aligned_pairs_available": aligned_available,
+        "projected_gps_blocks": projected_blocks,
+        "projected_available_nonzero_shifts": projected_shifts,
+        "projected_maximum_equivalent_live_time_seconds": projected_seconds,
+        "required_equivalent_live_time_seconds": required_seconds,
+        "safety_required_equivalent_live_time_seconds": safety_required_seconds,
+        "projected_to_required_ratio": projected_seconds / required_seconds,
+        "projected_to_safety_required_ratio": (
+            projected_seconds / safety_required_seconds
+        ),
+        "recommended_minimum_gps_blocks": recommended_blocks,
+        "recommended_minimum_source_pairs": recommended_pairs,
+        "recommendation_fits_available_pairs": feasible,
+        "planned_pairs_satisfy_safety_forecast": safe,
+        "scientific_blocker": blocker,
+        **execution_provenance(),
+    }
+
+
+def run_candidate_block_permutation_capacity_forecast(
+    pilot_schedule_path: str | Path,
+    pilot_background_report_path: str | Path,
+    planned_parent_plan_path: str | Path,
+    output_path: str | Path,
+    safety_factor: float = 1.5,
+    allow_insufficient: bool = False,
+) -> dict[str, Any]:
+    report = forecast_candidate_block_permutation_capacity(
+        pilot_schedule_path,
+        pilot_background_report_path,
+        planned_parent_plan_path,
+        safety_factor,
+    )
+    atomic_write_json(output_path, report)
+    if not report["planned_pairs_satisfy_safety_forecast"] and not allow_insufficient:
+        raise RuntimeError(
+            f"candidate block capacity forecast failed; inspect {output_path}"
+        )
+    return report
+
+
+def authorize_candidate_background_plan(
+    independent_validation_endpoint_path: str | Path,
+    parent_plan_path: str | Path,
+    validation_purpose_audit_path: str | Path,
+    capacity_forecast_path: str | Path,
+    output_path: str | Path,
+    shard_stop_exclusive: int,
+    pairs_per_shard: int = 4,
+    target_far_per_year: float = 0.1,
+    zero_count_confidence: float = 0.9,
+    minimum_safety_factor: float = 1.5,
+) -> dict[str, Any]:
+    """Authorize one validation-background plan against every frozen data-purpose gate."""
+
+    if (
+        shard_stop_exclusive < 1
+        or pairs_per_shard < 1
+        or target_far_per_year <= 0
+        or not 0 < zero_count_confidence < 1
+        or minimum_safety_factor < 1
+    ):
+        raise ValueError("candidate background authorization settings are invalid")
+    endpoint_path = Path(independent_validation_endpoint_path).resolve()
+    plan_path = Path(parent_plan_path).resolve()
+    audit_path = Path(validation_purpose_audit_path).resolve()
+    forecast_path = Path(capacity_forecast_path).resolve()
+    endpoint = json.loads(endpoint_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    forecast = json.loads(forecast_path.read_text(encoding="utf-8"))
+    plan_hash = file_sha256(plan_path)
+    purpose_component = endpoint.get("component_reports", {}).get(
+        "purpose_partition", {}
+    )
+    purpose_path = Path(str(purpose_component.get("path", ""))).resolve()
+
+    if (
+        endpoint.get("status")
+        != "frozen_gps_and_purpose_disjoint_validation_endpoint"
+        or endpoint.get("passed") is not True
+        or endpoint.get("scientific_claim_allowed") is not False
+        or int(endpoint.get("rows", -1)) != 3000
+        or int(endpoint.get("candidate_calibration_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("injection_validation_unique_gps_blocks", -1)) < 25
+        or int(endpoint.get("purpose_gps_block_overlap", -1)) != 0
+        or int(endpoint.get("test_rows_read", -1)) != 0
+        or endpoint.get("test_evaluation") is not None
+        or not purpose_path.is_file()
+        or purpose_component.get("sha256") != file_sha256(purpose_path)
+    ):
+        raise ValueError("independent validation endpoint authorization failed")
+    roles = audit.get("roles", {})
+    if (
+        audit.get("status")
+        != "verified_gwosc_plan_validation_purpose_disjointness"
+        or audit.get("passed") is not True
+        or audit.get("scientific_claim_allowed") is not False
+        or audit.get("candidate_scores_inspected") is not False
+        or int(audit.get("test_rows_read", -1)) != 0
+        or audit.get("overlap_pair_ids") != []
+        or audit.get("overlap_gps_blocks") != []
+        or audit.get("plan", {}).get("sha256") != plan_hash
+        or audit.get("purpose_partition", {}).get("sha256")
+        != purpose_component.get("sha256")
+        or set(roles) != {"candidate_calibration", "injection_validation"}
+        or any(
+            int(role.get("gps_interval_overlap_count", -1)) != 0
+            or role.get("direct_pair_id_overlaps") != []
+            for role in roles.values()
+        )
+    ):
+        raise ValueError("validation-purpose audit does not authorize the parent plan")
+
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    selected_pairs = int(plan.get("selected_pairs", -1))
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("run") != "O4a"
+        or plan.get("locked_evaluation_data") is not False
+        or plan.get("candidate_scores_inspected") is not False
+        or plan.get("test_data_opened") is not False
+        or selected_pairs != len(pairs)
+        or selected_pairs <= 0
+        or any(not value for value in pair_ids)
+        or len(set(pair_ids)) != len(pair_ids)
+        or math.ceil(selected_pairs / pairs_per_shard) != shard_stop_exclusive
+    ):
+        raise ValueError("parent plan is not a complete score-blind O4a shard range")
+    if (
+        forecast.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or forecast.get("scientific_claim_allowed") is not False
+        or forecast.get("forecast_only") is not True
+        or forecast.get("candidate_scores_inspected") is not False
+        or forecast.get("planned_pairs_satisfy_safety_forecast") is not True
+        or forecast.get("recommendation_fits_available_pairs") is not True
+        or forecast.get("planned_parent_plan_sha256") != plan_hash
+        or int(forecast.get("planned_source_pairs", -1)) != selected_pairs
+        or int(forecast.get("recommended_minimum_source_pairs", selected_pairs + 1))
+        > selected_pairs
+        or float(forecast.get("safety_factor", -1)) < minimum_safety_factor
+        or not math.isclose(
+            float(forecast.get("target_far_per_year", -1)),
+            target_far_per_year,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(forecast.get("zero_count_confidence", -1)),
+            zero_count_confidence,
+            abs_tol=1e-12,
+        )
+    ):
+        raise ValueError("capacity forecast does not authorize the parent plan")
+
+    identity = {
+        "independent_validation_endpoint_sha256": file_sha256(endpoint_path),
+        "parent_plan_sha256": plan_hash,
+        "validation_purpose_audit_sha256": file_sha256(audit_path),
+        "capacity_forecast_sha256": file_sha256(forecast_path),
+        "purpose_partition_sha256": file_sha256(purpose_path),
+        "selected_pairs": selected_pairs,
+        "shard_stop_exclusive": shard_stop_exclusive,
+        "pairs_per_shard": pairs_per_shard,
+        "target_far_per_year": target_far_per_year,
+        "zero_count_confidence": zero_count_confidence,
+        "minimum_safety_factor": minimum_safety_factor,
+    }
+    authorization_id = canonical_hash(identity, length=64)
+    result = {
+        "status": "authorized_validation_candidate_continuous_background_plan",
+        "authorization_id": authorization_id,
+        "authorization_identity": identity,
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "candidate_scores_inspected": False,
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "independent_validation_endpoint": {
+            "path": str(endpoint_path),
+            "sha256": file_sha256(endpoint_path),
+        },
+        "parent_plan": {"path": str(plan_path), "sha256": plan_hash},
+        "validation_purpose_audit": {
+            "path": str(audit_path),
+            "sha256": file_sha256(audit_path),
+        },
+        "capacity_forecast": {
+            "path": str(forecast_path),
+            "sha256": file_sha256(forecast_path),
+        },
+        "purpose_partition": {
+            "path": str(purpose_path),
+            "sha256": file_sha256(purpose_path),
+        },
+        "scientific_blocker": (
+            "validation background is authorized; scoring and locked evaluation remain pending"
+        ),
+        **execution_provenance(),
+    }
+    target = Path(output_path).resolve()
+    if target.exists():
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        if (
+            existing.get("status") != result["status"]
+            or existing.get("authorization_id") != authorization_id
+            or existing.get("authorization_identity") != identity
+        ):
+            raise FileExistsError(
+                "candidate background authorization output has another identity"
+            )
+        return existing
+    atomic_write_json(target, result)
+    return result
+
+
+def freeze_candidate_block_capacity_extension_decision(
+    base_forecast_path: str | Path,
+    extended_plan_path: str | Path,
+    extended_forecast_path: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Freeze why a score-blind parent plan was extended before candidate scoring."""
+
+    target = Path(output_path).resolve()
+    if target.exists():
+        raise FileExistsError("candidate background capacity decisions are immutable")
+    inputs = {}
+    for name, path_value in (
+        ("base_forecast", base_forecast_path),
+        ("extended_plan", extended_plan_path),
+        ("extended_forecast", extended_forecast_path),
+    ):
+        path = Path(path_value).resolve()
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must contain a JSON object")
+        inputs[name] = (path, value)
+    base_path, base = inputs["base_forecast"]
+    plan_path, plan = inputs["extended_plan"]
+    extended_path, extended = inputs["extended_forecast"]
+    if (
+        base.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or base.get("candidate_scores_inspected") is not False
+        or base.get("planned_pairs_satisfy_safety_forecast") is not False
+    ):
+        raise ValueError("base capacity forecast is not a score-blind failed safety gate")
+    if (
+        plan.get("status") != "development_acquisition_plan"
+        or plan.get("locked_evaluation_data") is not False
+        or plan.get("selection_rule") != "frozen_prefix_stratified_complement_v1"
+        or plan.get("candidate_scores_inspected") is not False
+    ):
+        raise ValueError("extended plan is not a score-blind frozen-prefix extension")
+    pairs = list(plan.get("pairs", []))
+    pair_ids = [str(row.get("pair_id", "")) for row in pairs]
+    base_count = int(plan.get("base_selected_pairs", 0))
+    if (
+        not pairs
+        or len(pair_ids) != len(set(pair_ids))
+        or any(not pair_id for pair_id in pair_ids)
+        or int(plan.get("selected_pairs", -1)) != len(pairs)
+        or int(plan.get("extension_pairs", -1)) != len(pairs) - base_count
+        or canonical_hash(pair_ids[:base_count], 64)
+        != str(plan.get("base_pair_ids_hash", ""))
+        or str(plan.get("base_parent_plan_sha256", ""))
+        != str(base.get("planned_parent_plan_sha256", ""))
+        or base_count != int(base.get("planned_source_pairs", -1))
+    ):
+        raise ValueError("extended plan does not preserve the failed forecast parent exactly")
+    if (
+        extended.get("status") != "score_blind_candidate_block_capacity_forecast"
+        or extended.get("candidate_scores_inspected") is not False
+        or extended.get("planned_pairs_satisfy_safety_forecast") is not True
+        or str(extended.get("planned_parent_plan_sha256", ""))
+        != file_sha256(plan_path)
+        or int(extended.get("planned_source_pairs", -1)) != len(pairs)
+    ):
+        raise ValueError("extended capacity forecast does not pass for the exact extended plan")
+    common_fields = (
+        "pilot_schedule_sha256",
+        "pilot_background_report_sha256",
+        "safety_factor",
+        "target_far_per_year",
+        "zero_count_confidence",
+        "required_equivalent_live_time_seconds",
+    )
+    if any(base.get(field) != extended.get(field) for field in common_fields):
+        raise ValueError("base and extended capacity forecasts changed the frozen target")
+    recommended_pairs = int(base.get("recommended_minimum_source_pairs", 0))
+    if recommended_pairs <= base_count or recommended_pairs != len(pairs):
+        raise ValueError("extended plan is not the failed forecast's exact minimum recommendation")
+    result = {
+        "status": "frozen_score_blind_background_capacity_extension_decision",
+        "scientific_claim_allowed": False,
+        "test_data_opened": False,
+        "candidate_scores_inspected": False,
+        "selection_data": CANDIDATE_BLOCK_SELECTION_DATA,
+        "decision": "freeze_extended_parent_for_validation_background",
+        "base_forecast_path": str(base_path),
+        "base_forecast_sha256": file_sha256(base_path),
+        "base_parent_plan_sha256": str(base["planned_parent_plan_sha256"]),
+        "base_source_pairs": base_count,
+        "extended_plan_path": str(plan_path),
+        "extended_plan_sha256": file_sha256(plan_path),
+        "extended_source_pairs": len(pairs),
+        "extension_source_pairs": len(pairs) - base_count,
+        "extended_forecast_path": str(extended_path),
+        "extended_forecast_sha256": file_sha256(extended_path),
+        "recommended_minimum_source_pairs": recommended_pairs,
+        "safety_factor": float(extended["safety_factor"]),
+        "target_far_per_year": float(extended["target_far_per_year"]),
+        "zero_count_confidence": float(extended["zero_count_confidence"]),
+        "projected_to_safety_required_ratio": float(
+            extended["projected_to_safety_required_ratio"]
+        ),
+        "scientific_blocker": (
+            "exact post-DQ schedule, frozen validation threshold and locked test remain required"
         ),
         **execution_provenance(),
     }

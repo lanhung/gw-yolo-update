@@ -1,0 +1,43 @@
+calibration_perturbation:
+  # This is a conservative bounded stress envelope, not a draw from an official
+  # detector-calibration posterior. A publication result must either retain that
+  # interpretation or replace the template with hash-frozen official envelopes.
+  protocol: run_correlated_frequency_response_v1
+  required_split: val
+  # Legacy rows may still require this fallback. New detector-stratified rows
+  # retain their explicit O1/O2/O3a/O3b observing-run identity.
+  default_observing_run: O4a
+  seed: 20260722
+  target_sample_rate: 1024
+  model_ifos: [H1, L1, V1]
+  anchor_frequencies_hz: [20, 64, 128, 256, 480]
+  random_draws: 4
+  envelope_templates:
+    conservative_cross_run_stress_v1:
+      maximum_amplitude_fraction: [0.08, 0.05, 0.04, 0.05, 0.08]
+      maximum_phase_degrees: [8.0, 5.0, 4.0, 5.0, 8.0]
+      source:
+        identity: predeclared_conservative_cross_run_validation_envelope_v1
+        semantics: bounded_common_stress_test_not_run_specific_calibration_posterior
+  run_template_assignments:
+    O1: conservative_cross_run_stress_v1
+    O2: conservative_cross_run_stress_v1
+    O3a: conservative_cross_run_stress_v1
+    O3b: conservative_cross_run_stress_v1
+    O4a: conservative_cross_run_stress_v1
+
+calibration_robustness:
+  # Every scenario is evaluated at the original validation-only FAR threshold.
+  # The lower paired-bootstrap bound must satisfy the non-inferiority margin.
+  minimum_scenarios: 7
+  maximum_absolute_weighted_efficiency_loss: 0.05
+  maximum_far_multiplier_of_target: 2.0
+  bootstrap_replicates: 10000
+  minimum_injection_gps_blocks: 25
+  required_detector_subsets:
+    - H1+L1
+    - H1+V1
+    - L1+V1
+    - H1+L1+V1
+  minimum_injections_per_detector_subset: 25
+  seed: 20260722
