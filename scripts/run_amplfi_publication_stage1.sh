@@ -146,9 +146,24 @@ fi
 
 training_marker="$OUTPUT_ROOT/training_complete.json"
 if [[ ! -s "$training_marker" ]]; then
+  gpu_query_args=()
+  if [[ -n "${GWYOLO_ASSIGNED_GPU_INDEX:-}" ]]; then
+    if [[ ! "$GWYOLO_ASSIGNED_GPU_INDEX" =~ ^[0-9]+$ ]]; then
+      echo "GWYOLO_ASSIGNED_GPU_INDEX must be a non-negative integer" >&2
+      exit 2
+    fi
+    if [[ "${CUDA_VISIBLE_DEVICES:-}" != "$GWYOLO_ASSIGNED_GPU_INDEX" ]]; then
+      echo "assigned GPU index and CUDA_VISIBLE_DEVICES differ" >&2
+      exit 2
+    fi
+    gpu_query_args=(-i "$GWYOLO_ASSIGNED_GPU_INDEX")
+  fi
   while :; do
-    gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
-      2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+    gpu_pids=$(
+      nvidia-smi "${gpu_query_args[@]}" \
+        --query-compute-apps=pid --format=csv,noheader,nounits \
+        2>/dev/null | sed '/^[[:space:]]*$/d' || true
+    )
     [[ -z "$gpu_pids" ]] && break
     sleep 30
   done
@@ -313,6 +328,8 @@ result = {
     "model_metadata_sha256": digest(metadata_path),
     "selected_checkpoint_path": selection["selected_checkpoint_path"],
     "selected_checkpoint_sha256": selection["selected_checkpoint_sha256"],
+    "assigned_gpu_index": os.environ.get("GWYOLO_ASSIGNED_GPU_INDEX"),
+    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
     "code_commit": commit,
 }
 target = pathlib.Path(target_value)
