@@ -10,7 +10,9 @@ SCRIPT = (
 
 def test_detector_set_bundle_queue_is_fail_closed_and_portable() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
-    assert 'while [[ ! -s "$OVERLAP_RECEIPT" ]]' in source
+    assert "overlap_receipt_ready()" in source
+    assert "while ! overlap_receipt_ready" in source
+    assert 'set(loaded.get("artifacts", {})) != required' in source
     assert "detector_set_training_bundle_queue_upstream_incomplete" in source
     assert "detector-set-training-bundle-export" in source
     assert "--clean-train-manifest" in source

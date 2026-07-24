@@ -58,10 +58,44 @@ os.replace(part, target)
 PY
 }
 
-while [[ ! -s "$OVERLAP_RECEIPT" ]]; do
+overlap_receipt_ready() {
+  [[ -s "$OVERLAP_RECEIPT" ]] || return 1
+  "$TASK_PYTHON" - "$OVERLAP_RECEIPT" <<'PY'
+import json
+import pathlib
+import sys
+
+loaded = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+required = {
+    "train_report",
+    "validation_report",
+    "joint_group_audit",
+    "expansion_readiness_audit",
+    "capacity_report",
+}
+if (
+    loaded.get("status") != "verified_detector_set_overlap_robustness_corpus"
+    or loaded.get("passed") is not True
+    or loaded.get("test_rows_read") != 0
+    or loaded.get("test_evaluation") is not None
+    or loaded.get("same_distribution_data_scaling_claim_allowed") is not False
+    or set(loaded.get("artifacts", {})) != required
+):
+    raise SystemExit(1)
+PY
+}
+
+# A superseded materializer may leave a fail-closed receipt at the same path
+# before the corrected upstream atomically publishes its complete evidence
+# graph.  Wait for the semantic terminal state, not merely for file existence.
+while ! overlap_receipt_ready; do
   if [[ -n "${UPSTREAM_PID:-}" ]] && ! kill -0 "$UPSTREAM_PID" 2>/dev/null; then
     write_incomplete
     exit 0
+  fi
+  if [[ -s "$OVERLAP_RECEIPT" && -z "${UPSTREAM_PID:-}" ]]; then
+    echo "detector-set overlap receipt exists but is not publication-safe" >&2
+    exit 3
   fi
   sleep "${QUEUE_POLL_SECONDS:-30}"
 done

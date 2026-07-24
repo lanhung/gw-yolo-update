@@ -954,7 +954,36 @@ def select_lightning_validation_checkpoint(
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("checkpoint index lacks epoch/global_step") from error
         verified.append({**entry, "path": str(path), "epoch": epoch, "global_step": global_step})
-    selectable = [entry for entry in verified if Path(entry["path"]).name != "last.ckpt"]
+    selectable = [
+        entry for entry in verified if Path(entry["path"]).name != "last.ckpt"
+    ]
+    # Lightning commonly exposes the validation-best checkpoint twice: once
+    # through a stable ``best.ckpt`` alias and once through its epoch/step
+    # filename.  They are the same immutable model, not two scientifically
+    # ambiguous candidates.  Collapse only byte-identical aliases with the
+    # same training identity; distinct checkpoint hashes for one epoch remain
+    # fail-closed below.
+    checkpoint_groups: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+    for entry in selectable:
+        identity = (
+            str(entry["sha256"]),
+            int(entry["epoch"]),
+            int(entry["global_step"]),
+        )
+        checkpoint_groups.setdefault(identity, []).append(entry)
+    selectable = []
+    for aliases in checkpoint_groups.values():
+        aliases = sorted(
+            aliases,
+            key=lambda entry: (
+                Path(entry["path"]).name in {"best.ckpt"},
+                Path(entry["path"]).name,
+                entry["path"],
+            ),
+        )
+        canonical = dict(aliases[0])
+        canonical["alias_paths"] = [entry["path"] for entry in aliases]
+        selectable.append(canonical)
     exact = [
         entry
         for entry in selectable
@@ -993,6 +1022,8 @@ def select_lightning_validation_checkpoint(
         "checkpoint_match_rule": match_rule,
         "selected_checkpoint_path": selected["path"],
         "selected_checkpoint_sha256": selected["sha256"],
+        "selected_checkpoint_alias_paths": selected["alias_paths"],
+        "selected_checkpoint_alias_count": len(selected["alias_paths"]),
         "configured_max_epochs": configured_max_epochs,
         "observed_validation_epochs": observed_epochs,
         "validation_points": len(validation_rows),
