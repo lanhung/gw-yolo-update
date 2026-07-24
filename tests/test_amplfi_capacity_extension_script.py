@@ -32,6 +32,8 @@ def test_amplfi_capacity_extension_preserves_frozen_policy_and_evicts() -> None:
         "BASE_STREAM_MERGE_REPORT",
         "CAPACITY_POLICY",
         "MINIMUM_FREE_BYTES",
+        "from scipy.signal import resample_poly",
+        "requires h5py, NumPy and scipy.signal",
         '"candidate_scores_inspected"',
         '"test_rows_read"',
     ):

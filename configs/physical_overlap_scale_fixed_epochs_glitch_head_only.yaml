@@ -1,0 +1,35 @@
+overlap_training:
+  seed: 20260728
+  training_scope: glitch_head_only
+  training_control: fixed_epochs
+  epochs: 20
+  batch_size: 8
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  positive_weights: [10.0, 10.0]
+  class_weights: [1.0, 1.0]
+  focal_gamma: 2.0
+  clean_chirp_positive_weight: 10.0
+  clean_chirp_weight: 0.25
+  clean_chirp_distillation_weight: 0.0
+  clean_glitch_distillation_weight: 0.25
+  minimum_clean_chirp_iou_retention: 0.95
+  cache_in_memory: false
+  glitch_family_sampling:
+    enabled: true
+    exponent: 0.5
+    maximum_weight_ratio: 4.0
+    minimum_family_count: 5
+  model_ifos: [H1, L1, V1]
+  q_values: [4, 8, 16]
+  target_sample_rate: 1024
+  threshold_grid: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  tensor:
+    whitening: self
+    target_whitening: morphology
+    mask_fraction: 0.08
+    minimum_ifo_mask_snr: 2.0
+    frequency_bins: 96
+    time_bins: 96
+    fmin: 16.0
+    fmax: 500.0

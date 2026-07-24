@@ -39,6 +39,11 @@ if [[ "$(git -C "$TASK_CODE_DIR" rev-parse HEAD 2>/dev/null || true)" \
   echo "AMPLFI capacity extension requires its exact checkout" >&2
   exit 3
 fi
+if ! "$TASK_PYTHON" -c \
+  'import h5py; import numpy; from scipy.signal import resample_poly'; then
+  echo "AMPLFI capacity extension requires h5py, NumPy and scipy.signal" >&2
+  exit 3
+fi
 
 target_pairs=${EXTENSION_TARGET_PAIRS:-8}
 pairs_per_shard=${PAIRS_PER_SHARD:-2}
