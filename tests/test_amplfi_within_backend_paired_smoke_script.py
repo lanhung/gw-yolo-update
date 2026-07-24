@@ -35,6 +35,8 @@ def test_amplfi_within_backend_smoke_is_strict_validation_only() -> None:
     assert "bootstrap_replicates" in source
     assert "evaluation_tier" in source
     assert "minimum_publication_validation_injections" in source
+    assert "GWYOLO_ASSIGNED_GPU_INDEX" in source
+    assert 'gpu_query_args=(-i "$GWYOLO_ASSIGNED_GPU_INDEX")' in source
     assert "test_rows_read" in source
     assert "pe-robustness-joint-evaluate" not in source
     assert "dingo-common-batch" not in source

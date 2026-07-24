@@ -81,9 +81,24 @@ if [[ -z "$native_manifest" ]]; then
 fi
 
 wait_for_idle_gpu() {
+  gpu_query_args=()
+  if [[ -n "${GWYOLO_ASSIGNED_GPU_INDEX:-}" ]]; then
+    if [[ ! "$GWYOLO_ASSIGNED_GPU_INDEX" =~ ^[0-9]+$ ]]; then
+      echo "GWYOLO_ASSIGNED_GPU_INDEX must be a non-negative integer" >&2
+      exit 2
+    fi
+    if [[ "${PE_CUDA_VISIBLE_DEVICES:-0}" != "$GWYOLO_ASSIGNED_GPU_INDEX" ]]; then
+      echo "assigned PE GPU index and PE_CUDA_VISIBLE_DEVICES differ" >&2
+      exit 2
+    fi
+    gpu_query_args=(-i "$GWYOLO_ASSIGNED_GPU_INDEX")
+  fi
   while true; do
-    gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
-      2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+    gpu_pids=$(
+      nvidia-smi "${gpu_query_args[@]}" \
+        --query-compute-apps=pid --format=csv,noheader,nounits \
+        2>/dev/null | sed '/^[[:space:]]*$/d' || true
+    )
     [[ -z "$gpu_pids" ]] && return
     sleep 30
   done
@@ -204,6 +219,8 @@ result = {
     "comparison_scope": "strict_within_backend_paired",
     "cross_backend_absolute_comparison_allowed": False,
     "test_rows_read": 0,
+    "assigned_gpu_index": os.environ.get("GWYOLO_ASSIGNED_GPU_INDEX"),
+    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
     "code_commit": commit,
     "paired_injections": paired_injections,
     "bootstrap_replicates": bootstrap_replicates,
