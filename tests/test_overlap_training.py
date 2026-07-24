@@ -17,6 +17,7 @@ from gwyolo.overlap_training import (
     overlap_checkpoint_selection_score,
     overlap_training_split_audit,
     promote_overlap_sampling_arm,
+    promote_single_overlap_arm,
     replay_overlap_five_seed_stability,
     resolve_overlap_training_control,
     run_physical_overlap_scaling_hard_endpoint_cell,
@@ -955,6 +956,115 @@ def test_overlap_sampling_promotion_uses_only_paired_audited_validation(tmp_path
     assert failed["five_seed_stability"]["passing_seeds"] == [7, 8, 9]
     assert failed["selected_checkpoint_path"] is None
     assert failed["selected_checkpoint_sha256"] is None
+
+
+def test_glitch_adapter_single_arm_gate_controls_five_seed_expansion(
+    tmp_path,
+) -> None:
+    promotion_config = tmp_path / "promotion.yaml"
+    promotion_config.write_text(
+        """overlap_sampling_promotion:
+  minimum_clean_chirp_iou_retention: 0.95
+  minimum_glitch_iou: 0.10
+  minimum_family_median_iou: 0.05
+  maximum_zero_iou_families: 1
+  minimum_validation_rows_per_family: 5
+"""
+    )
+    stability_config = tmp_path / "stability.yaml"
+    stability_config.write_text(
+        """overlap_five_seed_stability:
+  minimum_passing_seed_fraction: 0.8
+  minimum_median_clean_retention: 0.95
+  minimum_median_glitch_iou: 0.10
+  minimum_median_family_iou: 0.05
+"""
+    )
+    reports = []
+    for seed in range(7, 12):
+        checkpoint = tmp_path / f"adapter-{seed}.pt"
+        checkpoint.write_bytes(str(seed).encode())
+        report_path = tmp_path / f"adapter-{seed}.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "status": "validation_selected_real_glitch_overlap_finetune",
+                    "scientific_claim_allowed": False,
+                    "search_claim_allowed": False,
+                    "checkpoint_selection_metric": "validation_loss",
+                    "training_scope": {
+                        "scope": "glitch_adapter_only",
+                        "non_glitch_state_preserved_bit_exact": True,
+                    },
+                    "seed": seed,
+                    "best_epoch": 3,
+                    "history": [
+                        {
+                            "epoch": 3,
+                            "checkpoint_eligible": True,
+                            "clean_chirp_iou_retention": 1.0,
+                        }
+                    ],
+                    "calibrated_overlap_validation": {
+                        "chirp": {"iou": 0.8},
+                        "glitch": {"iou": 0.2},
+                        "mean_iou": 0.5 - (seed - 7) * 0.001,
+                        "by_glitch_family": {
+                            "Blip": {"physical_rows": 5, "iou": 0.2},
+                            "Tomte": {"physical_rows": 5, "iou": 0.1},
+                        },
+                    },
+                    "checkpoint_path": str(checkpoint),
+                    "checkpoint_sha256": file_sha256(checkpoint),
+                    "config_hash": "adapter-config",
+                    "config_file_sha256": "adapter-config-file",
+                    "overlap_train_manifest_sha256": "overlap-train",
+                    "overlap_validation_manifest_sha256": "overlap-val",
+                    "clean_train_manifest_sha256": "clean-train",
+                    "clean_validation_manifest_sha256": "clean-val",
+                    "pretrained_checkpoint_sha256": "pretrained",
+                }
+            )
+        )
+        reports.append(report_path)
+
+    promotion = promote_single_overlap_arm(
+        reports[0],
+        promotion_config,
+        tmp_path / "adapter-promotion.json",
+        "glitch_adapter",
+    )
+    assert promotion["passed"] is True
+    assert promotion["promoted_arm"] == "glitch_adapter"
+    assert promotion["test_data_opened"] is False
+    summary = summarize_overlap_five_seed_promotion(
+        tmp_path / "adapter-promotion.json",
+        reports,
+        stability_config,
+        tmp_path / "adapter-five-seed.json",
+    )
+    assert summary["passed"] is True
+    assert summary["promoted_arm"] == "glitch_adapter"
+    assert summary["selected_seed"] == 7
+    assert summary["five_seed_stability"]["passing_seed_fraction"] == 1.0
+    assert "human_weak_mask_audit" not in summary["required_next_gates"]
+
+    failed_payload = json.loads(reports[0].read_text())
+    failed_payload["calibrated_overlap_validation"]["glitch"]["iou"] = 0.0
+    for row in failed_payload["calibrated_overlap_validation"][
+        "by_glitch_family"
+    ].values():
+        row["iou"] = 0.0
+    reports[0].write_text(json.dumps(failed_payload))
+    failed = promote_single_overlap_arm(
+        reports[0],
+        promotion_config,
+        tmp_path / "adapter-promotion-failed.json",
+        "glitch_adapter",
+    )
+    assert failed["passed"] is False
+    assert failed["promoted_arm"] is None
+    assert failed["scale_to_five_seeds"] is False
 
 
 def test_overlap_dataset_preserves_both_masks_and_availability(tmp_path) -> None:

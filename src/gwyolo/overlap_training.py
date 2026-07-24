@@ -465,6 +465,120 @@ def promote_overlap_sampling_arm(
     return result
 
 
+def promote_single_overlap_arm(
+    finetune_report_path: str | Path,
+    promotion_config_path: str | Path,
+    output_path: str | Path,
+    arm: str,
+) -> dict[str, Any]:
+    """Gate a predeclared single-arm fallback before five-seed expansion."""
+
+    expected_scopes = {"glitch_adapter": "glitch_adapter_only"}
+    if arm not in expected_scopes:
+        raise ValueError(f"Unsupported single overlap arm: {arm}")
+    report_path = Path(finetune_report_path).resolve()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    scope = report.get("training_scope", {})
+    if (
+        report.get("status") != "validation_selected_real_glitch_overlap_finetune"
+        or report.get("scientific_claim_allowed") is not False
+        or report.get("search_claim_allowed") is not False
+        or report.get("checkpoint_selection_metric") != "validation_loss"
+        or scope.get("scope") != expected_scopes[arm]
+        or scope.get("non_glitch_state_preserved_bit_exact") is not True
+    ):
+        raise ValueError("Single-arm overlap report violates its validation-only scope")
+    checkpoint_path = Path(str(report.get("checkpoint_path", ""))).resolve()
+    if (
+        not checkpoint_path.is_file()
+        or report.get("checkpoint_sha256") != file_sha256(checkpoint_path)
+    ):
+        raise ValueError("Single-arm overlap checkpoint failed hash replay")
+
+    config_path = Path(promotion_config_path).resolve()
+    config = load_yaml(config_path)
+    settings = config.get("overlap_sampling_promotion")
+    if not isinstance(settings, dict):
+        raise ValueError("Overlap sampling promotion configuration is missing")
+    required_settings = {
+        "minimum_clean_chirp_iou_retention",
+        "minimum_glitch_iou",
+        "minimum_family_median_iou",
+        "maximum_zero_iou_families",
+        "minimum_validation_rows_per_family",
+    }
+    missing = sorted(required_settings - set(settings))
+    if missing:
+        raise ValueError(f"Single-arm promotion config omits settings: {missing}")
+
+    selected_history = [
+        row
+        for row in report.get("history", [])
+        if int(row["epoch"]) == int(report["best_epoch"])
+    ]
+    if len(selected_history) != 1 or not selected_history[0].get(
+        "checkpoint_eligible"
+    ):
+        raise ValueError("Single-arm overlap checkpoint was not retention-eligible")
+    retention = float(selected_history[0]["clean_chirp_iou_retention"])
+    metrics = report.get("calibrated_overlap_validation", {})
+    families = metrics.get("by_glitch_family", {})
+    if not families:
+        raise ValueError("Single-arm overlap report lacks family validation metrics")
+    minimum_family_rows = int(settings["minimum_validation_rows_per_family"])
+    if any(
+        int(row.get("physical_rows", -1)) < minimum_family_rows
+        for row in families.values()
+    ):
+        raise ValueError("Single-arm overlap report has an underpowered family")
+    family_ious = np.asarray(
+        [float(row["iou"]) for row in families.values()], dtype=np.float64
+    )
+    checks = {
+        "clean_retention": retention
+        >= float(settings["minimum_clean_chirp_iou_retention"]),
+        "glitch_iou": float(metrics["glitch"]["iou"])
+        >= float(settings["minimum_glitch_iou"]),
+        "family_median_iou": float(np.median(family_ious))
+        >= float(settings["minimum_family_median_iou"]),
+        "zero_iou_families": int(np.count_nonzero(family_ious == 0))
+        <= int(settings["maximum_zero_iou_families"]),
+    }
+    passed = all(checks.values())
+    summary = {
+        "clean_chirp_iou_retention": retention,
+        "chirp_iou": float(metrics["chirp"]["iou"]),
+        "glitch_iou": float(metrics["glitch"]["iou"]),
+        "worst_family_iou": float(family_ious.min()),
+        "median_family_iou": float(np.median(family_ious)),
+        "zero_iou_families": int(np.count_nonzero(family_ious == 0)),
+        "family_ious": {
+            label: float(row["iou"]) for label, row in sorted(families.items())
+        },
+        "absolute_checks": checks,
+        "absolute_passed": passed,
+    }
+    result = {
+        "status": "validation_only_overlap_single_arm_promotion",
+        "passed": passed,
+        "scientific_claim_allowed": False,
+        "search_claim_allowed": False,
+        "test_data_opened": False,
+        "promoted_arm": arm if passed else None,
+        "candidate_arm": arm,
+        "scale_to_five_seeds": passed,
+        "summaries": {arm: summary},
+        "input_report_hashes": {arm: file_sha256(report_path)},
+        "input_report_paths": {arm: str(report_path)},
+        "source_training_scope": scope,
+        "config_path": str(config_path),
+        "config_hash": canonical_hash(config),
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def summarize_overlap_five_seed_promotion(
     promotion_report_path: str | Path,
     finetune_report_paths: list[str | Path],
@@ -475,11 +589,18 @@ def summarize_overlap_five_seed_promotion(
 
     promotion = json.loads(Path(promotion_report_path).read_text(encoding="utf-8"))
     promoted = promotion.get("promoted_arm")
+    status = promotion.get("status")
+    accepted = (
+        status == "validation_only_overlap_sampling_promotion"
+        and promoted in {"uniform", "family_balanced"}
+    ) or (
+        status == "validation_only_overlap_single_arm_promotion"
+        and promoted == "glitch_adapter"
+    )
     if (
-        promotion.get("status") != "validation_only_overlap_sampling_promotion"
+        not accepted
         or not promotion.get("passed")
         or not promotion.get("scale_to_five_seeds")
-        or promoted not in {"uniform", "family_balanced"}
     ):
         raise ValueError("Overlap sampling promotion did not authorize five seeds")
     paths = [Path(path) for path in finetune_report_paths]
@@ -491,6 +612,16 @@ def summarize_overlap_five_seed_promotion(
         for report in reports
     ):
         raise ValueError("A five-seed overlap report is not validation-selected")
+    if promoted == "glitch_adapter" and any(
+        report.get("checkpoint_selection_metric") != "validation_loss"
+        or report.get("training_scope", {}).get("scope") != "glitch_adapter_only"
+        or report.get("training_scope", {}).get(
+            "non_glitch_state_preserved_bit_exact"
+        )
+        is not True
+        for report in reports
+    ):
+        raise ValueError("A five-seed glitch-adapter report violates its frozen scope")
     seeds = [int(report["seed"]) for report in reports]
     if len(set(seeds)) != 5:
         raise ValueError("Five-seed overlap reports do not contain five unique seeds")
@@ -734,7 +865,7 @@ def summarize_overlap_five_seed_promotion(
         },
         "required_next_gates": [
             "continuous_background_far_ifar_vt",
-            "human_weak_mask_audit",
+            "paired_real_glitch_functional_mask_endpoints",
             "locked_o4a_then_o4b_evaluation",
         ],
         **execution_provenance(),

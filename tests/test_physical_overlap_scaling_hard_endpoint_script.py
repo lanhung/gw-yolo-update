@@ -19,3 +19,5 @@ def test_hard_endpoint_successor_freezes_before_reading_scaling_metrics() -> Non
     assert "physical-overlap-scale-hard-endpoint-cell" in source
     assert "physical-overlap-scale-hard-endpoint-bind" in source
     assert "NEXT_PHYSICAL_SCALE" in source
+    assert 'nvidia-smi -i "$assigned_gpu"' in source
+    assert 'export CUDA_VISIBLE_DEVICES="$assigned_gpu"' in source

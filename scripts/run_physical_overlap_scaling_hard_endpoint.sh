@@ -47,6 +47,11 @@ if [[ "$(git -C "$TASK_CODE_DIR" rev-parse HEAD 2>/dev/null || true)" \
   echo "TASK_CODE_DIR commit differs from GWYOLO_CODE_COMMIT" >&2
   exit 3
 fi
+assigned_gpu=${HARD_ENDPOINT_CUDA_VISIBLE_DEVICES:-0}
+if ! [[ "$assigned_gpu" =~ ^[0-9]+$ ]]; then
+  echo "hard endpoint requires one non-negative physical GPU index" >&2
+  exit 3
+fi
 if [[ -e "$OUTPUT_ROOT" ]]; then
   echo "hard-endpoint output root is immutable: $OUTPUT_ROOT" >&2
   exit 4
@@ -55,7 +60,7 @@ fi
 cd "$TASK_CODE_DIR"
 export PYTHONPATH=src
 export GWYOLO_CODE_COMMIT
-export CUDA_VISIBLE_DEVICES="${HARD_ENDPOINT_CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="$assigned_gpu"
 mkdir -p "$OUTPUT_ROOT/logs"
 hard_root="$OUTPUT_ROOT/hard-subset"
 
@@ -125,8 +130,11 @@ fi
 
 wait_for_idle_gpu() {
   while true; do
-    gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
-      2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+    gpu_pids=$(
+      nvidia-smi -i "$assigned_gpu" \
+        --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+        | sed '/^[[:space:]]*$/d' || true
+    )
     [[ -z "$gpu_pids" ]] && return
     sleep 30
   done

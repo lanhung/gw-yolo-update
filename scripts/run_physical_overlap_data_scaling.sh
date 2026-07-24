@@ -49,6 +49,11 @@ if [[ "$(git -C "$TASK_CODE_DIR" rev-parse HEAD 2>/dev/null || true)" \
   echo "TASK_CODE_DIR commit differs from GWYOLO_CODE_COMMIT" >&2
   exit 3
 fi
+assigned_gpu=${OVERLAP_CUDA_VISIBLE_DEVICES:-0}
+if ! [[ "$assigned_gpu" =~ ^[0-9]+$ ]]; then
+  echo "overlap scaling requires one non-negative physical GPU index" >&2
+  exit 4
+fi
 
 read -r -a scales <<<"${OVERLAP_SCALES:-250 500 1000}"
 read -r -a seeds <<<"${OVERLAP_SCALE_SEEDS:-20260728 20260729 20260730 20260731 20260732}"
@@ -74,7 +79,7 @@ done
 cd "$TASK_CODE_DIR"
 export PYTHONPATH=src
 export GWYOLO_CODE_COMMIT
-export CUDA_VISIBLE_DEVICES="${OVERLAP_CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="$assigned_gpu"
 mkdir -p "$OUTPUT_ROOT/logs"
 subset_root="$OUTPUT_ROOT/subsets"
 subset_report="$subset_root/physical_overlap_scaling_subsets.json"
@@ -126,8 +131,11 @@ fi
 
 wait_for_idle_gpu() {
   while true; do
-    gpu_pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits \
-      2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+    gpu_pids=$(
+      nvidia-smi -i "$assigned_gpu" \
+        --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+        | sed '/^[[:space:]]*$/d' || true
+    )
     [[ -z "$gpu_pids" ]] && return
     sleep 30
   done
