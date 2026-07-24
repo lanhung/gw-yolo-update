@@ -41,6 +41,7 @@ def test_score_blind_queue_rejects_nonzero_test_fraction(tmp_path: Path) -> None
         "TASK_PYTHON",
         "TASK_CODE_DIR",
         "GWYOLO_CODE_COMMIT",
+        "PILOT_CODE_COMMIT",
         "PILOT_PLAN",
         "PILOT_REPORT",
         "PLAN_AUTHORIZATION",
@@ -85,7 +86,7 @@ def test_score_blind_queue_executes_only_after_exact_pilot_contract(
     def digest(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    commit = "abc123"
+    pilot_commit = "pilot123"
     parent = write(
         "parent.json",
         {
@@ -106,7 +107,7 @@ def test_score_blind_queue_executes_only_after_exact_pilot_contract(
             "pairs_per_shard": 4,
             "selected_pairs": 4,
             "detectors": ["H1", "L1"],
-            "code_commit": commit,
+            "code_commit": pilot_commit,
         },
     )
     files = [
@@ -127,7 +128,7 @@ def test_score_blind_queue_executes_only_after_exact_pilot_contract(
             "plan_sha256": digest(pilot_plan),
             "selected_pairs": 4,
             "verified_files": 8,
-            "code_commit": commit,
+            "code_commit": pilot_commit,
             "files": files,
         },
     )
@@ -159,7 +160,8 @@ def test_score_blind_queue_executes_only_after_exact_pilot_contract(
         **os.environ,
         "TASK_PYTHON": sys.executable,
         "TASK_CODE_DIR": str(code),
-        "GWYOLO_CODE_COMMIT": commit,
+        "GWYOLO_CODE_COMMIT": "successor456",
+        "PILOT_CODE_COMMIT": pilot_commit,
         "PILOT_PID": "99999999",
         "PILOT_PLAN": str(pilot_plan),
         "PILOT_REPORT": str(pilot_report),

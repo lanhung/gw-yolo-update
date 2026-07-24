@@ -5,6 +5,7 @@ required_variables=(
   TASK_PYTHON
   TASK_CODE_DIR
   GWYOLO_CODE_COMMIT
+  PILOT_CODE_COMMIT
   PILOT_PID
   PILOT_PLAN
   PILOT_REPORT
@@ -82,7 +83,7 @@ fi
   "$PLAN_AUTHORIZATION" \
   "$PARENT_PLAN" \
   "$EVENT_EXCLUSIONS" \
-  "$GWYOLO_CODE_COMMIT" \
+  "$PILOT_CODE_COMMIT" \
   "$PAIRS_PER_SHARD" \
   "$SHARD_STOP_EXCLUSIVE" <<'PY'
 import hashlib
@@ -105,7 +106,7 @@ def digest(path):
     authorization_path,
     parent_plan_path,
     event_exclusions_path,
-    code_commit,
+    pilot_code_commit,
     pairs_per_shard,
     shard_stop,
 ) = sys.argv[1:]
@@ -155,7 +156,7 @@ if (
     or int(pilot_plan.get("shard_index", -1)) != 0
     or int(pilot_plan.get("pairs_per_shard", -1)) != pairs_per_shard
     or int(pilot_plan.get("selected_pairs", -1)) != pairs_per_shard
-    or pilot_plan.get("code_commit") != code_commit
+    or pilot_plan.get("code_commit") != pilot_code_commit
 ):
     raise SystemExit("pilot plan is not shard zero of the authorized parent")
 if (
@@ -166,7 +167,7 @@ if (
     or int(pilot_report.get("selected_pairs", -1)) != pairs_per_shard
     or int(pilot_report.get("verified_files", -1)) != expected_pilot_files
     or len(pilot_keys) != expected_pilot_files
-    or pilot_report.get("code_commit") != code_commit
+    or pilot_report.get("code_commit") != pilot_code_commit
     or any(
         row.get("verification", {}).get("passed") is not True
         for row in pilot_report.get("files", [])
