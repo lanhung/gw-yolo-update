@@ -189,3 +189,19 @@ The current 414-image/300-group release cannot support the primary paper claim b
 - an explicit demonstration that adding data improves O4 transfer rather than only O3-like mAP.
 
 Offline augmentations are reported separately and never counted as independent physical samples.
+
+For the chirp-frozen residual adapter, scale promotion is explicitly conditional:
+
+1. The frozen one-seed adapter must pass the absolute validation gates without test access.
+2. Exactly four additional seeds run only after that pass; at least 4/5 seeds and all frozen
+   median stability gates must pass.
+3. Only then may 250/500/1,000/full physical-group scales run under both fixed-epoch and
+   fixed-optimizer-update controls.
+4. The scaling configs must preserve the one-seed adapter architecture, optimizer and sampling
+   policy. A family-balanced adapter is a separate predeclared ablation, not an implicit change
+   inside the data-volume curve.
+5. A larger hard endpoint is authorized only when both controls show the frozen material
+   improvement while preserving clean-chirp non-inferiority.
+
+These gates prevent a training schedule or a more aggressive sampler from being mislabeled as
+evidence that physical sample count caused the gain.
