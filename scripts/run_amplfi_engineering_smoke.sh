@@ -232,7 +232,7 @@ if [[ ! -s "$load_report" ]]; then
 fi
 
 "$TASK_PYTHON" - \
-  "$stage_report" "$BACKGROUND_RECEIPT" "$BACKGROUND_BANK_REPORT" \
+  "$stage_report" "$resolved_config" "$BACKGROUND_RECEIPT" "$BACKGROUND_BANK_REPORT" \
   "${metrics_files[0]}" "$checkpoint" "$load_report" \
   "$GWYOLO_CODE_COMMIT" "$OUTPUT_ROOT/amplfi_engineering_smoke_receipt.json" <<'PY'
 import hashlib
@@ -241,6 +241,8 @@ import os
 import pathlib
 import sys
 
+import yaml
+
 
 def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -248,6 +250,7 @@ def digest(path):
 
 (
     stage_path,
+    resolved_config_path,
     background_path,
     bank_report_path,
     metrics_path,
@@ -257,6 +260,9 @@ def digest(path):
     target_value,
 ) = sys.argv[1:]
 stage = json.loads(pathlib.Path(stage_path).read_text(encoding="utf-8"))
+resolved_config = yaml.safe_load(
+    pathlib.Path(resolved_config_path).read_text(encoding="utf-8")
+)
 load = json.loads(pathlib.Path(load_path).read_text(encoding="utf-8"))
 if (
     stage.get("stage") != "engineering_smoke"
@@ -264,6 +270,7 @@ if (
     or stage.get("compute_budget", {}).get("epochs") != 5
     or stage.get("compute_budget", {}).get("updates") != 250
     or stage.get("compute_budget", {}).get("online_waveform_examples") != 32000
+    or resolved_config.get("trainer", {}).get("deterministic") != "warn"
     or load.get("status") != "real_pe_backend_model_load_smoke_complete"
     or load.get("backend") != "AMPLFI"
 ):
@@ -272,6 +279,7 @@ result = {
     "status": "verified_amplfi_engineering_smoke",
     "passed": True,
     "publication_candidate": False,
+    "deterministic_policy": "seeded_warn_on_unsupported_cuda_operations",
     "scientific_claim_allowed": False,
     "search_claim_allowed": False,
     "test_rows_read": 0,

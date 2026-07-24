@@ -1,5 +1,5 @@
 schema_version: 1
-expected_base_config_sha256: ce18d1a334faa4b50e7adc1beef6a0340e49292b3b50ef832476826c00044f7d
+expected_base_config_sha256: 734ef1e15b12419ce1f38462e65d3d0acf432cc01f9e47400c64a339667beccd
 
 stages:
   engineering_smoke:

@@ -507,6 +507,7 @@ def test_amplfi_training_stage_freezes_hand_calculated_compute_budget(
     )
     resolved = yaml.safe_load(output_config.read_text(encoding="utf-8"))
     assert resolved["trainer"]["max_epochs"] == 100
+    assert resolved["trainer"]["deterministic"] == "warn"
     assert resolved["data"]["init_args"]["batches_per_epoch"] == 200
     assert resolved["data"]["init_args"]["batch_size"] == 256
     assert resolved["data"]["init_args"]["min_valid_duration"] == 50000

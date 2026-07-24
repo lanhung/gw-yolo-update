@@ -20,6 +20,7 @@ def test_amplfi_engineering_smoke_is_real_but_non_publication() -> None:
         "run_pe_model_load_smoke.py",
         "verified_amplfi_engineering_smoke",
         '"publication_candidate": False',
+        '"deterministic_policy": "seeded_warn_on_unsupported_cuda_operations"',
         '"scientific_claim_allowed": False',
         '"test_rows_read": 0',
     ):
