@@ -211,6 +211,14 @@ For the chirp-frozen residual adapter, scale promotion is explicitly conditional
    physically projected H1/L1/V1 signal bank may unlock the remaining Gravity Spy detector
    subsets, but that is a detector-set robustness ablation and cannot be labeled a pure
    sample-count increase.
+8. The detector-set arm uses `injection-detector-set-expand` with the frozen O4 reference-PSD
+   configuration. Every H1/L1/V1 component is regenerated in one PyCBC/LALSimulation projection;
+   the regenerated H1/L1 components must reproduce the existing materialized signal with
+   normalized overlap at least 0.999 and relative L2 error at most 0.01. H1/L1 use
+   `aLIGOAdVO4T1800545` and V1 uses `AdVO4T1800545` for training-only SNR stratification.
+9. A detector-expanded manifest is unusable unless its audit hash is replayed by the physical
+   capacity gate. Even after that gate, the arm is labeled a detector-set robustness ablation and
+   requires empirical-noise O4 transfer; it never authorizes H1+L1 same-distribution scaling.
 
 These gates prevent a training schedule or a more aggressive sampler from being mislabeled as
 evidence that physical sample count caused the gain.
