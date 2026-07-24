@@ -857,6 +857,229 @@ def freeze_physical_overlap_scaling_subsets(
     return report
 
 
+def audit_physical_overlap_expansion_capacity(
+    hard_endpoint_report_path: str | Path | None,
+    current_overlap_manifest_path: str | Path,
+    candidate_glitch_manifest_path: str | Path,
+    candidate_injection_manifest_path: str | Path,
+    gravityspy_corpus_audit_path: str | Path,
+    output_path: str | Path,
+    seed: int = 20260728,
+) -> dict[str, Any]:
+    """Determine whether an authorized next scale has real independent-source capacity."""
+
+    hard_path = (
+        None
+        if hard_endpoint_report_path is None
+        else Path(hard_endpoint_report_path).resolve()
+    )
+    if hard_path is None:
+        authorized = False
+        next_scale = None
+    else:
+        hard = json.loads(hard_path.read_text(encoding="utf-8"))
+        if (
+            hard.get("status")
+            != "completed_group_safe_physical_overlap_data_scaling_curve"
+            or hard.get("passed") is not True
+            or hard.get("test_rows_read") != 0
+            or hard.get("test_evaluation") is not None
+            or hard.get("hard_endpoint_binding", {}).get("passed") is not True
+        ):
+            raise ValueError("Physical-overlap hard endpoint failed replay")
+        authorized = hard.get("scale_promotion_authorized") is True
+        next_scale = hard.get("authorized_next_physical_scale")
+        if authorized != (isinstance(next_scale, int) and next_scale > 0):
+            raise ValueError(
+                "Physical-overlap hard endpoint has an inconsistent authorization"
+            )
+
+    current_path = Path(current_overlap_manifest_path).resolve()
+    glitch_path = Path(candidate_glitch_manifest_path).resolve()
+    injection_path = Path(candidate_injection_manifest_path).resolve()
+    audit_path = Path(gravityspy_corpus_audit_path).resolve()
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    if (
+        audit.get("status")
+        != "verified_group_safe_gravityspy_aligned_network_corpus"
+        or audit.get("passed") is not True
+        or audit.get("train_manifest_sha256") != file_sha256(glitch_path)
+        or any(
+            audit.get("split_audit", {}).get("cross_split_overlaps", {}).values()
+        )
+    ):
+        raise ValueError("Candidate Gravity Spy corpus failed its group-safe audit")
+
+    current = _read_jsonl(current_path)
+    glitches = _read_jsonl(glitch_path)
+    injections = _read_jsonl(injection_path)
+    _require_unique(
+        current,
+        ("mixture_id", "injection_id", "waveform_id", "glitch_id"),
+        "current overlap manifest",
+    )
+    if any(row.get("split") != "train" for row in current):
+        raise ValueError("Current overlap expansion source is not train-only")
+    candidate_glitch_ids = {
+        str(row["glitch_id"]) for row in glitches if row.get("split") == "train"
+    }
+    candidate_injection_ids = {
+        str(row["injection_id"])
+        for row in injections
+        if row.get("split") == "train"
+    }
+    if (
+        {str(row["glitch_id"]) for row in current} - candidate_glitch_ids
+        or {str(row["injection_id"]) for row in current} - candidate_injection_ids
+    ):
+        raise ValueError("Current overlap rows are not contained in candidate sources")
+
+    all_pairs = pair_overlap_rows(glitches, injections, "train", seed)
+    current_subsets = {
+        tuple(sorted(str(value) for value in row["available_ifos"]))
+        for row in current
+    }
+    same_distribution_glitches = [
+        row
+        for row in glitches
+        if row.get("split") == "train"
+        and tuple(sorted(_glitch_available_ifos(row))) in current_subsets
+    ]
+    same_pairs = pair_overlap_rows(
+        same_distribution_glitches,
+        injections,
+        "train",
+        seed,
+    )
+    current_count = len(current)
+    maximum_same_distribution = len(same_pairs)
+    maximum_all_detector_sets = len(all_pairs)
+    if (
+        maximum_same_distribution < current_count
+        or maximum_all_detector_sets < maximum_same_distribution
+    ):
+        raise ValueError("Candidate expansion capacity is smaller than the current corpus")
+
+    def subset_counts(rows: list[dict[str, Any]], glitch: bool) -> dict[str, int]:
+        return dict(
+            sorted(
+                Counter(
+                    "+".join(
+                        sorted(
+                            _glitch_available_ifos(row)
+                            if glitch
+                            else _supported_ifos(row)
+                        )
+                    )
+                    for row in rows
+                    if row.get("split") == "train"
+                ).items()
+            )
+        )
+
+    if not authorized:
+        mode = "not_authorized_by_hard_endpoint"
+        same_ready = False
+        all_ready = False
+        training_authorized = False
+        minimum_new_sources = 0
+    else:
+        same_ready = maximum_same_distribution >= next_scale
+        all_ready = maximum_all_detector_sets >= next_scale
+        minimum_new_sources = max(0, next_scale - maximum_all_detector_sets)
+        if same_ready:
+            mode = "same_distribution_capacity_ready"
+            training_authorized = True
+        elif all_ready:
+            mode = "detector_set_expansion_requires_separate_ablation"
+            training_authorized = False
+        else:
+            mode = "new_physical_sources_required"
+            training_authorized = False
+
+    result = {
+        "status": "audited_physical_overlap_expansion_capacity",
+        "passed": True,
+        "scientific_claim_allowed": False,
+        "scientific_blocker": (
+            "capacity is an authorization preflight, not a trained scaling result, "
+            "continuous-background search result or locked evaluation"
+        ),
+        "test_rows_read": 0,
+        "test_evaluation": None,
+        "hard_endpoint_authorized": authorized,
+        "authorized_next_physical_scale": next_scale if authorized else None,
+        "current_physical_groups": current_count,
+        "maximum_same_distribution_physical_groups": maximum_same_distribution,
+        "maximum_all_detector_set_physical_groups": maximum_all_detector_sets,
+        "same_distribution_capacity_ready": same_ready,
+        "all_detector_set_capacity_ready": all_ready,
+        "next_scale_training_authorized": training_authorized,
+        "expansion_mode": mode,
+        "minimum_new_detector_compatible_physical_groups": minimum_new_sources,
+        "detector_set_capacity": {
+            "current_overlap": dict(
+                sorted(
+                    Counter(
+                        "+".join(sorted(str(value) for value in row["available_ifos"]))
+                        for row in current
+                    ).items()
+                )
+            ),
+            "candidate_glitches": subset_counts(glitches, True),
+            "candidate_injections": subset_counts(injections, False),
+        },
+        "required_followup": (
+            [
+                "acquire new unique glitch IDs and GPS blocks compatible with the "
+                "current detector-set distribution",
+                "pair with disjoint unique waveform/injection IDs",
+                "rerun the joint train/validation leakage audit before training",
+            ]
+            if mode == "new_physical_sources_required"
+            else (
+                [
+                    "treat detector-set expansion as a separate predeclared robustness "
+                    "ablation, not same-distribution data scaling"
+                ]
+                if mode == "detector_set_expansion_requires_separate_ablation"
+                else []
+            )
+        ),
+        "inputs": {
+            "hard_endpoint": (
+                None
+                if hard_path is None
+                else {
+                    "path": str(hard_path),
+                    "sha256": file_sha256(hard_path),
+                }
+            ),
+            "current_overlap_manifest": {
+                "path": str(current_path),
+                "sha256": file_sha256(current_path),
+            },
+            "candidate_glitch_manifest": {
+                "path": str(glitch_path),
+                "sha256": file_sha256(glitch_path),
+            },
+            "candidate_injection_manifest": {
+                "path": str(injection_path),
+                "sha256": file_sha256(injection_path),
+            },
+            "gravityspy_corpus_audit": {
+                "path": str(audit_path),
+                "sha256": file_sha256(audit_path),
+            },
+        },
+        "pairing_policy": "maximum_cardinality_detector_subset_flow_v1",
+        "seed": seed,
+        **execution_provenance(),
+    }
+    atomic_write_json(output_path, result)
+    return result
+
+
 def freeze_physical_overlap_scaling_hard_subset(
     validation_manifest: str | Path,
     gravityspy_corpus_audit: str | Path,

@@ -202,6 +202,15 @@ For the chirp-frozen residual adapter, scale promotion is explicitly conditional
    inside the data-volume curve.
 5. A larger hard endpoint is authorized only when both controls show the frozen material
    improvement while preserving clean-chirp non-inferiority.
+6. Before training that next endpoint, an exact detector-compatible source-capacity audit must
+   show enough unique waveform, injection, glitch and GPS groups. The current 1,170-row H1+L1
+   corpus has no unused same-distribution capacity: its parent Gravity Spy train corpus has
+   2,449 glitches, but the remaining 1,279 require V1 while the current 10,000-waveform signal
+   bank is H1+L1-only.
+7. New O4a H1+L1 glitch/GPS groups are the preferred same-distribution expansion. A new
+   physically projected H1/L1/V1 signal bank may unlock the remaining Gravity Spy detector
+   subsets, but that is a detector-set robustness ablation and cannot be labeled a pure
+   sample-count increase.
 
 These gates prevent a training schedule or a more aggressive sampler from being mislabeled as
 evidence that physical sample count caused the gain.

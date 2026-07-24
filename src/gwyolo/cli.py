@@ -1048,6 +1048,25 @@ def build_parser() -> argparse.ArgumentParser:
     physical_overlap_scaling.add_argument("--seed", type=int, default=20260728)
     physical_overlap_scaling.add_argument("--include-full", action="store_true")
 
+    overlap_expansion_capacity = subparsers.add_parser(
+        "physical-overlap-expansion-capacity"
+    )
+    overlap_expansion_capacity.add_argument("--hard-endpoint-report")
+    overlap_expansion_capacity.add_argument(
+        "--current-overlap-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument(
+        "--candidate-glitch-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument(
+        "--candidate-injection-manifest", required=True
+    )
+    overlap_expansion_capacity.add_argument(
+        "--gravityspy-corpus-audit", required=True
+    )
+    overlap_expansion_capacity.add_argument("--output", required=True)
+    overlap_expansion_capacity.add_argument("--seed", type=int, default=20260728)
+
     overlap_hard_subset = subparsers.add_parser(
         "physical-overlap-scale-hard-subset-freeze"
     )
@@ -3828,6 +3847,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_dir,
                 args.seed,
                 args.include_full,
+            )
+        )
+    elif args.command == "physical-overlap-expansion-capacity":
+        from .overlaps import audit_physical_overlap_expansion_capacity
+
+        _print(
+            audit_physical_overlap_expansion_capacity(
+                args.hard_endpoint_report,
+                args.current_overlap_manifest,
+                args.candidate_glitch_manifest,
+                args.candidate_injection_manifest,
+                args.gravityspy_corpus_audit,
+                args.output,
+                args.seed,
             )
         )
     elif args.command == "physical-overlap-scale-hard-subset-freeze":
