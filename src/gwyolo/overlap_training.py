@@ -1801,12 +1801,45 @@ def configure_overlap_training_scope(
                 parameter.numel() for parameter in parameters
             ),
         }
-    if scope != "glitch_head_only":
-        raise ValueError("Overlap training_scope must be full_model or glitch_head_only")
+    if scope not in {"glitch_head_only", "glitch_adapter_only"}:
+        raise ValueError(
+            "Overlap training_scope must be full_model, glitch_head_only, "
+            "or glitch_adapter_only"
+        )
     if teacher_architecture != "detector_set":
         raise ValueError(
-            "glitch_head_only requires an exact detector-set pretrained checkpoint"
+            f"{scope} requires an exact detector-set pretrained checkpoint"
         )
+    if scope == "glitch_adapter_only":
+        adapter = getattr(student, "glitch_adapter", None)
+        adapter_head = getattr(student, "glitch_adapter_head", None)
+        adapter_channels = int(getattr(student, "glitch_adapter_channels", 0))
+        if adapter is None or adapter_head is None or adapter_channels <= 0:
+            raise ValueError(
+                "glitch_adapter_only requires an enabled zero-residual glitch adapter"
+            )
+        student.requires_grad_(False)
+        adapter.requires_grad_(True)
+        adapter_head.requires_grad_(True)
+        parameters = [
+            parameter
+            for module in (adapter, adapter_head)
+            for parameter in module.parameters()
+            if parameter.requires_grad
+        ]
+        return parameters, {
+            "scope": scope,
+            "backbone_frozen": True,
+            "chirp_output_frozen": True,
+            "glitch_output_trainable": True,
+            "gradient_mask_policy": None,
+            "adapter_policy": "zero_initialized_residual_glitch_decoder_v1",
+            "adapter_channels": adapter_channels,
+            "trainable_parameter_tensors": len(parameters),
+            "effective_trainable_parameters": sum(
+                parameter.numel() for parameter in parameters
+            ),
+        }
     head = getattr(student, "shared_head", None)
     q_count = int(getattr(student, "q_count", 0))
     if (
@@ -2072,12 +2105,24 @@ def run_physical_overlap_finetune(
     pretrained = torch.load(pretrained_checkpoint, map_location=device, weights_only=False)
     teacher, teacher_architecture = model_from_checkpoint(pretrained, model_ifos, q_values)
     teacher = teacher.to(device).requires_grad_(False)
-    student = DetectorSetQNet(len(model_ifos), len(q_values), int(pretrained["base_channels"])).to(device)
+    student = DetectorSetQNet(
+        len(model_ifos), len(q_values), int(pretrained["base_channels"])
+    )
     if teacher_architecture == "detector_set":
         student.load_state_dict(pretrained["model"])
         warm_start = {"status": "exact_detector_set_state_dict"}
     else:
         warm_start = initialize_detector_set_from_early_fusion(student, pretrained)
+    requested_scope = str(settings.get("training_scope", "full_model"))
+    if requested_scope == "glitch_adapter_only":
+        adapter_report = student.enable_glitch_adapter(
+            int(settings.get("glitch_adapter_channels", 0))
+        )
+        warm_start = {
+            **warm_start,
+            "glitch_adapter": adapter_report,
+        }
+    student = student.to(device)
     optimized_parameters, training_scope = configure_overlap_training_scope(
         student, teacher_architecture, settings
     )
@@ -2098,18 +2143,19 @@ def run_physical_overlap_finetune(
     )
     if (
         checkpoint_selection_metric == "validation_loss"
-        and training_scope["scope"] != "glitch_head_only"
+        and training_scope["scope"]
+        not in {"glitch_head_only", "glitch_adapter_only"}
     ):
         raise ValueError(
-            "validation_loss checkpoint selection is restricted to glitch_head_only, "
-            "where the frozen chirp contribution is constant"
+            "validation_loss checkpoint selection is restricted to frozen-chirp "
+            "glitch_head_only or glitch_adapter_only scopes"
         )
     overlap_checkpoint_selection_score(
         {"mean_iou": 0.0, "loss": 0.0}, checkpoint_selection_metric
     )
     q_count = len(q_values)
     frozen_non_glitch_state = None
-    if training_scope["scope"] == "glitch_head_only":
+    if training_scope["scope"] in {"glitch_head_only", "glitch_adapter_only"}:
         frozen_non_glitch_state = {
             name: value.detach().cpu().clone()
             for name, value in student.state_dict().items()
@@ -2216,6 +2262,9 @@ def run_physical_overlap_finetune(
                     "q_values": list(q_values),
                     "input_channels": len(model_ifos) * len(q_values),
                     "base_channels": int(pretrained["base_channels"]),
+                    "glitch_adapter_channels": int(
+                        getattr(student, "glitch_adapter_channels", 0)
+                    ),
                     "epoch": epoch,
                     "validation_overlap_mean_iou": float(
                         overlap_validation["mean_iou"]
@@ -2275,11 +2324,18 @@ def run_physical_overlap_finetune(
                 )
             )
         )
-        backbone_preserved_bit_exact = all(
-            torch.equal(value.detach().cpu(), frozen_non_glitch_state[name])
-            for name, value in selected_state.items()
-            if name not in {"shared_head.weight", "shared_head.bias"}
-        )
+        if training_scope["scope"] == "glitch_adapter_only":
+            backbone_preserved_bit_exact = all(
+                torch.equal(value.detach().cpu(), frozen_non_glitch_state[name])
+                for name, value in selected_state.items()
+                if not name.startswith("glitch_adapter")
+            )
+        else:
+            backbone_preserved_bit_exact = all(
+                torch.equal(value.detach().cpu(), frozen_non_glitch_state[name])
+                for name, value in selected_state.items()
+                if name not in {"shared_head.weight", "shared_head.bias"}
+            )
         non_glitch_state_preserved_bit_exact = bool(
             chirp_head_preserved_bit_exact and backbone_preserved_bit_exact
         )

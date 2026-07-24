@@ -90,6 +90,42 @@ def test_checkpoint_loader_preserves_architecture_and_detector_order() -> None:
         model_from_checkpoint(checkpoint, ("L1", "H1", "V1"), (4.0,))
 
 
+def test_zero_residual_glitch_adapter_preserves_logits_and_round_trips() -> None:
+    torch.manual_seed(5)
+    source = DetectorSetQNet(ifo_count=3, q_count=2, base_channels=8).eval()
+    features = torch.randn(2, 6, 10, 12)
+    availability = torch.tensor([[1, 1, 1], [1, 0, 1]], dtype=torch.float32)
+    baseline = source(features, availability)
+    adapter = source.enable_glitch_adapter(adapter_channels=4)
+    adapted = source(features, availability)
+    assert adapter == {
+        "status": "initialized_zero_residual_glitch_adapter",
+        "adapter_channels": 4,
+    }
+    assert torch.equal(adapted, baseline)
+
+    with torch.no_grad():
+        source.glitch_adapter_head.bias.fill_(0.25)
+    changed = source(features, availability)
+    assert torch.equal(changed[:, 0], baseline[:, 0])
+    assert not torch.equal(changed[:, 1], baseline[:, 1])
+    checkpoint = {
+        "architecture": "detector_set",
+        "input_channels": 6,
+        "base_channels": 8,
+        "glitch_adapter_channels": 4,
+        "model_ifos": ["H1", "L1", "V1"],
+        "q_values": [4.0, 8.0],
+        "model": source.state_dict(),
+    }
+    restored, architecture = model_from_checkpoint(
+        checkpoint, ("H1", "L1", "V1"), (4.0, 8.0)
+    )
+    assert architecture == "detector_set"
+    assert restored.glitch_adapter_channels == 4
+    assert torch.equal(restored(features, availability), changed)
+
+
 def test_glitch_embedding_is_normalized_and_classifies_known_families() -> None:
     model = GlitchEmbeddingNet(q_count=3, class_count=4, base_channels=8, embedding_dim=6)
     logits, embedding = model(torch.randn(5, 3, 12, 10))

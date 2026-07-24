@@ -118,6 +118,38 @@ if nn is not None:
             self.bottleneck = _ConvBlock(base_channels, base_channels * 2)
             self.shared_decoder = _ConvBlock(base_channels * 3, base_channels)
             self.shared_head = nn.Conv2d(base_channels, 2 * self.q_count, 1)
+            self.glitch_adapter_channels = 0
+            self.glitch_adapter = None
+            self.glitch_adapter_head = None
+
+        def enable_glitch_adapter(self, adapter_channels: int) -> dict[str, Any]:
+            """Attach a zero-residual glitch decoder without changing chirp logits."""
+
+            if adapter_channels <= 0:
+                raise ValueError("glitch adapter channels must be positive")
+            if self.glitch_adapter_channels:
+                if self.glitch_adapter_channels != adapter_channels:
+                    raise ValueError("glitch adapter is already enabled with another width")
+                return {
+                    "status": "existing_zero_residual_glitch_adapter",
+                    "adapter_channels": self.glitch_adapter_channels,
+                }
+            device = self.shared_head.weight.device
+            dtype = self.shared_head.weight.dtype
+            self.glitch_adapter = _ConvBlock(self.base_channels, adapter_channels).to(
+                device=device, dtype=dtype
+            )
+            self.glitch_adapter_head = nn.Conv2d(
+                adapter_channels, self.q_count, 1
+            ).to(device=device, dtype=dtype)
+            nn.init.zeros_(self.glitch_adapter_head.weight)
+            if self.glitch_adapter_head.bias is not None:
+                nn.init.zeros_(self.glitch_adapter_head.bias)
+            self.glitch_adapter_channels = int(adapter_channels)
+            return {
+                "status": "initialized_zero_residual_glitch_adapter",
+                "adapter_channels": self.glitch_adapter_channels,
+            }
 
         def forward(self, value: Any, detector_availability: Any) -> Any:
             if value.ndim != 4 or value.shape[1] != self.input_channels:
@@ -164,7 +196,25 @@ if nn is not None:
                     time_bins,
                 )
             )
-            logits = self.shared_head(decoded).reshape(
+            per_detector_logits = self.shared_head(decoded).reshape(
+                batch * self.ifo_count,
+                2,
+                self.q_count,
+                frequency,
+                time_bins,
+            )
+            if self.glitch_adapter is not None:
+                residual = self.glitch_adapter_head(
+                    self.glitch_adapter(decoded)
+                )
+                per_detector_logits = torch.stack(
+                    [
+                        per_detector_logits[:, 0],
+                        per_detector_logits[:, 1] + residual,
+                    ],
+                    dim=1,
+                )
+            logits = per_detector_logits.reshape(
                 batch,
                 self.ifo_count,
                 2,
@@ -889,6 +939,9 @@ def model_from_checkpoint(
         model = MultiIFOQNet(expected_channels, base_channels)
     elif architecture == "detector_set":
         model = DetectorSetQNet(len(model_ifos), len(q_values), base_channels)
+        adapter_channels = int(checkpoint.get("glitch_adapter_channels", 0))
+        if adapter_channels:
+            model.enable_glitch_adapter(adapter_channels)
     else:
         raise ValueError(f"unsupported checkpoint architecture: {architecture}")
     model.load_state_dict(checkpoint["model"])

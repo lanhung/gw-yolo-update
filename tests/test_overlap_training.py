@@ -171,6 +171,54 @@ def test_glitch_head_only_scope_rejects_non_detector_set_teacher() -> None:
 
 
 @pytest.mark.skipif(torch is None, reason="torch is optional")
+def test_glitch_adapter_scope_preserves_base_and_chirp_bit_exact() -> None:
+    torch.manual_seed(11)
+    student = DetectorSetQNet(ifo_count=3, q_count=2, base_channels=8)
+    student.enable_glitch_adapter(adapter_channels=4)
+    original = {
+        name: value.detach().clone() for name, value in student.state_dict().items()
+    }
+    features = torch.randn(2, 6, 8, 8)
+    availability = torch.ones(2, 3)
+    baseline = student(features, availability).detach().clone()
+    parameters, report = configure_overlap_training_scope(
+        student,
+        "detector_set",
+        {"training_scope": "glitch_adapter_only"},
+    )
+    optimizer = torch.optim.AdamW(parameters, lr=0.1, weight_decay=0.0)
+    optimizer.zero_grad(set_to_none=True)
+    student(features, availability)[:, 1].sum().backward()
+    optimizer.step()
+
+    current = student.state_dict()
+    assert all(
+        torch.equal(current[name], value)
+        for name, value in original.items()
+        if not name.startswith("glitch_adapter")
+    )
+    assert any(
+        not torch.equal(current[name], value)
+        for name, value in original.items()
+        if name.startswith("glitch_adapter")
+    )
+    changed = student(features, availability)
+    assert torch.equal(changed[:, 0], baseline[:, 0])
+    assert not torch.equal(changed[:, 1], baseline[:, 1])
+    assert report == {
+        "scope": "glitch_adapter_only",
+        "backbone_frozen": True,
+        "chirp_output_frozen": True,
+        "glitch_output_trainable": True,
+        "gradient_mask_policy": None,
+        "adapter_policy": "zero_initialized_residual_glitch_decoder_v1",
+        "adapter_channels": 4,
+        "trainable_parameter_tensors": 8,
+        "effective_trainable_parameters": 458,
+    }
+
+
+@pytest.mark.skipif(torch is None, reason="torch is optional")
 def test_overlap_train_epoch_stops_at_exact_update_budget() -> None:
     class TinyDetectorSet(torch.nn.Module):
         def __init__(self):
