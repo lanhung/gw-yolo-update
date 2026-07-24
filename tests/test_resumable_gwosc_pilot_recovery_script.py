@@ -27,6 +27,9 @@ def test_recovery_is_bounded_identity_preserving_and_score_blind() -> None:
     assert "O4a" in source
     assert "locked_evaluation_data" in source
     assert "verified_resumable_gwosc_pilot_recovery" in source
+    assert "pilot_cli_code_commit" in source
+    assert "recovery_code_commit" in source
+    assert "recovery_script_sha256" in source
 
 
 def test_recovery_embedded_python_compiles() -> None:
@@ -87,6 +90,7 @@ def test_passing_upstream_creates_no_recovery_receipt(tmp_path: Path) -> None:
         "TASK_PYTHON": sys.executable,
         "TASK_CODE_DIR": str(code),
         "GWYOLO_CODE_COMMIT": "abc123",
+        "RECOVERY_CODE_COMMIT": "recovery456",
         "PILOT_PLAN": str(plan),
         "PILOT_REPORT": str(report),
         "CACHE_ROOT": str(tmp_path / "cache"),

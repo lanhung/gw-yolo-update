@@ -12,6 +12,7 @@ required_variables=(
   TASK_PYTHON
   TASK_CODE_DIR
   GWYOLO_CODE_COMMIT
+  RECOVERY_CODE_COMMIT
   PILOT_PLAN
   PILOT_REPORT
   CACHE_ROOT
@@ -60,6 +61,7 @@ if [[ "$RECOVERY_RECEIPT" == "$PILOT_REPORT" ]]; then
   echo "recovery receipt must not overwrite the immutable pilot report" >&2
   exit 2
 fi
+RECOVERY_SCRIPT_PATH=$(readlink -f "$0")
 
 while kill -0 "$UPSTREAM_PID" 2>/dev/null; do
   sleep "$POLL_SECONDS"
@@ -187,7 +189,8 @@ fi
 verify_pilot
 
 export attempts_executed DOWNLOAD_WORKERS CHUNK_SAMPLES CACHE_ROOT
-export PILOT_OUTPUT_DIR GWYOLO_CODE_COMMIT
+export PILOT_OUTPUT_DIR GWYOLO_CODE_COMMIT RECOVERY_CODE_COMMIT
+export RECOVERY_SCRIPT_PATH
 "$TASK_PYTHON" - \
   "$PILOT_PLAN" \
   "$PILOT_REPORT" \
@@ -217,7 +220,12 @@ result = {
     "download_workers": int(os.environ["DOWNLOAD_WORKERS"]),
     "chunk_samples": int(os.environ["CHUNK_SAMPLES"]),
     "recovery_attempts_executed": int(os.environ["attempts_executed"]),
-    "code_commit": os.environ["GWYOLO_CODE_COMMIT"],
+    "pilot_cli_code_commit": os.environ["GWYOLO_CODE_COMMIT"],
+    "recovery_code_commit": os.environ["RECOVERY_CODE_COMMIT"],
+    "recovery_script_path": os.environ["RECOVERY_SCRIPT_PATH"],
+    "recovery_script_sha256": hashlib.sha256(
+        pathlib.Path(os.environ["RECOVERY_SCRIPT_PATH"]).read_bytes()
+    ).hexdigest(),
     "exact_command": (
         "python -m gwyolo.cli gwosc-batch-download "
         f"--plan {plan_path} --cache-dir {os.environ['CACHE_ROOT']} "
