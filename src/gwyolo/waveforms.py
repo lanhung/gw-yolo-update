@@ -832,10 +832,46 @@ def _read_background(
             raise ValueError("Background bank/window identity mismatch")
         if bank["sample_rate"] != target_sample_rate:
             raise ValueError("Background bank sample rate differs from requested materialization")
-        observed_duration = bank["noise"].shape[1] / target_sample_rate
-        if not np.isclose(observed_duration, context_duration, rtol=0.0, atol=1e-9):
-            raise ValueError("Background bank context duration differs from requested materialization")
-        return bank["ifos"], bank["noise"], bank["context_gps_start"]
+        requested_samples = int(round(context_duration * target_sample_rate))
+        if (
+            requested_samples <= 0
+            or not np.isclose(
+                requested_samples / target_sample_rate,
+                context_duration,
+                rtol=0.0,
+                atol=1e-9,
+            )
+        ):
+            raise ValueError(
+                "Requested materialization context is not sample-rate aligned"
+            )
+        observed_samples = int(bank["noise"].shape[1])
+        if observed_samples < requested_samples:
+            raise ValueError(
+                "Background bank context is shorter than requested materialization"
+            )
+        crop_start = 0
+        if observed_samples > requested_samples:
+            analysis_start = int(bank["analysis_start_index"])
+            analysis_stop = int(bank["analysis_stop_index"])
+            analysis_center = (analysis_start + analysis_stop) / 2.0
+            crop_start = int(round(analysis_center - requested_samples / 2.0))
+            crop_stop = crop_start + requested_samples
+            if (
+                crop_start < 0
+                or crop_stop > observed_samples
+                or crop_start > analysis_start
+                or crop_stop < analysis_stop
+            ):
+                raise ValueError(
+                    "Requested materialization context cannot contain the analysis window"
+                )
+        crop_stop = crop_start + requested_samples
+        return (
+            bank["ifos"],
+            bank["noise"][:, crop_start:crop_stop],
+            bank["context_gps_start"] + crop_start / target_sample_rate,
+        )
     analysis_start = float(row["gps_start"])
     analysis_duration = float(row["duration"])
     if context_duration < analysis_duration:
@@ -942,9 +978,16 @@ def load_materialized_context(
             raise ValueError("materialized signal/background bank window identity mismatch")
         if bank["sample_rate"] != source_rate or bank["ifos"] != ifos:
             raise ValueError("materialized signal/background bank detector contract mismatch")
-        if not np.isclose(bank["context_gps_start"], context_start, rtol=0.0, atol=1e-9):
+        raw_offset = (context_start - bank["context_gps_start"]) * source_rate
+        offset = int(round(raw_offset))
+        stop = offset + signal.shape[1]
+        if (
+            not np.isclose(raw_offset, offset, rtol=0.0, atol=1e-6)
+            or offset < 0
+            or stop > bank["noise"].shape[1]
+        ):
             raise ValueError("materialized signal/background bank context mismatch")
-        noise = bank["noise"]
+        noise = bank["noise"][:, offset:stop]
     elif stored_noise is None:
         verified = verified_background_hashes if verified_background_hashes is not None else {}
         context_duration = signal.shape[1] / source_rate
@@ -1371,6 +1414,9 @@ def materialize_recipe(
             for ifo in ifos
         },
         "background_bank": background.get("background_bank"),
+        "background_bank_context_policy": (
+            "analysis_center_crop_v1" if background.get("background_bank") else None
+        ),
     }
 
 
@@ -1424,6 +1470,7 @@ def run_injection_materialization(
         ),
         "sample_rate": sample_rate,
         "context_duration": context_duration,
+        "background_bank_context_policy": "analysis_center_crop_v1",
         "storage_mode": storage_mode,
         "signal_dtype": (
             "scaled_float16_with_float64_ifo_peak"
@@ -1507,6 +1554,9 @@ def run_injection_materialization(
         "selected_recipes": len(selected),
         "sample_rate": sample_rate,
         "context_duration": context_duration,
+        "background_bank_context_policy": run_identity[
+            "background_bank_context_policy"
+        ],
         "storage_mode": storage_mode,
         "signal_dtype": run_identity["signal_dtype"],
         "materialized_bytes": sum(

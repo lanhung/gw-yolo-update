@@ -215,8 +215,68 @@ def test_numeric_background_bank_survives_source_eviction(tmp_path) -> None:
         storage_mode="signal_scaled_float16",
     )
     loaded = load_materialized_context(materialized)
+    assert materialized["background_bank_context_policy"] == "analysis_center_crop_v1"
     assert loaded["noise"].shape == (1, 16)
     assert loaded["mixture"] == pytest.approx(loaded["noise"] + loaded["signal"])
+
+
+def test_longer_numeric_background_bank_is_cropped_around_analysis_window(
+    tmp_path,
+) -> None:
+    bank = tmp_path / "long-bank.npz"
+    noise = np.arange(32, dtype=np.float64).reshape(1, 32)
+    np.savez(
+        bank,
+        noise=noise,
+        ifos=np.asarray(["H1"]),
+        sample_rate=np.asarray(4, dtype=np.int64),
+        context_gps_start=np.asarray(100.0),
+        analysis_gps_start=np.asarray(102.0),
+        analysis_start_index=np.asarray(8, dtype=np.int64),
+        analysis_stop_index=np.asarray(16, dtype=np.int64),
+        window_id=np.asarray("long-window"),
+    )
+    background = {
+        "window_id": "long-window",
+        "gps_block": "long-block",
+        "split": "val",
+        "gps_start": 102.0,
+        "duration": 2.0,
+        "ifos": ["H1"],
+        "source_files": {
+            "H1": {"path": "evicted-source.hdf5", "sha256": "a" * 64}
+        },
+        "background_bank": {"path": str(bank), "sha256": file_sha256(bank)},
+    }
+
+    class FakeBackend:
+        def generate(self, recipe, ifos, sample_rate):
+            assert ifos == ["H1"]
+            assert sample_rate == 4
+            return {"H1": (102.0, np.asarray([1.0, 2.0]))}, {
+                "H1": {"fake": True}
+            }
+
+    materialized = materialize_recipe(
+        {
+            "injection_id": "cropped-injection",
+            "background_window_id": "long-window",
+            "gps_block": "long-block",
+            "split": "val",
+        },
+        background,
+        FakeBackend(),
+        4,
+        tmp_path / "cropped-injection.npz",
+        context_duration=4.0,
+        storage_mode="signal_scaled_float16",
+    )
+    loaded = load_materialized_context(materialized)
+    assert loaded["noise"].shape == (1, 16)
+    assert loaded["context_gps_start"] == pytest.approx(101.0)
+    assert loaded["analysis_start_index"] == 4
+    assert loaded["analysis_stop_index"] == 12
+    assert loaded["noise"][0] == pytest.approx(noise[0, 4:20])
 
 
 def test_background_bank_source_eviction_requires_complete_hash_verification(tmp_path) -> None:

@@ -62,7 +62,7 @@ cd "$TASK_CODE_DIR"
 export PYTHONPATH=src GWYOLO_CODE_COMMIT
 manifest_context_duration=$(
   "$TASK_PYTHON" - "$data_receipt" "$background_report" "$injection_plan" \
-    "$background_manifest" "$recipes" <<'PY'
+    "$background_manifest" "$recipes" "$sample_rate" <<'PY'
 import hashlib
 import json
 import math
@@ -76,7 +76,15 @@ def digest(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
-receipt_path, background_path, plan_path, manifest_path, recipes_path = sys.argv[1:]
+(
+    receipt_path,
+    background_path,
+    plan_path,
+    manifest_path,
+    recipes_path,
+    target_sample_rate,
+) = sys.argv[1:]
+target_sample_rate = int(target_sample_rate)
 receipt = json.loads(pathlib.Path(receipt_path).read_text(encoding="utf-8"))
 background = json.loads(pathlib.Path(background_path).read_text(encoding="utf-8"))
 plan = json.loads(pathlib.Path(plan_path).read_text(encoding="utf-8"))
@@ -113,19 +121,31 @@ for row in rows:
     with np.load(bank["path"], allow_pickle=False) as arrays:
         noise = arrays["noise"]
         sample_rate = int(arrays["sample_rate"])
-        if noise.ndim != 2 or sample_rate <= 0:
+        if (
+            noise.ndim != 2
+            or sample_rate <= 0
+            or sample_rate != target_sample_rate
+        ):
             raise SystemExit("detector background bank has invalid context shape")
         durations.add(noise.shape[1] / sample_rate)
 if (
     not rows
     or rows_without_banks
-    or len(durations) != 1
+    or not durations
     or not all(math.isfinite(value) and value > 0 for value in durations)
 ):
     raise SystemExit(
-        "detector background banks require one positive context duration"
+        "detector background banks require positive context durations"
     )
-print(next(iter(durations)))
+context_duration = min(durations)
+if any(
+    float(row.get("duration", float("nan"))) > context_duration
+    for row in rows
+):
+    raise SystemExit(
+        "minimum detector bank context cannot contain every analysis window"
+    )
+print(context_duration)
 PY
 )
 if [[ -z "$context_duration" ]]; then
