@@ -414,8 +414,80 @@ def materialize_physical_overlaps(
     injection_rows = _read_jsonl(injection_manifest)
     pairs = pair_overlap_rows(glitch_rows, injection_rows, split, seed, limit)
     output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    config_sha256 = file_sha256(config_path)
+
+    def overlap_identity(
+        glitch: dict[str, Any], injection: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "version": OVERLAP_ARTIFACT_VERSION,
+            "split": split,
+            "glitch_id": str(glitch["glitch_id"]),
+            "injection_id": str(injection["injection_id"]),
+            "waveform_id": str(injection["waveform_id"]),
+            "glitch_sha256": str(glitch["sha256"]),
+            "injection_sha256": str(injection["materialized_sha256"]),
+            "config_sha256": config_sha256,
+            "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
+        }
+
+    planned = [
+        (
+            glitch,
+            injection,
+            f"overlap-{canonical_hash(overlap_identity(glitch, injection), 24)}",
+        )
+        for glitch, injection in pairs
+    ]
+    run_identity = {
+        "artifact_version": OVERLAP_ARTIFACT_VERSION,
+        "gravityspy_manifest_sha256": file_sha256(gravityspy_manifest),
+        "injection_manifest_sha256": file_sha256(injection_manifest),
+        "config_sha256": config_sha256,
+        "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
+        "split": split,
+        "seed": seed,
+        "predeclared_pair_limit": limit,
+        "pair_identity_hash": canonical_hash(
+            [
+                {
+                    "mixture_id": mixture_id,
+                    "glitch_id": str(glitch["glitch_id"]),
+                    "injection_id": str(injection["injection_id"]),
+                    "waveform_id": str(injection["waveform_id"]),
+                }
+                for glitch, injection, mixture_id in planned
+            ],
+            64,
+        ),
+    }
+    state_path = output / "physical_overlap_materialization_state.json"
+    partial_path = output / f"physical_overlap_{split}.partial.jsonl"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("run_identity") != run_identity:
+            raise ValueError("Existing overlap materialization belongs to another run")
+    elif partial_path.is_file():
+        raise ValueError("Partial overlap manifest exists without a run identity")
     records: list[dict[str, Any]] = []
-    for glitch, injection in pairs:
+    if partial_path.is_file():
+        records = _read_jsonl(partial_path)
+    if len(records) > len(planned):
+        raise ValueError("Partial overlap manifest is longer than the requested pairing")
+    for record, (glitch, injection, mixture_id) in zip(records, planned):
+        if (
+            record.get("mixture_id") != mixture_id
+            or str(record.get("glitch_id")) != str(glitch["glitch_id"])
+            or str(record.get("injection_id")) != str(injection["injection_id"])
+            or str(record.get("waveform_id")) != str(injection["waveform_id"])
+            or file_sha256(record["path"]) != str(record["sha256"])
+        ):
+            raise ValueError("Partial overlap manifest is not a verified pairing prefix")
+
+    for index, (glitch, injection, mixture_id) in enumerate(
+        planned[len(records) :], start=len(records) + 1
+    ):
         ifo = str(glitch["ifo"])
         gravity = _load_gravityspy_sample(
             glitch, model_ifos, q_values, target_rate, frequency_bins, time_bins
@@ -482,18 +554,6 @@ def materialize_physical_overlaps(
         )
         if np.any(features[availability == 0] != 0):
             raise RuntimeError("Unavailable detector planes must remain exactly zero")
-        identity = {
-            "version": OVERLAP_ARTIFACT_VERSION,
-            "split": split,
-            "glitch_id": str(glitch["glitch_id"]),
-            "injection_id": str(injection["injection_id"]),
-            "waveform_id": str(injection["waveform_id"]),
-            "glitch_sha256": str(glitch["sha256"]),
-            "injection_sha256": str(injection["materialized_sha256"]),
-            "config_sha256": file_sha256(config_path),
-            "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
-        }
-        mixture_id = f"overlap-{canonical_hash(identity, 24)}"
         sample_path = output / "samples" / f"{mixture_id}.npz"
         _atomic_save_npz(
             sample_path,
@@ -551,6 +611,20 @@ def materialize_physical_overlaps(
             "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
         }
         records.append(record)
+        if index % 10 == 0 or index == len(planned):
+            atomic_write_text(
+                partial_path,
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in records),
+            )
+            atomic_write_json(
+                state_path,
+                {
+                    "status": "in_progress",
+                    "run_identity": run_identity,
+                    "completed": len(records),
+                    "requested": len(planned),
+                },
+            )
 
     _require_unique(
         records,
@@ -629,6 +703,11 @@ def materialize_physical_overlaps(
             str(gravityspy_corpus_audit) if gravityspy_corpus_audit is not None else None
         ),
         "gravityspy_corpus_audit_sha256": corpus_audit_sha256,
+        "resumable_materialization": {
+            "policy": "verified_pairing_prefix_v1",
+            "checkpoint_every_rows": 10,
+            "run_identity": run_identity,
+        },
         "seed": seed,
         "required_next_gates": [
             "joint_cross_split_overlap_audit",
@@ -640,6 +719,16 @@ def materialize_physical_overlaps(
         **execution_provenance(),
     }
     atomic_write_json(output / "physical_overlap_report.json", report)
+    atomic_write_json(
+        state_path,
+        {
+            "status": "complete",
+            "run_identity": run_identity,
+            "completed": len(records),
+            "requested": len(planned),
+            "manifest_sha256": report["manifest_sha256"],
+        },
+    )
     return report
 
 

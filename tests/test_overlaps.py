@@ -88,7 +88,9 @@ def test_overlap_pairing_uses_maximum_detector_subset_flow() -> None:
         pair_overlap_rows(glitches, incompatible, "train", seed=4)
 
 
-def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(tmp_path) -> None:
+def test_physical_overlap_materializes_fresh_transform_and_explicit_availability(
+    tmp_path, monkeypatch
+) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
         """overlap_factory:
@@ -196,6 +198,32 @@ def test_physical_overlap_materializes_fresh_transform_and_explicit_availability
     assert report["rendered_image_count"] == 0
     assert report["network_coherence_claim_allowed"] is False
     assert report["gravityspy_corpus_audit_sha256"] == file_sha256(corpus_audit)
+    assert report["resumable_materialization"]["policy"] == (
+        "verified_pairing_prefix_v1"
+    )
+    state = json.loads(
+        (
+            tmp_path / "output" / "physical_overlap_materialization_state.json"
+        ).read_text()
+    )
+    assert state["status"] == "complete"
+    assert state["completed"] == 1
+
+    def should_not_reload(*_args, **_kwargs):
+        raise AssertionError("verified overlap prefix was recomputed")
+
+    monkeypatch.setattr("gwyolo.overlaps._load_gravityspy_sample", should_not_reload)
+    replayed = materialize_physical_overlaps(
+        gravity_manifest,
+        injection_manifest,
+        config,
+        tmp_path / "output",
+        "train",
+        seed=7,
+        gravityspy_corpus_audit=corpus_audit,
+    )
+    assert replayed["manifest_sha256"] == report["manifest_sha256"]
+
     bad_audit = tmp_path / "bad-corpus-audit.json"
     bad_payload = json.loads(corpus_audit.read_text())
     bad_payload["train_manifest_sha256"] = "0" * 64
